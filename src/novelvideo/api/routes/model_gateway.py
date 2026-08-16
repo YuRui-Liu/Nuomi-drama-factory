@@ -27,6 +27,11 @@ from novelvideo.model_gateway_settings import (
 )
 from novelvideo.model_gateway_runtime import refresh_model_gateway_runtime
 from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.text_runtime_settings import (
+    load_text_runtime_settings,
+    save_text_runtime_settings,
+    text_runtime_status,
+)
 from novelvideo.newapi_provisioner import (
     build_channel_payload,
     build_provisioner_status,
@@ -70,6 +75,14 @@ def require_ce_gateway_management() -> None:
 
 class OfficialGatewayBody(BaseModel):
     new_api_api_key: str = Field(alias="newApiApiKey")
+
+
+class TextRuntimeConfigBody(BaseModel):
+    provider: str
+    base_url: str = Field(alias="baseUrl")
+    model: str
+    api_key: str | None = Field(default=None, alias="apiKey")
+    clear_api_key: bool = Field(default=False, alias="clearApiKey")
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -347,6 +360,33 @@ async def get_model_gateway_config() -> dict[str, Any]:
             "mediaRelay": _media_relay_status(),
         },
     }
+
+
+@router.get("/text-runtime/config")
+async def get_text_runtime_config() -> dict[str, Any]:
+    try:
+        status = text_runtime_status(load_text_runtime_settings())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": status}
+
+
+@router.post("/text-runtime/config")
+async def save_text_runtime_config(body: TextRuntimeConfigBody) -> dict[str, Any]:
+    try:
+        saved = save_text_runtime_settings(
+            provider=body.provider,
+            base_url=body.base_url,
+            model=body.model,
+            api_key=body.api_key,
+            clear_api_key=body.clear_api_key,
+        )
+        runtime = refresh_model_gateway_runtime()
+    except PermissionError as exc:
+        raise _permission_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": text_runtime_status(saved), "runtime": runtime}
 
 
 @router.post("/official/enable")

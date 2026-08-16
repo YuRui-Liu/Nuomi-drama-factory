@@ -57,6 +57,54 @@ def _isolate_settings_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
 
 
+def test_text_runtime_config_routes_preserve_key_and_do_not_leak(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(model_gateway, "refresh_model_gateway_runtime", lambda: {"refreshed": True})
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+    default = client.get("/model-gateway/text-runtime/config")
+    assert default.status_code == 200
+    assert default.json()["data"]["provider"] == "deepseek"
+    created = client.post("/model-gateway/text-runtime/config", json={
+        "provider": "openai_compatible", "baseUrl": "https://llm.example/v1",
+        "model": "first-model", "apiKey": "sk-route-secret",
+    })
+    assert created.status_code == 200
+    assert created.json()["runtime"] == {"refreshed": True}
+    assert created.json()["data"]["apiKeyConfigured"] is True
+    assert "sk-route-secret" not in created.text
+    changed = client.post("/model-gateway/text-runtime/config", json={
+        "provider": "openai_compatible", "baseUrl": "https://llm.example/v1",
+        "model": "second-model",
+    })
+    assert changed.status_code == 200
+    assert changed.json()["data"]["model"] == "second-model"
+    assert changed.json()["data"]["apiKeyConfigured"] is True
+    fetched = client.get("/model-gateway/text-runtime/config")
+    assert "sk-route-secret" not in fetched.text
+    assert fetched.json()["data"]["apiKeyPreview"] == "sk-r...cret"
+    cleared = client.post("/model-gateway/text-runtime/config", json={
+        "provider": "openai_compatible", "baseUrl": "https://llm.example/v1",
+        "model": "second-model", "clearApiKey": True,
+    })
+    assert cleared.status_code == 200
+    assert cleared.json()["data"]["apiKeyConfigured"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"provider": "bad", "baseUrl": "https://ok.example", "model": "m"},
+    {"provider": "deepseek", "baseUrl": "file:///bad", "model": "m"},
+    {"provider": "deepseek", "baseUrl": "https://ok.example", "model": " "},
+])
+def test_text_runtime_config_route_maps_validation_to_422(monkeypatch, tmp_path, payload):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    response = TestClient(app).post("/model-gateway/text-runtime/config", json=payload)
+    assert response.status_code == 422
+
+
 def test_model_gateway_uses_explicit_custom_mode(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
 
