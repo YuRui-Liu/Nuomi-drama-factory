@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_ai import Agent
+from pydantic_ai import Agent, PromptedOutput
 
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.models import (
@@ -481,7 +481,7 @@ async def extract_characters_from_graph(
                 "deepseek-chat",
             ),
             system_prompt=system_prompt,
-            output_type=CharacterEnrichmentList,
+            output_type=PromptedOutput(CharacterEnrichmentList),
             output_retries=2,
             name="角色图谱结构化提取器",
         )

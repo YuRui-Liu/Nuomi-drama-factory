@@ -29,19 +29,17 @@ async def _run_scene_reference_asset(
     envelope: dict[str, Any],
     ctx: ProjectContext,
 ) -> dict[str, Any] | None:
-    from novelvideo.cognee import CogneeStore
     from novelvideo.config import (
         IMAGE_DEFAULT_STYLE,
         get_style_preset,
-        normalize_image_generation_selection,
     )
     from novelvideo.generators.scene_reference_images import generate_scene_reference_image
+    from novelvideo.sqlite_store import SQLiteStore
 
     payload = envelope.get("payload") or {}
     scene_name = str(payload["scene_name"])
     kind = str(payload["kind"])
     style = str(payload.get("style") or "")
-    model_selection = str(payload.get("model") or "").strip()
     scope = envelope.get("scope")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     manager = get_task_manager()
@@ -61,16 +59,20 @@ async def _run_scene_reference_asset(
         )
 
     update(0.10, "加载场景数据...")
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = SQLiteStore(
+        ctx.owner_project_label,
+        output_dir=str(output_dir),
+        state_dir=str(ctx.state_dir),
+    )
     await store.initialize()
     try:
-        scene = await store.sqlite_store.get_scene(scene_name)
+        scene = await store.get_scene(scene_name)
         if scene is None:
             raise RuntimeError(f"找不到场景: {scene_name}")
         base_scene = None
         base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
         if base_scene_id and base_scene_id != scene.name:
-            base_scene = await store.sqlite_store.get_scene(base_scene_id)
+            base_scene = await store.get_scene(base_scene_id)
 
         style_id = (style or IMAGE_DEFAULT_STYLE).strip() or IMAGE_DEFAULT_STYLE
         preset = get_style_preset(
@@ -89,9 +91,6 @@ async def _run_scene_reference_asset(
         # legacy image-source selection must not route this task back through
         # DramaClawAPI/NewAPI.
         provider = "grsai"
-        model = None
-        if model_selection:
-            normalize_image_generation_selection(model_selection)
         from novelvideo.api.deps import (
             get_media_capability_store,
             get_media_credential_resolver,
@@ -118,7 +117,7 @@ async def _run_scene_reference_asset(
         )
         if kind == "spatial_layout":
             rel_path = str(Path(output_path).relative_to(output_dir))
-            await store.sqlite_store.update_scene(scene_name, spatial_layout_image=rel_path)
+            await store.update_scene(scene_name, spatial_layout_image=rel_path)
         return {
             "scene_name": scene_name,
             "kind": kind,

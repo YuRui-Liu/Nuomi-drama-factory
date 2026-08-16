@@ -137,9 +137,13 @@ async def test_character_extraction_uses_global_text_runtime_not_cognee_llm(monk
 
     class FakeAgent:
         def __init__(self, model, **kwargs):
+            from pydantic_ai import PromptedOutput
+
             self.model = model
             self.kwargs = kwargs
             assert kwargs.get("model_settings") is None
+            assert isinstance(kwargs["output_type"], PromptedOutput)
+            assert kwargs["output_type"].outputs is pipeline.CharacterEnrichmentList
 
         async def run(self, prompt):
             assert "人物：林晚" in prompt
