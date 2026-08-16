@@ -1,0 +1,6 @@
+DramaClaw bundles FFmpeg and FFprobe for local media processing.
+
+FFmpeg is a separate open-source project: https://ffmpeg.org/
+The bundled Windows binary is provided by @ffmpeg-installer/win32-x64.
+FFmpeg licensing depends on the binary build configuration. Review the package
+metadata and FFmpeg license before redistributing this installer commercially.

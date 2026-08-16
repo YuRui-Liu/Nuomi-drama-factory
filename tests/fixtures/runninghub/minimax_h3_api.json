@@ -1,0 +1,120 @@
+{
+  "114": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": ""
+    },
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "115": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "1:1 (Square)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "_meta": {
+      "title": "Resolution Selector"
+    }
+  },
+  "131": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 1017315644376280
+    },
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "132": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "audio": [
+        "123",
+        0
+      ],
+      "bit_depth": 8,
+      "fps": 24,
+      "images": [
+        "124",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Create Video"
+    }
+  },
+  "133": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "clip": [
+        "130",
+        0
+      ],
+      "first_frame": [
+        "114",
+        0
+      ],
+      "height": [
+        "139",
+        0
+      ],
+      "last_frame": [
+        "141",
+        0
+      ],
+      "length": [
+        "134",
+        1
+      ],
+      "prompt": "Example subject moves through the scene",
+      "vae": [
+        "121",
+        0
+      ],
+      "width": [
+        "137",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "MiniMax H3 Image to Video"
+    }
+  },
+  "135": {
+    "class_type": "PrimitiveFloat",
+    "inputs": {
+      "value": 5
+    },
+    "_meta": {
+      "title": "Float (duration)"
+    }
+  },
+  "136": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "codec": "auto",
+      "filename_prefix": "video/output",
+      "format": "auto",
+      "fw_video_preview": "",
+      "video": [
+        "132",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Save Video"
+    }
+  },
+  "141": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": ""
+    },
+    "_meta": {
+      "title": "Load Image"
+    }
+  }
+}

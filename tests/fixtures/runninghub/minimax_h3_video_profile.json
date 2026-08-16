@@ -1,0 +1,29 @@
+{
+  "id": "minimax-h3-video",
+  "version": 1,
+  "workflow_id": "2087934731806658562",
+  "capabilities": [
+    "video.t2va",
+    "video.i2va",
+    "video.l2va",
+    "video.fl2va",
+    "video.ref2va"
+  ],
+  "bindings": {
+    "first_frame": {"node_id": "114", "field": "image"},
+    "aspect_ratio": {"node_id": "115", "field": "aspect_ratio"},
+    "seed": {"node_id": "131", "field": "noise_seed"},
+    "fps": {"node_id": "132", "field": "fps"},
+    "prompt": {"node_id": "133", "field": "prompt"},
+    "duration": {"node_id": "135", "field": "value"},
+    "last_frame": {"node_id": "141", "field": "image"}
+  },
+  "outputs": {
+    "video": {"node_id": "136", "media_type": "video"}
+  },
+  "constraints": {
+    "aspect_ratio_values": ["9:16 (Portrait Widescreen)"]
+  },
+  "source_sha256": "",
+  "status": "active"
+}

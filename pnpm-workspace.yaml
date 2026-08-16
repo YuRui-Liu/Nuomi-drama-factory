@@ -1,0 +1,9 @@
+packages:
+  - "."
+  - "frontend"
+
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+
+blockExoticSubdeps: false

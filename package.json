@@ -1,0 +1,48 @@
+{
+  "name": "dramaclaw-desktop",
+  "version": "1.1.4",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "description": "DramaClaw CE offline Windows desktop application",
+  "main": "desktop/main.cjs",
+  "license": "Elastic-2.0",
+  "author": "ClaymoreLab",
+  "scripts": {
+    "desktop:test": "node --test desktop/test/*.test.cjs",
+    "desktop:frontend": "corepack pnpm --dir frontend build:ce",
+    "desktop:stage": "node desktop/scripts/stage-runtime.cjs",
+    "desktop:prepare": "pnpm desktop:test && pnpm desktop:frontend && pnpm desktop:stage",
+    "desktop:build": "pnpm desktop:prepare && electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "@ffmpeg-installer/win32-x64": "4.1.0",
+    "electron": "39.2.6",
+    "electron-builder": "26.0.12",
+    "ffprobe-static": "3.1.0"
+  },
+  "build": {
+    "appId": "ai.dramaclaw.desktop",
+    "productName": "DramaClaw",
+    "asar": true,
+    "directories": { "output": "dist-desktop" },
+    "files": ["desktop/main.cjs", "desktop/runtime-paths.cjs", "package.json"],
+    "extraResources": [
+      { "from": "desktop-runtime", "to": "runtime" },
+      { "from": "LICENSES", "to": "licenses/dramaclaw" },
+      { "from": "NOTICE", "to": "licenses/NOTICE" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "artifactName": "DramaClaw Setup ${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DramaClaw",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
