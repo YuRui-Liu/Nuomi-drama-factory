@@ -200,6 +200,24 @@ function renderWithProviders(ui: ReactNode) {
 }
 
 describe("asset panel rename behavior", () => {
+  it("subscribes to build_scenes completion and invalidates the scene list", async () => {
+    server.use(
+      http.get("http://localhost:3000/api/v1/projects/demo/scenes", () =>
+        HttpResponse.json({ ok: true, data: [] }),
+      ),
+    );
+
+    renderWithProviders(<ScenesPanel project="demo" />);
+
+    await screen.findByText("No scenes yet");
+    expect(taskControllerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: expect.objectContaining({ taskType: "build_scenes", project: "demo" }),
+        invalidateKeys: [["projects", "demo", "scenes"]],
+      }),
+    );
+  });
+
   it("sends the edited scene name in PATCH payload", async () => {
     let patchBody: unknown = null;
     server.use(

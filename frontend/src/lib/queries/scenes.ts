@@ -25,6 +25,8 @@ export interface ScenePayload {
   notes?: string;
 }
 
+const ASSET_BUILD_SUBMIT_TIMEOUT_MS = 120_000;
+
 export interface ScenePlatePreview {
   scene_id: string;
   variant_id: string;
@@ -226,6 +228,7 @@ export function useBuildScenes(project: string) {
         api.post(p`api/v1/projects/${project}/scenes/build`, {
           json: {},
           throwHttpErrors: false,
+          timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS,
         }),
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.tasks(project) }),

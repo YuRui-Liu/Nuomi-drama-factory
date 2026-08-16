@@ -30,6 +30,8 @@ export type CharacterUpdateResponse = {
   renamed_from?: string;
 };
 
+const ASSET_BUILD_SUBMIT_TIMEOUT_MS = 120_000;
+
 export function useCharacters(project: string) {
   return useQuery({
     queryKey: queryKeys.characters(project),
@@ -48,6 +50,7 @@ export function useBuildCharacters(project: string) {
         api.post(p`api/v1/projects/${project}/characters/build`, {
           json: {},
           throwHttpErrors: false,
+          timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS,
         }),
       ),
   });

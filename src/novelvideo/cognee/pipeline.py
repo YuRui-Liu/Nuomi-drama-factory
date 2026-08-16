@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_ai import Agent
 
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.models import (
@@ -21,7 +22,12 @@ from novelvideo.models import (
     NovelEvent,
     NovelVisualBeat,
 )
-from novelvideo.config import ensure_project_dirs, get_newapi_reasoning_kwargs
+from novelvideo.config import (
+    ensure_project_dirs,
+    get_newapi_reasoning_kwargs,
+    get_newapi_text_pydantic_model,
+    get_newapi_text_pydantic_model_settings,
+)
 from novelvideo.cognee.screenplay_normalizer import (
     NormalizedSceneBlock,
     clean_scene_name_and_time,
@@ -378,7 +384,6 @@ async def extract_characters_from_graph(
     with preserve_st_env():
         import cognee
         from cognee.api.v1.search import SearchType
-        from cognee.infrastructure.llm.LLMGateway import LLMGateway
 
     def report(progress: float, task: str):
         if on_progress:
@@ -470,15 +475,17 @@ async def extract_characters_from_graph(
 - 如果信息不足，只允许对 role / body_type / description 做保守推测；不要为 aliases 编造原文未出现的称呼"""
 
     try:
-        result = await LLMGateway.acreate_structured_output(
-            context_text,
-            system_prompt,
-            CharacterEnrichmentList,
-            **get_newapi_reasoning_kwargs(
-                thinking_env="COGNEE_LLM_THINKING_LEVEL",
-                default_thinking_level="high",
+        agent = Agent(
+            get_newapi_text_pydantic_model(
+                "CHARACTER_BUILD_MODEL",
+                "deepseek-chat",
             ),
+            system_prompt=system_prompt,
+            output_type=CharacterEnrichmentList,
+            output_retries=2,
+            name="角色图谱结构化提取器",
         )
+        result = (await agent.run(context_text)).output
         characters = []
         for enriched in result.characters:
             # 自动映射 Fish Audio voice ID

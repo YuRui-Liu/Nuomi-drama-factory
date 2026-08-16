@@ -1,9 +1,9 @@
 import pytest
+from types import SimpleNamespace
 
 
 @pytest.mark.asyncio
 async def test_character_extraction_keeps_single_narrator_main(monkeypatch):
-    from cognee.infrastructure.llm.LLMGateway import LLMGateway
     from novelvideo.cognee import pipeline
     from novelvideo.models import NovelCharacter
 
@@ -17,11 +17,20 @@ async def test_character_extraction_keeps_single_narrator_main(monkeypatch):
     async def fake_search(**kwargs):
         return [{"search_result": "桑落第一人称叙述，楚寒和林清清是关键角色。"}]
 
-    async def fake_structured_output(*args, **kwargs):
-        return _Result()
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _prompt):
+            return SimpleNamespace(output=_Result())
 
     monkeypatch.setattr("cognee.search", fake_search)
-    monkeypatch.setattr(LLMGateway, "acreate_structured_output", fake_structured_output)
+    monkeypatch.setattr(pipeline, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        pipeline,
+        "get_newapi_text_pydantic_model",
+        lambda *_args, **_kwargs: object(),
+    )
 
     characters = await pipeline.extract_characters_from_graph()
 

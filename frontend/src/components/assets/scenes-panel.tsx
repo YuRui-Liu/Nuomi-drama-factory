@@ -1127,6 +1127,10 @@ export function ScenesPanel({
   const updateScene = useUpdateScene(project, editing?.name ?? "");
   const deleteScene = useDeleteScene(project);
   const buildScenes = useBuildScenes(project);
+  const buildScenesTask = useTaskController({
+    key: { taskType: "build_scenes", project, episode: 0 },
+    invalidateKeys: [queryKeys.scenes(project)],
+  });
   const imageSourceQuery = useAssetImageSourceSelection(project, "scene");
   const imageSourceSelection = imageSourceQuery.data?.data.image_source_selection ?? "";
   const buildScenesCost = useGenerationCreditCost("feature", "build_scenes");
@@ -1254,6 +1258,7 @@ export function ScenesPanel({
       toast.error(backendErrorResponseToastMessage(res, t));
       return;
     }
+    buildScenesTask.start();
     toast.success(res.message);
   }
 
@@ -1301,10 +1306,10 @@ export function ScenesPanel({
         <Button
           size="sm"
           onClick={handleBuildScenes}
-          disabled={buildScenes.isPending}
+          disabled={buildScenes.isPending || buildScenesTask.started}
           className="h-8 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75"
         >
-          {buildScenes.isPending ? (
+          {buildScenes.isPending || buildScenesTask.started ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
             <Sparkles className="size-3.5" />
