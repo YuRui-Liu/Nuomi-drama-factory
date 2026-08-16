@@ -37,6 +37,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { KnowledgeRuntimeSection } from "@/components/settings/knowledge-runtime-section";
+import { TextRuntimePanel } from "@/components/settings/text-runtime-panel";
 import {
   useKnowledgeRuntimeStatus,
   useMediaProviderAccounts,
@@ -354,6 +355,7 @@ function ModelConfigSection({ open }: { open: boolean }) {
       <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
         {t("settings.modelConfig.description")}
       </p>
+      <TextRuntimePanel enabled={open} />
       {modelGatewayMissing ? (
         <div className="mt-3 flex gap-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" aria-hidden />

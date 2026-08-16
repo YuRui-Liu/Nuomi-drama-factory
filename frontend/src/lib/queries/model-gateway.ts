@@ -7,6 +7,25 @@ import { queryKeys } from "@/lib/query-keys";
 import type { ErrorResponse, OkResponse } from "@/types/api";
 
 export type GatewayMode = "official" | "custom";
+export type TextRuntimeProvider = "deepseek" | "dramaclaw" | "openai_compatible";
+
+export interface TextRuntimeConfig {
+  source: string;
+  provider: TextRuntimeProvider;
+  baseUrl: string;
+  model: string;
+  configured: boolean;
+  apiKeyConfigured: boolean;
+  apiKeyPreview: string;
+}
+
+export interface SaveTextRuntimeInput {
+  provider: TextRuntimeProvider;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
+}
 
 /** 通用的「端点预览」：服务端只回 key 预览，绝不回完整 key。 */
 export interface GatewayEndpointPreview {
@@ -249,6 +268,31 @@ export function useModelGatewayConfig(enabled = true) {
         .get("api/v1/model-gateway/config", { signal })
         .json<OkResponse<ModelGatewayConfig>>(),
     enabled,
+  });
+}
+
+export function useTextRuntimeConfig(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.textRuntime(),
+    queryFn: ({ signal }) =>
+      api
+        .get("api/v1/model-gateway/text-runtime/config", { signal })
+        .json<OkResponse<TextRuntimeConfig>>(),
+    enabled,
+  });
+}
+
+export function useSaveTextRuntimeConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SaveTextRuntimeInput) =>
+      api
+        .post("api/v1/model-gateway/text-runtime/config", { json: input })
+        .json<OkResponse<TextRuntimeConfig> | ErrorResponse>(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.textRuntime() });
+      qc.invalidateQueries({ queryKey: queryKeys.modelGateway() });
+    },
   });
 }
 
