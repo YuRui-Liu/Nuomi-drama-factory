@@ -12,6 +12,7 @@ from novelvideo.official_defaults import (
     DEFAULT_TEXT_MODEL_BY_ENV,
     OFFICIAL_NEWAPI_BASE_URL,
 )
+from novelvideo.text_runtime_settings import load_text_runtime_settings
 
 # 加载环境变量（必须在任何其他导入之前）
 load_dotenv()
@@ -109,15 +110,15 @@ def get_pydantic_model(
         raise ValueError(f"Unknown provider: {provider}. " f"Available: {', '.join(available)}")
 
     preset = PROVIDER_PRESETS[provider]
-    model_name = model_name_override or os.environ.get("MODEL_NAME", preset["default_model"])
+    model_name = str(model_name_override or "").strip()
 
-    if provider == "openrouter" and model_name.startswith("openrouter/"):
+    if model_name and provider == "openrouter" and model_name.startswith("openrouter/"):
         model_name = model_name[len("openrouter/") :]
 
     return get_newapi_text_pydantic_model(
         "MODEL_NAME",
         preset["default_model"],
-        model_name_override=model_name,
+        model_name_override=model_name or None,
         timeout_seconds_override=_env_float(
             "MODEL_TIMEOUT",
             float(preset.get("timeout", 120)),
@@ -242,15 +243,12 @@ def get_newapi_text_pydantic_model(
     timeout_seconds_override: float | None = None,
 ):
     """Create a PydanticAI OpenAI-compatible model that routes through newAPI."""
-    model_name = str(model_name_override or "").strip() or get_newapi_text_model_name(
-        model_env, default_model
-    )
-    api_key, base_url = get_newapi_runtime_credentials(
-        env_api_key="MODEL_API_KEY",
-        env_base_url="MODEL_BASE_URL",
-    )
+    runtime = load_text_runtime_settings()
+    model_name = str(model_name_override or "").strip() or runtime.model
+    api_key = runtime.api_key
+    base_url = runtime.base_url
     if not api_key:
-        raise ValueError("API key not set. Configure DramaClawAPI credentials.")
+        raise ValueError("普通文本模型 API key 未配置，请在模型设置中配置。")
     timeout_seconds = (
         float(timeout_seconds_override)
         if timeout_seconds_override is not None

@@ -5,6 +5,47 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from novelvideo.knowledge_runtime import OllamaSettings
+from novelvideo.text_runtime_settings import TextRuntimeSettings
+
+
+def test_init_cognee_uses_text_runtime_without_replacing_embedding_gateway(monkeypatch) -> None:
+    from novelvideo.cognee import config
+
+    text_settings = TextRuntimeSettings(
+        source="database",
+        provider="deepseek",
+        base_url="https://deepseek.example/v1",
+        api_key="deepseek-key",
+        model="deepseek-model",
+    )
+    embedding_settings = OllamaSettings(
+        base_url="http://127.0.0.1:11434",
+        model="bge-m3:latest",
+        dimension=1024,
+        digest="sha256:def",
+        batch_size=8,
+        probed_at="now",
+    )
+    fake_config = SimpleNamespace()
+    monkeypatch.setattr(config, "COGNEE_AVAILABLE", True)
+    monkeypatch.setattr(config, "cognee", SimpleNamespace(config=fake_config))
+    monkeypatch.setattr(config, "load_text_runtime_settings", lambda: text_settings, raising=False)
+    monkeypatch.setattr(config, "load_knowledge_runtime_settings", lambda: embedding_settings)
+    monkeypatch.setattr(config, "install_codex_llm_gateway_adapter", lambda: None)
+    monkeypatch.setattr(config, "_apply_cognee_runtime_defaults", lambda: None)
+    monkeypatch.setattr(config, "_patch_cognee_embedding_timeout", lambda: None)
+    monkeypatch.setattr(config, "_install_insufficient_credits_log_filter", lambda: None)
+    monkeypatch.setattr(config, "_install_cognee_pipeline_concurrency", lambda: None)
+    monkeypatch.setattr(config, "_clear_cognee_embedding_and_vector_engine_caches", lambda: None)
+
+    config.init_cognee()
+
+    assert os.environ["LLM_ENDPOINT"] == text_settings.base_url
+    assert os.environ["LLM_API_KEY"] == text_settings.api_key
+    assert os.environ["LLM_MODEL"] == f"openai/{text_settings.model}"
+    assert os.environ["EMBEDDING_ENDPOINT"] == "http://127.0.0.1:11434/api/embed"
+    assert os.environ["EMBEDDING_MODEL"] == embedding_settings.model
+    assert os.environ.get("EMBEDDING_API_KEY", "") != text_settings.api_key
 
 
 def test_project_storage_uses_configured_ascii_cognee_root(

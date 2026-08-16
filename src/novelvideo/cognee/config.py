@@ -50,6 +50,7 @@ from novelvideo.shared.billing_errors import (
 )
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.text_runtime_settings import load_text_runtime_settings
 
 # 抑制 cognee/litellm 内部的 Pydantic 序列化警告
 # （豆包等非 OpenAI provider 的 Message 字段数与 cognee 期望不同，不影响功能）
@@ -863,9 +864,17 @@ def _apply_embedding_runtime_defaults(llm_provider: str) -> None:
     _clear_cognee_embedding_config_cache()
 
 
-def _apply_llm_env(provider: str, model: str, api_key: str) -> None:
+def _apply_llm_env(
+    provider: str,
+    model: str,
+    api_key: str,
+    *,
+    endpoint: str = "",
+) -> None:
     """应用 LLM 相关环境变量。"""
-    llm_endpoint = _get_endpoint_env(provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
+    llm_endpoint = endpoint or _get_endpoint_env(
+        provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT"
+    )
     llm_api_version = _get_scoped_env("COGNEE_LLM_API_VERSION", "LLM_API_VERSION")
     cognee_provider = _to_cognee_provider(provider)
 
@@ -1024,19 +1033,18 @@ def init_cognee() -> None:
         raise ImportError("cognee is not installed. Run: pip install cognee")
     install_codex_llm_gateway_adapter()
 
-    llm_provider = _resolve_llm_provider()
-
-    api_key = _resolve_llm_api_key(
-        llm_provider,
-        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-    )
-    llm_model = _normalize_llm_model(
-        llm_provider,
-        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-    )
+    text_runtime = load_text_runtime_settings()
+    llm_provider = "newapi"
+    api_key = text_runtime.api_key
+    llm_model = _normalize_llm_model(llm_provider, text_runtime.model)
 
     if api_key:
-        _apply_llm_env(llm_provider, llm_model, api_key)
+        _apply_llm_env(
+            llm_provider,
+            llm_model,
+            api_key,
+            endpoint=text_runtime.base_url,
+        )
     else:
         os.environ["LLM_PROVIDER"] = "custom"
         os.environ["LLM_MODEL"] = "codex-cli"
@@ -1066,7 +1074,7 @@ def init_cognee() -> None:
     cognee.config.embedding_provider = embedding_provider
     cognee.config.embedding_model = embedding_model
     cognee.config.embedding_dimensions = int(embedding_dimensions)
-    cognee.config.embedding_api_key = embedding_api_key or api_key
+    cognee.config.embedding_api_key = embedding_api_key
     if hasattr(cognee.config, "set_embedding_provider"):
         cognee.config.set_embedding_provider(embedding_provider)
     if hasattr(cognee.config, "set_embedding_model"):
@@ -1074,7 +1082,7 @@ def init_cognee() -> None:
     if hasattr(cognee.config, "set_embedding_dimensions"):
         cognee.config.set_embedding_dimensions(int(embedding_dimensions))
     if hasattr(cognee.config, "set_embedding_api_key"):
-        cognee.config.set_embedding_api_key(embedding_api_key or api_key)
+        cognee.config.set_embedding_api_key(embedding_api_key)
     _patch_cognee_embedding_timeout()
     _install_insufficient_credits_log_filter()
     _install_cognee_pipeline_concurrency()

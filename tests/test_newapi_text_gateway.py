@@ -1,3 +1,70 @@
+from types import SimpleNamespace
+
+
+def test_text_model_factory_reads_runtime_settings_on_every_call(monkeypatch):
+    import novelvideo.config as config
+
+    settings = iter(
+        [
+            SimpleNamespace(base_url="https://text-one.test/v1", api_key="key-one", model="model-one"),
+            SimpleNamespace(base_url="https://text-two.test/v1", api_key="key-two", model="model-two"),
+        ]
+    )
+    calls = []
+    monkeypatch.setattr(config, "load_text_runtime_settings", lambda: next(settings), raising=False)
+    monkeypatch.setattr(
+        config,
+        "_newapi_text_openai_model",
+        lambda model_name, **kwargs: calls.append((model_name, kwargs)) or object(),
+    )
+
+    config.get_newapi_text_pydantic_model("TASK_MODEL", "fallback")
+    config.get_newapi_text_pydantic_model("TASK_MODEL", "fallback")
+
+    assert [(name, call["api_key"], call["base_url"]) for name, call in calls] == [
+        ("model-one", "key-one", "https://text-one.test/v1"),
+        ("model-two", "key-two", "https://text-two.test/v1"),
+    ]
+
+
+def test_text_model_factory_explicit_override_wins_over_runtime_model(monkeypatch):
+    import novelvideo.config as config
+
+    monkeypatch.setattr(
+        config,
+        "load_text_runtime_settings",
+        lambda: SimpleNamespace(base_url="https://text.test/v1", api_key="key", model="runtime-model"),
+        raising=False,
+    )
+    calls = []
+    monkeypatch.setattr(
+        config,
+        "_newapi_text_openai_model",
+        lambda model_name, **kwargs: calls.append((model_name, kwargs)) or object(),
+    )
+
+    config.get_pydantic_model(model_name_override="explicit-model")
+
+    assert calls[0][0] == "explicit-model"
+    assert calls[0][1]["api_key"] == "key"
+    assert calls[0][1]["base_url"] == "https://text.test/v1"
+
+
+def test_text_model_factory_reports_product_specific_missing_key(monkeypatch):
+    import pytest
+    import novelvideo.config as config
+
+    monkeypatch.setattr(
+        config,
+        "load_text_runtime_settings",
+        lambda: SimpleNamespace(base_url="https://text.test/v1", api_key="", model="runtime-model"),
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="普通文本模型 API key 未配置，请在模型设置中配置。"):
+        config.get_newapi_text_pydantic_model("TASK_MODEL", "fallback")
+
+
 def test_identity_planner_uses_split_newapi_model_envs(monkeypatch):
     from novelvideo.agents.identity_planner import IdentityPlanner
     import novelvideo.agents.identity_planner as identity_planner
