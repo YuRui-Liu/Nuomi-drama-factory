@@ -29,6 +29,7 @@ from novelvideo.model_gateway_settings import (
     set_model_gateway_mode,
 )
 from novelvideo.model_gateway_runtime import refresh_model_gateway_runtime
+from novelvideo.text_runtime_settings import save_text_runtime_settings
 from novelvideo.newapi_provisioner import (
     AdminToken,
     build_channel_payload,
@@ -163,14 +164,15 @@ def test_newapi_runtime_credentials_allow_explicit_override(monkeypatch, tmp_pat
     assert base_url == "https://request.example/v1"
 
 
-def test_legacy_pydantic_factory_uses_ce_gateway_settings(monkeypatch, tmp_path):
+def test_legacy_pydantic_factory_uses_ce_text_runtime_settings(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     monkeypatch.setenv("MODEL_API_KEY", "sk-stale-env-secret")
     monkeypatch.setenv("MODEL_BASE_URL", "https://stale-env.example/v1")
-    save_custom_newapi_gateway(
-        base_url="http://new-api:3000",
-        api_key="sk-database-secret",
-        activate=True,
+    save_text_runtime_settings(
+        provider="openai_compatible",
+        base_url="http://text-runtime:3000/v1",
+        model="runtime-default",
+        api_key="sk-text-secret",
     )
     captured: dict[str, object] = {}
 
@@ -187,19 +189,19 @@ def test_legacy_pydantic_factory_uses_ce_gateway_settings(monkeypatch, tmp_path)
 
     assert result == "newapi-model"
     assert captured["model_name"] == "DC-legacy-agent-LLM"
-    assert captured["api_key"] == "sk-database-secret"
-    assert captured["base_url"] == "http://new-api:3000/v1"
+    assert captured["api_key"] == "sk-text-secret"
+    assert captured["base_url"] == "http://text-runtime:3000/v1"
     assert captured["timeout_seconds"] == 300.0
 
 
-def test_legacy_pydantic_factory_uses_ee_deployment_gateway(monkeypatch, tmp_path):
+def test_legacy_pydantic_factory_uses_ee_text_runtime_environment(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     monkeypatch.setenv("ST_EDITION", "ee")
     monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
-    monkeypatch.setenv("NEWAPI_API_KEY", "sk-ee-secret")
-    monkeypatch.setenv("NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
-    monkeypatch.setattr(config, "NEWAPI_API_KEY", "sk-ee-secret")
-    monkeypatch.setattr(config, "NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setenv("TEXT_MODEL_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "sk-ee-text-secret")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://ee-text.example/v1")
+    monkeypatch.setenv("TEXT_MODEL_NAME", "ee-runtime-default")
     captured: dict[str, object] = {}
 
     def fake_model(model_name, **kwargs):
@@ -212,8 +214,8 @@ def test_legacy_pydantic_factory_uses_ee_deployment_gateway(monkeypatch, tmp_pat
 
     assert result == "newapi-model"
     assert captured["model_name"] == "DC-legacy-agent-LLM"
-    assert captured["api_key"] == "sk-ee-secret"
-    assert captured["base_url"] == "https://ee-gateway.example/v1"
+    assert captured["api_key"] == "sk-ee-text-secret"
+    assert captured["base_url"] == "https://ee-text.example/v1"
 
 
 def test_legacy_pydantic_model_settings_match_newapi_transport(monkeypatch):
