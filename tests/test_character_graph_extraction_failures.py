@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
+import io
+import sys
 
 
 def _disable_project_context(monkeypatch):
@@ -62,6 +64,23 @@ async def test_character_extraction_allows_empty_graph_context(monkeypatch):
     monkeypatch.setattr(cognee, "search", AsyncMock(return_value=[]))
 
     assert await pipeline.extract_characters_from_graph() == []
+
+
+@pytest.mark.asyncio
+async def test_character_extraction_logs_are_safe_on_windows_gbk(monkeypatch):
+    from novelvideo.cognee import pipeline
+
+    async def empty_search(**_kwargs):
+        return []
+
+    raw = io.BytesIO()
+    gbk_stdout = io.TextIOWrapper(raw, encoding="gbk", errors="strict")
+    monkeypatch.setattr("cognee.search", empty_search)
+    monkeypatch.setattr(sys, "stdout", gbk_stdout)
+
+    assert await pipeline.extract_characters_from_graph() == []
+    gbk_stdout.flush()
+    assert "[WARN]" in raw.getvalue().decode("gbk")
 
 
 @pytest.mark.asyncio

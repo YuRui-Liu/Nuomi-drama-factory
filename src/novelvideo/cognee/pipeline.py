@@ -426,7 +426,7 @@ async def extract_characters_from_graph(
         raise
 
     if not context_text.strip():
-        log("⚠️ 图谱搜索无数据，请先构建图谱（cognify）")
+        log("[WARN] 图谱搜索无数据，请先构建图谱（cognify）")
         return []
 
     # 注入人物设定上下文（辅助图谱，不替代）
@@ -517,13 +517,13 @@ async def extract_characters_from_graph(
                 else:
                     found_first = True
             narrator_main = next((c.name for c in characters if c.is_main), "")
-            log(f"⚠️ LLM 返回 {main_count} 个解说主角，已只保留第一个: {narrator_main}")
+            log(f"[WARN] LLM 返回 {main_count} 个解说主角，已只保留第一个: {narrator_main}")
         log(f"LLM 结构化提取完成: {len(characters)} 个角色")
     except Exception as e:
         import logging
 
         logging.error(f"LLM 结构化提取失败: {e}")
-        log(f"⚠️ LLM 结构化提取失败: {e}")
+        log(f"[WARN] LLM 结构化提取失败: {e}")
         raise
 
     report(0.9, "提取完成")

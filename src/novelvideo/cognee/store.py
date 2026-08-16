@@ -836,7 +836,7 @@ class CogneeStore:
             )
 
         if not characters:
-            log("⚠️ 图谱提取无结果，保留现有角色数据")
+            log("[WARN] 图谱提取无结果，保留现有角色数据")
             report(1.0, "提取无结果")
             return []
 

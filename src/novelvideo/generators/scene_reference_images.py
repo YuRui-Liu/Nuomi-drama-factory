@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import os
 import time
 from pathlib import Path
@@ -33,6 +35,66 @@ from novelvideo.director_world.paths import safe_name
 from novelvideo.models import NovelScene, build_scene_effective_prompt
 
 SceneReferenceKind = Literal["master", "spatial_layout", "reverse_master"]
+
+
+async def _call_grsai_image_api(
+    *,
+    model: str,
+    prompt: str,
+    reference_images: list[tuple[str, bytes, str]] | None,
+    image_config: dict[str, str],
+) -> tuple[bytes | None, str, str]:
+    """Generate a scene image through the persisted GRSAI runtime account."""
+    from novelvideo.api.deps import (
+        get_media_capability_store,
+        get_media_credential_resolver,
+    )
+    from novelvideo.media_capabilities.models import (
+        ImageGenerationRequest,
+        MediaCapability,
+    )
+    from novelvideo.media_capabilities.runtime.configuration import (
+        load_grsai_runtime_configuration,
+    )
+
+    runtime = load_grsai_runtime_configuration(
+        get_media_capability_store(),
+        get_media_credential_resolver(),
+    )
+    client = runtime.create_client()
+    references = [
+        f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
+        for _name, data, mime_type in (reference_images or [])
+    ]
+    request = ImageGenerationRequest(
+        capability=MediaCapability.IMAGE_SINGLE,
+        prompt=prompt,
+        model=model or runtime.model,
+        references=references,
+        aspect_ratio=image_config.get("aspect_ratio") or "16:9",
+        image_size=image_config.get("image_size") or "1K",
+    )
+    try:
+        task_id = await client.submit(request, api_key=runtime.api_key)
+        deadline = time.monotonic() + 300
+        while True:
+            snapshot = await client.query(task_id, api_key=runtime.api_key)
+            if snapshot.status == "succeeded":
+                break
+            if snapshot.status in {"failed", "violation"}:
+                return None, "", f"GRSAI image generation {snapshot.status}"
+            if time.monotonic() >= deadline:
+                return None, "", "GRSAI image generation timed out"
+            await asyncio.sleep(2)
+        if not snapshot.results or not snapshot.results[0].get("url"):
+            return None, "", "GRSAI image response missing result URL"
+        response = await client.http.get(str(snapshot.results[0]["url"]))
+        response.raise_for_status()
+        return response.content, "", ""
+    except Exception as exc:
+        return None, "", f"GRSAI image generation failed: {exc}"
+    finally:
+        await client.http.aclose()
 
 
 def _scene_dir(project_dir: Path, scene_name: str) -> Path:
@@ -680,6 +742,14 @@ async def generate_scene_reference_image(
             reference_images=references or None,
             image_config=_scene_image_config(selected_model),
             base_url=base_url,
+        )
+    elif provider == "grsai":
+        selected_model = model or "gpt-image-2"
+        image_bytes, _text, error = await _call_grsai_image_api(
+            model=selected_model,
+            prompt=prompt,
+            reference_images=references or None,
+            image_config=_scene_image_config(selected_model),
         )
     elif provider in {"huimeng", "huimengi"}:
         api_key = HUIMENGI_API_KEY or ""

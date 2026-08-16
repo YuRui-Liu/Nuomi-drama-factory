@@ -1,3 +1,5 @@
+import pytest
+
 from novelvideo.generators.scene_reference_images import build_scene_reference_prompt
 from novelvideo.models import NovelScene
 
@@ -85,3 +87,32 @@ async def test_scene_reference_newapi_uses_normalized_gateway_base_url(monkeypat
     )
 
     assert captured["base_url"] == "https://relayclaw.cdnfg.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_scene_reference_grsai_uses_persisted_runtime_not_newapi(monkeypatch, tmp_path):
+    from novelvideo.generators import scene_reference_images
+    from novelvideo.models import NovelScene
+
+    calls = []
+
+    async def fake_grsai(**kwargs):
+        calls.append(kwargs)
+        return b"png-bytes", "", ""
+
+    async def fail_newapi(**_kwargs):
+        raise AssertionError("scene generation must not call DramaClawAPI")
+
+    monkeypatch.setattr(scene_reference_images, "_call_grsai_image_api", fake_grsai)
+    monkeypatch.setattr(scene_reference_images, "_call_newapi_image_api", fail_newapi)
+
+    output = await scene_reference_images.generate_scene_reference_image(
+        project_dir=tmp_path,
+        scene=NovelScene(name="大厅", description="地下大厅"),
+        kind="master",
+        provider="grsai",
+        model="gpt-image-2",
+    )
+
+    assert output.read_bytes() == b"png-bytes"
+    assert calls[0]["model"] == "gpt-image-2"

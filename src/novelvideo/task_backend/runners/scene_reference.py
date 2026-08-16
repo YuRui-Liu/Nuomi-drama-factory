@@ -32,7 +32,6 @@ async def _run_scene_reference_asset(
     from novelvideo.cognee import CogneeStore
     from novelvideo.config import (
         IMAGE_DEFAULT_STYLE,
-        IMAGE_GENERATION_SELECTIONS,
         get_style_preset,
         normalize_image_generation_selection,
     )
@@ -86,13 +85,26 @@ async def _run_scene_reference_asset(
         style_name = f"{style_label} ({style_id})"
 
         update(0.40, f"调用图像模型生成 {kind}...")
-        provider = None
+        # Scene reference images use the persisted media runtime.  The UI's
+        # legacy image-source selection must not route this task back through
+        # DramaClawAPI/NewAPI.
+        provider = "grsai"
         model = None
         if model_selection:
-            normalized_selection = normalize_image_generation_selection(model_selection)
-            selected_image_source = IMAGE_GENERATION_SELECTIONS[normalized_selection]
-            provider = selected_image_source["provider"]
-            model = selected_image_source["model"]
+            normalize_image_generation_selection(model_selection)
+        from novelvideo.api.deps import (
+            get_media_capability_store,
+            get_media_credential_resolver,
+        )
+        from novelvideo.media_capabilities.runtime.configuration import (
+            load_grsai_runtime_configuration,
+        )
+
+        grsai_runtime = load_grsai_runtime_configuration(
+            get_media_capability_store(),
+            get_media_credential_resolver(),
+        )
+        model = grsai_runtime.model
         output_path = await generate_scene_reference_image(
             project_dir=output_dir,
             scene=scene,
