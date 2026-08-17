@@ -8,6 +8,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { SaveStatus } from "@/components/save-status";
 import { useEscapeToClose } from "@/hooks/use-escape-to-close";
 import { useGridsByBeat } from "@/lib/queries/sketches";
+import { mergeVideoModelCatalog, useVideoModels } from "@/lib/queries/media-models";
 import { useVideoBackends } from "@/lib/queries/video";
 import { resolveImage } from "@/lib/resolve-image";
 import { saveScopes, useSaveState } from "@/stores/save-status-store";
@@ -99,7 +100,6 @@ export function SingleBeatPanel({
   episode,
   stages,
   defaultBackend,
-  onDefaultBackendChange,
   spineTemplate = "drama",
   showAudioMediaStatus = true,
   openSections,
@@ -115,6 +115,8 @@ export function SingleBeatPanel({
     (renderAssignment !== null && images.some((image) => isRenderImageMatch(image, renderAssignment))) ||
     images.some((image) => image.type === "render" && image.original_beat === beat.beat_number && !!image.cell_url);
   const hasSketch = !!resolvedSketch.url;
+  const [videoModelOverride, setVideoModelOverride] = useState<string | null>(null);
+  const effectiveVideoModel = videoModelOverride ?? defaultBackend;
 
   // Image preview popup
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -163,8 +165,9 @@ export function SingleBeatPanel({
                 {id === "video" && (
                   <VideoBackendHeaderSelect
                     project={project}
-                    value={defaultBackend}
-                    onChange={onDefaultBackendChange}
+                    value={effectiveVideoModel}
+                    inherited={videoModelOverride === null}
+                    onChange={setVideoModelOverride}
                   />
                 )}
                 <span
@@ -237,7 +240,7 @@ export function SingleBeatPanel({
                       project={project}
                       episode={episode}
                       state={stages?.video ?? "missing"}
-                      defaultBackend={defaultBackend}
+                      defaultBackend={effectiveVideoModel}
                       showAudioMediaStatus={showAudioMediaStatus}
                     />
                   )}
@@ -277,16 +280,22 @@ export function SingleBeatPanel({
 function VideoBackendHeaderSelect({
   project,
   value,
+  inherited,
   onChange,
 }: {
   project: string;
   value: string;
+  inherited: boolean;
   onChange: (backend: string) => void;
 }) {
   const { t } = useTranslation();
-  const { data: videoBackendsRes } = useVideoBackends(project);
-  const videoBackends = videoBackendsRes?.data ?? [];
-  const selectedBackend = videoBackends.find((backend) => backend.value === value);
+  const { data: videoModelsRes } = useVideoModels();
+  const { data: legacyModelsRes } = useVideoBackends(project);
+  const videoModels = mergeVideoModelCatalog(
+    videoModelsRes?.ok ? videoModelsRes.data : [],
+    legacyModelsRes?.data ?? [],
+  );
+  const selectedModel = videoModels.find((model) => model.id === value);
 
   return (
     <div
@@ -299,7 +308,7 @@ function VideoBackendHeaderSelect({
           className="!h-[26px] w-auto min-w-[150px] rounded-[7px] border-white/[0.12] bg-white/[0.018] px-2.5 text-xs font-normal text-foreground/80 shadow-none hover:border-white/[0.20] hover:bg-white/[0.035] hover:text-foreground focus-visible:border-white/[0.22] focus-visible:bg-white/[0.035] focus-visible:ring-white/10 dark:border-white/[0.12] dark:bg-white/[0.018] dark:hover:bg-white/[0.035] [&>svg]:ml-1.5 [&>svg]:size-3.5"
         >
           <SelectValue>
-            {() => selectedBackend?.label ?? value}
+            {() => `${selectedModel?.label ?? value}${inherited ? " · 继承" : " · 临时"}`}
           </SelectValue>
         </SelectTrigger>
         <SelectContent
@@ -308,29 +317,16 @@ function VideoBackendHeaderSelect({
           alignItemWithTrigger={false}
           className={WORKBENCH_SELECT_CONTENT_CLASS}
         >
-          {videoBackends.map((backend) => (
+          {videoModels.map((model) => (
             <SelectItem
-              key={backend.value}
-              value={backend.value}
+              key={model.id}
+              value={model.id}
+              disabled={!model.available}
               className={WORKBENCH_SELECT_ITEM_CLASS}
             >
               <span className="flex items-center gap-2">
-                {backend.label}
-                {backend.is_default && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {t("episode.workbench.video.noteDefault")}
-                  </span>
-                )}
-                {backend.is_seedance2 && (
-                  <span className="text-[10px] text-muted-foreground">
-                    Seedance2
-                  </span>
-                )}
-                {backend.dialogue_only && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {t("episode.workbench.video.noteDialogue")}
-                  </span>
-                )}
+                {model.label}
+                {!model.available && <span className="text-[10px] text-muted-foreground">{model.unavailable_reason || "未配置"}</span>}
               </span>
             </SelectItem>
           ))}

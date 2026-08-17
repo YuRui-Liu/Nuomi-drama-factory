@@ -35,7 +35,7 @@ import {
   aspectRatioForOrientation,
   orientationForAspectRatio,
 } from "@/lib/aspect-ratio";
-import { DEFAULT_VIDEO_BACKEND, useVideoBackends } from "@/lib/queries/video";
+import { useVideoBackends } from "@/lib/queries/video";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { useScopedTaskBatchInvalidation } from "@/hooks/use-scoped-task-batch-invalidation";
@@ -44,6 +44,7 @@ import { TASK_TYPES } from "@/lib/task-types";
 import { useTasks } from "@/lib/queries/tasks";
 import { GLASS_ALERT_DIALOG_CONTENT_CLASS } from "@/lib/dialog-styles";
 import { cn } from "@/lib/utils";
+import { DEFAULT_VIDEO_MODEL } from "@/stores/episode-workbench-store";
 
 import { BatchBar } from "@/components/episode/beat-workbench/batch-bar";
 import {
@@ -66,6 +67,7 @@ import {
 import { RenderGridGallery } from "@/components/episode/beat-workbench/render-grid-gallery";
 import { ViewToggles } from "@/components/episode/beat-workbench/view-toggles";
 import { ActionPanel } from "@/components/episode/beat-workbench/action-panel";
+import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
 import { RenderPlanDialog } from "@/components/episode/beat-workbench/render-plan-dialog";
 import { useHideHeaderOnScroll } from "@/components/episode/header-collapse";
 import { Button } from "@/components/ui/button";
@@ -155,7 +157,8 @@ function BeatsTabContent() {
   const { toggles, toggle: toggleView } = useViewToggles(project, epNum);
 
   // Project-level prefs mirrored from NiceGUI video_studio_page.video_settings.
-  const [videoBackend, setVideoBackendState] = useState(DEFAULT_VIDEO_BACKEND);
+  const [videoBackend, setVideoBackendState] = useState(DEFAULT_VIDEO_MODEL);
+  const [workbenchMode, setWorkbenchMode] = useState<"groups" | "repair">("groups");
 
   // 左(渲染/Beat 区)与右(详情/功能区)的可拖拽宽度占比。拖动中间分隔条调节占比;
   // 比例持久化到 localStorage —— 属 UI 偏好(region 无关),不随切区清空。clamp 25%–70%。
@@ -234,9 +237,7 @@ function BeatsTabContent() {
     [applyAspect, hasGeneratedAssets, orientation],
   );
   useEffect(() => {
-    setVideoBackendState(
-      projectConfigRes.data?.data?.video_backend || DEFAULT_VIDEO_BACKEND,
-    );
+    setVideoBackendState(projectConfigRes.data?.data?.video_backend || DEFAULT_VIDEO_MODEL);
   }, [projectConfigRes.data?.data?.video_backend]);
   useEffect(() => {
     const persistedOrientation = orientationForAspectRatio(
@@ -616,6 +617,20 @@ function BeatsTabContent() {
     );
   }
 
+  if (workbenchMode === "groups") {
+    return (
+      <NarrativeGroupWorkbench
+        project={project}
+        episode={epNum}
+        onRepairBeat={(beatId) => {
+          const beatNumber = Number.parseInt(beatId, 10);
+          if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
+          setWorkbenchMode("repair");
+        }}
+      />
+    );
+  }
+
   const detailBeatNumber =
     selection.mode === "single" ? selection.beatNum : null;
   const detailBeatDisplayNumber =
@@ -631,6 +646,9 @@ function BeatsTabContent() {
   // Main layout
   return (
     <div ref={scrollHideRef} className="flex h-full flex-col overflow-hidden">
+      <div className="flex h-10 shrink-0 items-center border-b border-white/[0.055] px-3">
+        <Button type="button" variant="ghost" size="sm" onClick={() => setWorkbenchMode("groups")}>返回叙事组生产</Button>
+      </div>
       {actionsSlot &&
         createPortal(
           <BatchBar

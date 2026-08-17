@@ -13,6 +13,15 @@ from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 
 
+async def run_group_sketch_grid(payload, *, generator, splitter):
+    """Run a narrative-group sketch grid and its mandatory auto-split."""
+    if str(payload.get("stage")) != "sketch":
+        raise ValueError("sketch narrative-group runner requires stage=sketch")
+    from novelvideo.narrative_groups.service import run_group_grid
+
+    return await run_group_grid(payload, generator=generator, splitter=splitter)
+
+
 def _int_list(value) -> list[int]:
     if value is None:
         return []

@@ -425,6 +425,7 @@ def _ensure_builtin_runners_registered() -> None:
         graph_build,
         identity,
         ingest,
+        narrative_group,
         prop_reference,
         render,
         scene_reference,

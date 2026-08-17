@@ -56,6 +56,7 @@ from novelvideo.api.routes import (  # noqa: E402
     media_capabilities,
     model_gateway,
     model_credits,
+    narrative_groups,
     pipeline,
     production_runs,
     projects,
@@ -103,6 +104,7 @@ api_router.include_router(chat.router, tags=["chat"])
 api_router.include_router(projects.router, tags=["projects"])
 api_router.include_router(ingest.router, tags=["ingest"])
 api_router.include_router(knowledge_runtime.router, tags=["knowledge-runtime"])
+api_router.include_router(media_capabilities.catalog_router, tags=["media-capabilities"])
 api_router.include_router(media_capabilities.router, tags=["media-capabilities"])
 api_router.include_router(characters.router, tags=["characters"])
 api_router.include_router(assets.router, tags=["assets"])
@@ -119,6 +121,7 @@ api_router.include_router(pipeline.router, tags=["pipeline"])
 api_router.include_router(production_runs.router, tags=["production-runs"])
 api_router.include_router(model_gateway.router, tags=["model-gateway"])
 api_router.include_router(model_credits.router, tags=["model-credits"])
+api_router.include_router(narrative_groups.router, tags=["narrative-groups"])
 api_router.include_router(freezone.router)
 api_router.include_router(release_notifications.router, tags=["release-notifications"])
 _verification_routes_registered = False

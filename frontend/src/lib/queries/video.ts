@@ -678,6 +678,7 @@ export function useRegenerateBeatVideo(project: string, episode: number) {
     mutationFn: ({
       beatNum,
       videoBackend,
+      videoMode,
       use_director_render,
       resolution,
       duration,
@@ -688,6 +689,7 @@ export function useRegenerateBeatVideo(project: string, episode: number) {
     }: {
       beatNum: number;
       videoBackend?: string;
+      videoMode?: "auto" | "i2va" | "fl2va";
       use_director_render?: boolean;
       // seedance-1.5-pro 等非 seedance2 后端的清晰度/时长（视频时长须 >= 音频，后端兜底）。
       resolution?: string;
@@ -703,6 +705,7 @@ export function useRegenerateBeatVideo(project: string, episode: number) {
           {
             json: {
               video_backend: videoBackend ?? DEFAULT_VIDEO_BACKEND,
+              ...(videoBackend?.includes(":") ? { h3_mode: videoMode ?? "auto" } : {}),
               use_director_render,
               ...(resolution !== undefined ? { resolution } : {}),
               ...(duration !== undefined ? { duration } : {}),

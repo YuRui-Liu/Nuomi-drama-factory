@@ -94,12 +94,18 @@ class ProjectUpdate(BaseModel):
     grid_mode: Optional[str] = None
     grid_model: Optional[str] = None
     video_backend: Optional[str] = None
+    h3_mode: Optional[Literal["auto", "i2va", "fl2va"]] = None
     use_director_render: Optional[bool] = None
     video_resolution: Optional[str] = None
     add_subtitles: Optional[bool] = None
     sketch_image_selection: Optional[str] = None
     render_image_selection: Optional[str] = None
     sketch_aspect_padding: Optional[bool] = None
+
+
+class MediaDefaultsRequest(BaseModel):
+    video_model: str
+    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
 
 
 class RenderSettingsUpdate(BaseModel):
@@ -346,6 +352,7 @@ class InsertManualShotRequest(BaseModel):
 class SingleVideoRequest(BaseModel):
     resolution: str = "720x1280"
     video_backend: str = "newapi_seedance-1.0-pro-fast"
+    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
     use_director_render: bool = False
     seedance2_config_json: Optional[str] = None
     mode: Optional[str] = None

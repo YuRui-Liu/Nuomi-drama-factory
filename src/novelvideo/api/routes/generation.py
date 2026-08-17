@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
+    get_media_capability_store,
+    get_media_credential_resolver,
     get_user_base_dir,
     get_state_dir,
     make_sqlite_store_for_context,
@@ -1556,6 +1558,18 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
                 reference_audio_max=0 if is_grok_video or is_happyhorse else None,
             )
         )
+    backend_options.append(
+        VideoBackendOption(
+            value="runninghub:minimax-h3",
+            label="MiniMax H3 (RunningHub)",
+            supported_modes=["auto", "i2va", "fl2va"],
+            min_duration=1,
+            max_duration=15,
+            reference_image_max=2,
+            reference_video_max=0,
+            reference_audio_max=0,
+        )
+    )
     return backend_options
 
 
@@ -4135,6 +4149,33 @@ async def generate_single_video(
     is_seedance2 = _is_seedance2_backend(body.video_backend)
     is_happyhorse = _is_happyhorse_backend(body.video_backend)
     is_grok_video = _is_grok_video_backend(body.video_backend)
+    is_h3 = body.video_backend == "runninghub:minimax-h3"
+    if is_h3:
+        from novelvideo.media_capabilities.video.catalog import H3_MODEL_ID, list_video_models
+
+        h3 = next(
+            item
+            for item in list_video_models(
+                get_media_capability_store(), get_media_credential_resolver()
+            )
+            if item.id == H3_MODEL_ID
+        )
+        if not h3.available:
+            reasons = {
+                "provider_not_configured": "请先在设置中启用 RunningHub",
+                "credential_unavailable": "请先在设置中保存 RunningHub API Key",
+                "workflow_not_configured": "请先配置 MiniMax H3 Workflow ID",
+                "profile_invalid": "MiniMax H3 工作流配置无效，请重新配置",
+            }
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "video_model_unavailable",
+                    "model": H3_MODEL_ID,
+                    "reason": h3.unavailable_reason,
+                    "action": reasons.get(h3.unavailable_reason, "请检查 RunningHub H3 配置"),
+                },
+            )
 
     # 首帧路径
     from novelvideo.utils.path_resolver import PathResolver
@@ -4170,13 +4211,35 @@ async def generate_single_video(
             video_mode = "first_frame"  # 回退
             prompt = _legacy_video_prompt_for_mode(beat, video_mode)
 
+    if is_h3 and body.h3_mode in {"auto", "fl2va"} and not last_frame_path:
+        next_frame = paths.first_frame_for_video(
+            beat_num + 1,
+            use_director_render=bool(body.use_director_render),
+        )
+        if not next_frame.exists() and body.h3_mode == "fl2va":
+            raise HTTPException(
+                status_code=400,
+                detail="MiniMax H3 fl2va mode requires a last frame",
+            )
+        if next_frame.exists():
+            last_frame_path = str(next_frame)
+            video_mode = "keyframe"
+
     seedance2_config_json = None
     single_video_resolution: str | None = None
     happyhorse_references: list[dict[str, str]] = []
     happyhorse_ratio: str | None = None
     grok_video_references: list[dict[str, str]] = []
     grok_video_ratio: str | None = None
-    if is_seedance2:
+    if is_h3:
+        if not prompt.strip():
+            return {"ok": False, "error": _missing_video_prompt_error(beat_num)}
+        if body.duration is not None:
+            video_duration = float(body.duration)
+        single_video_resolution = (
+            body.resolution if "resolution" in body.model_fields_set else None
+        )
+    elif is_seedance2:
         try:
             request_config_json = _merge_seedance2_request_config(
                 beat,
@@ -4331,6 +4394,7 @@ async def generate_single_video(
         "prompt": prompt,
         "video_duration": video_duration,
         "video_backend": body.video_backend,
+        "h3_mode": body.h3_mode,
         "use_director_render": bool(body.use_director_render),
         "last_frame_path": last_frame_path,
         "cognee_store_project": f"{username}/{project_name}",
@@ -4339,6 +4403,8 @@ async def generate_single_video(
         config["seedance2_config"] = seedance2_config_json
     if single_video_resolution:
         config["resolution"] = single_video_resolution
+    if is_h3 and body.ratio:
+        config["ratio"] = body.ratio
     if is_happyhorse:
         config["ratio"] = _happyhorse_ratio_for_backend(happyhorse_ratio)
         config["references"] = happyhorse_references
