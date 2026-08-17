@@ -207,12 +207,12 @@ Each semantic field must be explicitly bound to a node and input field. Outputs 
 
 Import calculates `source_sha256` over normalized content and returns a draft profile. The current configuration store persists profile metadata, bindings, constraints, and the digest; that must not be interpreted as storing an executable copy of the original Workflow JSON. A published ID/version cannot be overwritten in place. Create a new version when the workflow ID, bindings, outputs, or constraints change.
 
-### Planned provider capabilities
+### Provider capabilities
 
 - **GRSAI:** planned implementations for `image.storyboard_grid` and `image.single` will generate narrative storyboard grids. A later `image.grid_upscale_split` stage will upscale, split, remove borders, and preserve deterministic cell-to-shot mapping.
-- **RunningHub video:** the contracts reserve extension boundaries for `video.i2va` (first frame), `video.l2va` (last frame), `video.fl2va` (first and last frames), `video.ref2va` (reference media), and `video.t2va`. The real workflow executor remains future work.
+- **RunningHub MiniMax H3 video:** workflow `2087934731806658562` is connected as the default `runninghub_minimax_h3` backend. It binds node 114 for the first frame, node 141 for the last frame, node 133 for the prompt, node 135 for duration, node 131 for seed, and downloads the video from node 136. First-frame, last-frame, and first-and-last-frame generation are supported. Provider-native audio is removed from the downloaded MP4 so the existing independent dubbing and sound-effects pipeline remains authoritative. Use `ltx23` only as the legacy ComfyUI fallback.
 - **RunningHub TTS:** the contracts include `tts.synthesize`, `tts.voice_design`, and `tts.voice_clone`; workflow submission, parallel segmentation, ordered merging, and audio quality checks remain future work.
-- **MiniMax H3 Skills:** this is a prompt-enhancement layer that compiles structured shot data into H3 video prompts. It is not a model provider and does not submit jobs. See the [official MiniMax H3 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills).
+- **MiniMax H3 Skills:** the prompt-enhancement layer compiles structured shot data into H3 video prompts, while the RunningHub adapter performs upload, submission, polling, download, and native-audio removal. See the [official MiniMax H3 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/3d-animation-short-generator).
 
 ### Security checklist
 

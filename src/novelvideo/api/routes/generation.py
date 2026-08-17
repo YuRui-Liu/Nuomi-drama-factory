@@ -1509,7 +1509,27 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
         NEWAPI_VIDEO_DURATION_BOUNDS
     )
     default_backend = VideoGenerateRequest().video_backend
-    backend_options: list[VideoBackendOption] = []
+    backend_options: list[VideoBackendOption] = [
+        VideoBackendOption(
+            value="runninghub_minimax_h3",
+            label="RunningHub MiniMax H3",
+            is_default=default_backend == "runninghub_minimax_h3",
+            ratio_options=["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
+            supported_modes=["first_frame", "last_frame", "keyframe"],
+            reference_image_max=2,
+            reference_video_max=0,
+            reference_audio_max=0,
+        ),
+        VideoBackendOption(
+            value="ltx23",
+            label="LTX 2.3（旧版回退）",
+            is_default=default_backend == "ltx23",
+            supported_modes=["first_frame"],
+            reference_image_max=1,
+            reference_video_max=0,
+            reference_audio_max=0,
+        ),
+    ]
     for value, label in options.items():
         model = parse_newapi_video_backend(value)
         bounds = duration_bounds.get(model or "")

@@ -129,6 +129,7 @@ class VideoBackend(Enum):
     COMFYUI = "comfyui"  # Claymore 1.0
     WAN26 = "wan26"  # 阿里云 DashScope Wan2.6-i2v-flash
     LTX23 = "ltx23"  # Lightricks LTX-Video 2.3 22B
+    RUNNINGHUB_MINIMAX_H3 = "runninghub_minimax_h3"  # RunningHub MiniMax H3
     GROK_720 = "grok_720"  # xAI Grok Imagine Video 720p
 
 
@@ -3541,6 +3542,118 @@ class Wan26VideoGenerator(VideoGeneratorBase):
         )
 
 
+def _strip_video_audio(path: Path) -> None:
+    """Remove provider-native audio without re-encoding the video stream."""
+    muted = path.with_name(f"{path.stem}.muted{path.suffix}")
+    try:
+        result = run_project_subprocess(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "copy",
+                "-an",
+                str(muted),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "ffmpeg failed to remove audio")
+        muted.replace(path)
+    finally:
+        if muted.exists():
+            muted.unlink()
+
+
+class RunningHubMiniMaxH3VideoGenerator(VideoGeneratorBase):
+    """MiniMax H3 first/last-frame video generator hosted by RunningHub."""
+
+    def __init__(
+        self,
+        *,
+        seed: int | None = None,
+        runtime_loader: Callable[[], object] | None = None,
+        **_: object,
+    ) -> None:
+        self.seed = seed
+        self.runtime_loader = runtime_loader
+
+    async def generate(
+        self,
+        image_path: Optional[str],
+        prompt: str,
+        output_path: str,
+        aspect_ratio: str = "16:9",
+        duration: float = 5.0,
+        poll_interval: float = 5.0,
+        max_polls: int = 360,
+        **kwargs,
+    ) -> VideoGenResult:
+        from novelvideo.media_capabilities.video.runninghub_h3 import (
+            generate_minimax_h3_video,
+        )
+
+        on_log = kwargs.get("on_log") or (lambda _message: None)
+        on_progress = kwargs.get("on_progress") or (lambda _value: None)
+        try:
+            on_log("提交 RunningHub MiniMax H3 视频任务...")
+            on_progress(0.05)
+            if self.runtime_loader is not None:
+                runtime = self.runtime_loader()
+            else:
+                from novelvideo.api.deps import (
+                    get_media_capability_store,
+                    get_media_credential_resolver,
+                )
+                from novelvideo.media_capabilities.runtime.configuration import (
+                    load_runninghub_runtime_configuration,
+                )
+
+                runtime = load_runninghub_runtime_configuration(
+                    get_media_capability_store(),
+                    get_media_credential_resolver(),
+                )
+            generated = await generate_minimax_h3_video(
+                runtime,
+                first_frame=image_path,
+                last_frame=kwargs.get("last_frame_path"),
+                prompt=prompt,
+                duration=duration,
+                aspect_ratio=aspect_ratio,
+                seed=self.seed,
+                poll_interval=poll_interval,
+                max_polls=max_polls,
+            )
+            target = Path(output_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial.mp4")
+            try:
+                partial.write_bytes(generated.content)
+                _strip_video_audio(partial)
+                partial.replace(target)
+            finally:
+                if partial.exists():
+                    partial.unlink()
+            on_progress(1.0)
+            on_log("RunningHub MiniMax H3 视频生成完成")
+            return VideoGenResult(
+                status=VideoGenStatus.DONE,
+                video_path=target.as_posix(),
+                task_id=generated.provider_task_id,
+                provider_task_id=generated.provider_task_id,
+                duration_seconds=duration,
+            )
+        except Exception as exc:  # noqa: BLE001
+            on_log(f"RunningHub MiniMax H3 视频生成失败: {exc}")
+            return VideoGenResult(status=VideoGenStatus.FAILED, error=str(exc))
+
+
 NEWAPI_VIDEO_BACKEND_PREFIX = "newapi_"
 NEWAPI_VIDEO_DISPLAY_LABELS = {
     "seedance-1.0-pro-fast": "Seedance1.0 Pro Fast",
@@ -3612,6 +3725,7 @@ def create_video_generator(
             - SEEDANCE_PRO: Seedance 1.5 Pro 有声（火山方舟）
             - SEEDANCE_PRO_SILENT: Seedance 1.5 Pro 无声（火山方舟）
             - COMFYUI: Claymore 1.0 本地服务
+            - RUNNINGHUB_MINIMAX_H3: RunningHub MiniMax H3
             - WAN26: 阿里云 DashScope Wan2.6-i2v-flash
             - GROK_720: xAI Grok Imagine Video 720p
         use_mock: 兼容旧接口，True 时使用 MockVideoGenerator
@@ -3672,6 +3786,8 @@ def create_video_generator(
         return Seedance2VideoGenerator(**kwargs)
     elif backend_enum == VideoBackend.LTX23:
         return ComfyUIVideoGenerator(workflow_type="ltx23", **kwargs)
+    elif backend_enum == VideoBackend.RUNNINGHUB_MINIMAX_H3:
+        return RunningHubMiniMaxH3VideoGenerator(**kwargs)
     elif backend_enum == VideoBackend.WAN26:
         return Wan26VideoGenerator(**kwargs)
     elif backend_enum == VideoBackend.GROK_720:

@@ -806,9 +806,9 @@ NEWAPI_VIDEO_DURATION_BOUNDS = os.environ.get(
     "seedance-1.0-pro-fast:2-12,seedance-1.5-pro:4-12,seedance-2.0:4-15,seedance-2.0-fast:4-15,seedance-2.0-value:4-15,seedance-2.0-fast-value:4-15,happyhorse-1.0:3-15",
 ).strip()
 
-# 视频生成后端: newapi_seedance-1.0-pro-fast (默认), newapi_seedance-2.0-fast,
-# comfyui, seedance_fast, seedance_pro, seedance_pro_silent, wan26, grok_720
-VIDEO_BACKEND = os.environ.get("VIDEO_BACKEND", f"newapi_{DEFAULT_VIDEO_MODEL}")
+# 视频生成后端: runninghub_minimax_h3 (默认), newapi_seedance-1.0-pro-fast,
+# comfyui, ltx23（旧版回退）, seedance_fast, seedance_pro, wan26, grok_720
+VIDEO_BACKEND = os.environ.get("VIDEO_BACKEND", "runninghub_minimax_h3")
 
 # Seedance 模型（火山方舟）
 SEEDANCE_FAST_MODEL = os.environ.get("SEEDANCE_FAST_MODEL", "doubao-seedance-1-0-pro-fast-251015")

@@ -223,7 +223,7 @@ class GlobalOptimizeRequest(BaseModel):
 
 class VideoGenerateRequest(BaseModel):
     resolution: str = "720x1280"
-    video_backend: str = "newapi_seedance-1.0-pro-fast"
+    video_backend: str = "runninghub_minimax_h3"
     use_director_render: bool = False
 
 
@@ -345,7 +345,7 @@ class InsertManualShotRequest(BaseModel):
 
 class SingleVideoRequest(BaseModel):
     resolution: str = "720x1280"
-    video_backend: str = "newapi_seedance-1.0-pro-fast"
+    video_backend: str = "runninghub_minimax_h3"
     use_director_render: bool = False
     seedance2_config_json: Optional[str] = None
     mode: Optional[str] = None
