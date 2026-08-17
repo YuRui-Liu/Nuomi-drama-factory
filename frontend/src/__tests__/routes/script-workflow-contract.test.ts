@@ -29,6 +29,11 @@ describe("script workflow canonical contract", () => {
     expect(route).not.toContain('taskType: "literal_script_writer"');
   });
 
+  it("does not apply the global 30-second timeout to script generation", () => {
+    const queries = read("src/lib/queries/scripts.ts");
+    expect(queries).toMatch(/script\/generate[\s\S]*?timeout:\s*false/);
+  });
+
   it("exposes the v2-storage NiceGUI script workbench controls in the Script tab", () => {
     const route = read(
       "src/routes/_app/projects.$project/episodes.$episode/script.lazy.tsx",

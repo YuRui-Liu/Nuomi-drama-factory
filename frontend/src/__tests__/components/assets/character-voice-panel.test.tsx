@@ -10,6 +10,10 @@ import ky from "ky";
 import type { ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/hooks/use-task-controller", () => ({
+  useTaskController: () => ({ started: false, start: vi.fn(), stop: vi.fn(), stopping: false, stream: {}, logs: [] }),
+}));
+
 vi.mock("@/lib/api", () => ({
   api: ky.create({ baseUrl: "http://localhost:3000/" }),
 }));
@@ -39,6 +43,9 @@ beforeAll(async () => {
               missing: "未配置",
               upload: "上传声音样本",
               record: "录音",
+              design: "AI 设计音色",
+              designed: "音色设计完成",
+              designQueued: "音色设计任务已进入队列",
               trim: "裁剪到 3-5 秒",
               clear: "清除",
               loading: "正在读取声线样本",
@@ -160,6 +167,7 @@ describe("CharacterVoicePanel", () => {
     );
     expect(screen.getAllByRole("button", { name: "上传声音样本" })).toHaveLength(4);
     expect(screen.getAllByRole("button", { name: "录音" })).toHaveLength(4);
+    expect(screen.getAllByRole("button", { name: "AI 设计音色" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "裁剪到 3-5 秒" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "清除" })).toHaveLength(2);
 

@@ -19,9 +19,9 @@ from novelvideo.media_capabilities.tts.voice_store import VoiceProfileStore
 
 def _source_workflow() -> dict[str, Any]:
     return {
-        "2": {"inputs": {"language": "English"}, "class_type": "Language"},
-        "4": {"inputs": {"text": "old text"}, "class_type": "Text"},
-        "5": {"inputs": {"text": "old instruction"}, "class_type": "Text"},
+        "22": {"inputs": {"language": "English"}, "class_type": "Language"},
+        "14": {"inputs": {"text": "old text"}, "class_type": "Text"},
+        "15": {"inputs": {"text": "old instruction"}, "class_type": "Text"},
         "18": {"inputs": {"audio": ["17", 0]}, "class_type": "SaveAudio"},
         "23": {
             "inputs": {"model": "Qwen3-TTS-12Hz-1.7B-VoiceDesign"},
@@ -40,14 +40,14 @@ def test_qwen3_workflow_uses_locked_bindings_and_output() -> None:
         language="Chinese",
     )
 
-    assert compiled.workflow["4"]["inputs"]["text"] == "候选试听文本"
-    assert compiled.workflow["5"]["inputs"]["text"] == (
+    assert compiled.workflow["14"]["inputs"]["text"] == "候选试听文本"
+    assert compiled.workflow["15"]["inputs"]["text"] == (
         "A warm, measured voice."
     )
-    assert compiled.workflow["2"]["inputs"]["language"] == "Chinese"
+    assert compiled.workflow["22"]["inputs"]["language"] == "Chinese"
     assert compiled.output == "18.audio"
     assert compiled.workflow["23"] == source["23"]
-    assert source["4"]["inputs"]["text"] == "old text"
+    assert source["14"]["inputs"]["text"] == "old text"
 
 
 def test_qwen3_workflow_rejects_task_override_for_model_node() -> None:

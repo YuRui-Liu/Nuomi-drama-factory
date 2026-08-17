@@ -36,6 +36,7 @@ from novelvideo.api.schemas import (
     IdentityUpdate,
     IdentityImageGenRequest,
     CharacterVoiceRecordRequest,
+    CharacterVoiceDesignRequest,
     CharacterVoiceTrimRequest,
 )
 from novelvideo.config import (
@@ -1106,6 +1107,76 @@ async def record_character_voice_sample(
             sha256=sha256,
             updated_at=updated_at,
         ),
+    }
+
+
+@router.post("/projects/{project}/characters/{name}/voice-samples/{slot}/design")
+async def design_character_voice_sample(
+    project: str,
+    name: str,
+    slot: str,
+    body: CharacterVoiceDesignRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Generate and persist a Qwen3-TTS audition through RunningHub."""
+    if slot not in VOICE_SAMPLE_SLOTS:
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": f"不支持的声线槽位: {slot}"},
+        )
+    ctx, _username, _project_name, project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user)
+    )
+    if ctx is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "项目不存在"})
+    character = store.get_character(name)
+    if character is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"角色不存在: {name}"})
+
+    from novelvideo.media_capabilities.tts.voice_prompt import (
+        compile_character_voice_description,
+    )
+
+    try:
+        description = compile_character_voice_description(
+            gender=str(getattr(character, "gender", "") or ""),
+            age_group=str(getattr(character, "age_group", "") or ""),
+            role=str(getattr(character, "role", "") or ""),
+            raw_description=(
+                body.voice_description.strip()
+                or str(getattr(character, "description", "") or "")
+            ),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"ok": False, "error": str(exc)})
+    audition_text = body.audition_text.strip() or (
+        f"我是{name}。这件事没那么简单，你真的想清楚了吗？"
+    )
+
+    scope = f"character:{name}:voice:{slot}"
+    queued = await get_task_backend().enqueue_project_task(
+        ctx,
+        task_type="character_voice_design",
+        queue_kind="default",
+        episode=0,
+        scope=scope,
+        payload={
+            "character_name": name,
+            "slot": slot,
+            "voice_description": description,
+            "audition_text": audition_text,
+            "language": body.language.strip() or "Chinese",
+        },
+    )
+    return {
+        "ok": True,
+        "task_type": "character_voice_design",
+        "task_id": queued.task_state.task_id,
+        "task_key": project_task_state_key("character_voice_design", ctx.project_id, 0),
+        "scope": scope,
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "message": "Qwen3 音色设计任务已进入队列",
     }
 
 

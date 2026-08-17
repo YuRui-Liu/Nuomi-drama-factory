@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Literal
 
+import httpx
+
 from novelvideo.config import (
     HUIMENGI_API_KEY,
     HUIMENG_IMAGE_MODEL,
@@ -35,6 +37,44 @@ from novelvideo.director_world.paths import safe_name
 from novelvideo.models import NovelScene, build_scene_effective_prompt
 
 SceneReferenceKind = Literal["master", "spatial_layout", "reverse_master"]
+
+
+def _grsai_error_detail(exc: Exception) -> str:
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+async def _poll_grsai_image_result(
+    client,
+    task_id: str,
+    *,
+    api_key: str,
+    timeout_seconds: float = 300,
+):
+    """Poll a GRSAI task while tolerating transient network/eventual-consistency errors."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            snapshot = await client.query(task_id, api_key=api_key)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"GRSAI polling timed out ({_grsai_error_detail(exc)})"
+                ) from exc
+            await asyncio.sleep(2)
+            continue
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in {404, 408, 409, 425, 429} or status_code >= 500:
+                if time.monotonic() < deadline:
+                    await asyncio.sleep(2)
+                    continue
+            raise
+        if snapshot.status in {"succeeded", "failed", "violation"}:
+            return snapshot
+        if time.monotonic() >= deadline:
+            raise RuntimeError("GRSAI image generation timed out")
+        await asyncio.sleep(2)
 
 
 async def _call_grsai_image_api(
@@ -76,23 +116,20 @@ async def _call_grsai_image_api(
     )
     try:
         task_id = await client.submit(request, api_key=runtime.api_key)
-        deadline = time.monotonic() + 300
-        while True:
-            snapshot = await client.query(task_id, api_key=runtime.api_key)
-            if snapshot.status == "succeeded":
-                break
-            if snapshot.status in {"failed", "violation"}:
-                return None, "", f"GRSAI image generation {snapshot.status}"
-            if time.monotonic() >= deadline:
-                return None, "", "GRSAI image generation timed out"
-            await asyncio.sleep(2)
+        snapshot = await _poll_grsai_image_result(
+            client,
+            task_id,
+            api_key=runtime.api_key,
+        )
+        if snapshot.status in {"failed", "violation"}:
+            return None, "", f"GRSAI image generation {snapshot.status}"
         if not snapshot.results or not snapshot.results[0].get("url"):
             return None, "", "GRSAI image response missing result URL"
         response = await client.http.get(str(snapshot.results[0]["url"]))
         response.raise_for_status()
         return response.content, "", ""
     except Exception as exc:
-        return None, "", f"GRSAI image generation failed: {exc}"
+        return None, "", f"GRSAI image generation failed: {_grsai_error_detail(exc)}"
     finally:
         await client.http.aclose()
 

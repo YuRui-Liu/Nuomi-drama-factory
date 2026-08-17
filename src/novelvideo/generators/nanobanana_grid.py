@@ -3286,8 +3286,41 @@ async def _call_newapi_image_api(
     base_url: str | None = None,
     trace: dict[str, str] | None = None,
 ) -> tuple[bytes | None, str, str]:
-    """Call newAPI's OpenAI-compatible Images API."""
+    """Route legacy image callers to GRSAI when its runtime is configured."""
     import httpx
+
+    try:
+        from novelvideo.api.deps import (
+            get_media_capability_store,
+            get_media_credential_resolver,
+        )
+        from novelvideo.media_capabilities.runtime.configuration import (
+            load_grsai_runtime_configuration,
+        )
+
+        grsai_runtime = load_grsai_runtime_configuration(
+            get_media_capability_store(), get_media_credential_resolver()
+        )
+    except Exception:
+        grsai_runtime = None
+
+    if grsai_runtime is not None:
+        from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+
+        normalized_refs: list[tuple[str, bytes, str]] = []
+        for index, item in enumerate(reference_images or []):
+            if isinstance(item, bytes):
+                normalized_refs.append((f"reference_{index}.png", item, "image/png"))
+            elif len(item) == 3:
+                normalized_refs.append((str(item[0]), item[1], str(item[2])))
+            else:
+                normalized_refs.append((f"reference_{index}", item[0], str(item[1])))
+        return await _call_grsai_image_api(
+            model=grsai_runtime.model,
+            prompt=prompt,
+            reference_images=normalized_refs or None,
+            image_config=image_config or {},
+        )
 
     if not api_key:
         return None, "", "DramaClawAPI API key is missing"

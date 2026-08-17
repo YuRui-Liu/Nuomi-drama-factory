@@ -1930,6 +1930,12 @@ class CharacterVoiceRecordRequest(BaseModel):
     data_url: str
 
 
+class CharacterVoiceDesignRequest(BaseModel):
+    voice_description: str = ""
+    audition_text: str = ""
+    language: str = "Chinese"
+
+
 class NarratorVoiceCopyRequest(BaseModel):
     source_path: str
 

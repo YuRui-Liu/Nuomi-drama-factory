@@ -472,7 +472,10 @@ class AssetCompiler:
 
         source_text = await self._load_source_text(episode)
         report(0.18, "AI校对基础场景...")
-        await self._reconcile_base_scenes_from_text(source_text, episode, log)
+        if not await self._all_scene_blocks_have_existing_base(scene_blocks):
+            await self._reconcile_base_scenes_from_text(source_text, episode, log)
+        else:
+            log("[AssetCompiler] 基础场景均已存在，跳过 AI 校对")
 
         report(0.25, "编译场景资产...")
         scene_menu, pending_scenes = await self._compile_scenes(scene_blocks, episode, log)
@@ -491,6 +494,21 @@ class AssetCompiler:
 
         report(1.0, "完成")
         return scene_menu, len(pending_scenes)
+
+    async def _all_scene_blocks_have_existing_base(
+        self, scene_blocks: list[SceneBlock]
+    ) -> bool:
+        locations = {
+            str(block.location or "").strip()
+            for block in scene_blocks
+            if str(block.location or "").strip()
+        }
+        if not locations:
+            return False
+        for location in locations:
+            if await self._find_matching_scene(location) is None:
+                return False
+        return True
 
     async def compile_episode_props(
         self,

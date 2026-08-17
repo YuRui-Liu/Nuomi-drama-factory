@@ -1341,3 +1341,36 @@ def run_async(coro):
     import asyncio
 
     return asyncio.run(coro)
+@pytest.mark.asyncio
+async def test_legacy_newapi_image_entry_prefers_configured_grsai(monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.generators import nanobanana_grid
+
+    calls = {}
+
+    async def fake_grsai(**kwargs):
+        calls.update(kwargs)
+        return b"grsai-image", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+
+    result = await nanobanana_grid._call_newapi_image_api(
+        api_key="",
+        model="legacy-newapi-model",
+        prompt="draw a scene",
+        reference_images=[b"png-bytes"],
+        image_config={"aspect_ratio": "16:9", "image_size": "2K"},
+    )
+
+    assert result == (b"grsai-image", "", "")
+    assert calls["model"] == "gpt-image-2"
+    assert calls["reference_images"][0][1] == b"png-bytes"

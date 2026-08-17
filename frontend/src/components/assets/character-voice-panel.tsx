@@ -12,11 +12,13 @@ import {
   Trash2,
   Upload,
   Volume2,
+  WandSparkles,
 } from "lucide-react";
 
 import {
   useCharacterVoiceSamples,
   useDeleteCharacterVoiceSample,
+  useDesignCharacterVoiceSample,
   useRecordCharacterVoiceSample,
   useTrimCharacterVoiceSample,
   useUploadCharacterVoiceSample,
@@ -27,6 +29,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { useTaskController } from "@/hooks/use-task-controller";
+import { queryKeys } from "@/lib/query-keys";
 import type { Character, CharacterVoiceSlot, CharacterVoiceSlotId } from "@/types/character";
 
 const AGE_SLOT_ORDER: CharacterVoiceSlotId[] = ["child", "youth", "middle", "elder"];
@@ -136,6 +140,20 @@ export function CharacterVoicePanel({
   const recordVoice = useRecordCharacterVoiceSample(project, character.name);
   const trimVoice = useTrimCharacterVoiceSample(project, character.name);
   const deleteVoice = useDeleteCharacterVoiceSample(project, character.name);
+  const designVoice = useDesignCharacterVoiceSample(project, character.name);
+  const voiceDesignScope = `character:${character.name}:voice:default`;
+  const voiceDesignTask = useTaskController({
+    key: {
+      taskType: "character_voice_design",
+      project,
+      episode: 0,
+      scope: voiceDesignScope,
+    },
+    invalidateKeys: [
+      queryKeys.characterVoiceSamples(project, character.name),
+      queryKeys.characters(project),
+    ],
+  });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadSlotRef = useRef<string>("default");
@@ -223,7 +241,9 @@ export function CharacterVoicePanel({
     uploadVoice.isPending ||
     recordVoice.isPending ||
     trimVoice.isPending ||
-    deleteVoice.isPending;
+    deleteVoice.isPending ||
+    designVoice.isPending ||
+    voiceDesignTask.started;
 
   const finishMutation = <T,>(res: unknown, successMessage: string): boolean => {
     if (isErrorResponse(res)) {
@@ -256,6 +276,20 @@ export function CharacterVoicePanel({
     setRecordedDataUrl("");
     setRecordedDuration(null);
     setRecordStatus(t("characters.voiceSamples.recordReady"));
+  };
+
+  const designVoiceSample = async (slot: CharacterVoiceSlot) => {
+    try {
+      const res = await designVoice.mutateAsync({ slot: String(slot.slot) });
+      if (isErrorResponse(res)) {
+        toast.error(res.error || t("common.error"));
+        return;
+      }
+      voiceDesignTask.start({ scope: res.scope });
+      toast.success(t("characters.voiceSamples.designQueued"));
+    } catch {
+      toast.error(t("common.error"));
+    }
   };
 
   const stopRecorderTracks = () => {
@@ -506,6 +540,14 @@ export function CharacterVoicePanel({
                     disabled={pending}
                     onClick={() => openRecord(actionSlot)}
                   />
+                  {actionSlot.slot === "default" && (
+                    <VoiceActionButton
+                      label={t("characters.voiceSamples.design")}
+                      icon={<WandSparkles className="size-3.5" />}
+                      disabled={pending}
+                      onClick={() => void designVoiceSample(actionSlot)}
+                    />
+                  )}
                   {hasVoice && (
                     <>
                       <VoiceActionButton

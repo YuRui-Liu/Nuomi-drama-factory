@@ -202,23 +202,28 @@ def _confirm_scene_360_model_call(
 
 
 def resolve_scene_360_image_provider(provider: str = "") -> str:
-    """Return the provider used by scene 360 image generation."""
-    return (
-        (
-            provider
-            or os.environ.get("SCENE_360_IMAGE_PROVIDER")
-            or os.environ.get("SCENE_360_PROVIDER")
-            or os.environ.get("NANOBANANA_PROVIDER")
-            or "newapi"
-        )
-        .strip()
-        .lower()
-    )
+    """Return the provider used by scene 360 image generation.
+
+    Scene imagery is pinned to the persisted GRSAI runtime.  Ignore legacy
+    task payloads and environment variables that still name ``newapi``.
+    """
+    return "grsai"
+
+
+def _load_grsai_scene_360_model() -> str:
+    from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+
+    return load_grsai_runtime_configuration(
+        get_media_capability_store(), get_media_credential_resolver()
+    ).model
 
 
 def resolve_scene_360_image_model(provider: str = "", model: str = "") -> str:
     """Return the model used by scene 360 image generation."""
     resolved_provider = resolve_scene_360_image_provider(provider)
+    if resolved_provider == "grsai":
+        return _load_grsai_scene_360_model()
     resolved_model = str(model or "").strip()
     if resolved_model:
         from novelvideo.config import IMAGE_GENERATION_SELECTIONS

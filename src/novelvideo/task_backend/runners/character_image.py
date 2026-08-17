@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import re
 import shutil
 from datetime import datetime
@@ -73,6 +74,33 @@ def _find_identity(character, identity_id: str, identity_name: str):
     return None
 
 
+async def _generate_grsai_image(
+    *, model: str, prompt: str, output_path: str | Path,
+    reference_paths: list[str] | None = None,
+    aspect_ratio: str = "2:3",
+    image_size: str = "1K",
+) -> Path:
+    from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+
+    references = []
+    for raw_path in reference_paths or []:
+        path = Path(raw_path)
+        if path.exists():
+            references.append((path.name, path.read_bytes(), mimetypes.guess_type(path.name)[0] or "image/png"))
+    image_bytes, _text, error = await _call_grsai_image_api(
+        model=model,
+        prompt=prompt,
+        reference_images=references or None,
+        image_config={"aspect_ratio": aspect_ratio, "image_size": image_size},
+    )
+    if error or not image_bytes:
+        raise RuntimeError(error or "GRSAI image response contained no image")
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(image_bytes)
+    return destination
+
+
 def run_character_image(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
     return asyncio.run(
         await_envelope_with_cancel_watch(
@@ -87,8 +115,8 @@ async def _run_character_image(
     envelope: dict[str, Any],
     ctx: ProjectContext,
 ) -> dict[str, Any] | None:
-    from novelvideo.cognee import CogneeStore
     from novelvideo.project_config import load_project_config_file
+    from novelvideo.sqlite_store import SQLiteStore
 
     payload = envelope.get("payload") or {}
     mode = str(payload["mode"])
@@ -96,7 +124,6 @@ async def _run_character_image(
     identity_id = str(payload.get("identity_id") or "")
     identity_name = str(payload.get("identity_name") or "")
     style = str(payload.get("style") or "")
-    model = str(payload.get("model") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     task_type = str(envelope.get("task_type") or payload.get("task_type") or "character_portrait")
     scope = envelope.get("scope") or payload.get("scope")
@@ -114,15 +141,20 @@ async def _run_character_image(
         )
 
     update(0.10, "加载角色数据...")
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
     await store.load_graph_state()
     try:
-        character = await store.get_character_from_graph(character_name)
+        character = store.get_character(character_name)
         if character is None:
             raise RuntimeError(f"找不到角色: {character_name}")
         project_config = load_project_config_file(ctx.owner_username, ctx.project_name)
         ethnicity = project_config.get("ethnicity", "Chinese")
+        from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+        from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+        model = load_grsai_runtime_configuration(
+            get_media_capability_store(), get_media_credential_resolver()
+        ).model
 
         update(0.25, "准备生成参数...")
         if mode == "portrait":
@@ -187,8 +219,6 @@ async def _generate_character_portrait(
     scope: str,
     update,
 ) -> Path:
-    from novelvideo.generators import generate_character_reference_unified
-
     face_prompt = str(character.face_prompt or "").strip()
     if not face_prompt:
         raise RuntimeError("请先设置面部特征 (face_prompt)")
@@ -198,23 +228,14 @@ async def _generate_character_portrait(
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
         update(0.45, "调用图像模型生成角色 Portrait...")
-        paths = await generate_character_reference_unified(
-            character_name=character.name,
-            appearance_prompt=_strip_known_style_prefix(face_prompt),
-            output_dir=str(temp_dir),
-            count=1,
-            use_mock=False,
-            style=style,
-            ethnicity=ethnicity,
+        generated = await _generate_grsai_image(
             model=model,
-            project_dir=str(output_dir),
-            usage_task_type=task_type,
-            usage_scope=scope,
-            raise_on_error=True,
+            prompt=("Single close-up character portrait, centered head and shoulders, neutral clean background, "
+                    f"no text, no watermark. Ethnicity: {ethnicity}. Visual style: {style}. "
+                    f"Face: {_strip_known_style_prefix(face_prompt)}"),
+            output_path=temp_dir / "reference_01.png",
         )
-        if not paths:
-            raise RuntimeError("角色 Portrait 生成失败")
-        return _replace_canonical_asset(Path(paths[0]), portrait_path)
+        return _replace_canonical_asset(generated, portrait_path)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -233,8 +254,6 @@ async def _generate_identity_portrait(
     scope: str,
     update,
 ) -> Path:
-    from novelvideo.generators import generate_character_reference_unified
-
     identity = _find_identity(character, identity_id, identity_name)
     if identity is None:
         raise RuntimeError(f"找不到身份: {identity_id or identity_name}")
@@ -248,24 +267,14 @@ async def _generate_identity_portrait(
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
         update(0.45, "调用图像模型生成身份 Portrait...")
-        paths = await generate_character_reference_unified(
-            character_name=character.name,
-            appearance_prompt=_strip_known_style_prefix(face_prompt),
-            output_dir=str(temp_dir),
-            count=1,
-            use_mock=False,
-            style=style,
-            ethnicity=ethnicity,
+        generated = await _generate_grsai_image(
             model=model,
-            project_dir=str(output_dir),
-            usage_task_type=task_type,
-            usage_scope=scope,
-            identity_name=identity.identity_name,
-            raise_on_error=True,
+            prompt=("Single close-up character portrait, centered head and shoulders, neutral clean background, "
+                    f"no text, no watermark. Identity: {identity.identity_name}. Ethnicity: {ethnicity}. "
+                    f"Visual style: {style}. Face: {_strip_known_style_prefix(face_prompt)}"),
+            output_path=temp_dir / "reference_01.png",
         )
-        if not paths:
-            raise RuntimeError("身份 Portrait 生成失败")
-        _replace_canonical_asset(Path(paths[0]), portrait_path)
+        _replace_canonical_asset(generated, portrait_path)
         await store.update_character_identity(
             character.name,
             identity.identity_id,
@@ -289,7 +298,6 @@ async def _generate_identity_image(
     scope: str,
     update,
 ) -> Path:
-    from novelvideo.generators import generate_identity_image_unified
     from novelvideo.utils.path_resolver import (
         compute_identity_costume_path,
         compute_identity_portrait_path,
@@ -341,25 +349,16 @@ async def _generate_identity_image(
 
     update(0.45, "调用图像模型生成身份图...")
     try:
-        result = await generate_identity_image_unified(
-            character_name=character.name,
-            identity_prompt=_strip_known_style_prefix(identity_prompt),
-            reference_image_path=reference_image_path,
-            output_path=str(temp_output_path),
-            character_tag=str(identity.character_tag or ""),
-            ethnicity=ethnicity,
-            style=style,
+        references = [reference_image_path] + ([costume_image] if has_costume_image else [])
+        await _generate_grsai_image(
             model=model,
-            project_dir=str(output_dir),
-            costume_image_path=costume_image if has_costume_image else "",
-            usage_task_type=task_type,
-            usage_scope=scope,
-            identity_name=identity.identity_name,
-            raise_on_error=True,
+            prompt=("Full-body single character reference image, preserve the same face and identity from references, "
+                    f"coherent anatomy, no text, no watermark. Identity: {identity.identity_name}. "
+                    f"Ethnicity: {ethnicity}. Visual style: {style}. Clothing and appearance: "
+                    f"{_strip_known_style_prefix(identity_prompt or appearance_details)}"),
+            output_path=temp_output_path,
+            reference_paths=[path for path in references if path],
         )
-        success = bool(result.get("success", False)) if isinstance(result, dict) else bool(result)
-        if not success:
-            raise RuntimeError("身份图生成失败")
         return _replace_canonical_asset(temp_output_path, output_path)
     finally:
         temp_output_path.unlink(missing_ok=True)

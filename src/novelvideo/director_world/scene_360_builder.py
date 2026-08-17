@@ -1025,6 +1025,26 @@ async def run(args: argparse.Namespace) -> int:
             base_url=base_url,
             trace=provider_trace,
         )
+    elif provider == "grsai":
+        from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+        from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+        from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+
+        runtime = load_grsai_runtime_configuration(
+            get_media_capability_store(), get_media_credential_resolver()
+        )
+        model = runtime.model
+        image_bytes, _text, error = await _call_grsai_image_api(
+            model=model,
+            prompt=prompt,
+            reference_images=reference_images,
+            image_config={
+                "aspect_ratio": "2:1",
+                "image_size": args.image_size,
+                "quality": args.quality,
+                "output_format": "png",
+            },
+        )
     elif provider == "openrouter":
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:

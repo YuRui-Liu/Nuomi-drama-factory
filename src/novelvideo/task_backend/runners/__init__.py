@@ -19,4 +19,5 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     sketch_edit_execute,
     stage_asset,
     video,
+    voice_design,
 )

@@ -29,21 +29,22 @@ async def _run_prop_reference_asset(
     envelope: dict[str, Any],
     ctx: ProjectContext,
 ) -> dict[str, Any] | None:
-    from novelvideo.cognee import CogneeStore
-    from novelvideo.generators.nanobanana_prop import generate_prop_reference
+    from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
     payload = envelope.get("payload") or {}
     prop_name = str(payload["prop_name"])
     style = str(payload.get("style") or "")
-    model = str(payload.get("model") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     scope = envelope.get("scope")
     manager = get_task_manager()
 
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
     try:
-        prop = await store.sqlite_store.get_prop(prop_name)
+        prop = await store.get_prop(prop_name)
         if prop is None:
             raise RuntimeError(f"找不到道具: {prop_name}")
         visual_prompt = prop.visual_prompt or prop.description or prop.name
@@ -58,12 +59,14 @@ async def _run_prop_reference_asset(
             progress=0.50,
             current_task="调用图像模型生成三视图...",
         )
-        result_path = await generate_prop_reference(
-            visual_prompt=visual_prompt,
-            output_path=str(output_path),
-            style=style,
-            project_dir=str(output_dir),
-            model=model,
+        runtime = load_grsai_runtime_configuration(
+            get_media_capability_store(), get_media_credential_resolver()
+        )
+        result_path = await _generate_grsai_image(
+            model=runtime.model,
+            prompt=f"Professional three-view prop reference sheet, front side and back views, clean background, no text. Style: {style}. Prop: {visual_prompt}",
+            output_path=output_path,
+            aspect_ratio="1:1",
         )
         if not result_path:
             raise RuntimeError("图像 API 未返回有效图像")
@@ -83,20 +86,21 @@ def run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[st
 
 
 async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
-    from novelvideo.cognee import CogneeStore
-    from novelvideo.generators.nanobanana_prop import generate_prop_reference
+    from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
     payload = envelope.get("payload") or {}
     style = str(payload.get("style") or "")
-    model = str(payload.get("model") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     manager = get_task_manager()
 
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
     await store.load_graph_state()
     try:
-        props = await store.sqlite_store.list_props()
+        props = await store.list_props()
         props_to_gen = [
             prop
             for prop in props
@@ -118,12 +122,15 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             )
             prop_dir = output_dir / "assets" / "props" / prop.name
             prop_dir.mkdir(parents=True, exist_ok=True)
-            result = await generate_prop_reference(
-                visual_prompt=prop.visual_prompt or prop.description or prop.name,
-                output_path=str(prop_dir / "reference_3view.png"),
-                style=style,
-                project_dir=str(output_dir),
-                model=model,
+            runtime = load_grsai_runtime_configuration(
+                get_media_capability_store(), get_media_credential_resolver()
+            )
+            result = await _generate_grsai_image(
+                model=runtime.model,
+                prompt=("Professional three-view prop reference sheet, front side and back views, clean background, no text. "
+                        f"Style: {style}. Prop: {prop.visual_prompt or prop.description or prop.name}"),
+                output_path=prop_dir / "reference_3view.png",
+                aspect_ratio="1:1",
             )
             if result:
                 generated += 1

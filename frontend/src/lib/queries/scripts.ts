@@ -27,6 +27,7 @@ export function useGenerateScript(project: string, episode: number) {
         api.post(p`api/v1/projects/${project}/episodes/${episode}/script/generate`, {
           json: params ?? {},
           throwHttpErrors: false,
+          timeout: false,
         }),
       ),
   });

@@ -1,7 +1,44 @@
 import pytest
+import httpx
 
 from novelvideo.generators.scene_reference_images import build_scene_reference_prompt
 from novelvideo.models import NovelScene
+
+
+@pytest.mark.asyncio
+async def test_grsai_poll_retries_transient_read_timeout(monkeypatch):
+    from novelvideo.generators import scene_reference_images
+    from novelvideo.media_capabilities.image.grsai import GrsaiSnapshot
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def query(self, task_id, *, api_key):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("", request=httpx.Request("GET", "https://grsai.test"))
+            return GrsaiSnapshot(
+                id=task_id,
+                status="succeeded",
+                results=[{"url": "https://files.test/image.png"}],
+            )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scene_reference_images.asyncio, "sleep", no_sleep)
+    client = FakeClient()
+
+    snapshot = await scene_reference_images._poll_grsai_image_result(
+        client,
+        "task-1",
+        api_key="secret",
+        timeout_seconds=30,
+    )
+
+    assert snapshot.status == "succeeded"
+    assert client.calls == 2
 
 
 def test_scene_reference_prompt_combines_base_prompt_for_variant_without_base_image():

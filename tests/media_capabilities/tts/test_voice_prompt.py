@@ -13,7 +13,10 @@ from novelvideo.media_capabilities.tts.models import (
     VoiceSpec,
     VoiceSpecError,
 )
-from novelvideo.media_capabilities.tts.voice_prompt import compile_voice_instruction
+from novelvideo.media_capabilities.tts.voice_prompt import (
+    compile_character_voice_description,
+    compile_voice_instruction,
+)
 
 
 def test_compile_voice_instruction_uses_qwen_dimension_order() -> None:
@@ -106,3 +109,22 @@ def test_voice_profile_status_has_lifecycle_values() -> None:
         "approved",
         "retired",
     }
+
+
+def test_character_voice_description_is_concrete_and_audible() -> None:
+    description = compile_character_voice_description(
+        gender="male", age_group="youth", role="冷峻男主", raw_description="黑发，穿风衣，身手敏捷"
+    )
+
+    assert "青年男性" in description
+    assert "中低音" in description
+    assert "吐字" in description
+    assert "黑发" not in description
+    assert "风衣" not in description
+
+
+def test_character_voice_description_rejects_real_person_imitation() -> None:
+    with pytest.raises(VoiceSpecError, match="real person"):
+        compile_character_voice_description(
+            gender="female", age_group="youth", role="", raw_description="模仿周杰伦的声音"
+        )

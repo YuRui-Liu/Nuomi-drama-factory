@@ -31,6 +31,12 @@ _WORKFLOW_FIELDS: dict[MediaCapability, str] = {
     MediaCapability.TTS_VOICE_CLONE: "tts_indextts2_voice_clone",
 }
 
+RUNNINGHUB_DOWNLOAD_HOSTS = (
+    "rh-images.xiaoyaoyou.com",
+    "rh-images-1252422369.cos.ap-beijing.myqcloud.com",
+    "rh-images-switch-1252422369.cos.ap-guangzhou.myqcloud.com",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunningHubRuntimeConfiguration:
@@ -51,10 +57,15 @@ class RunningHubRuntimeConfiguration:
             )
         return value
 
-    def create_client(self) -> RunningHubClient:
+    def create_client(
+        self,
+        *,
+        download_allowed_hosts: tuple[str, ...] = RUNNINGHUB_DOWNLOAD_HOSTS,
+    ) -> RunningHubClient:
         return RunningHubClient(
             self.api_key,
             base_url=self.account.base_url or RunningHubClient.DEFAULT_BASE_URL,
+            download_allowed_hosts=download_allowed_hosts,
         )
 
 
@@ -71,7 +82,11 @@ class GrsaiRuntimeConfiguration:
         if not self.account.base_url:
             raise MediaRuntimeConfigurationError("GRSAI base URL is not configured")
         return GrsaiClient(
-            httpx.AsyncClient(base_url=self.account.base_url, trust_env=False),
+            httpx.AsyncClient(
+                base_url=self.account.base_url,
+                trust_env=False,
+                timeout=httpx.Timeout(connect=20, read=60, write=60, pool=20),
+            ),
             default_model=self.model,
         )
 

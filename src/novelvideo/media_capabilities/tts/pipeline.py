@@ -133,9 +133,9 @@ def compile_qwen3_voice_design_workflow(
                 raise ValueError(f"invalid task override inputs for node {node_id}")
             _node_inputs(workflow, node_id).update(deepcopy(dict(override_inputs)))
 
-    _node_inputs(workflow, "4")["text"] = text
-    _node_inputs(workflow, "5")["text"] = voice_instruction
-    _node_inputs(workflow, "2")["language"] = language
+    _node_inputs(workflow, "14")["text"] = text
+    _node_inputs(workflow, "15")["text"] = voice_instruction
+    _node_inputs(workflow, "22")["language"] = language
     _node_inputs(workflow, "18")
     _node_inputs(workflow, "23")
     return CompiledVoiceDesignWorkflow(workflow=workflow)

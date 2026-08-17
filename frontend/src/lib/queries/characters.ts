@@ -326,6 +326,18 @@ export function useRecordCharacterVoiceSample(project: string, name: string) {
   });
 }
 
+export function useDesignCharacterVoiceSample(project: string, name: string) {
+  return useMutation({
+    mutationFn: ({ slot }: { slot: string }) =>
+      api
+        .post(
+          p`api/v1/projects/${project}/characters/${name}/voice-samples/${slot}/design`,
+          { json: {}, timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS },
+        )
+        .json<TaskResponse | ErrorResponse>(),
+  });
+}
+
 export function useTrimCharacterVoiceSample(project: string, name: string) {
   const qc = useQueryClient();
   return useMutation({

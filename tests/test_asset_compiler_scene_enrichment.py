@@ -122,6 +122,24 @@ async def test_compile_episode_scenes_reconciles_base_scene_before_planning(monk
 
 
 @pytest.mark.asyncio
+async def test_compile_episode_scenes_skips_llm_reconcile_when_all_base_scenes_exist(
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    existing = NovelScene(
+        name="咖啡馆",
+        scene_type="interior",
+        environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        description="雨夜咖啡馆",
+    )
+
+    store = _FakeCogneeStore([existing])
+    compiler = asset_compiler.AssetCompiler(store)
+
+    assert await compiler._all_scene_blocks_have_existing_base([_block()]) is True
+
+
+@pytest.mark.asyncio
 async def test_compile_episode_scenes_backfills_existing_empty_scene_prompt(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
