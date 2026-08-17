@@ -31,6 +31,20 @@ describe("locale translation files", () => {
     expect([...enKeys].filter((key) => !zhKeys.has(key)).sort()).toEqual([]);
   });
 
+  it("defines episode import actions and task statuses in both locales", () => {
+    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
+    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+
+    for (const language of [zh, en]) {
+      expect(language.ingest.episodeImport).toMatchObject({
+        append: expect.any(String),
+        batch: expect.any(String),
+        accepted: expect.any(String),
+        completed: expect.any(String),
+      });
+    }
+  });
+
   it("uses the requested custom prompt label for Seedance2 guidance in Chinese", () => {
     const content = readFileSync("public/locales/zh/translation.json", "utf8");
     const translations = JSON.parse(content);

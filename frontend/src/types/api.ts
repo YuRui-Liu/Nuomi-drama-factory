@@ -10,7 +10,7 @@ export interface TaskResponse {
   task_type: string;
   task_id?: string;
   task_key?: string;
-  message: string;
+  message?: string;
   /**
    * Server-computed scope for tasks where the FE can't derive it itself
    * (e.g. `selection_scope(mode_key, beat_indices)` for sketch_regen).

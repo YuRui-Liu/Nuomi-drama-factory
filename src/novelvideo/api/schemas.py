@@ -118,6 +118,18 @@ class BeatBackgroundAnchorUpdate(BaseModel):
 # ── 导入 ──────────────────────────────────────────────────────────────────────
 
 
+class EpisodeImportResolutionRequest(BaseModel):
+    file_id: str = Field(min_length=1)
+    episode_number: int = Field(gt=0)
+    action: Literal["import", "overwrite", "skip"]
+
+
+class EpisodeImportCommitRequest(BaseModel):
+    preview_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=0)
+    resolutions: list[EpisodeImportResolutionRequest] = Field(default_factory=list)
+
+
 class IngestStart(BaseModel):
     filename: str
     rebuild: bool = False

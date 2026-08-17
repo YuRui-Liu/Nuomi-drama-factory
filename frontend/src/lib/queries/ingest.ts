@@ -2,11 +2,16 @@
 // Copyright (c) 2026 ClaymoreLab
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { jsonWithBackendError } from "@/lib/api-errors";
+import { BackendStatusError, jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { Chapter } from "@/types/episode";
+import type {
+  EpisodeImportCommitRequest,
+  EpisodeImportList,
+  EpisodeImportPreview,
+} from "@/types/episode-import";
 import type { SpineTemplate } from "@/types/project";
 
 export interface FormatCheckIssue {
@@ -148,5 +153,82 @@ export function useStartIngest(project: string) {
       }
       return response;
     },
+  });
+}
+
+export function usePreviewEpisodeImports(project: string) {
+  return useMutation({
+    mutationFn: async (files: File[]) => {
+      const formData = new FormData();
+      for (const file of files) formData.append("files", file);
+      const response = await jsonWithBackendError<
+        OkResponse<EpisodeImportPreview> | ErrorResponse
+      >(
+        api.post(p`api/v1/projects/${project}/episode-imports/preview`, {
+          body: formData,
+          throwHttpErrors: false,
+        }),
+      );
+      if (!response.ok) throw new Error(response.error);
+      return response;
+    },
+  });
+}
+
+export function useCommitEpisodeImport(project: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (request: EpisodeImportCommitRequest) => {
+      const raw = await api.post(p`api/v1/projects/${project}/episode-imports/commit`, {
+        json: request,
+        throwHttpErrors: false,
+      });
+      const body = await raw.json() as TaskResponse | ErrorResponse | { detail?: { code?: string; error?: string } };
+      if (!raw.ok) {
+        const detail = "detail" in body ? body.detail : undefined;
+        const message = detail?.error ?? ("error" in body ? body.error : raw.statusText);
+        throw new BackendStatusError(message, raw.status, body);
+      }
+      const response = body as TaskResponse | ErrorResponse;
+      if (!response.ok) throw new Error(response.error);
+      return response;
+    },
+    onSuccess: () => {
+      for (const queryKey of [
+        queryKeys.episodeImports(project),
+        queryKeys.chapters(project),
+        queryKeys.episodes(project),
+        queryKeys.knowledgeGraph(project),
+        queryKeys.tasks(project),
+        queryKeys.pipelineStatus(project),
+      ]) {
+        queryClient.invalidateQueries({ queryKey });
+      }
+    },
+  });
+}
+
+export function useClearEpisodeImportStale(project: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ episodeNumber, stage, sourceRevision }: { episodeNumber: number; stage: string; sourceRevision: number }) =>
+      jsonWithBackendError<OkResponse<{ cleared: boolean }>>(
+        api.delete(p`api/v1/projects/${project}/episode-imports/stale/${episodeNumber}/${stage}`, {
+          searchParams: { source_revision: sourceRevision },
+          throwHttpErrors: false,
+        }),
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.episodeImports(project) }),
+  });
+}
+
+export function useEpisodeImports(project: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.episodeImports(project),
+    queryFn: ({ signal }) =>
+      api
+        .get(p`api/v1/projects/${project}/episode-imports`, { signal })
+        .json<OkResponse<EpisodeImportList>>(),
+    enabled: !!project && enabled,
   });
 }

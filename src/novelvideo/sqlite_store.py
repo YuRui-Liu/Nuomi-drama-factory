@@ -205,6 +205,47 @@ CREATE TABLE IF NOT EXISTS seedance2_voice_audio_records (
 );
 CREATE INDEX IF NOT EXISTS idx_seedance2_voice_audio_speaker
     ON seedance2_voice_audio_records(episode_number, speaker);
+
+CREATE TABLE IF NOT EXISTS episode_sources (
+    episode_number INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    raw_content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_filename TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    downstream_stale INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS episode_source_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    project_revision INTEGER NOT NULL,
+    migrated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS episode_import_previews (
+    preview_id TEXT PRIMARY KEY,
+    base_revision INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS episode_import_records (
+    import_id TEXT PRIMARY KEY,
+    target_revision INTEGER NOT NULL,
+    episodes_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS episode_stage_revisions (
+    episode_number INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    consumed_revision INTEGER NOT NULL,
+    stale INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (episode_number, stage)
+);
 """
 
 
@@ -495,8 +536,13 @@ class SQLiteStore:
     async def load_episode_content(self, ep_num: int) -> Optional[str]:
         db = await self._ensure_db()
         async with db.execute(
-            "SELECT raw_content FROM episodes WHERE number = ?",
-            (ep_num,),
+            """
+            SELECT raw_content FROM episode_sources WHERE episode_number = ?
+            UNION ALL
+            SELECT raw_content FROM episodes WHERE number = ?
+            LIMIT 1
+            """,
+            (ep_num, ep_num),
         ) as cursor:
             row = await cursor.fetchone()
             if row and row[0]:
