@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
 from novelvideo.media_capabilities.models import (
     MediaArtifact,
     MediaCapability,
@@ -26,7 +27,6 @@ _H3_COORDINATORS: dict[str, object] = {}
 
 
 def get_h3_concurrency_coordinator(provider_id: str):
-    from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
     return _H3_COORDINATORS.setdefault(provider_id, ProviderConcurrencyCoordinator())
 
 
@@ -112,7 +112,6 @@ async def generate_h3_video(
 ) -> H3GenerationResult:
     """Generate one H3 video through RunningHub and persist its canonical file."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
-    from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
     from novelvideo.media_capabilities.runtime.artifacts import ArtifactStore
     from novelvideo.media_capabilities.runtime.configuration import (
         load_runninghub_runtime_configuration,

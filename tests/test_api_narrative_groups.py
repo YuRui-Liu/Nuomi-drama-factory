@@ -121,8 +121,10 @@ def test_list_urlizes_only_project_scoped_assets(monkeypatch, tmp_path):
     advance_revision(tmp_path, 1, "ng-01", "render")
     grid = tmp_path / "grids" / "grid.png"
     cell = tmp_path / "frames" / "cell.png"
-    grid.parent.mkdir(parents=True); cell.parent.mkdir(parents=True)
-    grid.write_bytes(b"grid"); cell.write_bytes(b"cell")
+    grid.parent.mkdir(parents=True)
+    cell.parent.mkdir(parents=True)
+    grid.write_bytes(b"grid")
+    cell.write_bytes(b"cell")
     record_stage_result(tmp_path, 1, "ng-01", "render", expected_revision=1,
                         status="completed", grid_asset=str(grid),
                         cell_assets=[{"cell": 0, "path": str(cell)}])
