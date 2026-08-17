@@ -113,6 +113,24 @@ def test_fixed_asset_image_providers_default_to_newapi_when_env_is_empty(monkeyp
     assert scene_reference_images._scene_image_provider("reverse_master", None) == "newapi"
 
 
+def test_grid_generator_allows_grsai_runtime_without_newapi_key():
+    from novelvideo.generators import nanobanana_grid
+
+    generator = nanobanana_grid.NanoBananaGridGenerator(
+        config={
+            "provider": "newapi",
+            "api_key": "",
+            "model": "gpt-image-2",
+            "base_url": "",
+            "rows": 1,
+            "cols": 1,
+            "total_panels": 1,
+        }
+    )
+
+    assert generator.provider == "newapi"
+
+
 def test_newapi_sketch_config_defaults_to_dc_image2_low_quality(monkeypatch):
     import httpx
     import novelvideo.config as config

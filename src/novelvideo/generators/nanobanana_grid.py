@@ -3756,7 +3756,10 @@ class NanoBananaGridGenerator:
         self.batch_size = config.get("batch_size", self.rows * self.cols)
         self.total_panels = config["total_panels"]
 
-        if not self.api_key:
+        # Legacy "newapi" callers are routed through the configured GRSAI
+        # runtime by _call_newapi_image_api before any NewAPI request is made.
+        # Do not reject them here merely because NEWAPI_API_KEY is absent.
+        if not self.api_key and self.provider != "newapi":
             if self.provider == "openrouter":
                 key_name = "OPENROUTER_API_KEY"
             elif self.provider == "huimeng":
