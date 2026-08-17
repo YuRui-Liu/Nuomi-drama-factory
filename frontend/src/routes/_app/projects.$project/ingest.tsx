@@ -26,6 +26,8 @@ import {
 import { useProject, useUpdateProject } from "@/lib/queries/projects";
 import {
   useChapters,
+  useClearEpisodeImportStale,
+  useEpisodeImports,
   useKnowledgeGraph,
   useStartIngest,
   useUploadNovel,
@@ -34,11 +36,13 @@ import {
 } from "@/lib/queries/ingest";
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import { NovelFormatDialog } from "@/components/ingest/NovelFormatDialog";
+import { EpisodeImportDialog } from "@/components/ingest/EpisodeImportDialog";
 import { KnowledgeGraphVisualization } from "@/components/ingest/KnowledgeGraphVisualization";
 import { useStyles } from "@/lib/queries/styles";
 import { useCancelTask, useTasks } from "@/lib/queries/tasks";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { useTaskStream } from "@/hooks/use-task-stream";
+import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
 import {
   backendErrorToastMessage,
@@ -72,6 +76,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import type { ProjectConfig, SpineTemplate } from "@/types/project";
+import type { TaskResponse } from "@/types/api";
 
 // ─── form schema ─────────────────────────────────────────────────────────────
 
@@ -868,6 +873,9 @@ export function IngestPageContent({ project }: { project: string }) {
     useState<UploadedFileSource | null>(null);
   const [inputMode, setInputMode] = useState<InputMode>("upload");
   const [novelFormatOpen, setNovelFormatOpen] = useState(false);
+  const [episodeImportOpen, setEpisodeImportOpen] = useState(false);
+  const [episodeImportTaskResponse, setEpisodeImportTaskResponse] =
+    useState<TaskResponse | null>(null);
   const [pastedText, setPastedText] = useState("");
   const [ingestSubmitted, setIngestSubmitted] = useState(false);
   const [hideImportedPreview, setHideImportedPreview] = useState(() =>
@@ -899,6 +907,23 @@ export function IngestPageContent({ project }: { project: string }) {
   const chaptersData = chaptersRes?.data;
   const hasImportedContent = (chaptersData?.chapters?.length ?? 0) > 0;
   const isUploadOnlyPreview = chaptersData?.preview_only === true;
+  const episodeImports = useEpisodeImports(project, hasImportedContent);
+  const clearEpisodeImportStale = useClearEpisodeImportStale(project);
+  const episodeImportTask = useTaskController({
+    key: { taskType: "episode_import", project, episode: 0 },
+    invalidateKeys: [
+      queryKeys.episodeImports(project),
+      queryKeys.chapters(project),
+      queryKeys.episodes(project),
+      queryKeys.knowledgeGraph(project),
+      queryKeys.tasks(project),
+    ],
+    showCompleteToast: false,
+    onComplete: async () => {
+      await episodeImports.refetch();
+      toast.success(t("ingest.episodeImport.completed"));
+    },
+  });
 
   const pastedBillableChars = useMemo(
     () => countBillableNovelChars(pastedText.trim()),
@@ -1336,6 +1361,21 @@ export function IngestPageContent({ project }: { project: string }) {
             </p>
           </div>
         </div>
+        {hasImportedContent && (
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEpisodeImportOpen(true)}
+            >
+              <Plus className="size-4" />
+              {t("ingest.episodeImport.append")}
+            </Button>
+            <Button type="button" onClick={() => setEpisodeImportOpen(true)}>
+              {t("ingest.episodeImport.batch")}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-10">
@@ -1621,6 +1661,58 @@ export function IngestPageContent({ project }: { project: string }) {
             </motion.section>
           ) : (
             <div className="min-w-0 space-y-6">
+              {episodeImportTaskResponse && (
+                <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-4 py-3 text-sm text-foreground">
+                  <CheckCircle2 className="size-4 shrink-0 text-primary" />
+                  <span>{episodeImportTaskResponse.message ?? t("ingest.episodeImport.accepted")}</span>
+                </div>
+              )}
+              {(episodeImports.data?.data.imports?.length ?? 0) > 0 && (
+                <section className={cn("rounded-lg border p-4", INGEST_SURFACE_SUBTLE_CLASS)}>
+                  <h2 className="text-sm font-semibold">{t("ingest.episodeImport.historyTitle")}</h2>
+                  <div className="mt-3 space-y-3">
+                    {episodeImports.data?.data.imports.map((record) => (
+                      <div key={record.import_id} className="rounded-md border border-white/[0.06] p-3 text-xs">
+                        <div className="flex items-center justify-between gap-3">
+                          <span>{t("ingest.episodeImport.revision", { revision: record.target_revision })}</span>
+                          <time className="text-muted-foreground" dateTime={record.created_at}>{new Date(record.created_at).toLocaleString()}</time>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {record.episodes.map((episode) => {
+                            const result = episode.result ?? episode.status ?? "failed";
+                            return <span key={`${record.import_id}-${episode.episode_number}`} className="rounded bg-white/[0.05] px-2 py-1">
+                              {t("ingest.episodeImport.episodeLabel", { number: episode.episode_number })} · {t(`ingest.episodeImport.result.${result}`)}
+                            </span>;
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {(episodeImports.data?.data.stale?.length ?? 0) > 0 && (
+                <section className="rounded-lg border border-amber-300/15 bg-amber-500/[0.04] p-4">
+                  <h2 className="text-sm font-semibold">{t("ingest.episodeImport.staleTitle")}</h2>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {episodeImports.data?.data.stale.map((entry) => (
+                      <Button
+                        key={`${entry.episode_number}-${entry.stage}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={clearEpisodeImportStale.isPending}
+                        onClick={() => void clearEpisodeImportStale.mutateAsync({
+                          episodeNumber: entry.episode_number,
+                          stage: entry.stage,
+                          sourceRevision: entry.source_revision,
+                        })}
+                      >
+                        {t("ingest.episodeImport.clearStale", { stage: t(`ingest.episodeImport.stage.${entry.stage}`) })}
+                      </Button>
+                    ))}
+                  </div>
+                </section>
+              )}
               {/* Upload zone OR uploaded file card */}
               {previewFile && (
                 <UploadedFileCard
@@ -1919,6 +2011,20 @@ export function IngestPageContent({ project }: { project: string }) {
         }}
       />
       <NovelFormatDialog open={novelFormatOpen} onOpenChange={setNovelFormatOpen} />
+      <EpisodeImportDialog
+        project={project}
+        open={episodeImportOpen}
+        onOpenChange={setEpisodeImportOpen}
+        existingEpisodeNumbers={
+          episodeImports.data?.data.items.map((item) => item.episode_number) ?? []
+        }
+        onCommitted={async (result) => {
+          setEpisodeImportTaskResponse(result);
+          episodeImportTask.start({ scope: result.scope });
+          await episodeImports.refetch();
+          toast.success(t("ingest.episodeImport.accepted"));
+        }}
+      />
     </div>
   );
 }

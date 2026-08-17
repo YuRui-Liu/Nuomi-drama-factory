@@ -100,6 +100,8 @@ class CogneeStore:
         output_dir: str | None = None,
         state_dir: str | None = None,
         sqlite_store: SQLiteStore | None = None,
+        cognee_runtime_dir: str | None = None,
+        resolve_active_runtime: bool = True,
     ):
         self.project_name = project_name
         self.dataset_name = f"novelvideo_{project_name}"
@@ -169,6 +171,18 @@ class CogneeStore:
             state_dir=self.state_dir,
         )
         self._share_sqlite_caches()
+        if cognee_runtime_dir is not None:
+            runtime_dir = Path(cognee_runtime_dir)
+        elif resolve_active_runtime:
+            from novelvideo.episode_import_service import resolve_active_cognee_runtime
+
+            runtime_dir = resolve_active_cognee_runtime(
+                project_dir=self.project_dir, state_dir=self.state_dir
+            )
+        else:
+            runtime_dir = resolved_state_dir
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.cognee_runtime_dir = str(runtime_dir)
         self.cognee_embedding_model: str | None = None
         self.cognee_embedding_dimensions: int | None = None
         self.cognee_embedding_binding = None
@@ -177,6 +191,29 @@ class CogneeStore:
 
         # 立即设置 Cognee 上下文
         self._set_cognee_context()
+
+    @classmethod
+    def for_explicit_runtime(
+        cls,
+        project_name: str,
+        *,
+        project_dir: str | Path,
+        state_dir: str | Path,
+        cognee_runtime_dir: str | Path,
+    ) -> "CogneeStore":
+        """Create a store whose durable and Cognee runtime paths are explicit.
+
+        Shadow rebuild callers must supply both directories and should call
+        ``ingest_novel_fast(..., rebuild=False)``.  This constructor never
+        resolves or prunes the project's active runtime.
+        """
+        return cls(
+            project_name,
+            output_dir=str(project_dir),
+            state_dir=str(state_dir),
+            cognee_runtime_dir=str(cognee_runtime_dir),
+            resolve_active_runtime=False,
+        )
 
     def __getattr__(self, name: str):
         """Lazily restore SQLiteStore for legacy/test objects built via __new__."""
@@ -293,7 +330,7 @@ class CogneeStore:
         确保多项目切换时 search() 和 cognify() 都指向正确的项目。
         """
         cognee_system_dir, cognee_data_dir = apply_cognee_project_storage_context(
-            self.state_dir,
+            getattr(self, "cognee_runtime_dir", self.state_dir),
             cognee,
         )
         if verbose:
@@ -589,6 +626,7 @@ class CogneeStore:
         rebuild: bool = False,
         on_progress: Optional[Callable[[float, str], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        persist_novel_content: bool = True,
     ) -> dict:
         """快速导入：只构建 Cognee 图谱，不提取角色/剧集。"""
 
@@ -655,8 +693,9 @@ class CogneeStore:
         # 原文落库放在图谱构建成功之后：失败时不留下"已导入"的痕迹。
         # /chapters 仅凭已存原文判定"导入完成"，若提前落库，cognify/memify 失败
         # 仍会让界面误报导入成功且锁死重新上传入口。
-        self.save_novel_content(content)
-        log("原文已保存到文件")
+        if persist_novel_content:
+            self.save_novel_content(content)
+            log("原文已保存到文件")
 
         embedding_binding = getattr(self, "cognee_embedding_binding", None)
         if embedding_binding is not None and embedding_binding.provider == "ollama":
@@ -2448,7 +2487,8 @@ class CogneeStore:
         # Release it before removing its backing files so the next operation
         # constructs a fresh database instead of reusing stale file handles.
         self._release_cognee_graph_engine()
-        cognee_dir = str(resolve_cognee_project_storage_paths(self.state_dir)[0])
+        runtime_dir = getattr(self, "cognee_runtime_dir", self.state_dir)
+        cognee_dir = str(resolve_cognee_project_storage_paths(runtime_dir)[0])
         if os.path.exists(cognee_dir):
             shutil.rmtree(cognee_dir)
             console.print(f"[green]已清理 cognee 数据: {cognee_dir}[/green]")

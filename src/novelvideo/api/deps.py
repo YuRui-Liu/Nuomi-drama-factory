@@ -234,7 +234,6 @@ async def make_sqlite_store_for_context(ctx: ProjectContext) -> "SQLiteStore":
 async def make_cognee_store_for_context(ctx: ProjectContext) -> "CogneeStore":
     """Create a CogneeStore from the resolved project owner/home paths."""
     from novelvideo.cognee import CogneeStore
-
     require_project_home_node(ctx, operation="open project graph store")
     store = CogneeStore(
         ctx.owner_project_label,

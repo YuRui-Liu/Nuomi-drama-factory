@@ -7,6 +7,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     audio,
     character_image,
     episode_assets,
+    episode_import,
     freezone,
     graph_build,
     identity,

@@ -72,6 +72,19 @@ beforeAll(async () => {
               failed: "Failed",
             },
             saveSettings: "Save Settings",
+            episodeImport: {
+              append: "Append episode",
+              batch: "Batch import",
+              accepted: "Import task accepted",
+              completed: "Episode import completed",
+              historyTitle: "Import history",
+              revision: "Target revision {{revision}}",
+              staleTitle: "Downstream updates required",
+              clearStale: "Mark {{stage}} updated",
+              result: { added: "Added", overwritten: "Overwritten", skipped: "Skipped", failed: "Failed" },
+              episodeLabel: "Episode {{number}}",
+              stage: { characters: "Characters", scenes: "Scenes", beats: "Beats", media: "Media" },
+            },
             settingsSaved: "Project settings saved",
             settingsSaveFailed: "Failed to save project settings",
             selectPlaceholder: "Select",
@@ -139,6 +152,53 @@ const mocks = vi.hoisted(() => ({
   // stale-cache 竞态用例把它设为 false，表示当前 data 还是挂载前的旧缓存。
   ingestTasksFetchedAfterMount: true,
   refetchKnowledgeGraph: vi.fn(),
+  episodeImports: [] as { episode_number: number }[],
+  episodeImportHistory: [] as { import_id: string; target_revision: number; created_at: string; episodes: { episode_number: number; result: string }[] }[],
+  episodeImportStale: [] as { episode_number: number; stage: string; source_revision: number; consumed_revision: number; stale: boolean }[],
+  clearEpisodeImportStale: vi.fn(),
+  refetchEpisodeImports: vi.fn(),
+  episodeImportTaskStart: vi.fn(),
+  episodeImportTaskOnComplete: undefined as undefined | (() => void),
+}));
+
+vi.mock("@/hooks/use-task-controller", () => ({
+  useTaskController: (options: { onComplete?: () => void }) => {
+    mocks.episodeImportTaskOnComplete = options.onComplete;
+    return { start: mocks.episodeImportTaskStart };
+  },
+}));
+
+vi.mock("@/components/ingest/EpisodeImportDialog", () => ({
+  EpisodeImportDialog: ({
+    open,
+    onCommitted,
+    existingEpisodeNumbers,
+  }: {
+    open: boolean;
+    existingEpisodeNumbers?: number[];
+    onCommitted?: (result: {
+      ok: true;
+      task_type: string;
+      task_id: string;
+      message?: string;
+    }) => void;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label="episode import dialog" data-existing-episodes={existingEpisodeNumbers?.join(",")}>
+        <button
+          type="button"
+          onClick={() =>
+            onCommitted?.({
+              ok: true,
+              task_type: "episode_import",
+              task_id: "episode-task-1",
+            })
+          }
+        >
+          Complete episode import
+        </button>
+      </div>
+    ) : null,
 }));
 
 vi.mock("@/components/ui/select", async () => {
@@ -260,6 +320,14 @@ vi.mock("@/lib/queries/ingest", () => ({
     mutateAsync: mocks.startIngest,
     isPending: false,
   }),
+  useEpisodeImports: () => ({
+    data: {
+      ok: true,
+      data: { project_revision: 1, migration_status: "not_needed", confirmation_required: false, items: mocks.episodeImports, imports: mocks.episodeImportHistory, stale: mocks.episodeImportStale },
+    },
+    refetch: mocks.refetchEpisodeImports,
+  }),
+  useClearEpisodeImportStale: () => ({ mutateAsync: mocks.clearEpisodeImportStale, isPending: false }),
 }));
 
 vi.mock("@/lib/queries/characters", () => ({
@@ -322,6 +390,13 @@ beforeEach(() => {
   mocks.toastError.mockReset();
   mocks.ingestTasks = [];
   mocks.ingestTasksFetchedAfterMount = true;
+  mocks.episodeImports = [];
+  mocks.episodeImportHistory = [];
+  mocks.episodeImportStale = [];
+  mocks.clearEpisodeImportStale.mockReset();
+  mocks.refetchEpisodeImports.mockReset();
+  mocks.episodeImportTaskStart.mockReset();
+  mocks.episodeImportTaskOnComplete = undefined;
 });
 
 describe("IngestPage settings save", () => {
@@ -445,6 +520,56 @@ describe("IngestPage settings save", () => {
     // ...but file replacement/destructive actions are gone once import succeeded.
     expect(screen.queryByRole("button", { name: "Reupload" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
+  it("keeps append and batch episode import actions available after episode one exists", async () => {
+    const user = userEvent.setup();
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        total_chars: 10,
+        count: 1,
+        chapters: [{ number: 1, title: "Episode 1", char_count: 10 }],
+      },
+    };
+    mocks.episodeImports = [{ episode_number: 1 }];
+
+    render(
+      <Wrapper>
+        <IngestPageContent project="demo" />
+      </Wrapper>,
+    );
+
+    expect(screen.getByRole("button", { name: "Append episode" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Batch import" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Append episode" }));
+    expect(screen.getByRole("dialog", { name: "episode import dialog" })).toHaveAttribute("data-existing-episodes", "1");
+
+    await user.click(screen.getByRole("button", { name: "Complete episode import" }));
+    await waitFor(() => expect(mocks.refetchEpisodeImports).toHaveBeenCalled());
+    expect(mocks.episodeImportTaskStart).toHaveBeenCalledWith({ scope: undefined });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Import task accepted");
+    expect(screen.getByText("Import task accepted")).toBeInTheDocument();
+
+    mocks.episodeImportTaskOnComplete?.();
+    await waitFor(() => expect(mocks.refetchEpisodeImports).toHaveBeenCalledTimes(2));
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Episode import completed");
+  });
+
+  it("shows import history, per-episode results, and clears stale stages", async () => {
+    mocks.chaptersData = { ok: true, data: { total_chars: 10, count: 1, chapters: [{ number: 1, title: "Episode 1", char_count: 10 }] } };
+    mocks.episodeImports = [{ episode_number: 1 }];
+    mocks.episodeImportHistory = [{ import_id: "task-1", target_revision: 4, created_at: "2026-08-17T00:00:00Z", episodes: [{ episode_number: 1, result: "overwritten" }] }];
+    mocks.episodeImportStale = [{ episode_number: 1, stage: "beats", source_revision: 5, consumed_revision: 4, stale: true }];
+    mocks.clearEpisodeImportStale.mockResolvedValue({ ok: true, data: { cleared: true } });
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.getByRole("heading", { name: "Import history" })).toBeInTheDocument();
+    expect(screen.getByText("Target revision 4")).toBeInTheDocument();
+    expect(screen.getAllByText((_, element) => element?.textContent === "Episode 1 · Overwritten").length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("button", { name: "Mark Beats updated" }));
+    expect(mocks.clearEpisodeImportStale).toHaveBeenCalledWith({ episodeNumber: 1, stage: "beats", sourceRevision: 5 });
   });
 
   it("shows the knowledge graph result after content is imported", () => {
