@@ -70,14 +70,15 @@ def runtime_with() -> RunningHubRuntimeConfiguration:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("first_frame", "last_frame", "expected_images"),
+    ("first_frame", "last_frame", "expected_images", "disconnected_field"),
     [
-        ("first.png", None, [("114", "uploaded/first.png")]),
-        (None, "last.png", [("141", "uploaded/last.png")]),
+        ("first.png", None, [("114", "uploaded/first.png")], "last_frame"),
+        (None, "last.png", [("141", "uploaded/last.png")], "first_frame"),
         (
             "first.png",
             "last.png",
             [("114", "uploaded/first.png"), ("141", "uploaded/last.png")],
+            None,
         ),
     ],
 )
@@ -85,6 +86,7 @@ async def test_generate_minimax_h3_video_binds_frame_modes(
     first_frame: str | None,
     last_frame: str | None,
     expected_images: list[tuple[str, str]],
+    disconnected_field: str | None,
 ) -> None:
     client = FakeClient(
         [
@@ -140,6 +142,23 @@ async def test_generate_minimax_h3_video_binds_frame_modes(
         "135": 5.0,
     }
     assert client.downloaded == ["https://rh-images.xiaoyaoyou.com/video.mp4"]
+    disconnected = [
+        item
+        for item in node_info
+        if item["nodeId"] == "133"
+        and item["fieldName"] in {"first_frame", "last_frame"}
+    ]
+    assert disconnected == (
+        []
+        if disconnected_field is None
+        else [
+            {
+                "nodeId": "133",
+                "fieldName": disconnected_field,
+                "fieldValue": None,
+            }
+        ]
+    )
 
 
 @pytest.mark.asyncio

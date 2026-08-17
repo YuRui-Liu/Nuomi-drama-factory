@@ -89,6 +89,22 @@ async def generate_minimax_h3_video(
                     "fieldValue": await client.upload(last_frame),
                 }
             )
+        if first_frame and not last_frame:
+            node_info.append(
+                {
+                    "nodeId": "133",
+                    "fieldName": "last_frame",
+                    "fieldValue": None,
+                }
+            )
+        elif last_frame and not first_frame:
+            node_info.append(
+                {
+                    "nodeId": "133",
+                    "fieldName": "first_frame",
+                    "fieldValue": None,
+                }
+            )
         node_info.extend(
             [
                 {
