@@ -36,6 +36,7 @@ export const DEFAULT_VIEW_TOGGLES: readonly BeatViewToggleId[] = [
   "sketch",
   "render",
 ];
+export const DEFAULT_VIDEO_MODEL = "runninghub:minimax-h3";
 
 const ACTION_PANEL_SECTION_IDS = new Set<BeatActionPanelSectionId>([
   "text",
@@ -55,6 +56,8 @@ interface EpisodeWorkbenchState {
   beatSelectionByScope: Record<string, PersistedBeatSelection>;
   actionPanelSectionsByScope: Record<string, BeatActionPanelSectionId[]>;
   viewTogglesByScope: Record<string, BeatViewToggleId[]>;
+  narrativeGroupSelectionByScope: Record<string, string>;
+  projectVideoModelByProject: Record<string, string>;
   setLastEpisodeLocation: (project: string, location: string) => void;
   clearLastEpisodeLocation: (project: string) => void;
   setBeatSelection: (
@@ -69,6 +72,9 @@ interface EpisodeWorkbenchState {
     scope: EpisodeWorkbenchScope,
     toggles: Iterable<BeatViewToggleId>,
   ) => void;
+  setNarrativeGroupSelection: (scope: EpisodeWorkbenchScope, groupId: string) => void;
+  setProjectVideoModel: (project: string, modelId: string) => void;
+  getProjectVideoModel: (project: string) => string;
   reset: () => void;
 }
 
@@ -155,11 +161,13 @@ function normalizeViewToggles(
 
 export const useEpisodeWorkbenchStore = create<EpisodeWorkbenchState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       lastEpisodeLocationByProject: {},
       beatSelectionByScope: {},
       actionPanelSectionsByScope: {},
       viewTogglesByScope: {},
+      narrativeGroupSelectionByScope: {},
+      projectVideoModelByProject: {},
       setLastEpisodeLocation: (project, location) =>
         set((state) => ({
           lastEpisodeLocationByProject: {
@@ -197,17 +205,36 @@ export const useEpisodeWorkbenchStore = create<EpisodeWorkbenchState>()(
             [episodeWorkbenchScopeKey(scope)]: normalizeViewToggles(toggles),
           },
         })),
+      setNarrativeGroupSelection: (scope, groupId) =>
+        set((state) => ({
+          narrativeGroupSelectionByScope: {
+            ...state.narrativeGroupSelectionByScope,
+            [episodeWorkbenchScopeKey(scope)]: groupId,
+          },
+        })),
+      setProjectVideoModel: (project, modelId) =>
+        set((state) => ({
+          projectVideoModelByProject: {
+            ...state.projectVideoModelByProject,
+            [project]: modelId || DEFAULT_VIDEO_MODEL,
+          },
+        })),
+      getProjectVideoModel: (project) =>
+        get().projectVideoModelByProject[project] ??
+        DEFAULT_VIDEO_MODEL,
       reset: () =>
         set({
           lastEpisodeLocationByProject: {},
           beatSelectionByScope: {},
           actionPanelSectionsByScope: {},
           viewTogglesByScope: {},
+          narrativeGroupSelectionByScope: {},
+          projectVideoModelByProject: {},
         }),
     }),
     {
       name: "supertale-episode-workbench",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => quotaSafeStateStorage),
       migrate: (persisted: unknown) => {
         const base = (persisted ?? {}) as Partial<EpisodeWorkbenchState>;
@@ -239,6 +266,8 @@ export const useEpisodeWorkbenchStore = create<EpisodeWorkbenchState>()(
           beatSelectionByScope: nextSelection,
           actionPanelSectionsByScope: nextSections,
           viewTogglesByScope: nextToggles,
+          narrativeGroupSelectionByScope: base.narrativeGroupSelectionByScope ?? {},
+          projectVideoModelByProject: base.projectVideoModelByProject ?? {},
         };
       },
     },

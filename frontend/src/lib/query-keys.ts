@@ -56,6 +56,8 @@ export const queryKeys = {
     ["projects", p, "episodes", ep, "beats"] as const,
   grids: (p: string, ep: number) =>
     ["projects", p, "episodes", ep, "grids"] as const,
+  narrativeGroups: (p: string, ep: number) =>
+    ["projects", p, "episodes", ep, "narrative-groups"] as const,
   sketchRegenQueue: (p: string, ep: number) =>
     ["projects", p, "episodes", ep, "sketch-regen-queue"] as const,
   sketchImageUsage: (p: string, ep: number) =>
@@ -95,5 +97,7 @@ export const queryKeys = {
   textRuntime: () => ["model-gateway", "text-runtime"] as const,
   knowledgeRuntime: () => ["knowledge-runtime"] as const,
   mediaProviderAccounts: () => ["media-capabilities", "providers"] as const,
+  videoModels: () => ["media-capabilities", "video", "models"] as const,
+  mediaDefaults: (p: string) => ["projects", p, "media-defaults"] as const,
   releaseNotifications: (locale: string) => ["release-notifications", locale] as const,
 };

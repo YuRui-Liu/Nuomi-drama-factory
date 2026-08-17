@@ -23,6 +23,7 @@ from novelvideo.api.schemas import (
     CharacterVoiceRecordRequest,
     NarratorVoiceCopyRequest,
     NarratorVoiceTrimRequest,
+    MediaDefaultsRequest,
     ProjectCreate,
     ProjectStatusFilter,
     ProjectSummary,
@@ -584,6 +585,39 @@ async def update_project(
         project=ctx.project_name,
     )
     return {"ok": True, "data": config}
+
+
+@router.get("/projects/{project}/media-defaults")
+async def get_project_media_defaults(
+    project: str,
+    user: dict = Depends(get_api_user),
+):
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="viewer")
+    config = load_project_config_from_state_dir(
+        ctx.state_dir, username=ctx.owner_username, project=ctx.project_name
+    )
+    return {
+        "ok": True,
+        "data": {
+            "video_model": str(config.get("video_backend") or "runninghub:minimax-h3"),
+            "h3_mode": str(config.get("h3_mode") or "auto"),
+        },
+    }
+
+
+@router.put("/projects/{project}/media-defaults")
+async def put_project_media_defaults(
+    project: str,
+    body: MediaDefaultsRequest,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
+    require_project_home_node(ctx, operation="update project media defaults")
+    save_project_config_in_state_dir(
+        ctx.state_dir,
+        config={"video_backend": body.video_model, "h3_mode": body.h3_mode},
+    )
+    return {"ok": True, "data": body.model_dump()}
 
 
 @router.get("/projects/{project}/narrator-voice")

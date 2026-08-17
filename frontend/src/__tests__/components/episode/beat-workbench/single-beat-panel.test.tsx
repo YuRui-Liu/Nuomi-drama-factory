@@ -66,6 +66,11 @@ vi.mock("@/lib/queries/video", () => ({
   }),
 }));
 
+vi.mock("@/lib/queries/media-models", () => ({
+  useVideoModels: () => ({ data: { ok: true, data: [] } }),
+  mergeVideoModelCatalog: (_catalog: unknown[], legacy: unknown[]) => legacy,
+}));
+
 vi.mock("@/stores/save-status-store", () => ({
   saveScopes: {
     beatText: () => "beat-text",

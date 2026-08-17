@@ -19,6 +19,15 @@ from novelvideo.task_backend.runners.sketch import (
     _ensure_scene_refs_for_beats,
     _scene_refs_override_from_config,
 )
+
+
+async def run_group_render_grid(payload, *, generator, splitter):
+    """Run a narrative-group render grid and its mandatory auto-split."""
+    if str(payload.get("stage")) != "render":
+        raise ValueError("render narrative-group runner requires stage=render")
+    from novelvideo.narrative_groups.service import run_group_grid
+
+    return await run_group_grid(payload, generator=generator, splitter=splitter)
 from novelvideo.task_state import get_task_manager
 
 

@@ -127,7 +127,10 @@ class ProviderConcurrencyCoordinator:
         with self._lock:
             state = self._providers.get(normalized_provider)
             if state is not None:
-                self._require_bound_loop(normalized_provider, state)
+                if not state.active_by_capability and not state.waiters:
+                    state.loop = None
+                else:
+                    self._require_bound_loop(normalized_provider, state)
             if state is None:
                 self._providers[normalized_provider] = _ProviderState(config=config)
                 return
@@ -147,6 +150,8 @@ class ProviderConcurrencyCoordinator:
         with self._lock:
             state = self._state(normalized_provider)
             if state.loop is None:
+                state.loop = loop
+            elif state.loop is not loop and not state.active_by_capability and not state.waiters:
                 state.loop = loop
             else:
                 self._require_bound_loop(normalized_provider, state)

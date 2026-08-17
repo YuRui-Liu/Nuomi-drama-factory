@@ -76,6 +76,12 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
     logs: [],
   });
 
+  const invalidateTerminalQueries = useCallback(() => {
+    invalidateKeysRef.current?.forEach((key) =>
+      queryClient.invalidateQueries({ queryKey: key }),
+    );
+  }, [queryClient]);
+
   const cleanup = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -136,22 +142,20 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
 
         if (data.status === "completed") {
           cleanup();
-          if (invalidateKeysRef.current) {
-            invalidateKeysRef.current.forEach((key) =>
-              queryClient.invalidateQueries({ queryKey: key }),
-            );
-          }
+          invalidateTerminalQueries();
           if (showCompleteToast) {
             toast.success(data.current_task || "Task completed");
           }
           onCompleteRef.current?.(data.result);
         } else if (data.status === "failed") {
           cleanup();
+          invalidateTerminalQueries();
           const message = taskErrorMessage(data, "Task failed");
           toast.error(message);
           onErrorRef.current?.(message);
         } else if (data.status === "cancelled") {
           cleanup();
+          invalidateTerminalQueries();
           const message = taskErrorMessage(data, "Task cancelled");
           toast.error(message);
           onErrorRef.current?.(message);
@@ -182,6 +186,7 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
         const msg = data?.error || "Task not found";
         setState((prev) => ({ ...prev, status: "failed", error: msg }));
         cleanup();
+        invalidateTerminalQueries();
         const message = taskErrorMessage(
           { error: msg, error_code: data?.error_code },
           "Task not found",
@@ -213,6 +218,7 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
     queryClient,
     showCompleteToast,
     taskErrorMessage,
+    invalidateTerminalQueries,
   ]);
 
   // Region-switch teardown: the orchestrator dispatches a window

@@ -36,6 +36,7 @@ def _client(
     credential_store=None,
 ) -> TestClient:
     app = FastAPI()
+    app.include_router(media_capabilities.catalog_router, prefix="/api/v1")
     app.include_router(media_capabilities.router, prefix="/api/v1")
     app.dependency_overrides[get_media_capability_store] = lambda: store
     if credential_store is not None:
@@ -90,6 +91,33 @@ def _workflow_bytes() -> bytes:
             "136": {"class_type": "SaveVideo", "inputs": {}},
         }
     ).encode()
+
+
+def test_video_models_endpoint_lists_disabled_h3_without_secrets(
+    store: MediaCapabilityStore,
+) -> None:
+    response = _client(store).get("/api/v1/media-capabilities/video/models")
+
+    assert response.status_code == 200
+    item = next(
+        model
+        for model in response.json()["data"]
+        if model["id"] == "runninghub:minimax-h3"
+    )
+    assert item["available"] is False
+    assert item["supported_modes"] == ["auto", "i2va", "fl2va"]
+    assert item["default_mode"] == "auto"
+    assert "key" not in response.text.lower()
+
+
+def test_video_models_catalog_is_readable_by_authenticated_editor(
+    store: MediaCapabilityStore,
+) -> None:
+    response = _client(store, user={"id": "editor", "role": "editor"}).get(
+        "/api/v1/media-capabilities/video/models"
+    )
+    assert response.status_code == 200
+    assert response.json()["data"][0]["id"] == "runninghub:minimax-h3"
 
 
 def _import_workflow(client: TestClient, *, bindings: dict | None = None):

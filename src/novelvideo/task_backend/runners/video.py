@@ -101,8 +101,6 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
     manager = get_task_manager()
     _log(manager, ctx, envelope, f"开始生成 Beat {beat_num} 视频")
 
-    from novelvideo.generators.video_generator import ShotReference, create_video_generator
-    from novelvideo.seedance2_i2v.pipeline import is_huimeng_seedance2_backend
     from novelvideo.utils.path_resolver import PathResolver
 
     beat = config.get("beat", {})
@@ -113,12 +111,56 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
     backend_str = config.get("video_backend", "runninghub_minimax_h3")
     last_frame_path = config.get("last_frame_path")
     seedance2_config = config.get("seedance2_config") or beat.get("seedance2_config_json")
-    is_seedance2_backend = is_huimeng_seedance2_backend(backend_str)
+    is_h3_backend = str(backend_str).strip().lower() == "runninghub:minimax-h3"
 
     paths = PathResolver(output_dir, episode)
     videos_dir = paths.videos_dir()
     videos_dir.mkdir(parents=True, exist_ok=True)
     video_path = paths.video(beat_num)
+    if is_h3_backend:
+        from novelvideo.media_capabilities.video.runtime import generate_h3_video
+
+        generated = await generate_h3_video(
+            ctx=ctx,
+            first_frame=str(frame_path or ""),
+            last_frame=str(last_frame_path) if last_frame_path else None,
+            prompt=str(prompt),
+            duration=float(video_duration),
+            aspect_ratio=str(config.get("ratio") or "9:16"),
+            resolution=str(config["resolution"]) if config.get("resolution") else None,
+            output_path=video_path.as_posix(),
+            mode=str(config.get("h3_mode") or "auto"),
+        )
+        video_pool_id = None
+        try:
+            from novelvideo.generators.video_pool_indexer import add_video_to_pool
+
+            entry = add_video_to_pool(
+                videos_ep_dir=videos_dir,
+                episode=episode,
+                beat_num=beat_num,
+                source_video_path=Path(generated.output_path),
+                duration=video_duration,
+                video_mode=("keyframe" if generated.actual_mode == "fl2va" else "first_frame"),
+                backend="runninghub:minimax-h3",
+                prompt=prompt,
+            )
+            video_pool_id = entry.id
+        except Exception as exc:  # noqa: BLE001
+            _log(manager, ctx, envelope, f"添加到视频池失败 (非致命): {exc}")
+        return {
+            "video_path": generated.output_path,
+            "beat_num": beat_num,
+            "video_pool_id": video_pool_id,
+            "provider_task_id": generated.provider_task_id,
+            "actual_provider": "runninghub",
+            "actual_model": "runninghub:minimax-h3",
+            "actual_mode": generated.actual_mode,
+        }
+    from novelvideo.generators.video_generator import ShotReference, create_video_generator
+    from novelvideo.seedance2_i2v.pipeline import is_huimeng_seedance2_backend
+
+    is_seedance2_backend = is_huimeng_seedance2_backend(backend_str)
     gen_kwargs: dict[str, Any] = {}
     # 非 seedance2 后端（含 seedance-1.5-pro）的清晰度走构造参数透传；
     # seedance2 的清晰度在 prepare 阶段并入 seedance2_config，无需在此重复。

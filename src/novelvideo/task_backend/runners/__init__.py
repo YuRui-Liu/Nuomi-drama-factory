@@ -11,6 +11,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     graph_build,
     identity,
     ingest,
+    narrative_group,
     prop_reference,
     render,
     scene_reference,

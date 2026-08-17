@@ -49,6 +49,8 @@ from novelvideo.media_capabilities.workflow_profiles import (
     WorkflowImportError,
     import_profile,
 )
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
+from novelvideo.media_capabilities.video.catalog import list_video_models
 
 
 class _Body(BaseModel):
@@ -140,9 +142,30 @@ router = APIRouter(
     dependencies=[Depends(require_media_capability_admin)],
 )
 
+catalog_router = APIRouter(
+    prefix="/media-capabilities",
+    dependencies=[Depends(get_api_user)],
+)
+
 AdminUser = Annotated[dict, Depends(require_media_capability_admin)]
 Store = Annotated[MediaCapabilityStore, Depends(get_media_capability_store)]
 CredentialStore = Annotated[Any, Depends(get_media_credential_store)]
+
+
+@catalog_router.get("/video/models")
+def get_video_models(
+    store: Store,
+    credentials: CredentialStore,
+) -> dict[str, object]:
+    """List stable video model IDs without exposing credential material."""
+    resolver = CredentialResolver(
+        keyring_reader=credentials.get,
+        secret_reader=credentials.get,
+    )
+    return {
+        "ok": True,
+        "data": [item.model_dump(mode="json") for item in list_video_models(store, resolver)],
+    }
 
 _PUBLISH_REQUIREMENTS: dict[MediaCapability, tuple[frozenset[str], str]] = {
     MediaCapability.IMAGE_STORYBOARD_GRID: (frozenset({"prompt"}), "image"),
