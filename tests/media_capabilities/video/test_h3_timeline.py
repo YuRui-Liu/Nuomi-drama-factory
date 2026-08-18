@@ -1,15 +1,17 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from novelvideo.media_capabilities.video.h3_timeline import (
     DialogueSource,
-    H3DirectorManifest,
+    H3CompiledTimeline,
+    H3DirectorOutputManifest,
     H3DirectorSegment,
-    compile_h3_timeline,
-    legal_frame_count,
+    build_h3_timeline_data,
+    frames_for_duration,
     load_h3_director_manifest,
-    save_h3_director_manifest,
+    save_director_manifest,
     validate_director_segments,
 )
 from novelvideo.utils.path_resolver import PathResolver
@@ -23,6 +25,8 @@ def _segment(segment_id: str, beat: int, duration: float, **overrides) -> H3Dire
         "duration_seconds": duration,
         "first_frame": f"first-{beat}.png",
         "dialogue": f"line {beat}",
+        "speaker": f"speaker {beat}",
+        "voice_style": "restrained",
         "dialogue_source": DialogueSource.EXTERNAL_TTS,
     }
     values.update(overrides)
@@ -30,47 +34,88 @@ def _segment(segment_id: str, beat: int, duration: float, **overrides) -> H3Dire
 
 
 def test_h3_legal_frame_count_uses_24fps_17k_plus_5_ceiling() -> None:
-    assert legal_frame_count(5) == 124
-    assert legal_frame_count(1) == 39
-    assert legal_frame_count(124 / 24) == 124
+    assert frames_for_duration(5) == 124
+    assert frames_for_duration(1) == 39
+    assert frames_for_duration(124 / 24) == 124
 
 
 def test_compile_timeline_has_stable_cumulative_offsets() -> None:
-    timeline = compile_h3_timeline([_segment("s1", 1, 5), _segment("s2", 2, 1)])
+    timeline = build_h3_timeline_data(
+        [_segment("s1", 1, 5), _segment("s2", 2, 1), _segment("s3", 3, 2)]
+    )
+    assert isinstance(timeline, H3CompiledTimeline)
 
     assert [(entry.start_frame, entry.frame_count) for entry in timeline.entries] == [
         (0, 124),
         (124, 39),
+        (163, 56),
     ]
-    assert timeline.total_frames == 163
+    assert timeline.total_frames == 219
     assert timeline.fps == 24
-    assert timeline.duration_seconds == pytest.approx(163 / 24)
+    assert timeline.duration_seconds == pytest.approx(219 / 24)
+    assert timeline.entries[2].start_seconds == pytest.approx(163 / 24)
+    assert timeline.entries[2].end_seconds == pytest.approx(219 / 24)
+    assert timeline.entries[2].actual_duration_seconds == pytest.approx(56 / 24)
+    assert timeline.entries[0].dialogue_start_seconds == 0
+    assert timeline.entries[0].dialogue_end_seconds == pytest.approx(124 / 24)
+    assert timeline.entries[0].speaker == "speaker 1"
+
+
+def test_empty_timeline_is_rejected() -> None:
+    with pytest.raises(ValueError, match="segment"):
+        build_h3_timeline_data([])
 
 
 def test_low_level_timeline_allows_tail_only_but_strict_product_validation_rejects_it() -> None:
     tail_only = _segment("tail", 3, 2, first_frame=None, last_frame="last.png")
 
-    assert compile_h3_timeline([tail_only]).entries[0].segment == tail_only
+    assert build_h3_timeline_data([tail_only]).entries[0].segment == tail_only
     with pytest.raises(ValueError, match="first frame"):
         validate_director_segments([tail_only], strict_first_frame=True)
 
 
 def test_manifest_round_trip_maps_one_physical_video_to_multiple_entries(tmp_path: Path) -> None:
-    timeline = compile_h3_timeline([_segment("s1", 1, 5), _segment("s2", 2, 1)])
-    manifest = H3DirectorManifest(
+    timeline = build_h3_timeline_data([_segment("s1", 1, 5), _segment("s2", 2, 1)])
+    manifest = H3DirectorOutputManifest(
         physical_video="director.mp4",
         entries=timeline.entries,
         fps=timeline.fps,
         total_frames=timeline.total_frames,
+        workflow_id="workflow-136",
+        provider_task_id="task-42",
+        original_audio_path="original_audio.wav",
+        original_audio_status="available",
+        dialogue_stem_path="dialogue.wav",
+        dialogue_stem_status="ready",
+        ambience_stem_path="ambience.wav",
+        ambience_stem_status="ready",
     )
     target = tmp_path / "nested" / "manifest.json"
 
-    save_h3_director_manifest(target, manifest)
+    save_director_manifest(target, manifest)
 
+    persisted = json.loads(target.read_text(encoding="utf-8"))
+    assert persisted["actual_duration_seconds"] == pytest.approx(163 / 24)
+    persisted_entry = persisted["entries"][0]
+    assert persisted_entry["start_seconds"] == 0
+    assert persisted_entry["end_seconds"] == pytest.approx(124 / 24)
+    assert persisted_entry["actual_duration_seconds"] == pytest.approx(124 / 24)
+    assert persisted_entry["dialogue_start_seconds"] == 0
+    assert persisted_entry["dialogue_end_seconds"] == pytest.approx(124 / 24)
+    assert persisted_entry["speaker"] == "speaker 1"
+    assert persisted_entry["dialogue_source"] == "external_tts"
     assert load_h3_director_manifest(target) == manifest
     assert {entry.physical_video for entry in load_h3_director_manifest(target).entries} == {
         "director.mp4"
     }
+    restored = load_h3_director_manifest(target)
+    assert restored.format_version == 1
+    assert restored.workflow_id == "workflow-136"
+    assert restored.provider_task_id == "task-42"
+    assert restored.actual_duration_seconds == pytest.approx(163 / 24)
+    assert restored.dialogue_stem_status == "ready"
+    assert all(entry.format_version == 1 for entry in restored.entries)
+    assert restored.entries[0].dialogue_source is DialogueSource.EXTERNAL_TTS
     assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 

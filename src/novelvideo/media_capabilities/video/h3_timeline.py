@@ -29,6 +29,9 @@ class H3DirectorSegment:
     first_frame: str | None
     last_frame: str | None = None
     dialogue: str = ""
+    speaker: str = ""
+    tone: str = ""
+    voice_style: str = ""
     dialogue_source: DialogueSource = DialogueSource.EXTERNAL_TTS
 
     def __post_init__(self) -> None:
@@ -49,10 +52,41 @@ class H3TimelineEntry:
     start_frame: int
     frame_count: int
     physical_video: str | None = None
+    format_version: int = 1
+    workflow_id: str | None = None
+    provider_task_id: str | None = None
 
     @property
     def end_frame(self) -> int:
         return self.start_frame + self.frame_count
+
+    @property
+    def start_seconds(self) -> float:
+        return self.start_frame / H3_FPS
+
+    @property
+    def end_seconds(self) -> float:
+        return self.end_frame / H3_FPS
+
+    @property
+    def actual_duration_seconds(self) -> float:
+        return self.frame_count / H3_FPS
+
+    @property
+    def dialogue_start_seconds(self) -> float:
+        return self.start_seconds
+
+    @property
+    def dialogue_end_seconds(self) -> float:
+        return self.end_seconds
+
+    @property
+    def speaker(self) -> str:
+        return self.segment.speaker
+
+    @property
+    def dialogue_source(self) -> DialogueSource:
+        return self.segment.dialogue_source
 
 
 @dataclass(frozen=True)
@@ -66,18 +100,37 @@ class H3Timeline:
         return self.total_frames / self.fps
 
 
+H3CompiledTimeline = H3Timeline
+
+
 @dataclass(frozen=True)
-class H3DirectorManifest:
+class H3DirectorOutputManifest:
     physical_video: str
     entries: tuple[H3TimelineEntry, ...]
     fps: int = H3_FPS
     total_frames: int = 0
+    format_version: int = 1
+    workflow_id: str | None = None
+    provider_task_id: str | None = None
+    original_audio_path: str | None = None
+    original_audio_status: str = "not_requested"
+    dialogue_stem_path: str | None = None
+    dialogue_stem_status: str = "not_requested"
+    ambience_stem_path: str | None = None
+    ambience_stem_status: str = "not_requested"
 
     def __post_init__(self) -> None:
         if not self.physical_video.strip():
             raise ValueError("physical video must not be empty")
         normalized = tuple(
-            replace(entry, physical_video=self.physical_video) for entry in self.entries
+            replace(
+                entry,
+                physical_video=self.physical_video,
+                format_version=self.format_version,
+                workflow_id=entry.workflow_id or self.workflow_id,
+                provider_task_id=entry.provider_task_id or self.provider_task_id,
+            )
+            for entry in self.entries
         )
         object.__setattr__(self, "entries", normalized)
         expected_total = normalized[-1].end_frame if normalized else 0
@@ -85,6 +138,14 @@ class H3DirectorManifest:
             object.__setattr__(self, "total_frames", expected_total)
         elif self.total_frames != expected_total:
             raise ValueError("manifest total frames do not match entries")
+
+    @property
+    def actual_duration_seconds(self) -> float:
+        return self.total_frames / self.fps
+
+
+# Backwards-compatible name used by the first integration draft.
+H3DirectorManifest = H3DirectorOutputManifest
 
 
 def legal_frame_count(duration_seconds: float, *, fps: int = H3_FPS) -> int:
@@ -100,6 +161,8 @@ def validate_director_segments(
     segments: Iterable[H3DirectorSegment], *, strict_first_frame: bool = False
 ) -> tuple[H3DirectorSegment, ...]:
     normalized = tuple(segments)
+    if not normalized:
+        raise ValueError("at least one director segment is required")
     seen: set[str] = set()
     for segment in normalized:
         if segment.segment_id in seen:
@@ -127,12 +190,30 @@ def compile_h3_timeline(
     return H3Timeline(tuple(entries), H3_FPS, start)
 
 
-def save_h3_director_manifest(path: Path | str, manifest: H3DirectorManifest) -> None:
+# Public names from the director-output contract.
+frames_for_duration = legal_frame_count
+build_h3_timeline_data = compile_h3_timeline
+
+
+def save_h3_director_manifest(
+    path: Path | str, manifest: H3DirectorOutputManifest
+) -> None:
     """Atomically save a manifest beside its final destination."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.parent / f".{target.name}.{uuid4().hex}.tmp"
     payload = asdict(manifest)
+    payload["actual_duration_seconds"] = manifest.actual_duration_seconds
+    for serialized, entry in zip(payload["entries"], manifest.entries, strict=True):
+        serialized.update(
+            start_seconds=entry.start_seconds,
+            end_seconds=entry.end_seconds,
+            actual_duration_seconds=entry.actual_duration_seconds,
+            dialogue_start_seconds=entry.dialogue_start_seconds,
+            dialogue_end_seconds=entry.dialogue_end_seconds,
+            speaker=entry.speaker,
+            dialogue_source=entry.dialogue_source.value,
+        )
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         os.replace(temp, target)
@@ -151,25 +232,45 @@ def load_h3_director_manifest(path: Path | str) -> H3DirectorManifest:
                 start_frame=int(item["start_frame"]),
                 frame_count=int(item["frame_count"]),
                 physical_video=item.get("physical_video"),
+                format_version=int(item.get("format_version", 1)),
+                workflow_id=item.get("workflow_id"),
+                provider_task_id=item.get("provider_task_id"),
             )
         )
-    return H3DirectorManifest(
+    return H3DirectorOutputManifest(
         physical_video=payload["physical_video"],
         entries=tuple(entries),
         fps=int(payload["fps"]),
         total_frames=int(payload["total_frames"]),
+        format_version=int(payload.get("format_version", 1)),
+        workflow_id=payload.get("workflow_id"),
+        provider_task_id=payload.get("provider_task_id"),
+        original_audio_path=payload.get("original_audio_path"),
+        original_audio_status=payload.get("original_audio_status", "not_requested"),
+        dialogue_stem_path=payload.get("dialogue_stem_path"),
+        dialogue_stem_status=payload.get("dialogue_stem_status", "not_requested"),
+        ambience_stem_path=payload.get("ambience_stem_path"),
+        ambience_stem_status=payload.get("ambience_stem_status", "not_requested"),
     )
+
+
+save_director_manifest = save_h3_director_manifest
 
 
 __all__ = [
     "DialogueSource",
     "H3DirectorManifest",
+    "H3DirectorOutputManifest",
     "H3DirectorSegment",
+    "H3CompiledTimeline",
     "H3Timeline",
     "H3TimelineEntry",
+    "build_h3_timeline_data",
     "compile_h3_timeline",
+    "frames_for_duration",
     "legal_frame_count",
     "load_h3_director_manifest",
+    "save_director_manifest",
     "save_h3_director_manifest",
     "validate_director_segments",
 ]
