@@ -7,10 +7,10 @@ import math
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 H3_FPS = 24
@@ -35,6 +35,11 @@ class H3DirectorSegment(BaseModel):
     tone: str = ""
     voice_style: str = ""
     dialogue_source: DialogueSource = DialogueSource.EXTERNAL_TTS
+
+    @field_validator("segment_id", "prompt", mode="before")
+    @classmethod
+    def trim_required_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 class H3TimelineEntry(BaseModel):
     model_config = _MODEL_CONFIG
@@ -80,8 +85,8 @@ class H3TimelineEntry(BaseModel):
 class H3CompiledTimeline(BaseModel):
     model_config = _MODEL_CONFIG
     entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
-    fps: int = Field(default=H3_FPS, gt=0)
-    total_frames: int = Field(gt=0)
+    fps: Literal[24] = H3_FPS
+    total_frames: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_boundaries(self) -> "H3CompiledTimeline":
@@ -90,7 +95,9 @@ class H3CompiledTimeline(BaseModel):
             if entry.start_frame != expected:
                 raise ValueError("timeline entries must be contiguous from frame 0")
             expected = entry.end_frame
-        if expected != self.total_frames:
+        if self.total_frames == 0:
+            object.__setattr__(self, "total_frames", expected)
+        elif expected != self.total_frames:
             raise ValueError("last timeline entry must end at total frames")
         return self
 
@@ -106,8 +113,8 @@ class H3DirectorOutputManifest(BaseModel):
     model_config = _MODEL_CONFIG
     physical_video: str = Field(min_length=1)
     entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
-    fps: int = Field(default=H3_FPS, gt=0)
-    total_frames: int = Field(gt=0)
+    fps: Literal[24] = H3_FPS
+    total_frames: int = Field(default=0, ge=0)
     format_version: int = Field(default=1, gt=0)
     workflow_id: str | None = None
     provider_task_id: str | None = None
@@ -118,6 +125,19 @@ class H3DirectorOutputManifest(BaseModel):
     ambience_stem_path: str | None = None
     ambience_stem_status: str = "not_requested"
     actual_duration_seconds: float | None = None
+
+    @field_validator(
+        "physical_video", "workflow_id", "provider_task_id",
+        "original_audio_path", "dialogue_stem_path", "ambience_stem_path",
+        mode="before",
+    )
+    @classmethod
+    def trim_optional_text(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("value must not be blank")
+        return value
 
     @model_validator(mode="after")
     def validate_and_normalize(self) -> "H3DirectorOutputManifest":
@@ -132,7 +152,11 @@ class H3DirectorOutputManifest(BaseModel):
             )
             for entry in self.entries
         )
-        H3CompiledTimeline(entries=normalized, fps=self.fps, total_frames=self.total_frames)
+        timeline = H3CompiledTimeline(
+            entries=normalized, fps=self.fps, total_frames=self.total_frames
+        )
+        if self.total_frames == 0:
+            object.__setattr__(self, "total_frames", timeline.total_frames)
         object.__setattr__(self, "entries", normalized)
         duration = self.total_frames / self.fps
         if self.actual_duration_seconds is not None and self.actual_duration_seconds != duration:

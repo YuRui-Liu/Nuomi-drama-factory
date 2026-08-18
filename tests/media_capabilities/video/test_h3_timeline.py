@@ -101,6 +101,49 @@ def test_compiled_timeline_rejects_non_positive_fps() -> None:
         H3CompiledTimeline(entries=(entry,), fps=0, total_frames=39)
 
 
+def test_h3_models_reject_non_24_fps() -> None:
+    entry = H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=39)
+    with pytest.raises(ValidationError):
+        H3CompiledTimeline(entries=(entry,), fps=30, total_frames=39)
+    with pytest.raises(ValidationError):
+        H3DirectorOutputManifest(
+            physical_video="director.mp4", entries=(entry,), fps=30, total_frames=39
+        )
+
+
+def test_total_frames_is_derived_when_omitted() -> None:
+    entry = H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=39)
+
+    assert H3CompiledTimeline(entries=(entry,)).total_frames == 39
+    assert H3DirectorOutputManifest(
+        physical_video="director.mp4", entries=(entry,)
+    ).total_frames == 39
+
+
+def test_key_strings_are_trimmed_and_blank_values_rejected() -> None:
+    segment = H3DirectorSegment(
+        segment_id="  s1  ", beat_number=1, prompt="  move  ", duration_seconds=1,
+        first_frame="first.png",
+    )
+    assert (segment.segment_id, segment.prompt) == ("s1", "move")
+    with pytest.raises(ValidationError):
+        H3DirectorSegment(
+            segment_id=" ", beat_number=1, prompt="move", duration_seconds=1,
+            first_frame="first.png",
+        )
+    entry = H3TimelineEntry(segment=segment, start_frame=0, frame_count=39)
+    manifest = H3DirectorOutputManifest(
+        physical_video=" director.mp4 ", workflow_id=" wf-1 ", entries=(entry,)
+    )
+    assert (manifest.physical_video, manifest.workflow_id) == ("director.mp4", "wf-1")
+    with pytest.raises(ValidationError):
+        H3DirectorOutputManifest(physical_video=" ", entries=(entry,))
+    with pytest.raises(ValidationError):
+        H3DirectorOutputManifest(
+            physical_video="director.mp4", workflow_id=" ", entries=(entry,)
+        )
+
+
 def test_timeline_entry_rejects_non_positive_frame_count() -> None:
     with pytest.raises(ValidationError):
         H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=0)
