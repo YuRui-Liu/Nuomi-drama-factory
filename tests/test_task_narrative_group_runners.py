@@ -130,6 +130,11 @@ def test_split_runner_recovers_grid_from_sidecar_without_generator(tmp_path, mon
         "_generate_grid",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not generate")),
     )
+    monkeypatch.setattr(
+        narrative_group,
+        "resolve_group_reference_preview",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not resolve")),
+    )
     ctx = SimpleNamespace(output_dir=tmp_path)
     envelope = {
         "task_type": "narrative_group_split",

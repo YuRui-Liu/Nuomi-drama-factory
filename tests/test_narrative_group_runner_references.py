@@ -188,3 +188,54 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
     assert result["reference_count"] == 2
     assert result["reference_warnings"] == []
     assert all(str(tmp_path) not in warning for warning in result["reference_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_execute_resolves_current_references_and_preserves_metadata(tmp_path, monkeypatch):
+    from novelvideo.narrative_groups.service import advance_revision, group_beats, save_groups
+
+    save_groups(tmp_path, 1, group_beats([{"id": "1", "beat_number": 1}]))
+    advance_revision(tmp_path, 1, "ng-01", "render")
+    preview = _preview(tmp_path)
+    resolves = []
+    monkeypatch.setattr(
+        narrative_group,
+        "resolve_group_reference_preview",
+        lambda *args, **kwargs: resolves.append((args, kwargs)) or preview,
+    )
+
+    async def generate(payload, ctx):
+        generation_input = narrative_group._generation_input(payload)
+        grid = tmp_path / "grid.png"
+        grid.write_bytes(b"grid")
+        return {
+            "grid_asset": str(grid),
+            "reference_count": len(generation_input.references),
+            "reference_warnings": ["asset changed after preview"],
+        }
+
+    monkeypatch.setattr(narrative_group, "_generate_grid", generate)
+    monkeypatch.setattr(
+        narrative_group,
+        "_split_existing_grid",
+        lambda *args: {"cell_assets": [], "errors": []},
+    )
+    envelope = {
+        "episode": 1,
+        "payload": {
+            "project_dir": str(tmp_path),
+            "episode": 1,
+            "group_id": "ng-01",
+            "stage": "render",
+            "revision": 1,
+            "beats": [{"beat_number": 1}],
+        },
+    }
+
+    result = await narrative_group._execute(
+        envelope, SimpleNamespace(output_dir=tmp_path), split_only=False
+    )
+
+    assert len(resolves) == 1
+    assert result["reference_count"] == 2
+    assert result["reference_warnings"] == ["asset changed after preview"]
