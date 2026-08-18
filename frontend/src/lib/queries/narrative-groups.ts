@@ -18,10 +18,10 @@ export interface NarrativeGroupImageReference {
   kind: "character" | "scene";
   source_kind: "identity" | "portrait_fallback" | "scene_master";
   label: string;
-  thumbnail_url: string | null;
+  thumbnail_url?: string | null;
   beat_numbers: number[];
   enabled_by_default: boolean;
-  warning: string | null;
+  warning?: string | null;
   character_name?: string;
   identity_id?: string;
   scene_id?: string;

@@ -94,4 +94,45 @@ describe("GroupReferenceDialog", () => {
     rerender(<GroupReferenceDialog {...props} open />);
     expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeInTheDocument();
   });
+
+  it("restores the new backend defaults when the preview changes while open", () => {
+    const { rerender, onSubmit, props } = renderDialog();
+    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
+
+    const nextPreview: NarrativeGroupReferencePreview = {
+      ...preview,
+      style: { ...preview.style, id: "style-2", enabled_by_default: false },
+      character_references: [
+        {
+          ...preview.character_references[0],
+          id: "char-3",
+          label: "苏清晏（成年）",
+          enabled_by_default: false,
+        },
+        {
+          ...preview.character_references[1],
+          id: "char-4",
+          enabled_by_default: true,
+        },
+      ],
+      scene_references: [
+        { ...preview.scene_references[0], id: "scene-2", enabled_by_default: true },
+      ],
+    };
+    rerender(<GroupReferenceDialog {...props} preview={nextPreview} />);
+
+    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "使用风格 水墨电影感" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "添加引用 苏清晏（成年）" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "取消引用 沈砚" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "取消引用 雨夜长街" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith({
+      useStyle: false,
+      selectedCharacterReferenceIds: ["char-4"],
+      selectedSceneReferenceIds: ["scene-2"],
+    });
+  });
 });
