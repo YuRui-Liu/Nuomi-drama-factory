@@ -22,6 +22,7 @@ DramaClaw 当前通过 RunningHub MiniMax H3 首尾帧工作流逐镜生成视�
 4. 支持日常使用的仅首帧 i2v 和首尾帧 fl2v。
 5. 底层序列化器保留仅尾帧能力，但当前界面与批量流程不开放该入口。
 6. 将 RunningHub 节点绑定、图片上传、帧对齐和 `timeline_data` 格式封装在专用适配器内。
+7. 所有提交给 H3 的镜头提示词都经过 MiniMax 官方 `h3-prompt-writing` 范式优化；现有提示词只作为语义草稿。
 
 ## 非目标
 
@@ -30,6 +31,7 @@ DramaClaw 当前通过 RunningHub MiniMax H3 首尾帧工作流逐镜生成视�
 - 不改变其他视频后端的逐镜生成行为。
 - 不把一个多镜成片复制登记成多个独立镜头视频。
 - 不实现多镜任务内的局部失败恢复；多镜任务保持原子性。
+- 不把现有 `video_prompt` 或 `keyframe_prompt` 直接发送给 H3。
 
 ## 架构
 
@@ -58,6 +60,25 @@ Runner 负责：
 
 Runner 不拼装 RunningHub `nodeInfoList`，也不理解节点 ID、`timeline_data` 版本或 H3 帧网格。
 
+### H3 提示词优化器
+
+新增独立的 `H3PromptOptimizer`。现有字段只提供镜头的语义草稿：仅首帧读取 `video_prompt`，首尾帧读取 `keyframe_prompt`。
+
+优化器参考 MiniMax 官方 `skills/h3-prompt-writing` 和 `references/base-en.txt` 重写每个镜头。输入至少包含生成模式、原始语义草稿、首帧及可选尾帧、对齐后的实际时长、Beat 画面描述、对白或旁白，以及前后镜头连续性摘要。
+
+输出必须按顺序包含：
+
+1. 与 I2VA 或 FL2VA 匹配的帧对齐声明；
+2. `integrated_multimodal_description`；
+3. `overall_soundscape`；
+4. `non_diegetic_music`。
+
+固定字段名、结构、参考图片标签和时间标记遵循官方范式；字段内容、镜头描述、动作、运镜与声音描述尽量使用中文。对白、歌词和画面内可见文字保持原文。这一中文优先规则是项目对官方英文写作建议的明确覆盖。描述必须匹配实际时长，并具体覆盖构图、主体、环境、动作、镜头、对白和声音。
+
+每个 segment 独立优化，不生成整组共用提示词。优化结果不覆盖原 `video_prompt` 或 `keyframe_prompt`，而是单独保存 H3 提示词、输入哈希、模式和范式版本。输入哈希至少覆盖原始草稿、首尾帧内容标识、实际时长、叙事上下文和范式版本；任一输入变化后缓存失效。
+
+组内生成时并行生成缺失或过期的 H3 提示词。只有全部镜头优化成功后才提交导演台任务。优化失败不得降级为直接发送原始提示词。
+
 ### H3 Director 适配器
 
 适配器负责：
@@ -79,7 +100,7 @@ Runner 不拼装 RunningHub `nodeInfoList`，也不理解节点 ID、`timeline_d
 | DramaClaw 字段 | 导演台字段 | 规则 |
 | --- | --- | --- |
 | 分组顺序 | segment 顺序与 `start` | 按当前顺序累计 |
-| 视频提示词 | `prompt` | 去除首尾空白后不得为空 |
+| H3 优化提示词 | `prompt` | 必须通过官方结构和中文优先规则校验 |
 | 目标时长 | `durationSec` / `frameCount` | 先按 H3 帧网格对齐 |
 | 首帧 | `startImage` | 当前产品流程必填 |
 | 尾帧 | `endImage` | 可选 |
@@ -110,11 +131,14 @@ Runner 不拼装 RunningHub `nodeInfoList`，也不理解节点 ID、`timeline_d
 提交前按镜头序号校验：
 
 - 当前产品流程中首帧存在；
-- 提示词非空；
+- 原始语义草稿非空；
+- H3 优化提示词存在、未过期并通过结构校验；
 - 时长为正数；
 - segments 列表非空。
 
 错误信息必须指出具体镜头序号。图片上传或时间线构造失败时不得提交 RunningHub 任务。
+
+H3 提示词优化失败、输出缺少必需章节、模式对齐声明错误或时长不匹配时，不得提交 RunningHub 任务，也不得回退到原始提示词。错误信息必须指出对应镜头和失败阶段。
 
 多镜任务是原子操作。RunningHub 失败、取消、超时或节点 `7` 未返回视频时：
 
@@ -150,6 +174,19 @@ Runner 不拼装 RunningHub `nodeInfoList`，也不理解节点 ID、`timeline_d
 - 节点 `12` 请求和节点 `7` 输出选择；
 - 底层仅尾帧序列化兼容性。
 
+### H3 提示词测试
+
+- I2VA 输出包含正确的 0.00 秒首帧对齐声明；
+- FL2VA 输出包含首帧 0.00 秒和尾帧实际结束时刻的对齐声明；
+- 必需字段严格按 `integrated_multimodal_description`、`overall_soundscape`、`non_diegetic_music` 排列；
+- 固定字段名、图片标签和时间标记保持官方形式，字段内容以中文为主；
+- 对白、歌词和画面文字保持原文；
+- 提示词时间线与对齐后的实际时长一致；
+- 每个 segment 使用对应首尾帧和叙事上下文独立优化；
+- 输入不变时复用缓存；草稿、图片、时长、上下文或范式版本变化时缓存失效；
+- 缺章节、错误对齐、空输出和优化器异常均阻止 RunningHub 提交；
+- 不存在把 `video_prompt` 或 `keyframe_prompt` 直接写入 H3 segment 的路径。
+
 ### Runner 与 API 测试
 
 - 单镜入口包装为单 segment；
@@ -170,4 +207,6 @@ Runner 不拼装 RunningHub `nodeInfoList`，也不理解节点 ID、`timeline_d
 5. 分组提示词、时长、顺序和首尾帧均准确映射到时间线。
 6. 帧数满足 H3 网格，累计起点与总帧数一致。
 7. 当前界面不出现仅尾帧入口，但底层构造器具备仅尾帧兼容测试。
-8. 所有新增测试及相关回归测试通过。
+8. 每镜提示词符合 MiniMax H3 官方基础模式结构，内容中文优先，原始提示词不会被直接提交。
+9. H3 优化提示词缓存可正确复用和失效，优化失败不会降级直传。
+10. 所有新增测试及相关回归测试通过。
