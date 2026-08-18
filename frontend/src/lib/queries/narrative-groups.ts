@@ -13,6 +13,44 @@ export type NarrativeStageStatus =
 export type NarrativeGridStage = "sketch" | "render";
 export type NarrativeGroupAction = "generate" | "split" | "regenerate";
 
+export interface NarrativeGroupImageReference {
+  id: string;
+  kind: "character" | "scene";
+  source_kind: "identity" | "portrait_fallback" | "scene_master";
+  label: string;
+  thumbnail_url: string | null;
+  beat_numbers: number[];
+  enabled_by_default: boolean;
+  warning: string | null;
+  character_name?: string;
+  identity_id?: string;
+  scene_id?: string;
+}
+
+export interface NarrativeGroupReferencePreview {
+  style: {
+    id: string;
+    label: string;
+    prompt: string;
+    enabled_by_default: boolean;
+    warning?: string | null;
+  };
+  character_references: NarrativeGroupImageReference[];
+  scene_references: NarrativeGroupImageReference[];
+  limits: {
+    max_images: number;
+    selected_images: number;
+    omitted_reference_ids: string[];
+  };
+  warnings: string[];
+}
+
+export interface NarrativeGroupGenerationSelection {
+  useStyle: boolean;
+  selectedCharacterReferenceIds: string[];
+  selectedSceneReferenceIds: string[];
+}
+
 export interface NarrativeStageState {
   status: NarrativeStageStatus;
   revision: number;
@@ -67,14 +105,35 @@ export function narrativeGroupRevisionPath(
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/revisions`;
 }
 
+export function narrativeGroupReferencePath(
+  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references`;
+}
+
 export function narrativeGroupRollbackPath(
   project: string, episode: number, groupId: string, stage: NarrativeGridStage, revision: number,
 ) {
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/revisions/${revision}/rollback`;
 }
 
-export function narrativeGroupActionPayload(input: { revision?: number } = {}) {
-  return input.revision === undefined ? {} : { revision: input.revision };
+export function narrativeGroupActionPayload(input: {
+  revision?: number;
+  selection?: NarrativeGroupGenerationSelection;
+} = {}) {
+  const payload: {
+    revision?: number;
+    use_style?: boolean;
+    selected_character_reference_ids?: string[];
+    selected_scene_reference_ids?: string[];
+  } = {};
+  if (input.revision !== undefined) payload.revision = input.revision;
+  if (input.selection) {
+    payload.use_style = input.selection.useStyle;
+    payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
+    payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
+  }
+  return payload;
 }
 
 export function useNarrativeGroups(project: string, episode: number) {
@@ -90,16 +149,39 @@ export function useNarrativeGroups(project: string, episode: number) {
 export function useNarrativeGroupAction(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, stage, action, revision }: {
-      groupId: string; stage: NarrativeGridStage; action: NarrativeGroupAction; revision?: number;
+    mutationFn: ({ groupId, stage, action, revision, selection }: {
+      groupId: string;
+      stage: NarrativeGridStage;
+      action: NarrativeGroupAction;
+      revision?: number;
+      selection?: NarrativeGroupGenerationSelection;
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
-      json: narrativeGroupActionPayload({ revision }),
+      json: narrativeGroupActionPayload({
+        revision,
+        selection: action === "split" ? undefined : selection,
+      }),
     }).json<TaskResponse>(),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.grids(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
     ]),
+  });
+}
+
+export function useNarrativeGroupReferences(
+  project: string,
+  episode: number,
+  groupId: string,
+  stage: NarrativeGridStage,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...queryKeys.narrativeGroups(project, episode), groupId, stage, "references"],
+    queryFn: ({ signal }) => api.get(
+      narrativeGroupReferencePath(project, episode, groupId, stage), { signal },
+    ).json<ApiResponse<NarrativeGroupReferencePreview>>(),
+    enabled: enabled && !!project && episode > 0 && !!groupId,
   });
 }
 
