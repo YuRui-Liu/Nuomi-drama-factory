@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 
 H3_FPS = 24
+_MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
 class DialogueSource(StrEnum):
@@ -20,12 +22,12 @@ class DialogueSource(StrEnum):
     H3_NATIVE = "h3_native"
 
 
-@dataclass(frozen=True)
-class H3DirectorSegment:
-    segment_id: str
-    beat_number: int
-    prompt: str
-    duration_seconds: float
+class H3DirectorSegment(BaseModel):
+    model_config = _MODEL_CONFIG
+    segment_id: str = Field(min_length=1)
+    beat_number: int = Field(gt=0)
+    prompt: str = Field(min_length=1)
+    duration_seconds: float = Field(gt=0, allow_inf_nan=False)
     first_frame: str | None
     last_frame: str | None = None
     dialogue: str = ""
@@ -34,82 +36,79 @@ class H3DirectorSegment:
     voice_style: str = ""
     dialogue_source: DialogueSource = DialogueSource.EXTERNAL_TTS
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "dialogue_source", DialogueSource(self.dialogue_source))
-        if not self.segment_id.strip():
-            raise ValueError("segment ID must not be empty")
-        if self.beat_number < 1:
-            raise ValueError("beat number must be positive")
-        if not self.prompt.strip():
-            raise ValueError("prompt must not be empty")
-        if not math.isfinite(self.duration_seconds) or self.duration_seconds <= 0:
-            raise ValueError("duration must be positive and finite")
-
-
-@dataclass(frozen=True)
-class H3TimelineEntry:
+class H3TimelineEntry(BaseModel):
+    model_config = _MODEL_CONFIG
     segment: H3DirectorSegment
-    start_frame: int
-    frame_count: int
+    start_frame: int = Field(ge=0)
+    frame_count: int = Field(gt=0)
     physical_video: str | None = None
     format_version: int = 1
     workflow_id: str | None = None
     provider_task_id: str | None = None
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    actual_duration_seconds: float | None = None
+    dialogue_start_seconds: float | None = None
+    dialogue_end_seconds: float | None = None
+    speaker: str | None = None
+    dialogue_source: DialogueSource | None = None
+
+    @model_validator(mode="after")
+    def derive_metadata(self) -> "H3TimelineEntry":
+        start = self.start_frame / H3_FPS
+        end = (self.start_frame + self.frame_count) / H3_FPS
+        derived = {
+            "start_seconds": start,
+            "end_seconds": end,
+            "actual_duration_seconds": self.frame_count / H3_FPS,
+            "dialogue_start_seconds": start,
+            "dialogue_end_seconds": end,
+            "speaker": self.segment.speaker,
+            "dialogue_source": self.segment.dialogue_source,
+        }
+        for name, value in derived.items():
+            supplied = getattr(self, name)
+            if supplied is not None and supplied != value:
+                raise ValueError(f"entry {name} does not match frame boundaries")
+            object.__setattr__(self, name, value)
+        return self
 
     @property
     def end_frame(self) -> int:
         return self.start_frame + self.frame_count
 
-    @property
-    def start_seconds(self) -> float:
-        return self.start_frame / H3_FPS
+class H3CompiledTimeline(BaseModel):
+    model_config = _MODEL_CONFIG
+    entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
+    fps: int = Field(default=H3_FPS, gt=0)
+    total_frames: int = Field(gt=0)
 
-    @property
-    def end_seconds(self) -> float:
-        return self.end_frame / H3_FPS
-
-    @property
-    def actual_duration_seconds(self) -> float:
-        return self.frame_count / H3_FPS
-
-    @property
-    def dialogue_start_seconds(self) -> float:
-        return self.start_seconds
-
-    @property
-    def dialogue_end_seconds(self) -> float:
-        return self.end_seconds
-
-    @property
-    def speaker(self) -> str:
-        return self.segment.speaker
-
-    @property
-    def dialogue_source(self) -> DialogueSource:
-        return self.segment.dialogue_source
-
-
-@dataclass(frozen=True)
-class H3Timeline:
-    entries: tuple[H3TimelineEntry, ...]
-    fps: int
-    total_frames: int
+    @model_validator(mode="after")
+    def validate_boundaries(self) -> "H3CompiledTimeline":
+        expected = 0
+        for entry in self.entries:
+            if entry.start_frame != expected:
+                raise ValueError("timeline entries must be contiguous from frame 0")
+            expected = entry.end_frame
+        if expected != self.total_frames:
+            raise ValueError("last timeline entry must end at total frames")
+        return self
 
     @property
     def duration_seconds(self) -> float:
         return self.total_frames / self.fps
 
 
-H3CompiledTimeline = H3Timeline
+H3Timeline = H3CompiledTimeline
 
 
-@dataclass(frozen=True)
-class H3DirectorOutputManifest:
-    physical_video: str
-    entries: tuple[H3TimelineEntry, ...]
-    fps: int = H3_FPS
-    total_frames: int = 0
-    format_version: int = 1
+class H3DirectorOutputManifest(BaseModel):
+    model_config = _MODEL_CONFIG
+    physical_video: str = Field(min_length=1)
+    entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
+    fps: int = Field(default=H3_FPS, gt=0)
+    total_frames: int = Field(gt=0)
+    format_version: int = Field(default=1, gt=0)
     workflow_id: str | None = None
     provider_task_id: str | None = None
     original_audio_path: str | None = None
@@ -118,43 +117,46 @@ class H3DirectorOutputManifest:
     dialogue_stem_status: str = "not_requested"
     ambience_stem_path: str | None = None
     ambience_stem_status: str = "not_requested"
+    actual_duration_seconds: float | None = None
 
-    def __post_init__(self) -> None:
-        if not self.physical_video.strip():
-            raise ValueError("physical video must not be empty")
+    @model_validator(mode="after")
+    def validate_and_normalize(self) -> "H3DirectorOutputManifest":
         normalized = tuple(
-            replace(
-                entry,
-                physical_video=self.physical_video,
-                format_version=self.format_version,
-                workflow_id=entry.workflow_id or self.workflow_id,
-                provider_task_id=entry.provider_task_id or self.provider_task_id,
+            entry.model_copy(
+                update={
+                    "physical_video": self.physical_video,
+                    "format_version": self.format_version,
+                    "workflow_id": entry.workflow_id or self.workflow_id,
+                    "provider_task_id": entry.provider_task_id or self.provider_task_id,
+                }
             )
             for entry in self.entries
         )
+        H3CompiledTimeline(entries=normalized, fps=self.fps, total_frames=self.total_frames)
         object.__setattr__(self, "entries", normalized)
-        expected_total = normalized[-1].end_frame if normalized else 0
-        if self.total_frames == 0:
-            object.__setattr__(self, "total_frames", expected_total)
-        elif self.total_frames != expected_total:
-            raise ValueError("manifest total frames do not match entries")
-
-    @property
-    def actual_duration_seconds(self) -> float:
-        return self.total_frames / self.fps
+        duration = self.total_frames / self.fps
+        if self.actual_duration_seconds is not None and self.actual_duration_seconds != duration:
+            raise ValueError("manifest actual duration does not match total frames")
+        object.__setattr__(self, "actual_duration_seconds", duration)
+        return self
 
 
 # Backwards-compatible name used by the first integration draft.
 H3DirectorManifest = H3DirectorOutputManifest
 
 
-def legal_frame_count(duration_seconds: float, *, fps: int = H3_FPS) -> int:
+def frames_for_duration(duration_seconds: float, fps: int = H3_FPS) -> int:
     """Return the smallest H3-legal ``17k + 5`` count meeting the duration."""
+    if fps <= 0:
+        raise ValueError("fps must be positive")
     if not math.isfinite(duration_seconds) or duration_seconds <= 0:
         raise ValueError("duration must be positive and finite")
     requested = math.ceil(duration_seconds * fps)
     k = max(0, math.ceil((requested - 5) / 17))
     return 17 * k + 5
+
+
+legal_frame_count = frames_for_duration
 
 
 def validate_director_segments(
@@ -184,14 +186,15 @@ def compile_h3_timeline(
     start = 0
     entries: list[H3TimelineEntry] = []
     for segment in normalized:
-        frames = legal_frame_count(segment.duration_seconds)
-        entries.append(H3TimelineEntry(segment, start, frames))
+        frames = frames_for_duration(segment.duration_seconds, H3_FPS)
+        entries.append(
+            H3TimelineEntry(segment=segment, start_frame=start, frame_count=frames)
+        )
         start += frames
-    return H3Timeline(tuple(entries), H3_FPS, start)
+    return H3CompiledTimeline(entries=tuple(entries), fps=H3_FPS, total_frames=start)
 
 
 # Public names from the director-output contract.
-frames_for_duration = legal_frame_count
 build_h3_timeline_data = compile_h3_timeline
 
 
@@ -202,18 +205,7 @@ def save_h3_director_manifest(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.parent / f".{target.name}.{uuid4().hex}.tmp"
-    payload = asdict(manifest)
-    payload["actual_duration_seconds"] = manifest.actual_duration_seconds
-    for serialized, entry in zip(payload["entries"], manifest.entries, strict=True):
-        serialized.update(
-            start_seconds=entry.start_seconds,
-            end_seconds=entry.end_seconds,
-            actual_duration_seconds=entry.actual_duration_seconds,
-            dialogue_start_seconds=entry.dialogue_start_seconds,
-            dialogue_end_seconds=entry.dialogue_end_seconds,
-            speaker=entry.speaker,
-            dialogue_source=entry.dialogue_source.value,
-        )
+    payload = manifest.model_dump(mode="json")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         os.replace(temp, target)
@@ -222,35 +214,8 @@ def save_h3_director_manifest(
 
 
 def load_h3_director_manifest(path: Path | str) -> H3DirectorManifest:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    entries = []
-    for item in payload["entries"]:
-        segment = H3DirectorSegment(**item["segment"])
-        entries.append(
-            H3TimelineEntry(
-                segment=segment,
-                start_frame=int(item["start_frame"]),
-                frame_count=int(item["frame_count"]),
-                physical_video=item.get("physical_video"),
-                format_version=int(item.get("format_version", 1)),
-                workflow_id=item.get("workflow_id"),
-                provider_task_id=item.get("provider_task_id"),
-            )
-        )
-    return H3DirectorOutputManifest(
-        physical_video=payload["physical_video"],
-        entries=tuple(entries),
-        fps=int(payload["fps"]),
-        total_frames=int(payload["total_frames"]),
-        format_version=int(payload.get("format_version", 1)),
-        workflow_id=payload.get("workflow_id"),
-        provider_task_id=payload.get("provider_task_id"),
-        original_audio_path=payload.get("original_audio_path"),
-        original_audio_status=payload.get("original_audio_status", "not_requested"),
-        dialogue_stem_path=payload.get("dialogue_stem_path"),
-        dialogue_stem_status=payload.get("dialogue_stem_status", "not_requested"),
-        ambience_stem_path=payload.get("ambience_stem_path"),
-        ambience_stem_status=payload.get("ambience_stem_status", "not_requested"),
+    return H3DirectorOutputManifest.model_validate_json(
+        Path(path).read_text(encoding="utf-8")
     )
 
 

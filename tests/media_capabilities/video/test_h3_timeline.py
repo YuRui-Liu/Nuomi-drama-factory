@@ -2,12 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from novelvideo.media_capabilities.video.h3_timeline import (
     DialogueSource,
     H3CompiledTimeline,
     H3DirectorOutputManifest,
     H3DirectorSegment,
+    H3TimelineEntry,
     build_h3_timeline_data,
     frames_for_duration,
     load_h3_director_manifest,
@@ -34,6 +36,7 @@ def _segment(segment_id: str, beat: int, duration: float, **overrides) -> H3Dire
 
 
 def test_h3_legal_frame_count_uses_24fps_17k_plus_5_ceiling() -> None:
+    assert frames_for_duration(5, 24) == 124
     assert frames_for_duration(5) == 124
     assert frames_for_duration(1) == 39
     assert frames_for_duration(124 / 24) == 124
@@ -64,6 +67,43 @@ def test_compile_timeline_has_stable_cumulative_offsets() -> None:
 def test_empty_timeline_is_rejected() -> None:
     with pytest.raises(ValueError, match="segment"):
         build_h3_timeline_data([])
+
+
+def test_models_are_frozen_and_forbid_extra_fields() -> None:
+    segment = _segment("s1", 1, 1)
+    with pytest.raises(ValidationError):
+        H3DirectorSegment(**segment.model_dump(), unexpected=True)
+    with pytest.raises(ValidationError):
+        segment.prompt = "changed"
+
+
+@pytest.mark.parametrize(
+    "entries,total_frames",
+    [
+        ((H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=1, frame_count=39),), 40),
+        (
+            (
+                H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=39),
+                H3TimelineEntry(segment=_segment("s2", 2, 1), start_frame=40, frame_count=39),
+            ),
+            79,
+        ),
+    ],
+)
+def test_compiled_timeline_rejects_invalid_boundaries(entries, total_frames) -> None:
+    with pytest.raises(ValidationError):
+        H3CompiledTimeline(entries=entries, fps=24, total_frames=total_frames)
+
+
+def test_compiled_timeline_rejects_non_positive_fps() -> None:
+    entry = H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=39)
+    with pytest.raises(ValidationError):
+        H3CompiledTimeline(entries=(entry,), fps=0, total_frames=39)
+
+
+def test_timeline_entry_rejects_non_positive_frame_count() -> None:
+    with pytest.raises(ValidationError):
+        H3TimelineEntry(segment=_segment("s1", 1, 1), start_frame=0, frame_count=0)
 
 
 def test_low_level_timeline_allows_tail_only_but_strict_product_validation_rejects_it() -> None:
@@ -117,6 +157,20 @@ def test_manifest_round_trip_maps_one_physical_video_to_multiple_entries(tmp_pat
     assert all(entry.format_version == 1 for entry in restored.entries)
     assert restored.entries[0].dialogue_source is DialogueSource.EXTERNAL_TTS
     assert not list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
+def test_load_rejects_manifest_with_a_timeline_gap(tmp_path: Path) -> None:
+    target = tmp_path / "bad.json"
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1), _segment("s2", 2, 1)])
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4", entries=timeline.entries, total_frames=78
+    )
+    payload = manifest.model_dump(mode="json")
+    payload["entries"][1]["start_frame"] = 40
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_h3_director_manifest(target)
 
 
 def test_director_paths_are_group_and_revision_scoped_and_safe(tmp_path: Path) -> None:
