@@ -86,6 +86,13 @@ describe("GroupReferenceDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("已选择 3 张，超过最多 2 张限制");
   });
 
+  it("offers retry when preview loading fails", () => {
+    const onRetry = vi.fn();
+    renderDialog({ preview: null, error: new Error("预览失败"), onRetry });
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it("restores backend defaults after closing and reopening", () => {
     const { rerender, props } = renderDialog();
     fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));

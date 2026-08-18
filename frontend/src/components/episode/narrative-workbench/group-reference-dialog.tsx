@@ -26,6 +26,7 @@ export interface GroupReferenceDialogProps {
   submitting?: boolean;
   onSubmit: (selection: NarrativeGroupGenerationSelection) => void;
   onOpenChange: (open: boolean) => void;
+  onRetry?: () => void;
 }
 
 function defaultSelection(preview?: NarrativeGroupReferencePreview | null) {
@@ -112,6 +113,7 @@ export function GroupReferenceDialog({
   submitting = false,
   onSubmit,
   onOpenChange,
+  onRetry,
 }: GroupReferenceDialogProps) {
   const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview));
 
@@ -133,8 +135,9 @@ export function GroupReferenceDialog({
       {loading ? <div role="status" className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
         <Loader2 className="size-4 animate-spin" />正在加载引用预览
       </div> : null}
-      {errorMessage ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-destructive">
-        {errorMessage}
+      {errorMessage ? <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+        <span>{errorMessage}</span>
+        {onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}
       </div> : null}
 
       {!loading && preview ? <div className="space-y-3">
