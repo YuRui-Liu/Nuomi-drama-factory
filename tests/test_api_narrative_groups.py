@@ -14,8 +14,14 @@ from novelvideo.narrative_groups.service import advance_revision, record_stage_r
 
 
 class FakeStore:
+    def __init__(self, beat_count=6):
+        self.beat_count = beat_count
+
     async def get_beats_as_dicts(self, episode):
-        return [{"id": f"beat-{index}", "beat_number": index} for index in range(1, 7)]
+        return [
+            {"id": f"beat-{index}", "beat_number": index}
+            for index in range(1, self.beat_count + 1)
+        ]
 
 
 class FakeBackend:
@@ -31,7 +37,7 @@ class FakeBackend:
         )
 
 
-def make_client(monkeypatch, tmp_path: Path):
+def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
     ctx = SimpleNamespace(project_id="demo", output_dir=str(tmp_path))
     resolved = SimpleNamespace(ctx=ctx, project_dir=tmp_path, output_dir=str(tmp_path))
 
@@ -39,7 +45,7 @@ def make_client(monkeypatch, tmp_path: Path):
         return resolved
 
     async def store(*args, **kwargs):
-        return FakeStore()
+        return FakeStore(beat_count)
 
     backend = FakeBackend()
     monkeypatch.setattr(narrative_groups, "resolve_project_scope", resolve)
@@ -192,13 +198,13 @@ def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
 
 
 def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch, tmp_path):
-    client, _ = make_client(monkeypatch, tmp_path)
+    client, _ = make_client(monkeypatch, tmp_path, beat_count=10)
     preview = make_reference_preview(tmp_path)
     calls = []
     install_reference_resolver(monkeypatch, preview, calls)
 
     response = client.get(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-02/render/references"
     )
 
     assert response.status_code == 200
@@ -214,7 +220,7 @@ def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch,
         "/api/v1/projects/demo/media/assets/scenes/room.png"
     )
     assert "path" not in str(data).lower()
-    assert [beat["id"] for beat in calls[0][1]] == [f"beat-{index}" for index in range(1, 7)]
+    assert [beat["id"] for beat in calls[0][1]] == ["beat-10"]
     assert calls[0][2] == "render"
     assert data["limits"] == {
         "max_images": 9, "selected_images": 2, "omitted_reference_ids": [],
@@ -286,6 +292,8 @@ def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp
 
     assert response.status_code == 422
     assert backend.calls == []
+    groups = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"]
+    assert groups[0]["stages"]["render"]["revision"] == 0
 
 
 def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_path):
@@ -321,3 +329,30 @@ def test_split_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_
 
     assert response.status_code == 202
     assert "reference_selection" not in backend.calls[0][1]["payload"]
+
+
+def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), [])
+
+    sketch = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch-grid/generate"
+    )
+    render = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render-grid/generate"
+    )
+
+    assert sketch.status_code == render.status_code == 202
+    assert [call[1]["payload"]["stage"] for call in backend.calls] == ["sketch", "render"]
+    assert all("reference_selection" in call[1]["payload"] for call in backend.calls)
+
+
+def test_unknown_revision_rollback_returns_404(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/revisions/999/rollback"
+    )
+
+    assert response.status_code == 404
