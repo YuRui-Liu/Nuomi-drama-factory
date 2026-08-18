@@ -231,6 +231,34 @@ def test_more_than_nine_prioritizes_characters_and_exposes_omitted(tmp_path, mon
     assert any("9" in warning for warning in selection.warnings)
 
 
+def test_missing_high_priority_reference_does_not_consume_image_limit(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+    beats = []
+    character_paths = []
+    for index in range(7):
+        name = f"角色{index}"
+        character_paths.append(Path(_identity(project_dir, name, f"{name}_默认")))
+        beats.append({"beat_number": index + 1, "detected_identities": [f"{name}_默认"]})
+    for index in range(5):
+        scene_id = f"场景{index}"
+        _scene(project_dir, scene_id)
+        beats.append({"beat_number": index + 20, "scene_id": scene_id})
+    preview = resolve_group_reference_preview(project_dir, beats)
+    character_paths[0].unlink()
+
+    selection = apply_group_reference_selection(preview)
+
+    assert len(selection.selected) == MAX_GROUP_IMAGE_REFERENCES
+    assert len(selection.image_paths) == MAX_GROUP_IMAGE_REFERENCES
+    assert any(ref.kind == "scene" for ref in selection.selected)
+    assert all(Path(ref.path).is_file() for ref in selection.selected)
+    assert len(selection.omitted) == 2
+    assert all(Path(ref.path).is_file() for ref in selection.omitted)
+
+
 def test_deleted_asset_is_not_returned_as_stale_path(tmp_path, monkeypatch):
     project_dir = _project(tmp_path)
     path = Path(_identity(project_dir, "甲", "甲_默认"))
@@ -246,6 +274,34 @@ def test_deleted_asset_is_not_returned_as_stale_path(tmp_path, monkeypatch):
 
     assert selection.image_paths == ()
     assert any("不存在" in warning for warning in selection.warnings)
+
+
+def test_traversal_ids_cannot_reference_files_outside_project_assets(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    escaped_identity = _asset(
+        project_dir.parent / "escaped" / "identities" / "默认.png"
+    )
+    escaped_scene = _asset(project_dir.parent / "escaped-scene" / "master.png")
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+    beats = [
+        {
+            "beat_number": 1,
+            "detected_identities": ["../../../escaped_默认"],
+            "scene_id": "../../../escaped-scene",
+        }
+    ]
+
+    preview = resolve_group_reference_preview(project_dir, beats)
+    selection = apply_group_reference_selection(preview)
+
+    assert len(preview.image_references) == 2
+    assert all(not ref.path for ref in preview.image_references)
+    assert all(ref.warning for ref in preview.image_references)
+    assert escaped_identity not in selection.image_paths
+    assert escaped_scene not in selection.image_paths
+    assert selection.image_paths == ()
 
 
 def test_stable_ids_are_opaque_and_do_not_encode_project_path(tmp_path, monkeypatch):

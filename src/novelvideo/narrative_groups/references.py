@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
@@ -54,6 +54,7 @@ class GroupReferencePreview:
     style: GroupStyleReference
     image_references: tuple[GroupImageReference, ...]
     warnings: tuple[str, ...] = ()
+    asset_root: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,19 @@ class UnknownGroupReferenceIds(ValueError):
 def _opaque_id(kind: str, logical_identity: str) -> str:
     canonical = f"{kind}\0{logical_identity.strip()}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _safe_existing_asset_path(asset_root: Path, candidate: str) -> str:
+    """Return a resolved existing file only when it stays below ``asset_root``."""
+    if not candidate:
+        return ""
+    root = asset_root.resolve(strict=False)
+    path = Path(candidate).resolve(strict=False)
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return ""
+    return str(path) if path.is_file() else ""
 
 
 def _style_reference(project_dir: Path) -> GroupStyleReference:
@@ -142,6 +156,7 @@ def resolve_group_reference_preview(
     """Resolve references mentioned by the supplied group beats only."""
     del stage  # Reserved for stage-specific reference policy.
     project_dir = Path(project_dir)
+    asset_root = project_dir / "assets"
     coverage: dict[tuple[str, str], set[int]] = {}
     character_names: dict[str, str] = {}
 
@@ -162,14 +177,20 @@ def resolve_group_reference_preview(
         numbers = tuple(sorted(numbers_set))
         if kind == "character":
             character_name = character_names[logical_id]
-            identity_path = compute_identity_path(project_dir, character_name, logical_id)
+            identity_path = _safe_existing_asset_path(
+                asset_root,
+                compute_identity_path(project_dir, character_name, logical_id),
+            )
             if identity_path:
                 source_kind: ReferenceSourceKind = "identity"
                 path = identity_path
                 warning = ""
             else:
                 source_kind = "portrait_fallback"
-                path = compute_portrait_path(project_dir, character_name)
+                path = _safe_existing_asset_path(
+                    asset_root,
+                    compute_portrait_path(project_dir, character_name),
+                )
                 warning = (
                     f"角色 {character_name} 的身份图 {logical_id} 缺失，已回退默认肖像。"
                     if path
@@ -190,7 +211,10 @@ def resolve_group_reference_preview(
                 )
             )
         else:
-            path = compute_scene_master_path(project_dir, logical_id)
+            path = _safe_existing_asset_path(
+                asset_root,
+                compute_scene_master_path(project_dir, logical_id),
+            )
             warning = "" if path else f"场景 {logical_id} 的主图缺失。"
             references.append(
                 GroupImageReference(
@@ -213,7 +237,12 @@ def resolve_group_reference_preview(
         for warning in (style.warning, *(reference.warning for reference in references))
         if warning
     )
-    return GroupReferencePreview(style=style, image_references=tuple(references), warnings=warnings)
+    return GroupReferencePreview(
+        style=style,
+        image_references=tuple(references),
+        warnings=warnings,
+        asset_root=str(asset_root.resolve(strict=False)),
+    )
 
 
 def apply_group_reference_selection(
@@ -246,19 +275,25 @@ def apply_group_reference_selection(
         for ref in preview.image_references
         if ref.id in (character_ids if ref.kind == "character" else scene_ids)
     ]
-    requested.sort(key=_reference_sort_key)
-    selected = tuple(requested[:MAX_GROUP_IMAGE_REFERENCES])
-    omitted = tuple(requested[MAX_GROUP_IMAGE_REFERENCES:])
-
     warnings = list(preview.warnings)
-    valid_paths: list[str] = []
-    for ref in selected:
-        if ref.path and Path(ref.path).is_file():
-            valid_paths.append(ref.path)
+    eligible: list[GroupImageReference] = []
+    asset_root = Path(preview.asset_root) if preview.asset_root else None
+    for ref in requested:
+        safe_path = (
+            _safe_existing_asset_path(asset_root, ref.path)
+            if asset_root is not None
+            else (ref.path if ref.path and Path(ref.path).is_file() else "")
+        )
+        if safe_path:
+            eligible.append(replace(ref, path=safe_path))
         else:
             warning = f"参考图 {ref.label} 不存在，已从生成输入中移除。"
             if warning not in warnings:
                 warnings.append(warning)
+    eligible.sort(key=_reference_sort_key)
+    selected = tuple(eligible[:MAX_GROUP_IMAGE_REFERENCES])
+    omitted = tuple(eligible[MAX_GROUP_IMAGE_REFERENCES:])
+    valid_paths = [ref.path for ref in selected]
     if omitted:
         warnings.append(
             f"参考图最多 {MAX_GROUP_IMAGE_REFERENCES} 张，已省略 {len(omitted)} 张。"
