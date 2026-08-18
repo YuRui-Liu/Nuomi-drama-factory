@@ -556,6 +556,35 @@ class PathResolver:
         """视频路径。"""
         return self.output_dir / "videos" / "beats" / self._ep_str / f"beat_{beat_num:02d}.mp4"
 
+    def _director_revision_dir(self, group: str, revision: int) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", str(group)):
+            raise ValueError("director group must be a safe non-empty identifier")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("director revision must be a positive integer")
+        return (
+            self.output_dir
+            / "videos"
+            / "director"
+            / self._ep_str
+            / str(group)
+            / f"r{revision:03d}"
+        )
+
+    def director_video(self, group: str, revision: int) -> Path:
+        return self._director_revision_dir(group, revision) / "director.mp4"
+
+    def director_manifest(self, group: str, revision: int) -> Path:
+        return self._director_revision_dir(group, revision) / "manifest.json"
+
+    def director_original_audio(self, group: str, revision: int) -> Path:
+        return self._director_revision_dir(group, revision) / "original_audio.wav"
+
+    def director_dialogue_stem(self, group: str, revision: int) -> Path:
+        return self._director_revision_dir(group, revision) / "dialogue.wav"
+
+    def director_ambience_stem(self, group: str, revision: int) -> Path:
+        return self._director_revision_dir(group, revision) / "ambience.wav"
+
     # === 视频提示词 ===
 
     def video_prompt(self, beat_num: int) -> Path:
