@@ -128,6 +128,43 @@ def test_references_are_deduplicated_with_beat_coverage_and_stable_order(tmp_pat
     assert [r.id for r in first.image_references] == [r.id for r in second.image_references]
 
 
+def test_sorting_prioritizes_source_then_coverage_then_first_appearance(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    _identity(project_dir, "身份少", "身份少_默认")
+    _identity(project_dir, "身份晚", "身份晚_默认")
+    _identity(project_dir, "身份早", "身份早_默认")
+    _portrait(project_dir, "肖像多")
+    _portrait(project_dir, "肖像少")
+    _scene(project_dir, "场景多")
+    _scene(project_dir, "场景少")
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+    beats = [
+        {"beat_number": 1, "detected_identities": ["身份早_默认"]},
+        {"beat_number": 2, "detected_identities": ["身份少_默认"]},
+        {"beat_number": 3, "detected_identities": ["身份晚_默认"]},
+        {"beat_number": 4, "detected_identities": ["身份早_默认", "身份晚_默认"]},
+        {"beat_number": 5, "detected_identities": ["肖像多_造型", "肖像少_造型"]},
+        {"beat_number": 6, "detected_identities": ["肖像多_造型"]},
+        {"beat_number": 7, "scene_id": "场景少"},
+        {"beat_number": 8, "scene_id": "场景多"},
+        {"beat_number": 9, "scene_id": "场景多"},
+    ]
+
+    refs = resolve_group_reference_preview(project_dir, beats).image_references
+
+    assert [(ref.source_kind, ref.character_name or ref.scene_id) for ref in refs] == [
+        ("identity", "身份早"),
+        ("identity", "身份晚"),
+        ("identity", "身份少"),
+        ("portrait_fallback", "肖像多"),
+        ("portrait_fallback", "肖像少"),
+        ("scene_master", "场景多"),
+        ("scene_master", "场景少"),
+    ]
+
+
 def test_selection_none_means_all_and_empty_list_means_none(tmp_path, monkeypatch):
     project_dir = _project(tmp_path)
     char_path = _identity(project_dir, "甲", "甲_默认")
@@ -227,6 +264,25 @@ def test_stable_ids_are_opaque_and_do_not_encode_project_path(tmp_path, monkeypa
     assert str(project_dir) not in ref.id
 
 
+def test_stable_ids_do_not_change_across_project_dirs_or_asset_availability(tmp_path, monkeypatch):
+    first_project = tmp_path / "alice" / "first"
+    second_project = tmp_path / "bob" / "second"
+    first_project.mkdir(parents=True)
+    second_project.mkdir(parents=True)
+    first_path = Path(_identity(first_project, "甲", "甲_默认"))
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+    beats = [{"beat_number": 1, "detected_identities": ["甲_默认"]}]
+
+    with_asset = resolve_group_reference_preview(first_project, beats).image_references[0]
+    without_asset_elsewhere = resolve_group_reference_preview(second_project, beats).image_references[0]
+    first_path.unlink()
+    after_deletion = resolve_group_reference_preview(first_project, beats).image_references[0]
+
+    assert with_asset.id == without_asset_elsewhere.id == after_deletion.id
+
+
 def test_invalid_style_falls_back_to_project_default_with_warning(tmp_path, monkeypatch):
     project_dir = _project(tmp_path)
     monkeypatch.setattr(
@@ -239,3 +295,18 @@ def test_invalid_style_falls_back_to_project_default_with_warning(tmp_path, monk
     assert preview.style.name != "does-not-exist"
     assert preview.style.warning
     assert preview.warnings
+
+
+def test_blank_visual_style_is_invalid_and_warns_when_falling_back(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file",
+        lambda *args: {"visual_style": "   "},
+    )
+
+    preview = resolve_group_reference_preview(project_dir, [])
+
+    assert preview.style.name == "chinese_period_drama"
+    assert preview.style.id
+    assert preview.style.warning
+    assert preview.style.warning in preview.warnings

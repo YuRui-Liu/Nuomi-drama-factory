@@ -78,8 +78,12 @@ def _opaque_id(kind: str, logical_identity: str) -> str:
 
 def _style_reference(project_dir: Path) -> GroupStyleReference:
     config = load_project_config_file(project_dir.parent.name, project_dir.name)
-    requested = str(config.get("visual_style") or IMAGE_DEFAULT_STYLE).strip()
+    configured = config.get("visual_style")
+    requested = str(configured if configured is not None else IMAGE_DEFAULT_STYLE).strip()
     warning = ""
+    if not requested:
+        requested = IMAGE_DEFAULT_STYLE
+        warning = f"项目视觉风格为空，已回退到项目默认风格 {requested!r}。"
     try:
         preset = get_style_preset(requested, project_dir=str(project_dir))
         resolved_name = requested
