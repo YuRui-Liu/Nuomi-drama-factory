@@ -5,6 +5,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import narrative_groups
+from novelvideo.narrative_groups.references import (
+    GroupImageReference,
+    GroupReferencePreview,
+    GroupStyleReference,
+)
 from novelvideo.narrative_groups.service import advance_revision, record_stage_result
 
 
@@ -47,6 +52,40 @@ def make_client(monkeypatch, tmp_path: Path):
         "username": "tester",
     }
     return TestClient(app), backend
+
+
+def make_reference_preview(tmp_path: Path):
+    character = tmp_path / "assets" / "characters" / "hero.png"
+    scene = tmp_path / "assets" / "scenes" / "room.png"
+    character.parent.mkdir(parents=True)
+    scene.parent.mkdir(parents=True)
+    character.write_bytes(b"character")
+    scene.write_bytes(b"scene")
+    return GroupReferencePreview(
+        style=GroupStyleReference(id="style-opaque", name="cinematic", prompt="moody"),
+        image_references=(
+            GroupImageReference(
+                id="char-opaque", kind="character", source_kind="identity",
+                label="Hero", path=str(character), beat_numbers=(1,), first_appearance=1,
+                character_name="Hero", identity_id="hero_casual",
+            ),
+            GroupImageReference(
+                id="scene-opaque", kind="scene", source_kind="scene_master",
+                label="Room", path=str(scene), beat_numbers=(2,), first_appearance=2,
+                scene_id="scene_room",
+            ),
+        ),
+        warnings=("preview warning",),
+        asset_root=str(tmp_path / "assets"),
+    )
+
+
+def install_reference_resolver(monkeypatch, preview, calls):
+    def resolve(project_dir, beats, stage="render"):
+        calls.append((project_dir, beats, stage))
+        return preview
+
+    monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", resolve)
 
 
 def test_get_migrates_old_episode_to_stable_groups(monkeypatch, tmp_path):
@@ -150,3 +189,135 @@ def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
     assert history["current_revision"] == 2
     rolled = client.post(history_url + "/1/rollback").json()["data"]
     assert rolled["stages"]["render"]["revision"] == 3
+
+
+def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    preview = make_reference_preview(tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, preview, calls)
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["style"] == {
+        "id": "style-opaque", "label": "cinematic", "prompt": "moody",
+        "enabled_by_default": True, "warning": "",
+    }
+    assert data["character_references"][0]["thumbnail_url"] == (
+        "/api/v1/projects/demo/media/assets/characters/hero.png"
+    )
+    assert data["scene_references"][0]["thumbnail_url"] == (
+        "/api/v1/projects/demo/media/assets/scenes/room.png"
+    )
+    assert "path" not in str(data).lower()
+    assert [beat["id"] for beat in calls[0][1]] == [f"beat-{index}" for index in range(1, 7)]
+    assert calls[0][2] == "render"
+    assert data["limits"] == {
+        "max_images": 9, "selected_images": 2, "omitted_reference_ids": [],
+    }
+
+
+def test_reference_preview_unknown_group_returns_404_without_resolving(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/missing/sketch/references"
+    )
+
+    assert response.status_code == 404
+    assert calls == []
+
+
+def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={
+            "use_style": False,
+            "selected_character_reference_ids": ["char-opaque"],
+            "selected_scene_reference_ids": [],
+        },
+    )
+
+    assert response.status_code == 202
+    assert backend.calls[0][1]["payload"]["reference_selection"] == {
+        "use_style": False,
+        "selected_character_reference_ids": ["char-opaque"],
+        "selected_scene_reference_ids": [],
+    }
+    assert len(calls) == 1
+
+
+def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate"
+    )
+
+    assert response.status_code == 202
+    assert backend.calls[0][1]["payload"]["reference_selection"] == {
+        "use_style": True,
+        "selected_character_reference_ids": None,
+        "selected_scene_reference_ids": None,
+    }
+
+
+def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={"selected_character_reference_ids": ["foreign-id"]},
+    )
+
+    assert response.status_code == 422
+    assert backend.calls == []
+
+
+def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    calls = []
+    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
+
+    valid = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
+        json={"selected_scene_reference_ids": ["scene-opaque"]},
+    )
+    invalid = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
+        json={"selected_scene_reference_ids": ["foreign-id"]},
+    )
+
+    assert valid.status_code == 202
+    assert backend.calls[0][1]["payload"]["reference_selection"]["selected_scene_reference_ids"] == ["scene-opaque"]
+    assert invalid.status_code == 422
+    assert len(backend.calls) == 1
+
+
+def test_split_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+
+    def fail_resolver(*args, **kwargs):
+        raise AssertionError("split must not resolve references")
+
+    monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", fail_resolver)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/split"
+    )
+
+    assert response.status_code == 202
+    assert "reference_selection" not in backend.calls[0][1]["payload"]
