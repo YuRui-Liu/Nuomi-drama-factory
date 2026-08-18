@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,6 +14,11 @@ from novelvideo.narrative_groups.service import (
     retry_split,
     run_group_grid,
     stage_payload,
+)
+from novelvideo.narrative_groups.references import (
+    GroupImageReference,
+    apply_group_reference_selection,
+    resolve_group_reference_preview,
 )
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -32,11 +38,35 @@ def _beat_number(beat: Mapping[str, Any], fallback: int) -> int:
     return fallback
 
 
-def _grid_prompt(payload: Mapping[str, Any]) -> str:
+@dataclass(frozen=True)
+class GroupGenerationInput:
+    prompt: str
+    references: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+
+def _reference_mapping(references: tuple[GroupImageReference, ...]) -> str:
+    lines = []
+    for index, ref in enumerate(references, start=1):
+        beats = ", ".join(str(number) for number in ref.beat_numbers)
+        if ref.kind == "character":
+            subject = f"character {ref.character_name}, identity {ref.identity_id}"
+        else:
+            subject = f"scene {ref.scene_id}"
+        lines.append(f"Reference {index}: {subject}; use for panels {beats}.")
+    return "\n".join(lines)
+
+
+def _grid_prompt(
+    payload: Mapping[str, Any],
+    *,
+    style_prompt: str = "",
+    selected_references: tuple[GroupImageReference, ...] = (),
+) -> str:
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
     stage = str(payload.get("stage") or "render")
-    visual = "black-and-white storyboard sketch" if stage == "sketch" else "finished cinematic frame"
+    visual = "black-and-white storyboard sketch" if stage == "sketch" else "final image"
     panels = []
     for index, beat in enumerate(beats, start=1):
         description = (
@@ -49,11 +79,39 @@ def _grid_prompt(payload: Mapping[str, Any]) -> str:
             or "continue the scene"
         )
         panels.append(f"Panel {index}: {description}")
-    return (
+    grid_rules = (
         f"Create one clean {layout.get('rows', 1)}x{layout.get('columns', 1)} storyboard grid. "
         f"Each cell is a separate {visual}; preserve character, location, lighting and time continuity. "
         "Use equal cells in reading order, no borders, captions, labels, text, collage overlap, or extra panels.\n"
-        + "\n".join(panels)
+    )
+    parts = [part for part in (style_prompt, grid_rules, "\n".join(panels)) if part]
+    mapping = _reference_mapping(selected_references)
+    if mapping:
+        parts.append(mapping)
+    return "\n".join(parts)
+
+
+def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
+    preview = resolve_group_reference_preview(
+        Path(str(payload["project_dir"])),
+        list(payload.get("beats") or []),
+        stage=str(payload.get("stage") or "render"),
+    )
+    options = payload.get("reference_selection") or {}
+    selection = apply_group_reference_selection(
+        preview,
+        use_style=bool(options.get("use_style", True)),
+        selected_character_reference_ids=options.get("selected_character_reference_ids"),
+        selected_scene_reference_ids=options.get("selected_scene_reference_ids"),
+    )
+    return GroupGenerationInput(
+        prompt=_grid_prompt(
+            payload,
+            style_prompt=selection.style_prompt,
+            selected_references=selection.selected,
+        ),
+        references=selection.image_paths,
+        warnings=selection.warnings,
     )
 
 
@@ -66,10 +124,12 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
     runtime = load_grsai_runtime_configuration(
         get_media_capability_store(), get_media_credential_resolver()
     )
+    generation_input = _generation_input(payload)
     request = ImageGenerationRequest(
         capability=MediaCapability.IMAGE_STORYBOARD_GRID,
-        prompt=_grid_prompt(payload),
+        prompt=generation_input.prompt,
         model=runtime.model,
+        references=list(generation_input.references),
         aspect_ratio="1:1",
         image_size="2K",
     )
@@ -107,6 +167,8 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             "actual_model": runtime.model,
             "actual_mode": str(payload.get("stage") or "render"),
             "provider_task_id": task_id,
+            "reference_count": len(generation_input.references),
+            "reference_warnings": list(generation_input.warnings),
         }
     finally:
         await client.http.aclose()
@@ -182,11 +244,21 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                 payload, splitter=lambda grid, data: _split_existing_grid(grid, data, ctx)
             )
         else:
+            generation_metadata: dict[str, Any] = {}
+
+            async def generate(data: Mapping[str, Any]) -> dict[str, Any]:
+                generated = await _generate_grid(data, ctx)
+                for field in ("reference_count", "reference_warnings"):
+                    if field in generated:
+                        generation_metadata[field] = generated[field]
+                return generated
+
             result = await run_group_grid(
                 payload,
-                generator=lambda data: _generate_grid(data, ctx),
+                generator=generate,
                 splitter=lambda grid, data: _split_existing_grid(grid, data, ctx),
             )
+            result.update(generation_metadata)
         error = "; ".join(str(item.get("message") or item) for item in result.get("errors") or [])
         record_stage_result(
             project_dir,
