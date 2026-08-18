@@ -88,9 +88,21 @@ describe("GroupReferenceDialog", () => {
 
   it("offers retry when preview loading fails", () => {
     const onRetry = vi.fn();
-    renderDialog({ preview: null, error: new Error("预览失败"), onRetry });
+    const { onSubmit } = renderDialog({ preview: null, error: new Error("预览失败"), onRetry });
+    const submit = screen.getByRole("button", { name: "使用 0 张参考图生成" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("does not submit while the preview is loading", () => {
+    const { onSubmit } = renderDialog({ preview: null, loading: true });
+    const submit = screen.getByRole("button", { name: "使用 0 张参考图生成" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("restores backend defaults after closing and reopening", () => {
