@@ -41,6 +41,15 @@ class H3DirectorSegment(BaseModel):
     def trim_required_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("first_frame", "last_frame", mode="before")
+    @classmethod
+    def trim_optional_frame(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("frame path must not be blank")
+        return value
+
 class H3TimelineEntry(BaseModel):
     model_config = _MODEL_CONFIG
     segment: H3DirectorSegment
@@ -230,8 +239,10 @@ def save_h3_director_manifest(
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.parent / f".{target.name}.{uuid4().hex}.tmp"
     payload = manifest.model_dump(mode="json")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
+        temp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         os.replace(temp, target)
     finally:
         temp.unlink(missing_ok=True)

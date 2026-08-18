@@ -157,6 +157,15 @@ def test_low_level_timeline_allows_tail_only_but_strict_product_validation_rejec
         validate_director_segments([tail_only], strict_first_frame=True)
 
 
+def test_frame_paths_are_trimmed_and_blank_values_rejected() -> None:
+    segment = _segment("trimmed", 1, 1, first_frame=" first.png ", last_frame=" last.png ")
+    assert (segment.first_frame, segment.last_frame) == ("first.png", "last.png")
+    with pytest.raises(ValidationError):
+        _segment("blank-first", 1, 1, first_frame=" ")
+    with pytest.raises(ValidationError):
+        _segment("blank-tail", 1, 1, first_frame=None, last_frame=" ")
+
+
 def test_manifest_round_trip_maps_one_physical_video_to_multiple_entries(tmp_path: Path) -> None:
     timeline = build_h3_timeline_data([_segment("s1", 1, 5), _segment("s2", 2, 1)])
     manifest = H3DirectorOutputManifest(
@@ -214,6 +223,24 @@ def test_load_rejects_manifest_with_a_timeline_gap(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         load_h3_director_manifest(target)
+
+
+def test_manifest_write_failure_cleans_temporary_file(tmp_path: Path, monkeypatch) -> None:
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1)])
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4", entries=timeline.entries
+    )
+    target = tmp_path / "nested" / "manifest.json"
+
+    def fail_write_text(self, *args, **kwargs):
+        self.touch()
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", fail_write_text)
+    with pytest.raises(OSError, match="disk full"):
+        save_director_manifest(target, manifest)
+
+    assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
 def test_director_paths_are_group_and_revision_scoped_and_safe(tmp_path: Path) -> None:
