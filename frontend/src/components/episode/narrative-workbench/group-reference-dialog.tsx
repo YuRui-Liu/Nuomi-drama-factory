@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { AlertTriangle, ImageOff, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,6 +37,18 @@ function defaultSelection(preview?: NarrativeGroupReferencePreview | null) {
     selectedSceneReferenceIds: preview?.scene_references
       .filter((item) => item.enabled_by_default).map((item) => item.id) ?? [],
   } satisfies NarrativeGroupGenerationSelection;
+}
+
+function previewSelectionKey(preview?: NarrativeGroupReferencePreview | null) {
+  if (!preview) return "none";
+  const referenceDefaults = (references: NarrativeGroupImageReference[]) => references
+    .map(({ id, enabled_by_default }) => `${id}:${enabled_by_default}`)
+    .sort();
+  return JSON.stringify({
+    style: [preview.style.id, preview.style.enabled_by_default],
+    characters: referenceDefaults(preview.character_references),
+    scenes: referenceDefaults(preview.scene_references),
+  });
 }
 
 const sourceLabels: Record<NarrativeGroupImageReference["source_kind"], string> = {
@@ -116,10 +128,17 @@ export function GroupReferenceDialog({
   onRetry,
 }: GroupReferenceDialogProps) {
   const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview));
+  const wasOpen = useRef(false);
+  const previousPreviewKey = useRef<string | null>(null);
+  const previewKey = previewSelectionKey(preview);
 
   useEffect(() => {
-    setSelection(defaultSelection(preview));
-  }, [open, preview]);
+    const justOpened = open && !wasOpen.current;
+    const defaultsChanged = previewKey !== previousPreviewKey.current;
+    if (justOpened || defaultsChanged) setSelection(defaultSelection(preview));
+    wasOpen.current = open;
+    previousPreviewKey.current = previewKey;
+  }, [open, preview, previewKey]);
 
   const imageCount = selection.selectedCharacterReferenceIds.length
     + selection.selectedSceneReferenceIds.length;

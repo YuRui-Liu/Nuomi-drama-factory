@@ -154,4 +154,15 @@ describe("GroupReferenceDialog", () => {
       selectedSceneReferenceIds: ["scene-2"],
     });
   });
+
+  it("preserves local choices across equivalent preview refetches", () => {
+    const { rerender, props } = renderDialog();
+    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
+
+    rerender(<GroupReferenceDialog {...props} preview={structuredClone(preview)} />);
+
+    expect(screen.getByRole("checkbox", { name: "添加引用 苏清晏（少女）" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
+  });
 });
