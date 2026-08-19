@@ -117,9 +117,18 @@ export function narrativeGroupVideoPath(project: string, episode: number, groupI
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/generate`;
 }
 
+/** Exact backend task scope for one narrative-group stage revision. */
+export function narrativeGroupTaskScope(
+  groupId: string,
+  stage: NarrativeGridStage | "video",
+  revision: number,
+) {
+  return `group_${groupId}_${stage}_r${revision}`;
+}
+
 /** Exact backend task scope for one H3 director output revision. */
 export function narrativeGroupVideoTaskScope(groupId: string, revision: number) {
-  return `group_${groupId}_video_r${revision}`;
+  return narrativeGroupTaskScope(groupId, "video", revision);
 }
 
 /** Backend contract: updates the manifest then enqueues composition, never H3 generation. */

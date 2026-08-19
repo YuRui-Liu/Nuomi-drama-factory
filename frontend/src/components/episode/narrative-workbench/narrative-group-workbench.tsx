@@ -2,7 +2,7 @@
 import { Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { narrativeGroupVideoTaskScope, useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage } from "@/lib/queries/narrative-groups";
+import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage } from "@/lib/queries/narrative-groups";
 import { mergeVideoModelCatalog, useMediaDefaults, useUpdateMediaDefaults, useVideoModels } from "@/lib/queries/media-models";
 import { useVideoBackends } from "@/lib/queries/video";
 import { DEFAULT_VIDEO_MODEL, episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
@@ -21,6 +21,17 @@ function taskScope(response: unknown): string | undefined {
   const data = record.data;
   return data && typeof data === "object" && typeof (data as Record<string, unknown>).scope === "string"
     ? (data as Record<string, unknown>).scope as string : undefined;
+}
+
+function activeStageScope(
+  group: { id: string; stages: Record<NarrativeGridStage, { status: string; revision: number }> } | undefined,
+  fallback: NarrativeGridStage,
+): string | undefined {
+  if (!group) return undefined;
+  const stage = (["sketch", "render"] as const).find(
+    (name) => group.stages[name].status === "queued" || group.stages[name].status === "running",
+  ) ?? fallback;
+  return narrativeGroupTaskScope(group.id, stage, group.stages[stage].revision);
 }
 
 export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { project: string; episode: number; onRepairBeat: (beatId: string) => void }) {
@@ -49,16 +60,18 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     queryKeys.grids(project, episode),
     queryKeys.beats(project, episode),
   ];
+  const groupGridScope = activeStageScope(group, "sketch");
+  const groupSplitScope = activeStageScope(group, "render");
   const groupVideoScope = group
     ? narrativeGroupVideoTaskScope(group.id, group.stages.video.revision)
     : undefined;
   const gridTask = useTaskController({
-    key: { project, episode, taskType: "narrative_group_grid", scope: group?.id },
+    key: { project, episode, taskType: "narrative_group_grid", scope: groupGridScope },
     invalidateKeys,
     showCompleteToast: false,
   });
   const splitTask = useTaskController({
-    key: { project, episode, taskType: "narrative_group_split", scope: group?.id },
+    key: { project, episode, taskType: "narrative_group_split", scope: groupSplitScope },
     invalidateKeys,
     showCompleteToast: false,
   });

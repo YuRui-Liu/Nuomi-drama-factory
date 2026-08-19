@@ -22,6 +22,8 @@ from novelvideo.narrative_groups.service import (
     ensure_groups,
     rebuild_groups,
     rollback_stage_revision,
+    reserve_video_revision,
+    restore_video_reservation,
     stage_history,
     update_video_manifest_dialogue_source,
 )
@@ -267,15 +269,15 @@ async def _enqueue_group_video(
 ):
     resolved, _, _ = await _resolve_groups(project, episode, user)
     try:
-        group, revision = advance_revision(
-            resolved.project_dir, episode, group_id, "video",
-            regenerate=True,
+        group, reservation = reserve_video_revision(
+            resolved.project_dir, episode, group_id,
             expected_revision=request.revision,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
+    revision = reservation.revision
     scope = f"group_{group_id}_video_r{revision}"
     payload = {
         "episode": episode,
@@ -284,10 +286,14 @@ async def _enqueue_group_video(
         "model": request.model,
         "mode": request.mode,
     }
-    queued = await get_task_backend().enqueue_project_task(
-        resolved.ctx, task_type="narrative_group_video", queue_kind="default",
-        episode=episode, scope=scope, payload=payload,
-    )
+    try:
+        queued = await get_task_backend().enqueue_project_task(
+            resolved.ctx, task_type="narrative_group_video", queue_kind="default",
+            episode=episode, scope=scope, payload=payload,
+        )
+    except Exception as exc:
+        restore_video_reservation(resolved.project_dir, episode, reservation)
+        raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,

@@ -9,7 +9,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
@@ -256,6 +256,99 @@ def advance_revision(
             raise KeyError(group_id)
         save_groups(project_dir, episode, updated)
         return found, found.stages[stage].revision
+
+
+@dataclass(frozen=True)
+class VideoRevisionReservation:
+    """A queued video revision paired with the exact stage it replaced."""
+
+    group_id: str
+    revision: int
+    previous_stage: GroupStageState
+
+
+def reserve_video_revision(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    *,
+    expected_revision: int,
+) -> tuple[NarrativeGroup, VideoRevisionReservation]:
+    """Atomically reserve the next video revision while retaining rollback data.
+
+    The caller must invoke :func:`restore_video_reservation` if task enqueue
+    fails.  The compare-and-swap restore prevents an older failed request from
+    overwriting a later successful reservation.
+    """
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        found: NarrativeGroup | None = None
+        updated: list[NarrativeGroup] = []
+        reservation: VideoRevisionReservation | None = None
+        for group in groups:
+            if group.id != group_id:
+                updated.append(group)
+                continue
+            current = group.stages.get("video", GroupStageState())
+            if current.revision != int(expected_revision):
+                raise RuntimeError("narrative group video revision is stale")
+            revision = current.revision + 1
+            history = (*current.revision_history, _stage_snapshot(current)) if current.revision else current.revision_history
+            stages = dict(group.stages)
+            stages["video"] = replace(
+                current,
+                status="queued",
+                revision=revision,
+                grid_asset="",
+                cell_assets=(),
+                error="",
+                actual_provider="",
+                actual_model="",
+                actual_mode="",
+                created_at="",
+                revision_history=history,
+                video_asset="",
+                manifest_asset="",
+                original_audio_path="",
+                dialogue_stem_path="",
+                ambience_stem_path="",
+                dialogue_stem_status="not_requested",
+                ambience_stem_status="not_requested",
+            )
+            found = replace(group, stages=stages)
+            reservation = VideoRevisionReservation(group_id=group_id, revision=revision, previous_stage=current)
+            updated.append(found)
+        if found is None or reservation is None:
+            raise KeyError(group_id)
+        save_groups(project_dir, episode, updated)
+        return found, reservation
+
+
+def restore_video_reservation(
+    project_dir: str | Path,
+    episode: int,
+    reservation: VideoRevisionReservation,
+) -> bool:
+    """Restore a failed enqueue only if its reservation is still current."""
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        updated: list[NarrativeGroup] = []
+        restored = False
+        for group in groups:
+            if group.id != reservation.group_id:
+                updated.append(group)
+                continue
+            current = group.stages.get("video", GroupStageState())
+            if current.revision == reservation.revision and current.status == "queued":
+                stages = dict(group.stages)
+                stages["video"] = reservation.previous_stage
+                updated.append(replace(group, stages=stages))
+                restored = True
+            else:
+                updated.append(group)
+        if restored:
+            save_groups(project_dir, episode, updated)
+        return restored
 
 
 def record_stage_result(

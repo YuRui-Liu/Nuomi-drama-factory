@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import narrative_groups
-from novelvideo.narrative_groups.service import advance_revision, record_stage_result
+from novelvideo.narrative_groups.service import advance_revision, record_stage_result, sidecar_path
 
 
 class FakeStore:
@@ -24,6 +24,12 @@ class FakeBackend:
             backend="inline",
             queue=kwargs["queue_kind"],
         )
+
+
+class FailingBackend(FakeBackend):
+    async def enqueue_project_task(self, ctx, **kwargs):
+        self.calls.append((ctx, kwargs))
+        raise RuntimeError("queue unavailable")
 
 
 def make_client(monkeypatch, tmp_path: Path):
@@ -151,6 +157,36 @@ def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypa
     stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["video"]
     assert stage["revision"] == 1
     assert stage["status"] == "queued"
+
+
+def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    video = tmp_path / "videos" / "prior.mp4"
+    manifest = tmp_path / "videos" / "prior.manifest.json"
+    stems = [tmp_path / "videos" / name for name in ("original.wav", "dialogue.wav", "ambience.wav")]
+    video.parent.mkdir(parents=True, exist_ok=True)
+    for path in (video, manifest, *stems):
+        path.write_bytes(b"old")
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1, status="completed",
+        video_asset=str(video), manifest_asset=str(manifest), original_audio_path=str(stems[0]),
+        dialogue_stem_path=str(stems[1]), ambience_stem_path=str(stems[2]),
+        dialogue_stem_status="succeeded", ambience_stem_status="succeeded",
+    )
+    before = sidecar_path(tmp_path, 1).read_bytes()
+    failing = FailingBackend()
+    monkeypatch.setattr(narrative_groups, "get_task_backend", lambda: failing)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"model": "minimax-h3", "mode": "auto", "revision": 1},
+    )
+
+    assert response.status_code == 503
+    assert sidecar_path(tmp_path, 1).read_bytes() == before
+    assert len(failing.calls) == 1
 
 
 def test_video_generate_requires_current_revision(monkeypatch, tmp_path):

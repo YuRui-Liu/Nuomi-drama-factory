@@ -18,6 +18,7 @@ import {
   narrativeGroupVideoDialogueSourcePayload,
   narrativeGroupVideoPayload,
   narrativeGroupVideoTaskScope,
+  narrativeGroupTaskScope,
   narrativeGroupReferencePath,
   narrativeGroupRevisionPath,
   narrativeGroupRollbackPath,
@@ -43,6 +44,8 @@ describe("narrative group query contract", () => {
 
   it("uses the exact server H3 scope for the current video revision", () => {
     expect(narrativeGroupVideoTaskScope("ng-01", 4)).toBe("group_ng-01_video_r4");
+    expect(narrativeGroupTaskScope("ng-01", "sketch", 2)).toBe("group_ng-01_sketch_r2");
+    expect(narrativeGroupTaskScope("ng-01", "render", 3)).toBe("group_ng-01_render_r3");
   });
 
   it("uses a separate recomposition-only dialogue source endpoint", () => {
