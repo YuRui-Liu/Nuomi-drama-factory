@@ -307,6 +307,16 @@ async def get_beats(project: str, episode_num: int, user: dict = Depends(get_api
     frames_dir = project_dir / "frames" / f"ep{episode_num:03d}"
     videos_dir = project_dir / "videos" / "beats" / f"ep{episode_num:03d}"
     audio_dir = project_dir / "audio" / f"ep{episode_num:03d}"
+    # Director outputs are one physical video spanning multiple logical beats.
+    # Prefer that authoritative source over stale per-beat legacy files.
+    from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
+
+    director_by_beat = {
+        beat_num: span.video_path
+        for span in resolve_episode_composition_sources(project_dir, episode_num, beats)
+        if span.is_director
+        for beat_num in span.beat_numbers
+    }
     # 收集已存在的音频，循环后并发探测时长，供前端时长控件做默认值/下限（视频时长须 >= 音频）。
     audio_duration_jobs: list[tuple[dict, str]] = []
     for beat in beats:
@@ -340,7 +350,13 @@ async def get_beats(project: str, episode_num: int, user: dict = Depends(get_api
             beat["frame_url"] = ""
         # video
         video_file = f"beat_{beat_num:02d}.mp4"
-        if (videos_dir / video_file).exists():
+        director_video = director_by_beat.get(beat_num)
+        if director_video is not None and director_video.exists():
+            rel = director_video.relative_to(project_dir).as_posix()
+            beat["video_url"] = make_static_url_for_context(
+                resolved.ctx, rel, local_path=director_video
+            )
+        elif (videos_dir / video_file).exists():
             rel = f"videos/beats/ep{episode_num:03d}/{video_file}"
             beat["video_url"] = make_static_url_for_context(
                 resolved.ctx, rel, local_path=videos_dir / video_file

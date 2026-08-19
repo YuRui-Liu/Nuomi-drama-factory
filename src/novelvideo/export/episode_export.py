@@ -18,20 +18,27 @@ def format_srt_time(seconds: float) -> str:
 
 
 async def build_srt_content(project_dir: Path, episode: int, beats: list[dict]) -> str:
+    # Composition and subtitle timing must read the same H3 director manifests.
+    # Import lazily to avoid loading task runners for callers that only use the
+    # legacy export path.
+    from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
+
     audio_dir = project_dir / "audio" / f"ep{episode:03d}"
+    spans = resolve_episode_composition_sources(project_dir, episode, beats)
+    director_durations = {
+        entry.segment.beat_number: entry.actual_duration_seconds
+        for span in spans
+        for entry in span.entries
+    }
     srt_lines: list[str] = []
     current_time = 0.0
     seq = 0
 
     for index, beat in enumerate(beats, 1):
         beat_num = beat.get("beat_number", index)
-        narration = beat.get("narration_segment", "")
-        if not narration:
-            continue
-
         audio_path = audio_dir / f"beat_{beat_num:02d}.mp3"
-        duration = 5.0
-        if audio_path.exists():
+        duration = director_durations.get(int(beat_num), 5.0)
+        if int(beat_num) not in director_durations and audio_path.exists():
             try:
                 duration = await get_audio_duration_async(str(audio_path))
             except Exception:
@@ -39,14 +46,16 @@ async def build_srt_content(project_dir: Path, episode: int, beats: list[dict]) 
 
         start = current_time
         end = current_time + duration
+        current_time = end
+        narration = beat.get("narration_segment", "")
+        if not narration:
+            continue
         seq += 1
 
         srt_lines.append(f"{seq}")
         srt_lines.append(f"{format_srt_time(start)} --> {format_srt_time(end)}")
         srt_lines.append(narration)
         srt_lines.append("")
-
-        current_time = end
 
     return "\n".join(srt_lines)
 
@@ -81,6 +90,8 @@ async def build_episode_zip_file(
     paths = PathResolver(str(project_dir), episode)
     files_to_pack: list[tuple[Path, str]] = []
 
+    from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
+
     for beat in beats:
         beat_num = beat.get("beat_number", 0)
         if beat_num <= 0:
@@ -88,9 +99,13 @@ async def build_episode_zip_file(
         audio_path = paths.audio(beat_num)
         if audio_path.exists():
             files_to_pack.append((audio_path, f"audio/{audio_path.name}"))
-        video_path = paths.video(beat_num)
-        if video_path.exists():
-            files_to_pack.append((video_path, f"video/{video_path.name}"))
+    for span in resolve_episode_composition_sources(project_dir, episode, beats):
+        files_to_pack.append((span.video_path, f"video/{span.video_path.name}"))
+        if span.manifest_path is not None and span.manifest_path.exists():
+            files_to_pack.append((span.manifest_path, f"manifests/{span.manifest_path.name}"))
+        for stem in (span.ambience_stem_path, span.original_audio_path):
+            if stem is not None and stem.exists():
+                files_to_pack.append((stem, f"stems/{stem.name}"))
 
     final_path = paths.final_video()
     if final_path.exists():

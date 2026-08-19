@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
+from novelvideo.narrative_groups.service import load_groups
+from novelvideo.utils.path_resolver import PathResolver
 from novelvideo.task_backend.cancel import (
     TaskTimedOut,
     await_envelope_with_cancel_watch,
@@ -17,6 +20,91 @@ from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
+
+
+@dataclass(frozen=True)
+class VideoSpan:
+    """One physical source to place on the episode timeline.
+
+    Director manifests intentionally retain their logical H3 entries here, but
+    the physical video appears exactly once in the composition source list.
+    """
+
+    video_path: Path
+    beat_numbers: tuple[int, ...]
+    entries: tuple[Any, ...] = ()
+    manifest_path: Path | None = None
+    ambience_stem_path: Path | None = None
+    original_audio_path: Path | None = None
+
+    @property
+    def is_director(self) -> bool:
+        return bool(self.entries)
+
+
+def resolve_episode_composition_sources(
+    project_dir: str | Path, episode: int, beats: list[dict[str, Any]]
+) -> list[VideoSpan]:
+    """Resolve Director outputs first, then legacy per-beat video fallbacks.
+
+    A completed narrative group's manifest is the authoritative mapping from
+    logical beats to a physical H3 movie.  Old beat MP4s fill only uncovered
+    beats, so migration cannot duplicate a director group in the final cut.
+    """
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource,
+        load_h3_director_manifest,
+    )
+    root = Path(project_dir)
+    spans: list[VideoSpan] = []
+    covered: set[int] = set()
+    try:
+        groups = load_groups(root, episode)
+    except (OSError, ValueError):
+        groups = []
+    for group in sorted(groups, key=lambda item: int(getattr(item, "ordinal", 0))):
+        stage = getattr(group, "stages", {}).get("video")
+        manifest_name = str(getattr(stage, "manifest_asset", "") or "").strip()
+        if getattr(stage, "status", "") != "completed" or not manifest_name:
+            continue
+        manifest_path = Path(manifest_name)
+        if not manifest_path.exists():
+            continue
+        manifest = load_h3_director_manifest(manifest_path)
+        video_path = Path(manifest.physical_video)
+        if not video_path.exists():
+            continue
+        entries = tuple(manifest.entries)
+        if any(entry.dialogue_source is DialogueSource.EXTERNAL_TTS for entry in entries):
+            ambience = Path(manifest.ambience_stem_path or "")
+            if manifest.ambience_stem_status != "succeeded" or not ambience.exists():
+                raise RuntimeError(
+                    f"Director manifest {manifest_path} requires an ambience stem for external_tts"
+                )
+        else:
+            ambience = None
+        spans.append(
+            VideoSpan(
+                video_path=video_path,
+                beat_numbers=tuple(entry.segment.beat_number for entry in entries),
+                entries=entries,
+                manifest_path=manifest_path,
+                ambience_stem_path=ambience,
+                original_audio_path=Path(manifest.original_audio_path)
+                if manifest.original_audio_path else None,
+            )
+        )
+        covered.update(entry.segment.beat_number for entry in entries)
+
+    paths = PathResolver(str(root), episode)
+    for index, beat in enumerate(beats, start=1):
+        beat_num = int(beat.get("beat_number") or index)
+        if beat_num in covered:
+            continue
+        legacy = paths.video(beat_num)
+        if legacy.exists():
+            spans.append(VideoSpan(video_path=legacy, beat_numbers=(beat_num,)))
+    return spans
 
 
 def _log(manager, ctx: ProjectContext, envelope: dict[str, Any], message: str) -> None:
@@ -506,21 +594,75 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
     video_clips: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        for index, beat in enumerate(beats):
+        sources = resolve_episode_composition_sources(output_dir, episode, beats)
+        for index, source in enumerate(sources):
             check_cancel()
-            beat_num = int(beat.get("beat_number") or index + 1)
-            video_path = paths.video(beat_num)
-            audio_path = paths.audio(beat_num)
-            if not video_path.exists():
-                continue
-            clip_path = tmp_dir / f"beat_{beat_num:04d}.mp4"
+            beat_num = source.beat_numbers[0]
+            video_path = source.video_path
+            clip_path = tmp_dir / f"source_{index:04d}.mp4"
             manager.update_progress_for_project(
                 ctx,
                 "compose_episode",
                 episode,
-                progress=index / max(1, len(beats)),
-                current_task=f"合成 Beat {beat_num}...",
+                progress=index / max(1, len(sources)),
+                current_task=f"合成 {'导演组' if source.is_director else 'Beat'} {beat_num}...",
             )
+            if source.is_director:
+                from novelvideo.media_capabilities.video.h3_timeline import DialogueSource
+
+                # H3-native lines retain the original video audio; external TTS
+                # lines use the separated ambience stem, never the original mix.
+                cmd = ["ffmpeg", "-y", "-i", str(video_path), "-i", str(source.ambience_stem_path)]
+                filter_parts: list[str] = []
+                audio_labels: list[str] = []
+                input_index = 2
+                for entry_index, entry in enumerate(source.entries):
+                    start, end = entry.start_seconds, entry.end_seconds
+                    label = f"a{entry_index}"
+                    if entry.dialogue_source is DialogueSource.H3_NATIVE:
+                        filter_parts.append(
+                            f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[{label}]"
+                        )
+                    else:
+                        tts = paths.audio(entry.segment.beat_number)
+                        if not tts.exists():
+                            raise RuntimeError(
+                                f"Beat {entry.segment.beat_number} requires TTS for external_tts"
+                            )
+                        cmd.extend(["-i", str(tts)])
+                        ambience_label = f"amb{entry_index}"
+                        filter_parts.append(
+                            f"[1:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[{ambience_label}]"
+                        )
+                        filter_parts.append(
+                            f"[{input_index}:a]atrim=duration={entry.actual_duration_seconds},"
+                            f"asetpts=PTS-STARTPTS[tts{entry_index}]"
+                        )
+                        filter_parts.append(
+                            f"[{ambience_label}][tts{entry_index}]amix=inputs=2:duration=first[{label}]"
+                        )
+                        input_index += 1
+                    audio_labels.append(f"[{label}]")
+                filter_parts.append(
+                    f"{''.join(audio_labels)}concat=n={len(audio_labels)}:v=0:a=1[director_a]"
+                )
+                cmd.extend([
+                    "-filter_complex", ";".join(filter_parts), "-map", "0:v:0", "-map", "[director_a]",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-shortest", str(clip_path),
+                ])
+                result = run_checked(cmd, default_timeout_seconds=30 * 60)
+                check_cancel()
+                if result.returncode == 0:
+                    video_clips.append(str(clip_path))
+                else:
+                    manager.update_progress_for_project(
+                        ctx, "compose_episode", episode,
+                        logs=[f"导演组 {beat_num} 合成失败: {result.stderr[:500]}"],
+                    )
+                continue
+
+            audio_path = paths.audio(beat_num)
             cmd = ["ffmpeg", "-y", "-i", str(video_path)]
             has_embedded_audio = False
             if audio_path.exists():

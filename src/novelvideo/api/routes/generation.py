@@ -5418,12 +5418,8 @@ async def cut_grid(
 @router.post("/projects/{project}/episodes/{episode_num}/export/zip")
 async def export_zip(project: str, episode_num: int, user: dict = Depends(get_api_user)):
     """打包指定集的所有资源为 ZIP 文件下载。"""
-    import zipfile
-    import tempfile
-
     from fastapi.responses import FileResponse
-    from novelvideo.export.episode_export import build_srt_content
-    from novelvideo.utils.path_resolver import PathResolver
+    from novelvideo.export.episode_export import build_episode_zip_file
 
     resolved = await _resolve_generation_project(project, user, required_role="viewer")
     project_name = resolved.project_name
@@ -5435,53 +5431,13 @@ async def export_zip(project: str, episode_num: int, user: dict = Depends(get_ap
     )
     beats = await store.get_beats_as_dicts(episode_num)
 
-    ep_tag = f"ep{episode_num:03d}"
-    paths = PathResolver(str(project_dir), episode_num)
-
-    files_to_pack: list[tuple[Path, str]] = []
-    for beat in beats:
-        beat_num = int(beat.get("beat_number", 0) or 0)
-        if beat_num <= 0:
-            continue
-        audio_path = paths.audio(beat_num)
-        if audio_path.exists():
-            files_to_pack.append((audio_path, f"audio/{audio_path.name}"))
-        video_path = paths.video(beat_num)
-        if video_path.exists():
-            files_to_pack.append((video_path, f"video/{video_path.name}"))
-
-    final_path = paths.final_video()
-    if final_path.exists():
-        files_to_pack.append((final_path, final_path.name))
-
-    # Keep existing extra project assets in the API ZIP; NiceGUI's core export
-    # is beat audio/video + final + SRT, but frames/grids are useful inspection
-    # artifacts and were already part of the React API surface.
-    extra_dirs = {
-        "frames": project_dir / "frames" / ep_tag,
-        "grids": project_dir / "grids" / ep_tag,
-    }
-    for folder_name, folder in extra_dirs.items():
-        if folder.exists():
-            for file_path in sorted(folder.iterdir()):
-                if file_path.is_file():
-                    files_to_pack.append((file_path, f"{folder_name}/{file_path.name}"))
-
-    srt_content = await build_srt_content(project_dir, episode_num, beats)
-
-    # 创建临时 ZIP 文件
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp.close()
-
-    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file_path, arc_name in files_to_pack:
-            zf.write(file_path, arc_name)
-        if srt_content:
-            zf.writestr(f"{ep_tag}.srt", srt_content)
+    zip_path = await build_episode_zip_file(project_dir, project_name, episode_num, beats)
+    if zip_path is None:
+        return {"ok": False, "error": "No episode assets available for export"}
 
     return FileResponse(
-        path=tmp.name,
-        filename=f"{project_name}_{ep_tag}.zip",
+        path=zip_path,
+        filename=zip_path.name,
         media_type="application/zip",
     )
 
