@@ -314,10 +314,28 @@ async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload
     stable_input = {"segments": [{"id": "one", "first_frame_sha256": "a" * 64}]}
     first = await pipeline.generate_timeline(
         request, timeline_data='{"imageFile":"https://one.example/first.png"}',
+        director_params={
+            "task_type": "i2v — 首帧生视频(Image-to-Video)",
+            "global_prompt": "导演台",
+            "frame_rate": 24,
+            "width": 416,
+            "height": 736,
+            "ref_max_size": 736,
+            "total_frames": 124,
+        },
         input_asset_hashes=("a" * 64,), idempotency_input=stable_input,
     )
     second = await pipeline.generate_timeline(
         request, timeline_data='{"imageFile":"https://two.example/first.png"}',
+        director_params={
+            "task_type": "i2v — 首帧生视频(Image-to-Video)",
+            "global_prompt": "导演台",
+            "frame_rate": 24,
+            "width": 416,
+            "height": 736,
+            "ref_max_size": 736,
+            "total_frames": 124,
+        },
         input_asset_hashes=("a" * 64,), idempotency_input=stable_input,
     )
 
@@ -326,6 +344,8 @@ async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload
     assert attempt.input_asset_hashes == ["a" * 64]
     assert "https://" not in str(store.get_task(first.task_id).input_snapshot)
     assert "https://one.example" in attempt.effective_params["timeline_data"]
+    assert attempt.effective_params["width"] == 416
+    assert executor.calls[0][2]["total_frames"] == 124
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,16 @@
   "12": {
     "class_type": "MiniMaxH3Director",
     "inputs": {
+      "task_type": "fl2v — 首尾帧生视频(First-Last Frame)",
+      "global_prompt": "",
+      "bd_grp_sample": "采样设置",
+      "cfg": 1,
+      "seed": 666,
+      "frame_rate": 24,
+      "width": 576,
+      "height": 736,
+      "ref_max_size": 736,
+      "total_frames": 124,
       "timeline_data": ""
     },
     "_meta": {
@@ -12,7 +22,7 @@
     "class_type": "SaveVideo",
     "inputs": {
       "codec": "auto",
-      "filename_prefix": "video/output",
+      "filename_prefix": "video/MiniMaxH3_Director_t2v",
       "format": "auto",
       "fw_video_preview": "",
       "video": [
@@ -21,7 +31,7 @@
       ]
     },
     "_meta": {
-      "title": "Save Video"
+      "title": "💾 Save Video"
     }
   }
 }

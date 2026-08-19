@@ -18,7 +18,7 @@ from novelvideo.media_capabilities.models import (
     VideoGenerationRequest,
     WorkflowProfile,
 )
-from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorSegment,
     build_h3_timeline_data,
@@ -49,7 +49,10 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
         profile = profile.model_copy(update={"workflow_id": normalized})
-    required_bindings = {"timeline_data"}
+    required_bindings = {
+        "task_type", "global_prompt", "frame_rate", "width", "height",
+        "ref_max_size", "total_frames", "timeline_data",
+    }
     if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
         raise ValueError("H3 production profile is missing required bindings or output")
     return profile
@@ -186,7 +189,7 @@ def _director_output_settings(aspect_ratio: str, resolution: str | None) -> dict
 
 def _director_timeline_payload(
     timeline,
-    uploaded_frames: dict[str, str],
+    uploaded_frames: dict[str, object],
     *,
     aspect_ratio: str,
     resolution: str | None,
@@ -197,10 +200,16 @@ def _director_timeline_payload(
         segment = entry.segment
         first = uploaded_frames.get(segment.first_frame or "")
         last = uploaded_frames.get(segment.last_frame or "")
-        image = lambda value: ({"imageFile": value} if value else None)
+
+        def image(value):
+            if isinstance(value, dict):
+                return dict(value)
+            return {"imageFile": value} if value else None
+
+        nominal_duration = segment.duration_seconds
         shot = {
             "id": segment.segment_id,
-            "durationSec": entry.frame_count / timeline.fps,
+            "durationSec": nominal_duration,
             "prompt": segment.prompt,
             "negativePrompt": "",
             "continuityFromPrev": False,
@@ -213,7 +222,7 @@ def _director_timeline_payload(
             "start": entry.start_frame,
             "length": entry.frame_count,
             "frameCount": entry.frame_count,
-            "durationSec": entry.frame_count / timeline.fps,
+            "durationSec": nominal_duration,
             "prompt": segment.prompt,
             "negativePrompt": "",
             "continuityFromPrev": False,
@@ -273,13 +282,26 @@ def _director_timeline_payload(
         "segments": segments,
         "timelineMode": "fl2v" if any(item["endImage"] for item in segments) else "i2v",
         "width": output["width"], "height": output["height"], "refMaxSize": output["longEdge"],
-        "durationSec": timeline.duration_seconds,
+        "durationSec": sum(entry.segment.duration_seconds for entry in timeline.entries),
         "shots": shots,
         "gen": {"defaultFrameCount": timeline.entries[0].frame_count},
         "keyframes": keyframes,
         "liveTaePreview": True,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _director_semantic_values(timeline_data: str) -> dict[str, object]:
+    data = json.loads(timeline_data)
+    return {
+        "task_type": data["global"]["taskType"],
+        "global_prompt": data["global"]["prompt"],
+        "frame_rate": data["frameRate"],
+        "width": data["width"],
+        "height": data["height"],
+        "ref_max_size": data["refMaxSize"],
+        "total_frames": data["totalFrames"],
+    }
 
 
 async def generate_h3_director_video(
@@ -344,10 +366,20 @@ async def generate_h3_director_video(
             prompt_profile={"id": "minimax-h3", "version": 1},
         )
         uploaded_frames: dict[str, UploadedReference] = {}
+        uploaded_frame_payloads: dict[str, dict[str, object]] = {}
         for entry in timeline.entries:
             for source in (entry.segment.first_frame, entry.segment.last_frame):
                 if source and source not in uploaded_frames:
                     uploaded_frames[source] = await upload(source)
+                    from PIL import Image
+
+                    with Image.open(source) as frame:
+                        width, height = frame.size
+                    uploaded_frame_payloads[source] = {
+                        "imageFile": uploaded_frames[source].url,
+                        "width": width,
+                        "height": height,
+                    }
         request = VideoGenerationRequest(
             capability=(
                 MediaCapability.VIDEO_FL2VA
@@ -361,14 +393,16 @@ async def generate_h3_director_video(
             aspect_ratio=aspect_ratio,
             resolution=resolution,
         )
+        timeline_data = _director_timeline_payload(
+            timeline,
+            uploaded_frame_payloads,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+        )
         candidate = await pipeline.generate_timeline(
             request,
-            timeline_data=_director_timeline_payload(
-                timeline,
-                {source: uploaded.url for source, uploaded in uploaded_frames.items()},
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
-            ),
+            timeline_data=timeline_data,
+            director_params=_director_semantic_values(timeline_data),
             input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
             idempotency_input={
                 "version": 5,

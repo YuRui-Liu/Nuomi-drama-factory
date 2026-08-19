@@ -1,13 +1,20 @@
 {
   "id": "minimax-h3-video",
-  "version": 1,
+  "version": 2,
   "workflow_id": "2089723723468328961",
   "capabilities": ["video.i2va", "video.fl2va"],
   "bindings": {
+    "task_type": {"node_id": "12", "field": "task_type"},
+    "global_prompt": {"node_id": "12", "field": "global_prompt"},
+    "frame_rate": {"node_id": "12", "field": "frame_rate"},
+    "width": {"node_id": "12", "field": "width"},
+    "height": {"node_id": "12", "field": "height"},
+    "ref_max_size": {"node_id": "12", "field": "ref_max_size"},
+    "total_frames": {"node_id": "12", "field": "total_frames"},
     "timeline_data": {"node_id": "12", "field": "timeline_data"}
   },
   "outputs": {"video": {"node_id": "7", "media_type": "video"}},
-  "constraints": {"required_fields": ["timeline_data"]},
-  "source_sha256": "",
+  "constraints": {"required": ["task_type", "global_prompt", "frame_rate", "width", "height", "ref_max_size", "total_frames", "timeline_data"]},
+  "source_sha256": "5b44dbe86bfce52d358eda37e47f78ac60bf02cc3a96fb04eeb4567db255c684",
   "status": "active"
 }

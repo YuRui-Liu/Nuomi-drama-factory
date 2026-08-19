@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from novelvideo.media_capabilities.video.runtime import (
-    generate_h3_director_video,
     generate_h3_video,
     get_h3_concurrency_coordinator,
     load_h3_workflow_profile,
@@ -19,7 +18,11 @@ def test_production_profile_is_packaged_and_workflow_can_be_overridden() -> None
 
     assert profile.id == "minimax-h3-video"
     assert profile.workflow_id == "9001"
-    assert profile.bindings == {"timeline_data": {"node_id": "12", "field": "timeline_data"}}
+    assert set(profile.bindings) == {
+        "task_type", "global_prompt", "frame_rate", "width", "height",
+        "ref_max_size", "total_frames", "timeline_data",
+    }
+    assert all(binding["node_id"] == "12" for binding in profile.bindings.values())
     assert profile.outputs["video"]["node_id"] == "7"
 
 
@@ -82,7 +85,10 @@ def test_director_timeline_matches_packaged_node12_v5_contract() -> None:
 
     payload = _director_timeline_payload(
         timeline,
-        {"first.png": "first-remote.png", "last.png": "last-remote.png"},
+        {
+            "first.png": {"imageFile": "first-remote.png", "width": 1080, "height": 1920},
+            "last.png": {"imageFile": "last-remote.png", "width": 1080, "height": 1920},
+        },
         aspect_ratio="9:16",
         resolution="720p",
     )
@@ -103,3 +109,11 @@ def test_director_timeline_matches_packaged_node12_v5_contract() -> None:
     assert data["runSelection"] == []
     assert data["keyframes"][0]["id"] == "one_s"
     assert data["keyframes"][1]["id"] == "one_e"
+    assert data["segments"][0]["durationSec"] == 5
+    assert data["shots"][0]["durationSec"] == 5
+    assert data["keyframes"][0]["durationSec"] == 5
+    assert data["segments"][0]["genImage"] == {
+        "imageFile": "first-remote.png", "width": 1080, "height": 1920,
+    }
+    assert data["width"] == data["output"]["width"] == 416
+    assert data["height"] == data["output"]["height"] == 736

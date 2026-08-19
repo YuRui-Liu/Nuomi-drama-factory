@@ -27,13 +27,31 @@ def test_minimax_h3_profile_locks_workflow_semantic_bindings() -> None:
     assert compile_node_info(
         profile,
         {
+            "task_type": "fl2v — 首尾帧生视频(First-Last Frame)",
+            "global_prompt": "",
+            "frame_rate": 24,
+            "width": 416,
+            "height": 736,
+            "ref_max_size": 736,
+            "total_frames": 124,
             "timeline_data": '{"entries":[]}',
         },
     ) == [
+        {"nodeId": "12", "fieldName": "frame_rate", "fieldValue": 24},
+        {"nodeId": "12", "fieldName": "global_prompt", "fieldValue": ""},
+        {"nodeId": "12", "fieldName": "height", "fieldValue": 736},
+        {"nodeId": "12", "fieldName": "ref_max_size", "fieldValue": 736},
+        {
+            "nodeId": "12",
+            "fieldName": "task_type",
+            "fieldValue": "fl2v — 首尾帧生视频(First-Last Frame)",
+        },
         {
             "nodeId": "12",
             "fieldName": "timeline_data",
             "fieldValue": '{"entries":[]}',
         },
+        {"nodeId": "12", "fieldName": "total_frames", "fieldValue": 124},
+        {"nodeId": "12", "fieldName": "width", "fieldValue": 416},
     ]
     assert profile.outputs == {"video": {"node_id": "7", "media_type": "video"}}

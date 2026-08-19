@@ -221,11 +221,16 @@ class H3VideoPipeline:
         request: VideoGenerationRequest,
         *,
         timeline_data: str,
+        director_params: Mapping[str, JsonValue] | None = None,
         input_asset_hashes: tuple[str, ...] = (),
         idempotency_input: Mapping[str, JsonValue],
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
         stable_timeline = dict(idempotency_input)
+        semantic_values: dict[str, JsonValue] = {
+            **dict(director_params or {}),
+            "timeline_data": timeline_data,
+        }
         input_snapshot = {"timeline": stable_timeline}
         implementation_snapshot = {
             "prompt_profile": self.prompt_profile,
@@ -235,6 +240,7 @@ class H3VideoPipeline:
             {
                 "request": request.model_dump(mode="json"),
                 "timeline": stable_timeline,
+                "director_params": dict(director_params or {}),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -282,14 +288,14 @@ class H3VideoPipeline:
                 "source_sha256": self.workflow_profile.source_sha256,
             },
             input_asset_hashes=list(input_asset_hashes),
-            effective_params={"timeline_data": timeline_data},
+            effective_params=semantic_values,
         )
         deadline = self.monotonic() + self.poll_timeout
         while True:
             completed = await self.executor.step(
                 task.id,
                 profile=self.workflow_profile,
-                semantic_values={"timeline_data": timeline_data},
+                semantic_values=semantic_values,
             )
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
