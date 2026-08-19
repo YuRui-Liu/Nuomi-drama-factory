@@ -54,6 +54,25 @@ def test_group_video_builds_dialogue_from_canonical_beat_fields(tmp_path):
     assert _dialogue_required(beat, segments[0]) is True
 
 
+def test_group_video_rejects_explicit_fl2va_without_last_frames(tmp_path):
+    import pytest
+
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"frame")
+
+    with pytest.raises(ValueError, match="fl2va.*last frame"):
+        _build_segments(
+            {"mode": "fl2va"},
+            [{"id": "beat-1", "beat_number": 1, "visual_description": "人物抬头"}],
+            {
+                "beat_ids": ["beat-1"],
+                "cell_assets": [{"beat_id": "beat-1", "path": str(frame)}],
+            },
+        )
+
+
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import narrative_group_video
     from novelvideo.narrative_groups.service import load_groups

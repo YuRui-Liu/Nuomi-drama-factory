@@ -97,7 +97,12 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
       return;
     }
     try {
-      const response = await action.mutateAsync({ groupId: group.id, stage, action: nextAction });
+      const response = await action.mutateAsync({
+        groupId: group.id,
+        stage,
+        action: nextAction,
+        aspectRatio,
+      });
       (nextAction === "split" ? splitTask : gridTask).start({ scope: taskScope(response) });
       toast.success("任务已进入队列");
     }

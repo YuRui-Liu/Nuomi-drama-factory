@@ -234,15 +234,35 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
 
     assert submitted[0].references == [ref.path for ref in preview.image_references]
     assert submitted[0].model == "gpt-image-2-vip"
-    assert submitted[0].aspect_ratio == "9:8"
+    assert submitted[0].aspect_ratio == "1:1"
     assert result["reference_count"] == 2
     assert result["reference_warnings"] == []
     assert all(str(tmp_path) not in warning for warning in result["reference_warnings"])
 
 
 @pytest.mark.parametrize(
+    ("aspect_ratio", "model", "expected"),
+    [
+        ("9:16", "gpt-image-2", "1:1"),
+        ("16:9", "gpt-image-2", "3:2"),
+        ("9:16", "nano-banana-2", "27:32"),
+    ],
+)
+def test_grid_aspect_uses_nearest_canvas_supported_by_model(
+    tmp_path, aspect_ratio, model, expected
+):
+    payload = _payload(
+        tmp_path,
+        layout={"rows": 2, "columns": 3},
+        aspect_ratio=aspect_ratio,
+    )
+
+    assert narrative_group._provider_grid_aspect_ratio(payload, model) == expected
+
+
+@pytest.mark.parametrize(
     ("aspect_ratio", "expected"),
-    [("9:16", (168, 300)), ("16:9", (300, 168))],
+    [("9:16", (162, 288)), ("16:9", (288, 162))],
 )
 def test_split_normalizes_each_first_frame_to_requested_video_aspect(
     tmp_path, aspect_ratio, expected
@@ -267,6 +287,9 @@ def test_split_normalizes_each_first_frame_to_requested_video_aspect(
 
     with Image.open(result["cell_assets"][0]["path"]) as cell:
         assert cell.size == expected
+        assert cell.width * int(aspect_ratio.split(":")[1]) == (
+            cell.height * int(aspect_ratio.split(":")[0])
+        )
 
 
 @pytest.mark.asyncio

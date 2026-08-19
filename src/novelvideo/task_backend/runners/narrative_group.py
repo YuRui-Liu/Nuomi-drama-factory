@@ -170,6 +170,17 @@ def _grid_request_aspect_ratio(payload: Mapping[str, Any]) -> str:
     return f"{grid_width // divisor}:{grid_height // divisor}"
 
 
+def _provider_grid_aspect_ratio(payload: Mapping[str, Any], model: str) -> str:
+    """Choose the closest real canvas supported by the selected image model."""
+    requested = _grid_request_aspect_ratio(payload)
+    if not model.startswith("gpt-image"):
+        return requested
+    left, right = (int(part) for part in requested.split(":"))
+    desired = left / right
+    supported = (("2:3", 2 / 3), ("1:1", 1.0), ("3:2", 3 / 2))
+    return min(supported, key=lambda item: abs(item[1] - desired))[0]
+
+
 def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
     from PIL import Image
 
@@ -177,14 +188,17 @@ def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
     with Image.open(path) as source:
         image = source.convert("RGB")
         width, height = image.size
-        if width * target_height > height * target_width:
-            crop_width = max(1, int(height * target_width / target_height))
+        scale = min(width // target_width, height // target_height)
+        if scale < 1:
+            image = image.resize((target_width, target_height))
+        else:
+            crop_width = target_width * scale
+            crop_height = target_height * scale
             left = (width - crop_width) // 2
-            image = image.crop((left, 0, left + crop_width, height))
-        elif width * target_height < height * target_width:
-            crop_height = max(1, int(width * target_height / target_width))
             top = (height - crop_height) // 2
-            image = image.crop((0, top, width, top + crop_height))
+            image = image.crop(
+                (left, top, left + crop_width, top + crop_height)
+            )
         image.save(path, format="PNG")
 
 
@@ -200,12 +214,13 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         provider_id=provider_id,
     )
     generation_input = _generation_input(payload)
+    model = str(payload.get("model") or runtime.model)
     request = ImageGenerationRequest(
         capability=MediaCapability.IMAGE_STORYBOARD_GRID,
         prompt=generation_input.prompt,
-        model=str(payload.get("model") or runtime.model),
+        model=model,
         references=list(generation_input.references),
-        aspect_ratio=_grid_request_aspect_ratio(payload),
+        aspect_ratio=_provider_grid_aspect_ratio(payload, model),
         image_size="2K",
     )
     client = runtime.create_client()

@@ -37,7 +37,7 @@ describe("NarrativeGroupWorkbench references",()=>{
  });
  it("runs split directly and cancel does not submit",async()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText("生成")); fireEvent.click(screen.getByText("取消")); expect(m.mutate).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText("切分")); await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:"split"})); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText("切分")); await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:"split",aspectRatio:"16:9"})); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
  });
  it("clears the pending confirmation when the active group changes",()=>{
   const { rerender } = render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);

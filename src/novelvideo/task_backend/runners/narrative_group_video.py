@@ -158,6 +158,9 @@ async def _optimize_missing_prompts(
 def _build_segments(
     payload: Mapping[str, Any], beat_records: list[dict[str, Any]], saved: Mapping[str, Any]
 ) -> list[H3DirectorSegment]:
+    requested_mode = str(payload.get("mode") or "auto").strip().lower()
+    if requested_mode not in {"auto", "i2va", "fl2va"}:
+        raise ValueError("MiniMax H3 group mode must be auto, i2va, or fl2va")
     by_id = {str(item.get("id") or item.get("beat_id") or item.get("beat_number")): item for item in beat_records}
     cells = {str(item.get("beat_id")): item for item in saved.get("cell_assets") or []}
     segments: list[H3DirectorSegment] = []
@@ -169,11 +172,16 @@ def _build_segments(
         first = _first_frame(cell)
         if not first:
             raise ValueError(f"rendered first frame is unavailable: {beat_id}")
+        last = None if requested_mode == "i2va" else _last_frame(cell)
+        if requested_mode == "fl2va" and not last:
+            raise ValueError(
+                f"MiniMax H3 fl2va group mode requires a last frame: {beat_id}"
+            )
         dialogue_source = DialogueSource(str(beat.get("dialogue_source") or DialogueSource.EXTERNAL_TTS))
         segments.append(H3DirectorSegment(
             segment_id=str(beat_id), beat_number=_beat_number(beat, index),
             prompt=_raw_prompt(beat), duration_seconds=_duration(beat),
-            first_frame=first, last_frame=_last_frame(cell),
+            first_frame=first, last_frame=last,
             dialogue=h3_dialogue_text(beat),
             speaker=h3_speaker_text(beat),
             tone=h3_tone_text(beat),
