@@ -52,6 +52,8 @@ class GroupStageState:
     actual_provider: str = ""
     actual_model: str = ""
     actual_mode: str = ""
+    source_sketch_revision: int = 0
+    constraint_mode: str = ""
     created_at: str = ""
     revision_history: tuple[dict[str, Any], ...] = ()
 

@@ -44,7 +44,7 @@ class FailingBackend(FakeBackend):
 
 
 def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
-    ctx = SimpleNamespace(project_id="demo", output_dir=str(tmp_path))
+    ctx = SimpleNamespace(project_id="demo", output_dir=str(tmp_path), state_dir=str(tmp_path))
     resolved = SimpleNamespace(ctx=ctx, project_dir=tmp_path, output_dir=str(tmp_path))
 
     async def resolve(*args, **kwargs):
@@ -57,6 +57,15 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
     monkeypatch.setattr(narrative_groups, "resolve_project_scope", resolve)
     monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
     monkeypatch.setattr(narrative_groups, "get_task_backend", lambda: backend)
+    monkeypatch.setattr(
+        narrative_groups,
+        "get_media_capability_store",
+        lambda: SimpleNamespace(
+            get_provider=lambda provider_id: SimpleNamespace(
+                id=provider_id, provider_type="grsai", enabled=True
+            )
+        ),
+    )
     app = FastAPI()
     app.include_router(narrative_groups.router, prefix="/api/v1")
     app.dependency_overrides[narrative_groups.get_api_user] = lambda: {
@@ -135,6 +144,54 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     queued_task_type = backend.calls[0][1]["task_type"]
     assert get_project_task_runner(queued_task_type) is narrative_group.run_narrative_group_grid
     assert backend.calls[0][1]["payload"]["beats"][0]["id"] == "beat-1"
+    assert backend.calls[0][1]["payload"]["provider_id"] == "grsai-main"
+    assert backend.calls[0][1]["payload"]["model"] == "nano-banana-2"
+
+
+def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    blocked = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate"
+    )
+    allowed = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={"allow_unconstrained": True},
+    )
+
+    assert blocked.status_code == 409
+    assert allowed.status_code == 202
+    assert len(backend.calls) == 1
+    payload = backend.calls[0][1]["payload"]
+    assert payload["constraint_mode"] == "unconstrained"
+    assert payload["model"] == "gpt-image-2"
+
+
+def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    advance_revision(tmp_path, 1, "ng-01", "sketch")
+    sketch = tmp_path / "grids" / "sketch.png"
+    sketch.parent.mkdir(parents=True)
+    sketch.write_bytes(b"sketch")
+    record_stage_result(
+        tmp_path, 1, "ng-01", "sketch", expected_revision=1,
+        status="completed", grid_asset=str(sketch),
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={"provider_id": "grsai-alt", "model": "gpt-image-2-vip"},
+    )
+
+    assert response.status_code == 202
+    payload = backend.calls[0][1]["payload"]
+    assert payload["provider_id"] == "grsai-alt"
+    assert payload["model"] == "gpt-image-2-vip"
+    assert payload["constraint_mode"] == "strong_sketch"
+    assert payload["source_sketch_revision"] == 1
+    assert payload["source_sketch_asset"] == str(sketch)
 
 
 def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkeypatch, tmp_path):
@@ -142,13 +199,16 @@ def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkey
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     first = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={"allow_unconstrained": True},
     ).json()["data"]
     repeated = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={"allow_unconstrained": True},
     ).json()["data"]
     regenerated = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
+        json={"allow_unconstrained": True},
     ).json()["data"]
 
     assert first["scope"] == repeated["scope"] == "group_ng-01_render_r1"
@@ -172,7 +232,10 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
-        json={"model": "minimax-h3", "mode": "auto", "revision": 0},
+        json={
+            "model": "minimax-h3", "mode": "auto", "revision": 0,
+            "aspect_ratio": "16:9", "resolution": "720p",
+        },
     )
 
     assert response.status_code == 202
@@ -184,6 +247,8 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "revision": 1,
         "model": "minimax-h3",
         "mode": "auto",
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
     }
 
 
@@ -339,6 +404,7 @@ def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypa
             "use_style": False,
             "selected_character_reference_ids": ["char-opaque"],
             "selected_scene_reference_ids": [],
+            "allow_unconstrained": True,
         },
     )
 
@@ -393,11 +459,11 @@ def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_
 
     valid = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
-        json={"selected_scene_reference_ids": ["scene-opaque"]},
+        json={"selected_scene_reference_ids": ["scene-opaque"], "allow_unconstrained": True},
     )
     invalid = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
-        json={"selected_scene_reference_ids": ["foreign-id"]},
+        json={"selected_scene_reference_ids": ["foreign-id"], "allow_unconstrained": True},
     )
 
     assert valid.status_code == 202
@@ -429,7 +495,8 @@ def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch-grid/generate"
     )
     render = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render-grid/generate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render-grid/generate",
+        json={"allow_unconstrained": True},
     )
 
     assert sketch.status_code == render.status_code == 202

@@ -365,6 +365,8 @@ def record_stage_result(
     actual_provider: str | None = None,
     actual_model: str | None = None,
     actual_mode: str | None = None,
+    source_sketch_revision: int | None = None,
+    constraint_mode: str | None = None,
     video_asset: str | None = None,
     manifest_asset: str | None = None,
     original_audio_path: str | None = None,
@@ -425,6 +427,14 @@ def record_stage_result(
                 actual_mode=(
                     current.actual_mode if actual_mode is None else str(actual_mode)
                 ),
+                source_sketch_revision=(
+                    current.source_sketch_revision
+                    if source_sketch_revision is None
+                    else int(source_sketch_revision)
+                ),
+                constraint_mode=(
+                    current.constraint_mode if constraint_mode is None else str(constraint_mode)
+                ),
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             stages = dict(group.stages)
@@ -454,6 +464,8 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
         "actual_mode": state.actual_mode,
+        "source_sketch_revision": state.source_sketch_revision,
+        "constraint_mode": state.constraint_mode,
         "created_at": state.created_at,
     }
 
@@ -515,6 +527,8 @@ def rollback_stage_revision(
                 actual_provider=source.get("actual_provider", ""),
                 actual_model=source.get("actual_model", ""),
                 actual_mode=source.get("actual_mode", ""),
+                source_sketch_revision=int(source.get("source_sketch_revision") or 0),
+                constraint_mode=source.get("constraint_mode", ""),
                 created_at=datetime.now(timezone.utc).isoformat(),
                 revision_history=history,
             )

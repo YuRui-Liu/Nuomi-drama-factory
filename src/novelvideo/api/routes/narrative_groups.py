@@ -15,7 +15,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.api.auth import get_api_user
-from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
+from novelvideo.api.deps import (
+    get_media_capability_store,
+    make_sqlite_store_for_context,
+    resolve_project_scope,
+)
+from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
 from novelvideo.narrative_groups.models import NarrativeGroup, StageName
 from novelvideo.narrative_groups.references import (
     MAX_GROUP_IMAGE_REFERENCES,
@@ -44,6 +49,35 @@ class NarrativeGroupGenerationRequest(BaseModel):
     use_style: bool = True
     selected_character_reference_ids: list[str] | None = None
     selected_scene_reference_ids: list[str] | None = None
+    provider_id: str | None = None
+    model: str | None = None
+    allow_unconstrained: bool = False
+
+
+def _image_binding(
+    ctx, project_dir: Path, stage: StageName, request: NarrativeGroupGenerationRequest
+) -> tuple[str, str]:
+    from novelvideo.project_config import load_project_config_from_state_dir
+
+    config = load_project_config_from_state_dir(
+        getattr(ctx, "state_dir", project_dir),
+        username=getattr(ctx, "owner_username", ""),
+        project=getattr(ctx, "project_name", ""),
+    )
+    prefix = "narrative_sketch" if stage == "sketch" else "narrative_render"
+    provider_id = str(
+        request.provider_id or config.get(f"{prefix}_provider") or "grsai-main"
+    ).strip()
+    default_model = "nano-banana-2" if stage == "sketch" else "gpt-image-2"
+    model = str(request.model or config.get(f"{prefix}_model") or default_model).strip()
+    account = get_media_capability_store().get_provider(provider_id)
+    if account is None or account.provider_type != "grsai" or not account.enabled:
+        raise HTTPException(
+            status_code=422, detail="Selected GRSAI image provider is unavailable"
+        )
+    if model not in GRSAI_IMAGE_MODELS:
+        raise HTTPException(status_code=422, detail="Unsupported GRSAI image model")
+    return provider_id, model
 
 
 class NarrativeGroupVideoRequest(BaseModel):
@@ -323,7 +357,7 @@ async def _enqueue_group_action(
 ):
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     try:
-        _, selected_beats = _group_beats(groups, beats, group_id)
+        source_group, selected_beats = _group_beats(groups, beats, group_id)
     except KeyError as exc:
         raise HTTPException(
             status_code=404, detail=f"Narrative group '{group_id}' not found"
@@ -347,7 +381,37 @@ async def _enqueue_group_action(
                 status_code=422,
                 detail={"unknown_reference_ids": list(exc.unknown_ids)},
             ) from exc
-        reference_selection = request.model_dump(exclude={"aspect_ratio"})
+        reference_selection = request.model_dump(
+            exclude={"aspect_ratio", "provider_id", "model", "allow_unconstrained"}
+        )
+    provider_id = model = ""
+    constraint_mode = ""
+    source_sketch_revision = 0
+    source_sketch_asset = ""
+    if not split_only:
+        provider_id, model = _image_binding(
+            resolved.ctx, resolved.project_dir, stage, request
+        )
+        if stage == "render":
+            sketch = source_group.stages["sketch"]
+            sketch_path = Path(sketch.grid_asset) if sketch.grid_asset else None
+            sketch_ready = (
+                sketch.status == "completed"
+                and sketch.revision > 0
+                and sketch_path is not None
+                and sketch_path.is_file()
+            )
+            if not sketch_ready and not request.allow_unconstrained:
+                raise HTTPException(
+                    status_code=409,
+                    detail="请先完成当前叙事组草图，或明确选择无草图约束生成",
+                )
+            if sketch_ready:
+                constraint_mode = "strong_sketch"
+                source_sketch_revision = sketch.revision
+                source_sketch_asset = str(sketch_path)
+            else:
+                constraint_mode = "unconstrained"
     try:
         group, revision = advance_revision(
             resolved.project_dir,
@@ -382,6 +446,15 @@ async def _enqueue_group_action(
     }
     if reference_selection is not None:
         payload["reference_selection"] = reference_selection
+        payload.update(
+            {
+                "provider_id": provider_id,
+                "model": model,
+                "constraint_mode": constraint_mode,
+                "source_sketch_revision": source_sketch_revision,
+                "source_sketch_asset": source_sketch_asset,
+            }
+        )
     queued = await get_task_backend().enqueue_project_task(
         resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
         scope=scope, payload=payload,
