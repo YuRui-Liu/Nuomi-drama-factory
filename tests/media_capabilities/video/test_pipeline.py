@@ -67,7 +67,7 @@ class FakeExecutor:
                 media_type="video/mp4",
                 local_path=(
                     "shot-2.mp4"
-                    if "第 2 个" in str(semantic_values["prompt"])
+                    if "第 2 个" in str(semantic_values.get("prompt", ""))
                     else f"{task_id}.mp4"
                 ),
                 content_sha256="a" * 64,
@@ -284,3 +284,45 @@ async def test_three_shots_submit_concurrently_and_quality_failure_is_isolated(
         "uploaded://shot-3-first.png",
     ]
     assert results[1].quality_issues[0].code == "video.duration_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload_url(
+    tmp_path: Path,
+) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    executor = FakeExecutor(store)
+    profile = WorkflowProfile(
+        id="minimax-h3-video", version=1, workflow_id="2089723723468328961",
+        capabilities=[MediaCapability.VIDEO_I2VA],
+        bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+    )
+
+    async def probe(_: MediaArtifact) -> VideoProbe:
+        return VideoProbe(duration=5, width=576, height=1024, fps=24, has_audio=True)
+
+    pipeline = H3VideoPipeline(
+        store=store, executor=executor, workflow_profile=profile,
+        provider_account_id="runninghub-main", upload_reference=FakeUploader(),
+        probe_video=probe, register_candidate=lambda _: None,
+        prompt_profile={"id": "minimax-h3", "version": 1},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA, prompt="导演台", duration=5,
+        first_frame="first.png", aspect_ratio="9:16", resolution="576x1024",
+    )
+    stable_input = {"segments": [{"id": "one", "first_frame_sha256": "a" * 64}]}
+    first = await pipeline.generate_timeline(
+        request, timeline_data='{"imageFile":"https://one.example/first.png"}',
+        input_asset_hashes=("a" * 64,), idempotency_input=stable_input,
+    )
+    second = await pipeline.generate_timeline(
+        request, timeline_data='{"imageFile":"https://two.example/first.png"}',
+        input_asset_hashes=("a" * 64,), idempotency_input=stable_input,
+    )
+
+    assert first.task_id == second.task_id
+    attempt = store.list_attempts(first.task_id)[-1]
+    assert attempt.input_asset_hashes == ["a" * 64]
+    assert "https://" not in str(store.get_task(first.task_id).input_snapshot)
+    assert "https://one.example" in attempt.effective_params["timeline_data"]

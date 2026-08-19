@@ -222,15 +222,20 @@ class H3VideoPipeline:
         *,
         timeline_data: str,
         input_asset_hashes: tuple[str, ...] = (),
+        idempotency_input: Mapping[str, JsonValue],
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
-        input_snapshot = {"timeline_data": timeline_data}
+        stable_timeline = dict(idempotency_input)
+        input_snapshot = {"timeline": stable_timeline}
         implementation_snapshot = {
             "prompt_profile": self.prompt_profile,
             "workflow_profile": self.workflow_profile.model_dump(mode="json"),
         }
         digest_source = json.dumps(
-            {"request": request.model_dump(mode="json"), **input_snapshot},
+            {
+                "request": request.model_dump(mode="json"),
+                "timeline": stable_timeline,
+            },
             ensure_ascii=False,
             sort_keys=True,
         ).encode()
@@ -240,6 +245,25 @@ class H3VideoPipeline:
             implementation_snapshot,
             input_snapshot,
         )
+        if task.status is MediaTaskStatus.SUCCEEDED:
+            if not isinstance(task.output, dict) or not task.output.get("artifacts"):
+                raise RuntimeError("idempotent timeline task succeeded without an artifact")
+            artifact = MediaArtifact.model_validate(task.output["artifacts"][0])
+            attempts = self.store.list_attempts(task.id)
+            current_attempt = attempts[-1] if attempts else None
+            candidate = VideoCandidate(
+                task_id=task.id,
+                provider_task_id=(
+                    current_attempt.provider_task_id if current_attempt else None
+                ),
+                artifact=artifact,
+                status=MediaTaskStatus.SUCCEEDED,
+                reference_hashes=tuple(
+                    current_attempt.input_asset_hashes if current_attempt else ()
+                ),
+            )
+            self.register_candidate(candidate)
+            return candidate
         self.store.start_attempt(
             task.id,
             self.provider_account_id,
@@ -249,6 +273,7 @@ class H3VideoPipeline:
                 "source_sha256": self.workflow_profile.source_sha256,
             },
             input_asset_hashes=list(input_asset_hashes),
+            effective_params={"timeline_data": timeline_data},
         )
         deadline = self.monotonic() + self.poll_timeout
         while True:

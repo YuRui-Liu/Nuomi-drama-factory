@@ -134,7 +134,63 @@ async def generate_h3_video(
     )
 
 
-def _director_timeline_payload(timeline, uploaded_frames: dict[str, str]) -> str:
+_DIRECTOR_ASPECT_LABELS = {
+    "1:1": "1:1 (方形)",
+    "2:3": "2:3 (竖版照片)",
+    "3:2": "3:2 (横版照片)",
+    "3:4": "3:4 (竖版标准)",
+    "4:3": "4:3 (标准)",
+    "9:16": "9:16 (竖版宽屏)",
+    "16:9": "16:9 (宽屏)",
+    "21:9": "21:9 (超宽屏)",
+}
+
+
+def _director_output_settings(aspect_ratio: str, resolution: str | None) -> dict:
+    """Map product options into the version-5 Director output contract."""
+    ratio = aspect_ratio if aspect_ratio in _DIRECTOR_ASPECT_LABELS else "9:16"
+    left, right = (int(value) for value in ratio.split(":"))
+    long_edge = 736
+    if resolution:
+        normalized = resolution.lower().strip()
+        if normalized.endswith("p") and normalized[:-1].isdigit():
+            long_edge = int(normalized[:-1])
+        elif "x" in normalized:
+            width, height = (int(value) for value in normalized.split("x", 1))
+            long_edge = max(width, height)
+        else:
+            raise ValueError("H3 resolution must be '<height>p' or '<width>x<height>'")
+    multiple = 32
+    if left >= right:
+        width = ((long_edge + multiple - 1) // multiple) * multiple
+        height = ((width * right / left + multiple - 1) // multiple) * multiple
+    else:
+        height = ((long_edge + multiple - 1) // multiple) * multiple
+        width = ((height * left / right + multiple - 1) // multiple) * multiple
+    long_edge = max(width, height)
+    return {
+        "mode": "fixed",
+        "aspectRatio": _DIRECTOR_ASPECT_LABELS[ratio],
+        "megapixels": round(width * height / 1_000_000, 3),
+        "multiple": multiple,
+        "longEdge": long_edge,
+        "width": width,
+        "height": height,
+        "maxExportFrames": 0,
+        "exportMode": "all",
+        "audioMode": "generate",
+        "continuityEnabled": False,
+        "continuityOverlapFrames": 5,
+    }
+
+
+def _director_timeline_payload(
+    timeline,
+    uploaded_frames: dict[str, str],
+    *,
+    aspect_ratio: str,
+    resolution: str | None,
+) -> str:
     shots = []
     segments = []
     for entry in timeline.entries:
@@ -168,16 +224,60 @@ def _director_timeline_payload(timeline, uploaded_frames: dict[str, str]) -> str
             "taskType": "",
             "refs": [],
         })
+    output = _director_output_settings(aspect_ratio, resolution)
+    task_type = (
+        "fl2v — 首尾帧生视频(First-Last Frame)"
+        if any(item["endImage"] for item in segments)
+        else "i2v — 首帧生视频(Image-to-Video)"
+    )
+    keyframes = []
+    for entry, segment in zip(timeline.entries, segments, strict=True):
+        half = segment["frameCount"] // 2
+        if segment["isStartFrame"]:
+            keyframes.append({
+                "id": f"{segment['id']}_s", "imageFile": segment["genImage"]["imageFile"],
+                "start": segment["start"], "length": half,
+                "frameCount": half, "durationSec": segment["durationSec"],
+                "prompt": segment["prompt"], "negativePrompt": segment["negativePrompt"],
+                "isStartFrame": True, "isEndFrame": False,
+            })
+        if segment["isEndFrame"]:
+            keyframes.append({
+                "id": f"{segment['id']}_e", "imageFile": segment["endImage"]["imageFile"],
+                "start": segment["start"] + half, "length": segment["frameCount"] - half,
+                "frameCount": segment["frameCount"] - half, "durationSec": segment["durationSec"],
+                "prompt": "", "negativePrompt": segment["negativePrompt"],
+                "isStartFrame": False, "isEndFrame": True,
+            })
     payload = {
         "version": 5,
         "editMode": "segment",
         "totalFrames": timeline.total_frames,
         "frameRate": timeline.fps,
+        "video": {
+            "fileName": "", "videoFile": "", "subfolder": "", "type": "input",
+            "frames": [], "frameMap": [], "sourceFrameCount": timeline.total_frames * 2,
+            "deletedSourceRanges": [],
+        },
+        "videoClips": [],
+        "global": {
+            "taskType": task_type, "prompt": "", "refs": [],
+            "referenceVideo": {"videoFile": "", "fileName": "", "type": "input", "subfolder": ""},
+            "continuousReference": False, "genImage": {"imageFile": ""},
+            "sourceWidth": output["width"], "sourceHeight": output["height"],
+            "refAudios": [], "refVideos": [], "commonEnabled": False, "commonCollapsed": False,
+        },
+        "output": output,
+        "runSelectEnabled": False,
+        "runSelection": [],
         "segments": segments,
         "timelineMode": "fl2v" if any(item["endImage"] for item in segments) else "i2v",
+        "width": output["width"], "height": output["height"], "refMaxSize": output["longEdge"],
         "durationSec": timeline.duration_seconds,
         "shots": shots,
         "gen": {"defaultFrameCount": timeline.entries[0].frame_count},
+        "keyframes": keyframes,
+        "liveTaePreview": True,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -243,11 +343,11 @@ async def generate_h3_director_video(
             register_candidate=lambda _candidate: None,
             prompt_profile={"id": "minimax-h3", "version": 1},
         )
-        uploaded_frames: dict[str, str] = {}
+        uploaded_frames: dict[str, UploadedReference] = {}
         for entry in timeline.entries:
             for source in (entry.segment.first_frame, entry.segment.last_frame):
                 if source and source not in uploaded_frames:
-                    uploaded_frames[source] = (await upload(source)).url
+                    uploaded_frames[source] = await upload(source)
         request = VideoGenerationRequest(
             capability=(
                 MediaCapability.VIDEO_FL2VA
@@ -263,8 +363,35 @@ async def generate_h3_director_video(
         )
         candidate = await pipeline.generate_timeline(
             request,
-            timeline_data=_director_timeline_payload(timeline, uploaded_frames),
-            input_asset_hashes=tuple(),
+            timeline_data=_director_timeline_payload(
+                timeline,
+                {source: uploaded.url for source, uploaded in uploaded_frames.items()},
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            ),
+            input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
+            idempotency_input={
+                "version": 5,
+                "frame_rate": timeline.fps,
+                "total_frames": timeline.total_frames,
+                "segments": [
+                    {
+                        "id": entry.segment.segment_id,
+                        "start": entry.start_frame,
+                        "frame_count": entry.frame_count,
+                        "prompt": entry.segment.prompt,
+                        "first_frame_sha256": (
+                            uploaded_frames[entry.segment.first_frame].sha256
+                            if entry.segment.first_frame else None
+                        ),
+                        "last_frame_sha256": (
+                            uploaded_frames[entry.segment.last_frame].sha256
+                            if entry.segment.last_frame else None
+                        ),
+                    }
+                    for entry in timeline.entries
+                ],
+            },
         )
         if candidate.status is not MediaTaskStatus.SUCCEEDED:
             codes = ", ".join(issue.code for issue in candidate.quality_issues)

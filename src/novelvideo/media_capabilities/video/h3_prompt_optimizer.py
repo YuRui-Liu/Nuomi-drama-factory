@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai import Agent
 
 from .h3_prompt import render_h3_optimized_prompt
 from .h3_timeline import H3DirectorSegment
@@ -68,7 +69,10 @@ class H3PromptOptimizer:
                 raise ValueError("H3 prompt optimization supports only i2va and fl2va")
             _validate_dialogue_contract(segment, dialogue_required=context.dialogue_required)
             input_hash = _input_hash(segment, context, mode)
-            cache_path = self._cache_dir / f"{segment.segment_id}-{input_hash}.json"
+            segment_key = hashlib.sha256(
+                segment.segment_id.encode("utf-8")
+            ).hexdigest()[:16]
+            cache_path = self._cache_dir / f"{segment_key}-{input_hash}.json"
             cached = _load_cache(cache_path, input_hash)
             if cached is not None:
                 return cached.model_copy(update={"cache_hit": True})
@@ -95,6 +99,35 @@ class H3PromptOptimizer:
             raise H3PromptOptimizationError(
                 f"H3 prompt optimization failed: {exc}"
             ) from exc
+
+
+def create_h3_prompt_optimizer(*, cache_dir: Path | str) -> H3PromptOptimizer:
+    """Create the production typed H3 optimizer using the NewAPI text route."""
+    from novelvideo.config import (
+        get_newapi_text_pydantic_model,
+        get_newapi_text_pydantic_model_settings,
+    )
+    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+
+    settings = get_newapi_text_pydantic_model_settings(
+        "H3_PROMPT_OPTIMIZER_THINKING_LEVEL", "low"
+    )
+    kwargs: dict[str, Any] = {}
+    if settings is not None:
+        kwargs["model_settings"] = settings
+    agent = Agent(
+        get_newapi_text_pydantic_model(
+            "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+        ),
+        system_prompt=(
+            "你是 MiniMax H3 中文视频提示词导演。严格输出约定的 typed 字段；"
+            "保持输入帧事实，对白必须可辨识并支持口型。"
+        ),
+        output_type=H3PromptStructuredOutput,
+        name="MiniMax H3 Prompt Optimizer",
+        **kwargs,
+    )
+    return H3PromptOptimizer(agent, cache_dir)
 
 
 def _validate_dialogue_contract(
@@ -179,4 +212,5 @@ __all__ = [
     "H3PromptOptimizationResult",
     "H3PromptOptimizer",
     "H3PromptStructuredOutput",
+    "create_h3_prompt_optimizer",
 ]

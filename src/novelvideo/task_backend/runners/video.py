@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,9 @@ from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
+from novelvideo.media_capabilities.video.h3_prompt_optimizer import create_h3_prompt_optimizer
+from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.models import H3Mode
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,76 @@ def _resolve_video_aspect_ratio(value: object, frame_path: object) -> str:
     return "adaptive" if str(frame_path or "").strip() else "9:16"
 
 
+def _frame_content_sha256(path: str, *, label: str) -> str:
+    frame = Path(path)
+    if not frame.is_file():
+        raise FileNotFoundError(f"H3 {label} frame is unavailable: {frame}")
+    return hashlib.sha256(frame.read_bytes()).hexdigest()
+
+
+def _h3_dialogue_required(beat: dict[str, Any], config: dict[str, Any]) -> bool:
+    """Derive lip-sync intent only from explicit beat/config dialogue signals."""
+    if "dialogue_required" in config:
+        return bool(config["dialogue_required"])
+    if "dialogue_required" in beat:
+        return bool(beat["dialogue_required"])
+    dialogue = str(beat.get("dialogue") or beat.get("line") or config.get("dialogue") or "").strip()
+    if dialogue:
+        return True
+    audio_type = str(config.get("audio_type") or beat.get("audio_type") or "").strip().lower()
+    return audio_type in {"dialogue", "character_dialogue", "对白", "台词"}
+
+
+def _h3_prompt_context(
+    *, beat: dict[str, Any], config: dict[str, Any], first_frame: str, last_frame: str | None
+):
+    from novelvideo.config import get_newapi_text_model_name
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+
+    next_beat = config.get("next_beat") or {}
+    draft = str(config.get("prompt") or "").strip()
+    return H3PromptContext(
+        visual_description=str(beat.get("visual_description") or beat.get("shot_description") or draft),
+        narration=str(beat.get("narration") or beat.get("content") or ""),
+        prev_summary=str(config.get("prev_summary") or beat.get("prev_summary") or ""),
+        next_summary=str(next_beat.get("narration") or next_beat.get("content") or ""),
+        first_frame_sha256=_frame_content_sha256(first_frame, label="first"),
+        last_frame_sha256=(
+            _frame_content_sha256(last_frame, label="last") if last_frame else None
+        ),
+        model_id=get_newapi_text_model_name(
+            "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+        ),
+        dialogue_required=_h3_dialogue_required(beat, config),
+    )
+
+
+async def _optimize_h3_single_prompt(
+    *, ctx: ProjectContext, beat_num: int, beat: dict[str, Any], config: dict[str, Any],
+    first_frame: str, last_frame: str | None, duration: float, draft: str,
+) -> str:
+    from novelvideo.media_capabilities.video.h3_prompt import select_mode
+
+    segment = H3DirectorSegment(
+        segment_id=f"single-{beat_num}", beat_number=max(1, beat_num), prompt=draft or "当前镜头动作连续推进。",
+        duration_seconds=duration, first_frame=first_frame, last_frame=last_frame,
+        dialogue=str(beat.get("dialogue") or beat.get("line") or config.get("dialogue") or "").strip(),
+        speaker=str(beat.get("speaker") or config.get("speaker") or "").strip(),
+        tone=str(beat.get("tone") or beat.get("emotion") or config.get("tone") or "").strip(),
+    )
+    mode = select_mode(first_frame, last_frame, None)
+    if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
+        raise ValueError("single-video H3 requires a first frame")
+    optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
+    result = await optimizer.optimize_segment(
+        segment, _h3_prompt_context(
+            beat=beat, config=config, first_frame=first_frame, last_frame=last_frame
+        ), mode,
+    )
+    return result.prompt
+
+
 def _append_freezone_video_node_history(
     *,
     ctx: ProjectContext,
@@ -208,11 +282,20 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
     if is_h3_backend:
         from novelvideo.media_capabilities.video.runtime import generate_h3_video
 
+        first_frame = str(frame_path or "").strip()
+        if not first_frame:
+            raise ValueError("H3 single-video generation requires a first frame")
+        normalized_last = str(last_frame_path).strip() if last_frame_path else None
+        optimized_prompt = await _optimize_h3_single_prompt(
+            ctx=ctx, beat_num=beat_num, beat=beat, config=config, first_frame=first_frame,
+            last_frame=normalized_last, duration=float(video_duration), draft=str(prompt),
+        )
+
         generated = await generate_h3_video(
             ctx=ctx,
-            first_frame=str(frame_path or ""),
-            last_frame=str(last_frame_path) if last_frame_path else None,
-            prompt=str(prompt),
+            first_frame=first_frame,
+            last_frame=normalized_last,
+            prompt=optimized_prompt,
             duration=float(video_duration),
             aspect_ratio=str(config.get("ratio") or "9:16"),
             resolution=str(config["resolution"]) if config.get("resolution") else None,
@@ -231,7 +314,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
                 duration=video_duration,
                 video_mode=("keyframe" if generated.actual_mode == "fl2va" else "first_frame"),
                 backend="runninghub:minimax-h3",
-                prompt=prompt,
+                prompt=optimized_prompt,
             )
             video_pool_id = entry.id
         except Exception as exc:  # noqa: BLE001

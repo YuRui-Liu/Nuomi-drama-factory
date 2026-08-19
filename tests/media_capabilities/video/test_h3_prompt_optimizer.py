@@ -170,3 +170,22 @@ async def test_explicit_silent_segment_with_all_cue_fields_empty_is_valid(tmp_pa
 
     assert result.prompt
     assert len(agent.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_optimizer_hashes_unsafe_segment_id_for_cache_path(tmp_path):
+    agent = FakeAgent(H3PromptStructuredOutput(
+        integrated_multimodal_description="镜头前推。",
+        overall_soundscape="风声。",
+        non_diegetic_music="无。",
+    ))
+    optimizer = H3PromptOptimizer(agent, tmp_path / "cache")
+    segment = _segment().model_copy(update={"segment_id": "../../escape"})
+
+    result = await optimizer.optimize_segment(segment, _context(), H3Mode.I2VA)
+
+    assert result.cache_hit is False
+    cache_files = list((tmp_path / "cache").glob("*.json"))
+    assert len(cache_files) == 1
+    assert ".." not in cache_files[0].name
+    assert cache_files[0].parent == tmp_path / "cache"
