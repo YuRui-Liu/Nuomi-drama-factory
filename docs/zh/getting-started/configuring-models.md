@@ -268,25 +268,19 @@ secret://media/runninghub-main
 
 工作流导入处理的是 RunningHub 导出的 API JSON 内容，而不是由客户端提供任意服务器文件路径。当前导入器可接收 UTF-8 JSON bytes、字符串或对象；仅在调用方同时限定 `allowed_root` 时才允许读取本地 `Path`。导入限制为 5 MiB，只接受 JSON object，不执行其中的脚本或指令，并拒绝疑似凭据字段、重复 key、过深结构和无效节点引用。
 
-语义字段必须显式绑定到节点和输入字段，输出也必须指定节点与媒体类型。例如 MiniMax H3 工作流 `2087934731806658562` 的档案模型可使用：
+语义字段必须显式绑定到节点和输入字段，输出也必须指定节点与媒体类型。MiniMax H3 导演台工作流 `2089723723468328961` 只接受完整的 `timeline_data`，档案模型为：
 
 ```json
 {
   "id": "minimax-h3-video",
   "version": 1,
-  "workflow_id": "2087934731806658562",
-  "capabilities": ["video.i2va", "video.l2va", "video.fl2va"],
+  "workflow_id": "2089723723468328961",
+  "capabilities": ["video.i2va", "video.fl2va"],
   "bindings": {
-    "first_frame": {"node_id": "114", "field": "image"},
-    "last_frame": {"node_id": "141", "field": "image"},
-    "prompt": {"node_id": "133", "field": "prompt"},
-    "duration": {"node_id": "135", "field": "value"},
-    "seed": {"node_id": "131", "field": "noise_seed"},
-    "fps": {"node_id": "132", "field": "fps"},
-    "aspect_ratio": {"node_id": "115", "field": "aspect_ratio"}
+    "timeline_data": {"node_id": "12", "field": "timeline_data"}
   },
   "outputs": {
-    "video": {"node_id": "136", "media_type": "video"}
+    "video": {"node_id": "7", "media_type": "video"}
   },
   "constraints": {},
   "status": "draft"
@@ -301,6 +295,14 @@ secret://media/runninghub-main
 - **RunningHub 视频**：能力契约已为 `video.i2va`（首帧）、`video.l2va`（尾帧）、`video.fl2va`（首尾帧）、`video.ref2va`（参考素材）和 `video.t2va` 预留扩展边界；真实工作流执行器仍需后续接入。
 - **RunningHub TTS**：契约已包含 `tts.synthesize`、`tts.voice_design` 和 `tts.voice_clone`；工作流提交、分段并行、顺序合并和音频质量检查仍属后续实现。
 - **MiniMax H3 Skills**：这是将结构化分镜编译为 H3 视频提示词的增强层，不是模型供应商，也不负责提交任务。参考 [MiniMax H3 官方 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills)。
+
+### MiniMax H3 导演台运行约定
+
+- 一个 Director 任务可产出一个包含多个镜头的视频；合成、字幕和导出都读取 manifest 的 span，不按“一个 Beat 一个 MP4”重复插入。
+- 仅首帧为图生视频（i2v）；首帧加尾帧为首尾帧视频（fl2v）。产品界面不开放仅尾帧模式。
+- 提示词经 H3 中文优化层生成，不直接透传草稿；有对白的镜头必须写入可辨识的说话人、台词和时间信息，保证模型可对口型。
+- 默认保留 H3 原生环境声/音效。每个 span 的对白来源默认 `external_tts`，可切换为 `h3_native`；切换只重新合成，绝不重新生成视频，也不得叠加两路对白。
+- 旧 Beat/叙事组 MP4 可先执行 `python scripts/h3_director_migration.py <项目目录>` 查看 dry-run，再显式加 `--write` 生成附加 manifest；原 MP4 和既有 sidecar 不会被改写。
 
 ### 安全清单
 

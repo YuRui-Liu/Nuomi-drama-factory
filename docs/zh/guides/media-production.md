@@ -16,7 +16,7 @@ pnpm --dir frontend dev
 ## 供应商与工作流
 
 - GRSAI：单图、多宫格、超分和切割。切割后的子图与原始宫格图分别登记，便于复用和追踪。
-- RunningHub 视频：通过版本化 workflow profile 映射首帧、尾帧、首尾帧和图生视频参数；MiniMax H3 提示词在提交前编译。
+- RunningHub MiniMax H3 导演台：工作流 `2089723723468328961` 只绑定 `12.timeline_data`，从节点 `7` 下载成片；一次任务可生成多镜。仅首帧为 i2v，首尾帧为 fl2v，不开放仅尾帧。
 - RunningHub TTS：支持 Qwen3 音色设计和 IndexTTS2 音色克隆、情绪变体与批量对白合并。
 
 导入 RunningHub API JSON 后，先建立 profile，明确 workflow ID、版本、能力和允许绑定的节点字段。不要允许任意节点或任意字段透传。
@@ -57,3 +57,5 @@ pnpm --dir frontend dev
 真实产物路径以运行详情中 artifact 的 `local_path` 为准；内容寻址文件保存在配置的媒体 artifact 根目录，图像管线的阶段文件保存在该批次 `output_dir`。测试使用 MockTransport，不会生成真实视频。因此只有显式启用真实烟测、配置有效凭据并实际提交 RunningHub 后，才会出现真实 MP4。
 
 真实烟测建议只提交一个低成本镜头，确认远端 task ID、下载文件、SHA-256、质检结果和重启恢复后，再扩大到并发 5。
+
+H3 烟测脚本 `scripts/smoke_runninghub_h3.py` 只提交一个 Director timeline，并输出 task ID。提示词使用中文，含对白时必须为可辨识台词以支持对口型。H3 原生环境声/音效会保留；对白默认使用 `external_tts`，可逐 span 改为 `h3_native`，该改动只重新合成。

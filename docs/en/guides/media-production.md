@@ -16,7 +16,7 @@ The UI normally runs at `http://localhost:5173` and proxies `/api/v1` to the API
 ## Providers and workflows
 
 - GRSAI supports single images, grids, upscaling, and grid splitting. Source grids and extracted panels are registered separately.
-- RunningHub video uses versioned workflow profiles for first-frame, last-frame, first-and-last-frame, and image-to-video bindings. MiniMax H3 prompts are compiled before submission.
+- RunningHub MiniMax H3 Director uses workflow `2089723723468328961`, binding only `12.timeline_data` and downloading node `7`. One task can create multiple shots; first-frame is i2v, first-plus-last-frame is fl2v, and tail-only is not exposed.
 - RunningHub TTS supports Qwen3 voice design and IndexTTS2 cloning, emotion variants, batch dialogue, and audio merging.
 
 After importing a RunningHub API JSON file, create a profile with an explicit workflow ID, version, capability, and allow-listed node bindings. Arbitrary nodes and fields are rejected.
@@ -57,3 +57,5 @@ To roll back, pause new runs, restore the four defaults above, and separately ha
 Use each run detail's artifact `local_path` as the source of truth. Content-addressed outputs live under the configured artifact root; image stage files live in the batch `output_dir`. Automated tests use MockTransport and do not produce a real video. A real MP4 exists only after an explicitly enabled smoke test submits to RunningHub with valid credentials.
 
 Start with one low-cost shot. Verify the remote task ID, downloaded file, SHA-256, quality result, and restart recovery before increasing concurrency to five.
+
+`scripts/smoke_runninghub_h3.py` submits one Director timeline and prints the task ID. H3 prompts are Chinese-first; any dialogue must be recognizable for lip sync. Native ambience/SFX stay in the video. Per-span dialogue defaults to `external_tts` and can switch to `h3_native`; that only recomposes and never regenerates video.

@@ -180,25 +180,19 @@ Use an empty `fallback_chain` when cross-provider fallback is not allowed. Dupli
 
 Workflow import processes the contents of a RunningHub API JSON export; it does not trust an arbitrary server-side file path supplied by a client. The current importer accepts UTF-8 JSON bytes, a string, or an object. It reads a local `Path` only when the caller also constrains access with `allowed_root`. Imports are limited to 5 MiB, must be JSON objects, never execute scripts or instructions, and reject suspected credential fields, duplicate keys, overly deep structures, and invalid node references.
 
-Each semantic field must be explicitly bound to a node and input field. Outputs must identify a node and media type. For example, the profile model for MiniMax H3 workflow `2087934731806658562` can use:
+Each semantic field must be explicitly bound to a node and input field. Outputs must identify a node and media type. MiniMax H3 Director workflow `2089723723468328961` accepts one complete `timeline_data` payload:
 
 ```json
 {
   "id": "minimax-h3-video",
   "version": 1,
-  "workflow_id": "2087934731806658562",
-  "capabilities": ["video.i2va", "video.l2va", "video.fl2va"],
+  "workflow_id": "2089723723468328961",
+  "capabilities": ["video.i2va", "video.fl2va"],
   "bindings": {
-    "first_frame": {"node_id": "114", "field": "image"},
-    "last_frame": {"node_id": "141", "field": "image"},
-    "prompt": {"node_id": "133", "field": "prompt"},
-    "duration": {"node_id": "135", "field": "value"},
-    "seed": {"node_id": "131", "field": "noise_seed"},
-    "fps": {"node_id": "132", "field": "fps"},
-    "aspect_ratio": {"node_id": "115", "field": "aspect_ratio"}
+    "timeline_data": {"node_id": "12", "field": "timeline_data"}
   },
   "outputs": {
-    "video": {"node_id": "136", "media_type": "video"}
+    "video": {"node_id": "7", "media_type": "video"}
   },
   "constraints": {},
   "status": "draft"
@@ -210,9 +204,15 @@ Import calculates `source_sha256` over normalized content and returns a draft pr
 ### Provider capabilities
 
 - **GRSAI:** planned implementations for `image.storyboard_grid` and `image.single` will generate narrative storyboard grids. A later `image.grid_upscale_split` stage will upscale, split, remove borders, and preserve deterministic cell-to-shot mapping.
-- **RunningHub MiniMax H3 video:** workflow `2087934731806658562` is connected as the default `runninghub_minimax_h3` backend. It binds node 114 for the first frame, node 141 for the last frame, node 133 for the prompt, node 135 for duration, node 131 for seed, and downloads the video from node 136. First-frame, last-frame, and first-and-last-frame generation are supported. Provider-native audio is removed from the downloaded MP4 so the existing independent dubbing and sound-effects pipeline remains authoritative. Use `ltx23` only as the legacy ComfyUI fallback.
+- **RunningHub MiniMax H3 video:** workflow `2089723723468328961` is the default `runninghub_minimax_h3` backend. It submits one version-5 `timeline_data` to node 12 and downloads video from node 7. It supports first-frame i2v and first-plus-last-frame fl2v; tail-only generation is deliberately not exposed in the product.
 - **RunningHub TTS:** the contracts include `tts.synthesize`, `tts.voice_design`, and `tts.voice_clone`; workflow submission, parallel segmentation, ordered merging, and audio quality checks remain future work.
-- **MiniMax H3 Skills:** the prompt-enhancement layer compiles structured shot data into H3 video prompts, while the RunningHub adapter performs upload, submission, polling, download, and native-audio removal. See the [official MiniMax H3 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/3d-animation-short-generator).
+- **MiniMax H3 Skills:** the Chinese-first prompt layer compiles structured shots into the official H3 format. Dialogue shots must include recognizable speaker, line, and timing information for lip sync. See the [official MiniMax H3 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills).
+
+### MiniMax H3 Director operation
+
+- One Director output can contain several shots. Composition, subtitles, and export use manifest spans and insert that physical video once.
+- H3 ambience and sound effects are retained. Each span defaults to `external_tts`; `h3_native` is optional. Switching the dialogue source recompiles only and must not regenerate video or double voices.
+- To backfill old beat/group MP4s without altering them, first run `python scripts/h3_director_migration.py <project-dir>` (dry-run), then explicitly add `--write` to create additive manifests.
 
 ### Security checklist
 
