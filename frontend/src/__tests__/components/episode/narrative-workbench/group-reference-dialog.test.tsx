@@ -76,6 +76,10 @@ describe("GroupReferenceDialog", () => {
       useStyle: false,
       selectedCharacterReferenceIds: ["char-1"],
       selectedSceneReferenceIds: ["scene-1"],
+      providerId: "grsai-main",
+      model: "gpt-image-2",
+      allowUnconstrained: false,
+      saveAsProjectDefault: false,
     });
   });
 
@@ -152,6 +156,10 @@ describe("GroupReferenceDialog", () => {
       useStyle: false,
       selectedCharacterReferenceIds: ["char-4"],
       selectedSceneReferenceIds: ["scene-2"],
+      providerId: "grsai-main",
+      model: "gpt-image-2",
+      allowUnconstrained: false,
+      saveAsProjectDefault: false,
     });
   });
 

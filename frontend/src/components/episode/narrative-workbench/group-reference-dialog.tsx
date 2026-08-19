@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -27,15 +28,23 @@ export interface GroupReferenceDialogProps {
   onSubmit: (selection: NarrativeGroupGenerationSelection) => void;
   onOpenChange: (open: boolean) => void;
   onRetry?: () => void;
+  stage?: "sketch" | "render";
+  defaultProvider?: string;
+  defaultModel?: string;
+  sketchReady?: boolean;
 }
 
-function defaultSelection(preview?: NarrativeGroupReferencePreview | null) {
+function defaultSelection(preview?: NarrativeGroupReferencePreview | null, providerId = "grsai-main", model = "gpt-image-2") {
   return {
     useStyle: preview?.style.enabled_by_default ?? false,
     selectedCharacterReferenceIds: preview?.character_references
       .filter((item) => item.enabled_by_default).map((item) => item.id) ?? [],
     selectedSceneReferenceIds: preview?.scene_references
       .filter((item) => item.enabled_by_default).map((item) => item.id) ?? [],
+    providerId,
+    model,
+    allowUnconstrained: false,
+    saveAsProjectDefault: false,
   } satisfies NarrativeGroupGenerationSelection;
 }
 
@@ -126,8 +135,12 @@ export function GroupReferenceDialog({
   onSubmit,
   onOpenChange,
   onRetry,
+  stage = "render",
+  defaultProvider = "grsai-main",
+  defaultModel = stage === "sketch" ? "nano-banana-2" : "gpt-image-2",
+  sketchReady = true,
 }: GroupReferenceDialogProps) {
-  const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview));
+  const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview, defaultProvider, defaultModel));
   const wasOpen = useRef(false);
   const previousPreviewKey = useRef<string | null>(null);
   const previewKey = previewSelectionKey(preview);
@@ -135,10 +148,10 @@ export function GroupReferenceDialog({
   useEffect(() => {
     const justOpened = open && !wasOpen.current;
     const defaultsChanged = previewKey !== previousPreviewKey.current;
-    if (justOpened || defaultsChanged) setSelection(defaultSelection(preview));
+    if (justOpened || defaultsChanged) setSelection(defaultSelection(preview, defaultProvider, defaultModel));
     wasOpen.current = open;
     previousPreviewKey.current = previewKey;
-  }, [open, preview, previewKey]);
+  }, [open, preview, previewKey, defaultProvider, defaultModel]);
 
   const imageCount = selection.selectedCharacterReferenceIds.length
     + selection.selectedSceneReferenceIds.length;
@@ -160,6 +173,12 @@ export function GroupReferenceDialog({
       </div> : null}
 
       {!loading && preview ? <div className="space-y-3">
+        <section className="grid gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-2">
+          <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={selection.providerId ?? ""} onChange={(event) => setSelection((current) => ({ ...current, providerId: event.target.value }))} /></label>
+          <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select className="h-9 w-full rounded-md border border-input bg-background px-3" value={selection.model ?? ""} onChange={(event) => setSelection((current) => ({ ...current, model: event.target.value }))}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip", "nano-banana-2-4k-cl"]).map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+          <label className="flex items-center gap-2 text-xs sm:col-span-2"><Checkbox checked={selection.saveAsProjectDefault} onCheckedChange={(checked) => setSelection((current) => ({ ...current, saveAsProjectDefault: checked === true }))} />保存为本项目{stage === "sketch" ? "草图" : "实图"}默认模型</label>
+        </section>
+        {stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-xs text-amber-200"><Checkbox aria-label="允许无草图约束生成" checked={selection.allowUnconstrained} onCheckedChange={(checked) => setSelection((current) => ({ ...current, allowUnconstrained: checked === true }))} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；只有明确勾选后才允许提交。</span></label> : null}
         <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 p-3">
           <span>
             <span className="block font-medium">风格参考</span>
@@ -206,6 +225,8 @@ export function GroupReferenceDialog({
           disabled={
             loading || !!errorMessage || !preview || submitting
             || imageCount > preview.limits.max_images
+            || !selection.providerId?.trim() || !selection.model?.trim()
+            || (stage === "render" && !sketchReady && !selection.allowUnconstrained)
           }
           onClick={() => onSubmit(selection)}
         >

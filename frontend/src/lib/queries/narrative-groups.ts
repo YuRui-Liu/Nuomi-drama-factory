@@ -49,6 +49,10 @@ export interface NarrativeGroupGenerationSelection {
   useStyle: boolean;
   selectedCharacterReferenceIds: string[];
   selectedSceneReferenceIds: string[];
+  providerId?: string;
+  model?: string;
+  allowUnconstrained?: boolean;
+  saveAsProjectDefault?: boolean;
 }
 
 export interface NarrativeStageState {
@@ -59,6 +63,8 @@ export interface NarrativeStageState {
   actual_provider?: string | null;
   actual_model?: string | null;
   actual_mode?: string | null;
+  source_sketch_revision?: number | null;
+  constraint_mode?: "strong_sketch" | "unconstrained" | "" | null;
   video_asset?: string | null;
   manifest_asset?: string | null;
   original_audio_path?: string | null;
@@ -193,6 +199,9 @@ export function narrativeGroupActionPayload(input: {
     use_style?: boolean;
     selected_character_reference_ids?: string[];
     selected_scene_reference_ids?: string[];
+    provider_id?: string;
+    model?: string;
+    allow_unconstrained?: boolean;
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
@@ -200,6 +209,11 @@ export function narrativeGroupActionPayload(input: {
     payload.use_style = input.selection.useStyle;
     payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
     payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
+    if (input.selection.providerId) payload.provider_id = input.selection.providerId;
+    if (input.selection.model) payload.model = input.selection.model;
+    if (input.selection.allowUnconstrained !== undefined) {
+      payload.allow_unconstrained = input.selection.allowUnconstrained;
+    }
   }
   return payload;
 }

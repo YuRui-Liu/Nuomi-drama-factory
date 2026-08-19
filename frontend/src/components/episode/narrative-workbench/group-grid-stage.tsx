@@ -7,7 +7,7 @@ const STATUS: Record<string, string> = { pending: "未开始", queued: "排队�
 export function GroupGridStage({ title, stage, state, onAction }: { title: string; stage: NarrativeGridStage; state: NarrativeStageState; onAction: (stage: NarrativeGridStage, action: "generate" | "split" | "regenerate") => void }) {
   const splitFailed = state.status === "partial_failure" || state.status === "failed";
   return <section className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
-    <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">{title}</h3><p className="text-xs text-muted-foreground">{STATUS[state.status] ?? state.status} · revision {state.revision}</p></div>
+    <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">{title}</h3><p className="text-xs text-muted-foreground">{STATUS[state.status] ?? state.status} · revision {state.revision}</p>{state.actual_model ? <p className="mt-1 text-[11px] text-muted-foreground">{state.actual_provider}/{state.actual_model}{stage === "render" ? ` · ${state.constraint_mode === "strong_sketch" ? `草图强约束 r${state.source_sketch_revision}` : "无草图约束"}` : ""}</p> : null}</div>
       <div className="flex gap-2">
         {state.status === "pending" && <Button size="sm" onClick={() => onAction(stage, "generate")}>开始生成</Button>}
         {splitFailed && <Button size="sm" variant="outline" onClick={() => onAction(stage, "split")}>仅重试切分</Button>}
