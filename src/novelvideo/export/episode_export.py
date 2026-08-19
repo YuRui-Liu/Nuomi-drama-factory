@@ -25,6 +25,65 @@ async def build_srt_content(project_dir: Path, episode: int, beats: list[dict]) 
 
     audio_dir = project_dir / "audio" / f"ep{episode:03d}"
     spans = resolve_episode_composition_sources(project_dir, episode, beats)
+    if any(span.is_director for span in spans):
+        # A Director manifest is the shared source of truth for composition,
+        # archive export, and subtitles.  Its entries retain real frame-based
+        # boundaries, including silent shots that must still advance the clock.
+        beat_by_number = {
+            int(beat.get("beat_number", index)): beat
+            for index, beat in enumerate(beats, 1)
+        }
+        srt_lines: list[str] = []
+        sequence = 0
+        span_offset = 0.0
+        for span in spans:
+            if span.is_director:
+                for entry in span.entries:
+                    start = span_offset + float(entry.start_seconds or 0.0)
+                    end = span_offset + float(entry.end_seconds or 0.0)
+                    beat = beat_by_number.get(entry.segment.beat_number, {})
+                    text = entry.segment.dialogue.strip() or str(
+                        beat.get("narration_segment", "")
+                    ).strip()
+                    if text:
+                        sequence += 1
+                        srt_lines.extend(
+                            (
+                                str(sequence),
+                                f"{format_srt_time(start)} --> {format_srt_time(end)}",
+                                text,
+                                "",
+                            )
+                        )
+                span_offset += float(
+                    span.entries[-1].end_seconds or 0.0
+                )
+                continue
+
+            for beat_number in span.beat_numbers:
+                beat = beat_by_number.get(beat_number, {})
+                audio_path = audio_dir / f"beat_{beat_number:02d}.mp3"
+                duration = 5.0
+                if audio_path.exists():
+                    try:
+                        duration = await get_audio_duration_async(str(audio_path))
+                    except Exception:
+                        pass
+                start, end = span_offset, span_offset + duration
+                span_offset = end
+                text = str(beat.get("narration_segment", "")).strip()
+                if text:
+                    sequence += 1
+                    srt_lines.extend(
+                        (
+                            str(sequence),
+                            f"{format_srt_time(start)} --> {format_srt_time(end)}",
+                            text,
+                            "",
+                        )
+                    )
+        return "\n".join(srt_lines)
+
     director_durations = {
         entry.segment.beat_number: entry.actual_duration_seconds
         for span in spans

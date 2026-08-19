@@ -326,3 +326,48 @@ async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload
     assert attempt.input_asset_hashes == ["a" * 64]
     assert "https://" not in str(store.get_task(first.task_id).input_snapshot)
     assert "https://one.example" in attempt.effective_params["timeline_data"]
+
+
+@pytest.mark.asyncio
+async def test_director_timeline_revalidates_a_reused_succeeded_artifact(
+    tmp_path: Path,
+) -> None:
+    """A provider success may still be unusable and must never bypass QC on reuse."""
+    store = TaskStore(tmp_path / "tasks.db")
+    executor = FakeExecutor(store)
+    profile = WorkflowProfile(
+        id="minimax-h3-director", version=1, workflow_id="2089723723468328961",
+        capabilities=[MediaCapability.VIDEO_I2VA],
+        bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+    )
+    probe_calls = 0
+
+    async def probe(_: MediaArtifact) -> VideoProbe:
+        nonlocal probe_calls
+        probe_calls += 1
+        return VideoProbe(duration=1, width=576, height=1024, fps=24, has_audio=True)
+
+    pipeline = H3VideoPipeline(
+        store=store, executor=executor, workflow_profile=profile,
+        provider_account_id="runninghub-main", upload_reference=FakeUploader(),
+        probe_video=probe, register_candidate=lambda _: None,
+        prompt_profile={"id": "minimax-h3", "version": 1},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA, prompt="导演台", duration=5,
+        first_frame="first.png", aspect_ratio="9:16", resolution="576x1024",
+    )
+    kwargs = {
+        "timeline_data": '{"imageFile":"https://example/first.png"}',
+        "input_asset_hashes": ("a" * 64,),
+        "idempotency_input": {"segments": [{"id": "one"}]},
+    }
+
+    first = await pipeline.generate_timeline(request, **kwargs)
+    reused = await pipeline.generate_timeline(request, **kwargs)
+
+    assert first.status is MediaTaskStatus.QUALITY_FAILED
+    assert reused.status is MediaTaskStatus.QUALITY_FAILED
+    assert reused.quality_issues[0].code == "video.duration_mismatch"
+    assert probe_calls == 2
+    assert len(executor.calls) == 1

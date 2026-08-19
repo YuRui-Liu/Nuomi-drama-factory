@@ -251,13 +251,22 @@ class H3VideoPipeline:
             artifact = MediaArtifact.model_validate(task.output["artifacts"][0])
             attempts = self.store.list_attempts(task.id)
             current_attempt = attempts[-1] if attempts else None
+            # Provider completion is not a quality verdict.  The artifact can
+            # have failed QC on the original request (or changed on disk), so
+            # every idempotent reuse must probe it again.
+            issues = validate_video(await self.probe_video(artifact), request)
             candidate = VideoCandidate(
                 task_id=task.id,
                 provider_task_id=(
                     current_attempt.provider_task_id if current_attempt else None
                 ),
                 artifact=artifact,
-                status=MediaTaskStatus.SUCCEEDED,
+                status=(
+                    MediaTaskStatus.QUALITY_FAILED
+                    if issues
+                    else MediaTaskStatus.SUCCEEDED
+                ),
+                quality_issues=issues,
                 reference_hashes=tuple(
                     current_attempt.input_asset_hashes if current_attempt else ()
                 ),
