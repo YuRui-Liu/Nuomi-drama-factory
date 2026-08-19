@@ -61,6 +61,9 @@ dependencies = [
 novelvideo = "novelvideo.cli:app"
 
 [project.optional-dependencies]
+audio-separation = [
+    "demucs>=4.0.1,<5.0.0",
+]
 world = [
     "sharp @ git+https://github.com/apple/ml-sharp.git",
     "da2 @ git+https://github.com/EnVision-Research/DA-2.git#subdirectory=src",
