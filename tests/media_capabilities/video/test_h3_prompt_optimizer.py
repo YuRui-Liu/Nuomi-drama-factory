@@ -145,3 +145,28 @@ async def test_dialogue_intent_without_dialogue_fails_closed_before_agent_call(t
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, _context(), H3Mode.I2VA)
     assert agent.calls == []
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_dialogue_required_with_all_cue_fields_empty_fails_closed(tmp_path):
+    segment = _segment().model_copy(update={"dialogue": "", "speaker": "", "tone": ""})
+    context = _context().model_copy(update={"dialogue_required": True})
+    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+
+    with pytest.raises(H3PromptOptimizationError, match="dialogue is required"):
+        await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, context, H3Mode.I2VA)
+
+    assert agent.calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_silent_segment_with_all_cue_fields_empty_is_valid(tmp_path):
+    segment = _segment().model_copy(update={"dialogue": "", "speaker": "", "tone": ""})
+    context = _context().model_copy(update={"dialogue_required": False})
+    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, context, H3Mode.I2VA)
+
+    assert result.prompt
+    assert len(agent.calls) == 1

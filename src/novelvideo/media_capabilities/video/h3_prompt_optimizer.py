@@ -33,6 +33,7 @@ class H3PromptContext(BaseModel):
     first_frame_sha256: str = Field(min_length=1)
     last_frame_sha256: str | None = None
     model_id: str = Field(min_length=1)
+    dialogue_required: bool = False
 
 
 class H3PromptStructuredOutput(BaseModel):
@@ -65,7 +66,7 @@ class H3PromptOptimizer:
             mode = H3Mode(mode)
             if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
                 raise ValueError("H3 prompt optimization supports only i2va and fl2va")
-            _validate_dialogue_contract(segment)
+            _validate_dialogue_contract(segment, dialogue_required=context.dialogue_required)
             input_hash = _input_hash(segment, context, mode)
             cache_path = self._cache_dir / f"{segment.segment_id}-{input_hash}.json"
             cached = _load_cache(cache_path, input_hash)
@@ -96,11 +97,13 @@ class H3PromptOptimizer:
             ) from exc
 
 
-def _validate_dialogue_contract(segment: H3DirectorSegment) -> None:
+def _validate_dialogue_contract(
+    segment: H3DirectorSegment, *, dialogue_required: bool
+) -> None:
     dialogue = segment.dialogue.strip()
     speaker = segment.speaker.strip()
     tone = segment.tone.strip()
-    if (speaker or tone) and not dialogue:
+    if (dialogue_required or speaker or tone) and not dialogue:
         raise ValueError("dialogue is required for a segment with dialogue intent")
     if dialogue and not speaker:
         raise ValueError("speaker is required for recognizable dialogue")
@@ -136,6 +139,7 @@ def _build_task(
 说话者：{segment.speaker}
 对白：{segment.dialogue}
 语气：{segment.tone}
+对白必需：{'是' if context.dialogue_required else '否'}
 画面：{context.visual_description}
 叙事：{context.narration}
 前文：{context.prev_summary}
