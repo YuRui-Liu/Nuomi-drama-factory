@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Awaitable, Callable
 
 
 class StemSeparationError(RuntimeError):
@@ -31,12 +34,14 @@ class DemucsStemSeparator:
     def __init__(
         self,
         *,
-        executable: str = "demucs",
+        executable: str | None = None,
         model: str = "htdemucs",
         device: str = "cpu",
         timeout: float = 30 * 60,
+        terminate_timeout: float = 5,
+        audio_probe: Callable[[Path], Awaitable[float]] | None = None,
     ) -> None:
-        if not executable.strip():
+        if executable is not None and not executable.strip():
             raise ValueError("executable must not be empty")
         if not model.strip():
             raise ValueError("model must not be empty")
@@ -44,14 +49,19 @@ class DemucsStemSeparator:
             raise ValueError("device must not be empty")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
+        if terminate_timeout <= 0:
+            raise ValueError("terminate_timeout must be positive")
         self.executable = executable
         self.model = model
         self.device = device
         self.timeout = float(timeout)
+        self.terminate_timeout = float(terminate_timeout)
+        self.audio_probe = audio_probe or self._probe_audio
 
     @property
     def resolved_executable(self) -> str | None:
-        return shutil.which(self.executable)
+        configured = self.executable or os.getenv("DRAMACLAW_DEMUCS_BIN") or "demucs"
+        return shutil.which(configured)
 
     @property
     def available(self) -> bool:
@@ -95,12 +105,12 @@ class DemucsStemSeparator:
                 process.communicate(), timeout=self.timeout
             )
         except TimeoutError as exc:
-            await self._terminate(process)
+            await self._terminate(process, timeout=self.terminate_timeout)
             raise StemSeparationError(
                 f"Demucs separation timed out after {self.timeout:g} seconds"
             ) from exc
         except asyncio.CancelledError:
-            await self._terminate(process)
+            await self._terminate(process, timeout=self.terminate_timeout)
             raise
 
         if process.returncode != 0:
@@ -114,6 +124,18 @@ class DemucsStemSeparator:
             if current is None or current[0] <= 0 or current == previous[path]:
                 raise StemSeparationError(
                     f"Demucs output is missing or empty/stale: {path.name}"
+                )
+            try:
+                duration = await self.audio_probe(path)
+            except (StemSeparationError, asyncio.CancelledError):
+                raise
+            except Exception as exc:
+                raise StemSeparationError(
+                    f"Demucs output is not decodable: {path.name}"
+                ) from exc
+            if duration <= 0:
+                raise StemSeparationError(
+                    f"Demucs output has invalid duration: {path.name}"
                 )
         return StemSeparationResult(
             source=source_path,
@@ -132,10 +154,53 @@ class DemucsStemSeparator:
         return stat.st_size, stat.st_mtime_ns
 
     @staticmethod
-    async def _terminate(process: asyncio.subprocess.Process) -> None:
+    async def _terminate(
+        process: asyncio.subprocess.Process, *, timeout: float
+    ) -> None:
         if process.returncode is None:
             process.terminate()
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+            return
+        except TimeoutError:
+            if process.returncode is None:
+                process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except TimeoutError:
+            return
+
+    async def _probe_audio(self, path: Path) -> float:
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe is None:
+            raise StemSeparationUnavailable("audio validation unavailable: ffprobe not found")
+        process = await asyncio.create_subprocess_exec(
+            ffprobe, "-v", "error", "-show_entries", "format=duration",
+            "-of", "json", str(path), stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=min(self.timeout, 30)
+            )
+        except TimeoutError as exc:
+            await self._terminate(process, timeout=self.terminate_timeout)
+            raise StemSeparationError("ffprobe audio validation timed out") from exc
+        except asyncio.CancelledError:
+            await self._terminate(process, timeout=self.terminate_timeout)
+            raise
+        if process.returncode != 0:
+            detail = stderr.decode(errors="replace").strip()
+            raise StemSeparationError(
+                f"Demucs output is not decodable: {path.name}: {detail}"
+            )
+        try:
+            payload = json.loads(stdout)
+            return float((payload.get("format") or {}).get("duration") or 0)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StemSeparationError(
+                f"Demucs output is not decodable: {path.name}"
+            ) from exc
 
 
 __all__ = [
