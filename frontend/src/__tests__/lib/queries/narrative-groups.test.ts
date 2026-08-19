@@ -13,6 +13,9 @@ vi.mock("@/lib/api", () => ({
 import {
   narrativeGroupActionPath,
   narrativeGroupActionPayload,
+  narrativeGroupVideoPath,
+  narrativeGroupVideoDialogueSourcePath,
+  narrativeGroupVideoPayload,
   narrativeGroupReferencePath,
   narrativeGroupRevisionPath,
   narrativeGroupRollbackPath,
@@ -27,6 +30,18 @@ describe("narrative group query contract", () => {
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/render/regenerate");
     expect(narrativeGroupActionPayload({ revision: 3, apiKey: "must-not-leak" } as never))
       .toEqual({ revision: 3 });
+  });
+
+  it("builds one director-video request with only model, mode, and revision", () => {
+    expect(narrativeGroupVideoPath("demo project", 2, "ng-01"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
+    expect(narrativeGroupVideoPayload({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 }))
+      .toEqual({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 });
+  });
+
+  it("uses a separate recomposition-only dialogue source endpoint", () => {
+    expect(narrativeGroupVideoDialogueSourcePath("demo", 2, "ng-01"))
+      .toBe("api/v1/projects/demo/episodes/2/narrative-groups/ng-01/video/dialogue-source");
   });
 
   it("builds an encoded reference-preview path", () => {

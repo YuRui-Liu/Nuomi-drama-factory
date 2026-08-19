@@ -12,9 +12,15 @@ export function groupFrameSummary(inputs: NonNullable<NarrativeGroup["video_inpu
   };
 }
 
-export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, inherited = true, available = true, unavailableReason, onGenerate }: {
+const taskStatusLabel: Record<NonNullable<NarrativeGroup["stages"]["video"]["status"]>, string> = {
+  pending: "待生成", queued: "已排队", running: "生成中", review: "待审核",
+  completed: "已完成", partial_failure: "部分失败", failed: "生成失败",
+};
+
+export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, taskStatus = "pending", inherited = true, available = true, unavailableReason, onGenerate }: {
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
+  taskStatus?: NarrativeGroup["stages"]["video"]["status"];
   inherited?: boolean; available?: boolean; unavailableReason?: string | null;
   onGenerate?: (request: { video_model: string; h3_mode: VideoModelMode }) => void;
 }) {
@@ -28,7 +34,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
           <Video className="size-4 text-primary" />
           <div><h3 className="text-sm font-semibold">视频生成</h3><p className="text-xs text-muted-foreground">{label} · {modeLabel} · {inherited ? "继承项目默认" : "本次临时覆盖"}</p></div>
         </div>
-        <Button type="button" size="sm" disabled={!available || !hasFirstFrame || !onGenerate} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组内视频</Button>
+        <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!available || !hasFirstFrame || !onGenerate || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
       </div>
       {!available && <p className="mt-2 text-xs text-destructive">{unavailableReason || "模型尚未配置"}</p>}
       {inputs?.length ? <div className="mt-3 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">

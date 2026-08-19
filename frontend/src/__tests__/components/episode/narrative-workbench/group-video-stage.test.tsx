@@ -22,8 +22,14 @@ describe("GroupVideoStage", () => {
   it("keeps a temporary override local to the generation callback", () => {
     const generate = vi.fn();
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} onGenerate={generate} />);
-    fireEvent.click(screen.getByRole("button", { name: "生成组内视频" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成组合视频" }));
     expect(generate).toHaveBeenCalledWith({ video_model: "runninghub:minimax-h3", h3_mode: "auto" });
     expect(screen.getByText(/I2V/)).toBeInTheDocument();
+  });
+
+  it("reports the single director task state and never offers tail-frame-only mode", () => {
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} taskStatus="running" />);
+    expect(screen.getByText("生成中")).toBeInTheDocument();
+    expect(screen.queryByText(/仅尾帧/)).not.toBeInTheDocument();
   });
 });
