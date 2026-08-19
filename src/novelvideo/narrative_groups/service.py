@@ -451,6 +451,67 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
     raise KeyError(group_id)
 
 
+def update_video_manifest_dialogue_source(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    *,
+    span_index: int,
+    dialogue_source: str,
+    expected_revision: int | None = None,
+):
+    """Atomically change one logical H3 span without regenerating video.
+
+    The sidecar lock serializes revision checks with any generation task.  The
+    manifest itself is replaced atomically, so a composer sees either the old
+    complete mapping or the new complete mapping, never a partial JSON write.
+    """
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource,
+        H3DirectorOutputManifest,
+        H3TimelineEntry,
+        load_h3_director_manifest,
+        save_h3_director_manifest,
+    )
+
+    with _sidecar_guard(project_dir, episode):
+        group = next((item for item in load_groups(project_dir, episode) if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        state = group.stages.get("video", GroupStageState())
+        if expected_revision is not None and state.revision != int(expected_revision):
+            raise RuntimeError("narrative group video revision is stale")
+        manifest_name = str(state.manifest_asset or "").strip()
+        if not manifest_name:
+            raise FileNotFoundError("narrative group video manifest is unavailable")
+        manifest_path = Path(manifest_name)
+        if not manifest_path.is_file():
+            raise FileNotFoundError("narrative group video manifest is unavailable")
+        manifest = load_h3_director_manifest(manifest_path)
+        if span_index < 0 or span_index >= len(manifest.entries):
+            raise IndexError(span_index)
+        source = DialogueSource(dialogue_source)
+        entries = []
+        for index, entry in enumerate(manifest.entries):
+            segment = entry.segment
+            if index == span_index:
+                segment = segment.model_copy(update={"dialogue_source": source})
+            entries.append(H3TimelineEntry(
+                segment=segment,
+                start_frame=entry.start_frame,
+                frame_count=entry.frame_count,
+                physical_video=entry.physical_video,
+                format_version=entry.format_version,
+                workflow_id=entry.workflow_id,
+                provider_task_id=entry.provider_task_id,
+            ))
+        updated = H3DirectorOutputManifest(
+            **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
+        )
+        save_h3_director_manifest(manifest_path, updated)
+        return updated
+
+
 async def _await_result(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 

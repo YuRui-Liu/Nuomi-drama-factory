@@ -23,6 +23,7 @@ from novelvideo.narrative_groups.service import (
     rebuild_groups,
     rollback_stage_revision,
     stage_history,
+    update_video_manifest_dialogue_source,
 )
 from novelvideo.ports import get_task_backend
 
@@ -35,6 +36,15 @@ class NarrativeGroupVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="minimax-h3", min_length=1)
     mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    revision: int | None = Field(default=None, ge=1)
+
+
+class NarrativeGroupDialogueSourceRequest(BaseModel):
+    """A composition preference for one logical span of a director output."""
+
+    model_config = ConfigDict(extra="forbid")
+    span_index: int = Field(ge=0)
+    dialogue_source: Literal["external_tts", "h3_native"]
     revision: int | None = Field(default=None, ge=1)
 
 
@@ -69,8 +79,37 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
     result = []
     for group in groups:
         item = group.to_dict()
-        for state in item["stages"].values():
+        for stage_name, state in item["stages"].items():
             state.pop("revision_history", None)
+            if stage_name == "video":
+                manifest_name = str(state.get("manifest_asset") or "").strip()
+                if manifest_name:
+                    try:
+                        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+                        manifest = load_h3_director_manifest(manifest_name)
+                        state["video_spans"] = [
+                            {
+                                "span_index": index,
+                                "beat_numbers": [entry.segment.beat_number],
+                                "start_seconds": entry.start_seconds,
+                                "end_seconds": entry.end_seconds,
+                                "dialogue_source": entry.dialogue_source.value,
+                            }
+                            for index, entry in enumerate(manifest.entries)
+                        ]
+                        if not state.get("video_asset"):
+                            state["video_asset"] = manifest.physical_video
+                        if not state.get("original_audio_path"):
+                            state["original_audio_path"] = manifest.original_audio_path or ""
+                        if not state.get("dialogue_stem_path"):
+                            state["dialogue_stem_path"] = manifest.dialogue_stem_path or ""
+                        if not state.get("ambience_stem_path"):
+                            state["ambience_stem_path"] = manifest.ambience_stem_path or ""
+                    except (OSError, ValueError):
+                        state["video_spans"] = []
+                else:
+                    state["video_spans"] = []
             state["grid_asset"] = _asset_url(
                 project, project_dir, state.get("grid_asset", "")
             )
@@ -293,6 +332,65 @@ async def generate_video_group(
     user: dict = Depends(get_api_user),
 ):
     return await _enqueue_group_video(project, episode, group_id, user, request)
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/dialogue-source",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def change_group_video_dialogue_source(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupDialogueSourceRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    try:
+        update_video_manifest_dialogue_source(
+            resolved.project_dir,
+            episode,
+            group_id,
+            span_index=request.span_index,
+            dialogue_source=request.dialogue_source,
+            expected_revision=request.revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except (FileNotFoundError, IndexError) as exc:
+        raise HTTPException(status_code=404, detail="Narrative group video span not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    revision = request.revision
+    if revision is None:
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Narrative group not found")
+        revision = group.stages["video"].revision
+    scope = f"group_{group_id}_video_compose_r{revision}_s{request.span_index}"
+    payload = {
+        "episode": episode,
+        "group_id": group_id,
+        "revision": revision,
+        "span_index": request.span_index,
+        "dialogue_source": request.dialogue_source,
+    }
+    queued = await get_task_backend().enqueue_project_task(
+        resolved.ctx,
+        task_type="narrative_group_video_compose",
+        queue_kind="default",
+        episode=episode,
+        scope=scope,
+        payload=payload,
+    )
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id,
+        "scope": scope,
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 
 
 @router.post(
