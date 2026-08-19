@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
+from uuid import uuid4
 
 
 class StemSeparationError(RuntimeError):
@@ -81,47 +83,69 @@ class DemucsStemSeparator:
             raise StemSeparationError(f"source audio does not exist: {source_path}")
         output_path = Path(output_directory).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
-        stem_directory = output_path / self.model / source_path.stem
-        vocals = stem_directory / "vocals.wav"
-        no_vocals = stem_directory / "no_vocals.wav"
-        previous = {path: self._fingerprint(path) for path in (vocals, no_vocals)}
-
-        process = await asyncio.create_subprocess_exec(
-            executable,
-            "--two-stems",
-            "vocals",
-            "-n",
-            self.model,
-            "-d",
-            self.device,
-            "-o",
-            str(output_path),
-            str(source_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        digest = await asyncio.to_thread(self._sha256, source_path)
+        stable_directory = output_path / self.model / digest
+        run_output = output_path / ".demucs-runs" / uuid4().hex
+        run_output.mkdir(parents=True)
         try:
-            _stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout
+            process = await asyncio.create_subprocess_exec(
+                executable,
+                "--two-stems",
+                "vocals",
+                "-n",
+                self.model,
+                "-d",
+                self.device,
+                "-o",
+                str(run_output),
+                str(source_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except TimeoutError as exc:
-            await self._terminate(process, timeout=self.terminate_timeout)
-            raise StemSeparationError(
-                f"Demucs separation timed out after {self.timeout:g} seconds"
-            ) from exc
-        except asyncio.CancelledError:
-            await self._terminate(process, timeout=self.terminate_timeout)
-            raise
+            try:
+                _stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=self.timeout
+                )
+            except TimeoutError as exc:
+                await self._terminate(process, timeout=self.terminate_timeout)
+                raise StemSeparationError(
+                    f"Demucs separation timed out after {self.timeout:g} seconds"
+                ) from exc
+            except asyncio.CancelledError:
+                await self._terminate(process, timeout=self.terminate_timeout)
+                raise
+            if process.returncode != 0:
+                detail = stderr.decode(errors="replace").strip()
+                suffix = f": {detail}" if detail else ""
+                raise StemSeparationError(
+                    f"Demucs separation failed with exit code {process.returncode}{suffix}"
+                )
+            run_stems = run_output / self.model / source_path.stem
+            await self._validate_stems(run_stems)
+            stable_directory.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                run_stems.rename(stable_directory)
+            except OSError as exc:
+                if not stable_directory.is_dir():
+                    raise StemSeparationError("could not atomically publish stems") from exc
+            await self._validate_stems(stable_directory)
+        finally:
+            await asyncio.to_thread(shutil.rmtree, run_output, True)
 
-        if process.returncode != 0:
-            detail = stderr.decode(errors="replace").strip()
-            suffix = f": {detail}" if detail else ""
-            raise StemSeparationError(
-                f"Demucs separation failed with exit code {process.returncode}{suffix}"
-            )
-        for path in (vocals, no_vocals):
+        vocals = stable_directory / "vocals.wav"
+        no_vocals = stable_directory / "no_vocals.wav"
+        return StemSeparationResult(
+            source=source_path,
+            vocals=vocals,
+            no_vocals=no_vocals,
+            status="succeeded",
+            model=self.model,
+        )
+
+    async def _validate_stems(self, directory: Path) -> None:
+        for path in (directory / "vocals.wav", directory / "no_vocals.wav"):
             current = self._fingerprint(path)
-            if current is None or current[0] <= 0 or current == previous[path]:
+            if current is None or current[0] <= 0:
                 raise StemSeparationError(
                     f"Demucs output is missing or empty/stale: {path.name}"
                 )
@@ -137,13 +161,14 @@ class DemucsStemSeparator:
                 raise StemSeparationError(
                     f"Demucs output has invalid duration: {path.name}"
                 )
-        return StemSeparationResult(
-            source=source_path,
-            vocals=vocals,
-            no_vocals=no_vocals,
-            status="succeeded",
-            model=self.model,
-        )
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _fingerprint(path: Path) -> tuple[int, int] | None:
