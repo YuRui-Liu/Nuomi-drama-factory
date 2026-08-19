@@ -4,6 +4,7 @@ import pytest
 
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
+    H3PromptOptimizationError,
     H3PromptOptimizationResult,
     H3PromptOptimizer,
     H3PromptStructuredOutput,
@@ -66,7 +67,7 @@ async def test_optimizer_renders_typed_content_with_fixed_fl2va_structure(tmp_pa
     assert result.format_version == 1
     assert result.prompt == (
         "mode: fl2va\n\n"
-        "frame_alignment:\n首帧为动作起点，尾帧为动作终点；所有运动连续且不可偏离两帧可见事实。\n\n"
+        "frame_alignment:\n图片1：0.00 秒；图片2：5.00 秒。首帧为动作起点，尾帧为动作终点；所有运动连续且不可偏离两帧可见事实。\n\n"
         "integrated_multimodal_description:\n镜头缓慢推近，男人转身看向门口。\n"
         "[00:00.000-00:05.000] 林默（压低声音、急促）说：\u201c别过来\u201d\n\n"
         "overall_soundscape:\n脚步声停止，门锁轻响。\n\n"
@@ -103,8 +104,44 @@ async def test_optimizer_failure_raises_and_never_returns_or_caches_draft(tmp_pa
             raise RuntimeError("provider unavailable")
 
     optimizer = H3PromptOptimizer(FailingAgent(), tmp_path)
-    with pytest.raises(RuntimeError, match="provider unavailable"):
+    with pytest.raises(H3PromptOptimizationError, match="provider unavailable"):
         await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
 
     assert list(tmp_path.iterdir()) == []
 
+
+@pytest.mark.asyncio
+async def test_i2va_alignment_uses_official_image_one_zero_timestamp(tmp_path):
+    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+        _segment().model_copy(update={"last_frame": None}), _context(), H3Mode.I2VA
+    )
+    assert "frame_alignment:\n图片1：0.00 秒。" in result.prompt
+    assert "图片2" not in result.prompt
+
+
+@pytest.mark.asyncio
+async def test_fl2va_alignment_uses_actual_fractional_end_timestamp(tmp_path):
+    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+        _segment().model_copy(update={"duration_seconds": 4.25}), _context(), H3Mode.FL2VA
+    )
+    assert "图片1：0.00 秒；图片2：4.25 秒。" in result.prompt
+
+
+@pytest.mark.asyncio
+async def test_typed_output_validation_is_wrapped_and_not_cached(tmp_path):
+    agent = FakeAgent({"integrated_multimodal_description": "缺少音频字段"})
+    with pytest.raises(H3PromptOptimizationError, match="typed output"):
+        await H3PromptOptimizer(agent, tmp_path).optimize_segment(_segment(), _context(), H3Mode.I2VA)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_dialogue_intent_without_dialogue_fails_closed_before_agent_call(tmp_path):
+    segment = _segment().model_copy(update={"dialogue": ""})
+    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    with pytest.raises(H3PromptOptimizationError, match="dialogue"):
+        await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, _context(), H3Mode.I2VA)
+    assert agent.calls == []
+    assert list(tmp_path.iterdir()) == []

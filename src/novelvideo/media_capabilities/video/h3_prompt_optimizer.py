@@ -20,6 +20,10 @@ _FORMAT_VERSION = 1
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
+class H3PromptOptimizationError(RuntimeError):
+    """Optimization failed without producing a usable prompt or cache entry."""
+
+
 class H3PromptContext(BaseModel):
     model_config = _MODEL_CONFIG
     visual_description: str
@@ -57,29 +61,51 @@ class H3PromptOptimizer:
         context: H3PromptContext,
         mode: H3Mode,
     ) -> H3PromptOptimizationResult:
-        mode = H3Mode(mode)
-        if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
-            raise ValueError("H3 prompt optimization supports only i2va and fl2va")
-        input_hash = _input_hash(segment, context, mode)
-        cache_path = self._cache_dir / f"{segment.segment_id}-{input_hash}.json"
-        cached = _load_cache(cache_path, input_hash)
-        if cached is not None:
-            return cached.model_copy(update={"cache_hit": True})
+        try:
+            mode = H3Mode(mode)
+            if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
+                raise ValueError("H3 prompt optimization supports only i2va and fl2va")
+            _validate_dialogue_contract(segment)
+            input_hash = _input_hash(segment, context, mode)
+            cache_path = self._cache_dir / f"{segment.segment_id}-{input_hash}.json"
+            cached = _load_cache(cache_path, input_hash)
+            if cached is not None:
+                return cached.model_copy(update={"cache_hit": True})
 
-        # The draft is context only. It is never returned if typed generation fails.
-        response = await self._agent.run(_build_task(segment, context, mode))
-        output = H3PromptStructuredOutput.model_validate(response.output)
-        prompt = render_h3_optimized_prompt(
-            mode=mode,
-            duration_seconds=segment.duration_seconds,
-            dialogue=segment.dialogue,
-            speaker=segment.speaker,
-            tone=segment.tone,
-            **output.model_dump(),
-        )
-        result = H3PromptOptimizationResult(prompt=prompt, input_hash=input_hash)
-        _save_cache(cache_path, result)
-        return result
+            response = await self._agent.run(_build_task(segment, context, mode))
+            try:
+                output = H3PromptStructuredOutput.model_validate(response.output)
+            except Exception as exc:
+                raise ValueError(f"invalid typed output: {exc}") from exc
+            prompt = render_h3_optimized_prompt(
+                mode=mode,
+                duration_seconds=segment.duration_seconds,
+                dialogue=segment.dialogue,
+                speaker=segment.speaker,
+                tone=segment.tone,
+                **output.model_dump(),
+            )
+            result = H3PromptOptimizationResult(prompt=prompt, input_hash=input_hash)
+            _save_cache(cache_path, result)
+            return result
+        except H3PromptOptimizationError:
+            raise
+        except Exception as exc:
+            raise H3PromptOptimizationError(
+                f"H3 prompt optimization failed: {exc}"
+            ) from exc
+
+
+def _validate_dialogue_contract(segment: H3DirectorSegment) -> None:
+    dialogue = segment.dialogue.strip()
+    speaker = segment.speaker.strip()
+    tone = segment.tone.strip()
+    if (speaker or tone) and not dialogue:
+        raise ValueError("dialogue is required for a segment with dialogue intent")
+    if dialogue and not speaker:
+        raise ValueError("speaker is required for recognizable dialogue")
+    if dialogue and not tone:
+        raise ValueError("tone is required for recognizable dialogue")
 
 
 def _input_hash(
@@ -145,6 +171,7 @@ def _save_cache(path: Path, result: H3PromptOptimizationResult) -> None:
 
 __all__ = [
     "H3PromptContext",
+    "H3PromptOptimizationError",
     "H3PromptOptimizationResult",
     "H3PromptOptimizer",
     "H3PromptStructuredOutput",

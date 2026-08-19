@@ -3,12 +3,6 @@ from collections.abc import Sequence
 from .models import H3Mode, MotionSpec
 
 
-_FRAME_ALIGNMENT = {
-    H3Mode.I2VA: "首帧为动作起点；后续运动须连续，并保持首帧中的人物、场景与空间关系。",
-    H3Mode.FL2VA: "首帧为动作起点，尾帧为动作终点；所有运动连续且不可偏离两帧可见事实。",
-}
-
-
 def select_mode(
     first_frame: object | None,
     last_frame: object | None,
@@ -67,20 +61,33 @@ def render_h3_optimized_prompt(
 ) -> str:
     """Render typed optimizer output into the fixed H3 wire format."""
     mode = H3Mode(mode)
-    if mode not in _FRAME_ALIGNMENT:
+    if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
         raise ValueError("optimized H3 prompts support only i2va and fl2va")
     description = integrated_multimodal_description.strip()
     if dialogue.strip():
         cue = f"{speaker.strip()}（{tone.strip()}）说：“{dialogue.strip()}”"
         description = f"{description}\n[00:00.000-{_timestamp(duration_seconds)}] {cue}"
     sections = (
-        ("frame_alignment", _FRAME_ALIGNMENT[mode]),
+        ("frame_alignment", _frame_alignment(mode, duration_seconds)),
         ("integrated_multimodal_description", description),
         ("overall_soundscape", overall_soundscape.strip()),
         ("non_diegetic_music", non_diegetic_music.strip()),
     )
     body = "\n\n".join(f"{name}:\n{value}" for name, value in sections)
     return f"mode: {mode.value}\n\n{body}"
+
+
+def _frame_alignment(mode: H3Mode, duration_seconds: float) -> str:
+    if mode is H3Mode.I2VA:
+        return (
+            "图片1：0.00 秒。首帧为动作起点；后续运动须连续，"
+            "并保持首帧中的人物、场景与空间关系。"
+        )
+    return (
+        f"图片1：0.00 秒；图片2：{duration_seconds:.2f} 秒。"
+        "首帧为动作起点，尾帧为动作终点；"
+        "所有运动连续且不可偏离两帧可见事实。"
+    )
 
 
 def _timestamp(seconds: float) -> str:
