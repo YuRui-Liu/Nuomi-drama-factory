@@ -301,8 +301,8 @@ secret://media/runninghub-main
 - 一个 Director 任务可产出一个包含多个镜头的视频；合成、字幕和导出都读取 manifest 的 span，不按“一个 Beat 一个 MP4”重复插入。
 - 仅首帧为图生视频（i2v）；首帧加尾帧为首尾帧视频（fl2v）。产品界面不开放仅尾帧模式。
 - 提示词经 H3 中文优化层生成，不直接透传草稿；有对白的镜头必须写入可辨识的说话人、台词和时间信息，保证模型可对口型。
-- 默认保留 H3 原生环境声/音效。每个 span 的对白来源默认 `external_tts`，可切换为 `h3_native`；切换只重新合成，绝不重新生成视频，也不得叠加两路对白。
-- 旧 Beat/叙事组 MP4 可先执行 `python scripts/h3_director_migration.py <项目目录>` 查看 dry-run，再显式加 `--write` 生成附加 manifest；原 MP4 和既有 sidecar 不会被改写。
+- 默认保留 H3 原生环境声/音效；新生成 span 的对白来源默认 `external_tts`。迁移旧 MP4 时，因没有可验证的分轨，所有条目默认 `h3_native`，避免合成阶段错误地丢弃原视频音频。
+- 旧 Beat/叙事组 MP4 可先执行 `python scripts/h3_director_migration.py <项目目录>` 查看 dry-run，再显式加 `--write` 生成附加 manifest。只有能映射到同 revision 叙事组的文件才会以 CAS 方式挂接为 `completed`，供生产合成读取；无组的旧 Beat 只报告 `unattached`。若要迁移为 `external_tts`，必须同时显式提供存在的 `--ambience-stem` 与 `--dialogue-stem`；原 MP4 和较新 sidecar 结果不会被改写。
 
 ### 安全清单
 

@@ -211,8 +211,8 @@ Import calculates `source_sha256` over normalized content and returns a draft pr
 ### MiniMax H3 Director operation
 
 - One Director output can contain several shots. Composition, subtitles, and export use manifest spans and insert that physical video once.
-- H3 ambience and sound effects are retained. Each span defaults to `external_tts`; `h3_native` is optional. Switching the dialogue source recompiles only and must not regenerate video or double voices.
-- To backfill old beat/group MP4s without altering them, first run `python scripts/h3_director_migration.py <project-dir>` (dry-run), then explicitly add `--write` to create additive manifests.
+- H3 ambience and sound effects are retained. Newly generated spans default to `external_tts`; migrated legacy MP4s default to `h3_native` because no verified stems exist, so composition keeps their original audio.
+- To backfill old beat/group MP4s without altering them, first run `python scripts/h3_director_migration.py <project-dir>` (dry-run), then explicitly add `--write`. Only a same-revision mapped narrative group is CAS-attached as `completed` for production composition; a beat with no group is reported as `unattached`. `external_tts` migration additionally requires both existing `--ambience-stem` and `--dialogue-stem`; newer sidecar results are never overwritten.
 
 ### Security checklist
 

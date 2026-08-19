@@ -7,6 +7,17 @@ from scripts.h3_director_migration import (
     backfill_legacy_h3_manifests,
     detect_legacy_h3_artifacts,
 )
+from novelvideo.narrative_groups.models import GroupStageState
+from novelvideo.narrative_groups.service import load_groups, save_groups
+from novelvideo.narrative_groups.service import group_beats
+from novelvideo.media_capabilities.video.h3_timeline import (
+    DialogueSource,
+    H3DirectorOutputManifest,
+    H3DirectorSegment,
+    build_h3_timeline_data,
+    save_h3_director_manifest,
+)
+from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
 
 
 def test_detects_legacy_beat_and_group_videos_without_writing(tmp_path: Path) -> None:
@@ -56,9 +67,107 @@ def test_backfill_is_dry_run_by_default_then_idempotently_writes_manifests(tmp_p
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["physical_video"] == video.as_posix()
     assert payload["entries"][0]["segment"]["beat_number"] == 2
-    assert payload["entries"][0]["segment"]["dialogue_source"] == "external_tts"
+    assert payload["entries"][0]["segment"]["dialogue_source"] == "h3_native"
     assert video.read_bytes() == original
 
     rerun = backfill_legacy_h3_manifests(tmp_path, write=True)
     assert rerun.written == 0
     assert rerun.skipped_existing == 1
+
+
+def _group_with_video_revision(tmp_path: Path, *, revision: int, status: str = "pending") -> None:
+    group = group_beats([{"beat_number": 1}, {"beat_number": 2}])[0]
+    stages = dict(group.stages)
+    stages["video"] = GroupStageState(revision=revision, status=status)
+    save_groups(tmp_path, 1, [group.__class__(
+        id=group.id, ordinal=group.ordinal, beat_ids=group.beat_ids,
+        layout=group.layout, cell_to_beat=group.cell_to_beat, stages=stages,
+    )])
+
+
+def test_write_attaches_mapped_group_and_native_audio_is_composable(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "ep001" / "narrative_groups" / "ng-01_r1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"legacy-group")
+    _group_with_video_revision(tmp_path, revision=1)
+
+    report = backfill_legacy_h3_manifests(tmp_path, write=True)
+
+    assert report.written == 1
+    assert report.attached == 1
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    assert stage.status == "completed"
+    assert stage.video_asset == video.as_posix()
+    assert Path(stage.manifest_asset).is_file()
+    spans = resolve_episode_composition_sources(
+        tmp_path, 1, [{"beat_number": 1}, {"beat_number": 2}]
+    )
+    assert [span.video_path for span in spans] == [video]
+    assert spans[0].ambience_stem_path is None
+
+
+def test_dry_run_does_not_attach_or_mutate_group_sidecar(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "ep001" / "narrative_groups" / "ng-01_r1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"legacy-group")
+    _group_with_video_revision(tmp_path, revision=1)
+    sidecar = tmp_path / ".narrative_groups" / "ep001.json"
+    before = sidecar.read_bytes()
+
+    report = backfill_legacy_h3_manifests(tmp_path)
+
+    assert report.written == 0
+    assert report.attached == 0
+    assert sidecar.read_bytes() == before
+
+
+def test_write_attaches_a_preexisting_legacy_manifest(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "ep001" / "narrative_groups" / "ng-01_r1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"legacy-group")
+    _group_with_video_revision(tmp_path, revision=1)
+    item = detect_legacy_h3_artifacts(tmp_path)[0]
+    segments = tuple(
+        H3DirectorSegment(
+            segment_id=f"legacy-{beat}", beat_number=beat, prompt="legacy", duration_seconds=1,
+            first_frame="legacy://frame", dialogue_source=DialogueSource.H3_NATIVE,
+        )
+        for beat in item.beat_numbers
+    )
+    save_h3_director_manifest(item.manifest_path, H3DirectorOutputManifest(
+        physical_video=video.as_posix(), entries=build_h3_timeline_data(segments).entries,
+    ))
+
+    report = backfill_legacy_h3_manifests(tmp_path, write=True)
+
+    assert report.written == 0
+    assert report.skipped_existing == 1
+    assert report.attached == 1
+    assert load_groups(tmp_path, 1)[0].stages["video"].status == "completed"
+
+
+def test_write_never_overwrites_higher_revision_or_completed_result(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "ep001" / "narrative_groups" / "ng-01_r1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"legacy-group")
+    _group_with_video_revision(tmp_path, revision=2, status="completed")
+    groups = load_groups(tmp_path, 1)
+    current = groups[0].stages["video"]
+    stages = dict(groups[0].stages)
+    stages["video"] = GroupStageState(
+        revision=current.revision, status="completed", video_asset="new.mp4", manifest_asset="new.json"
+    )
+    group = groups[0]
+    save_groups(tmp_path, 1, [group.__class__(
+        id=group.id, ordinal=group.ordinal, beat_ids=group.beat_ids,
+        layout=group.layout, cell_to_beat=group.cell_to_beat, stages=stages,
+    )])
+
+    report = backfill_legacy_h3_manifests(tmp_path, write=True)
+
+    assert report.written == 1
+    assert report.attached == 0
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    assert stage.revision == 2
+    assert stage.video_asset == "new.mp4"
+    assert stage.manifest_asset == "new.json"

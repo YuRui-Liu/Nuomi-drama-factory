@@ -45,6 +45,8 @@ class BackfillReport:
     planned: int
     written: int
     skipped_existing: int
+    attached: int
+    unattached: int
 
 
 def _relative_posix(root: Path, path: Path) -> str:
@@ -108,7 +110,14 @@ def detect_legacy_h3_artifacts(project_dir: Path | str) -> tuple[LegacyH3Artifac
     return tuple(candidates)
 
 
-def _manifest_for(candidate: LegacyH3Artifact, *, duration_seconds: float) -> H3DirectorOutputManifest:
+def _manifest_for(
+    candidate: LegacyH3Artifact,
+    *,
+    duration_seconds: float,
+    ambience_stem_path: Path | None = None,
+    dialogue_stem_path: Path | None = None,
+) -> H3DirectorOutputManifest:
+    external_tts = ambience_stem_path is not None and dialogue_stem_path is not None
     segments = tuple(
         H3DirectorSegment(
             segment_id=f"legacy-ep{candidate.episode:03d}-{candidate.group_id}-{beat:02d}",
@@ -119,7 +128,11 @@ def _manifest_for(candidate: LegacyH3Artifact, *, duration_seconds: float) -> H3
             # MP4s did not persist one, so retain a non-resolvable marker that
             # can never be accidentally uploaded as a new generation input.
             first_frame=f"legacy://{candidate.video_path.name}",
-            dialogue_source=DialogueSource.EXTERNAL_TTS,
+            # Old movies retain their source audio by default.  External TTS
+            # is only safe when an operator supplied both verified stems.
+            dialogue_source=(
+                DialogueSource.EXTERNAL_TTS if external_tts else DialogueSource.H3_NATIVE
+            ),
         )
         for beat in candidate.beat_numbers
     )
@@ -129,7 +142,59 @@ def _manifest_for(candidate: LegacyH3Artifact, *, duration_seconds: float) -> H3
         entries=timeline.entries,
         workflow_id=None,
         provider_task_id=None,
+        dialogue_stem_path=dialogue_stem_path.as_posix() if dialogue_stem_path else None,
+        dialogue_stem_status="succeeded" if dialogue_stem_path else "not_requested",
+        ambience_stem_path=ambience_stem_path.as_posix() if ambience_stem_path else None,
+        ambience_stem_status="succeeded" if ambience_stem_path else "not_requested",
     )
+
+
+def _attach_group_manifest(candidate: LegacyH3Artifact, manifest_path: Path) -> bool:
+    """CAS-attach only the exact stale group revision while its sidecar is locked."""
+    if candidate.kind != "group":
+        return False
+    from novelvideo.narrative_groups.models import GroupStageState
+    from novelvideo.narrative_groups.service import _sidecar_guard, load_groups, record_stage_result
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+    root = candidate.video_path.parents[3]
+    with _sidecar_guard(root, candidate.episode):
+        group = next(
+            (item for item in load_groups(root, candidate.episode) if item.id == candidate.group_id),
+            None,
+        )
+        if group is None:
+            return False
+        current = group.stages.get("video", GroupStageState())
+        # A higher revision, or an already materialized same-revision result,
+        # always wins over a discovered legacy movie.
+        if current.revision != candidate.revision or (
+            current.status == "completed"
+            and (current.video_asset or current.manifest_asset)
+        ):
+            return False
+        manifest = load_h3_director_manifest(manifest_path)
+        updated = record_stage_result(
+            root,
+            candidate.episode,
+            candidate.group_id,
+            "video",
+            expected_revision=candidate.revision,
+            status="completed",
+            video_asset=candidate.video_path.as_posix(),
+            manifest_asset=manifest_path.as_posix(),
+            dialogue_stem_path=str(manifest.dialogue_stem_path or ""),
+            ambience_stem_path=str(manifest.ambience_stem_path or ""),
+            dialogue_stem_status=manifest.dialogue_stem_status,
+            ambience_stem_status=manifest.ambience_stem_status,
+        )
+        stage = updated.stages.get("video", GroupStageState())
+        return (
+            stage.revision == candidate.revision
+            and stage.status == "completed"
+            and stage.video_asset == candidate.video_path.as_posix()
+            and stage.manifest_asset == manifest_path.as_posix()
+        )
 
 
 def backfill_legacy_h3_manifests(
@@ -137,28 +202,51 @@ def backfill_legacy_h3_manifests(
     *,
     write: bool = False,
     duration_seconds: float = 5.0,
+    ambience_stem_path: Path | str | None = None,
+    dialogue_stem_path: Path | str | None = None,
 ) -> BackfillReport:
     """Plan or add manifests, without altering original movies or group sidecars."""
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
+    if bool(ambience_stem_path) != bool(dialogue_stem_path):
+        raise ValueError("external_tts migration requires both ambience and dialogue stems")
+    ambience_stem = Path(ambience_stem_path).resolve() if ambience_stem_path else None
+    dialogue_stem = Path(dialogue_stem_path).resolve() if dialogue_stem_path else None
+    for label, stem in (("ambience", ambience_stem), ("dialogue", dialogue_stem)):
+        if stem is not None and not stem.is_file():
+            raise FileNotFoundError(f"{label} stem is unavailable: {stem}")
     items = detect_legacy_h3_artifacts(project_dir)
     written = 0
     skipped_existing = 0
+    attached = 0
+    unattached = 0
     for item in items:
-        if item.manifest_path.exists():
+        exists = item.manifest_path.exists()
+        if exists:
             skipped_existing += 1
-            continue
-        if write:
+        elif write:
             save_h3_director_manifest(
                 item.manifest_path,
-                _manifest_for(item, duration_seconds=duration_seconds),
+                _manifest_for(
+                    item,
+                    duration_seconds=duration_seconds,
+                    ambience_stem_path=ambience_stem,
+                    dialogue_stem_path=dialogue_stem,
+                ),
             )
             written += 1
+        if write:
+            if _attach_group_manifest(item, item.manifest_path):
+                attached += 1
+            else:
+                unattached += 1
     return BackfillReport(
         items=items,
         planned=len(items) - skipped_existing,
         written=written,
         skipped_existing=skipped_existing,
+        attached=attached,
+        unattached=unattached,
     )
 
 
@@ -167,14 +255,18 @@ def main() -> None:
     parser.add_argument("project_dir", type=Path)
     parser.add_argument("--write", action="store_true", help="write additive manifests; default is dry-run")
     parser.add_argument("--duration-seconds", type=float, default=5.0)
+    parser.add_argument("--ambience-stem", type=Path)
+    parser.add_argument("--dialogue-stem", type=Path)
     args = parser.parse_args()
     report = backfill_legacy_h3_manifests(
-        args.project_dir, write=args.write, duration_seconds=args.duration_seconds
+        args.project_dir, write=args.write, duration_seconds=args.duration_seconds,
+        ambience_stem_path=args.ambience_stem, dialogue_stem_path=args.dialogue_stem,
     )
     mode = "written" if args.write else "dry-run"
     print(
         f"{mode}: planned={report.planned} written={report.written} "
-        f"skipped_existing={report.skipped_existing}"
+        f"skipped_existing={report.skipped_existing} attached={report.attached} "
+        f"unattached={report.unattached}"
     )
     for item in report.items:
         print(f"{item.kind} ep{item.episode:03d} beats={list(item.beat_numbers)} -> {item.manifest_path}")
