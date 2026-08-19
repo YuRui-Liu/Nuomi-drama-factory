@@ -70,16 +70,25 @@ def runtime_with() -> RunningHubRuntimeConfiguration:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("first_frame", "last_frame", "expected_mode"),
+    (
+        "first_frame",
+        "last_frame",
+        "aspect_ratio",
+        "expected_mode",
+        "expected_size",
+    ),
     [
-        ("first.png", None, "i2v"),
-        ("first.png", "last.png", "fl2v"),
+        ("first.png", None, "9:16", "i2v", (416, 736)),
+        ("first.png", "last.png", "9:16", "fl2v", (416, 736)),
+        ("first.png", None, "16:9", "i2v", (736, 416)),
     ],
 )
 async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
     first_frame: str,
     last_frame: str | None,
+    aspect_ratio: str,
     expected_mode: str,
+    expected_size: tuple[int, int],
 ) -> None:
     client = FakeClient(
         [
@@ -108,7 +117,7 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
         last_frame=last_frame,
         prompt="女孩从门口跑到窗边",
         duration=5,
-        aspect_ratio="9:16",
+        aspect_ratio=aspect_ratio,
         seed=7,
         poll_interval=0,
         max_polls=2,
@@ -123,11 +132,21 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
     assert client.submitted is not None
     workflow_id, node_info = client.submitted
     assert workflow_id == "2089723723468328961"
-    assert node_info and len(node_info) == 1
-    assert node_info[0]["nodeId"] == "12"
-    assert node_info[0]["fieldName"] == "timeline_data"
+    assert node_info and len(node_info) == 8
+    assert {item["nodeId"] for item in node_info} == {"12"}
+    fields = {item["fieldName"]: item["fieldValue"] for item in node_info}
+    assert fields["task_type"] == (
+        "fl2v — 首尾帧生视频(First-Last Frame)"
+        if last_frame
+        else "i2v — 首帧生视频(Image-to-Video)"
+    )
+    assert fields["global_prompt"] == ""
+    assert fields["frame_rate"] == 24
+    assert (fields["width"], fields["height"]) == expected_size
+    assert fields["ref_max_size"] == 736
+    assert fields["total_frames"] == 124
     import json
-    payload = json.loads(node_info[0]["fieldValue"])
+    payload = json.loads(fields["timeline_data"])
     assert payload["timelineMode"] == expected_mode
     assert payload["frameRate"] == 24
     assert payload["totalFrames"] == 124

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -45,8 +44,13 @@ def _director_timeline_payload(
     last_frame_url: str | None,
     prompt: str,
     duration: float,
+    aspect_ratio: str,
 ) -> str:
     """Build the Director node's single-segment timeline contract."""
+    from novelvideo.media_capabilities.video.runtime import (
+        _director_timeline_payload as build_director_payload,
+    )
+
     timeline = build_h3_timeline_data(
         (
             H3DirectorSegment(
@@ -60,47 +64,17 @@ def _director_timeline_payload(
         ),
         strict_first_frame=True,
     )
-    entry = timeline.entries[0]
-    frame_count = entry.frame_count
-    end_image = {"imageFile": last_frame_url} if last_frame_url else None
-    segment = {
-        "id": "segment-1",
-        "start": 0,
-        "length": frame_count,
-        "frameCount": frame_count,
-        "durationSec": frame_count / timeline.fps,
-        "prompt": prompt.strip(),
-        "negativePrompt": "",
-        "continuityFromPrev": False,
-        "isStartFrame": True,
-        "isEndFrame": last_frame_url is not None,
-        "genImage": {"imageFile": first_frame_url},
-        "endImage": end_image,
-        "taskType": "",
-        "refs": [],
+    uploaded_frames: dict[str, object] = {
+        "legacy-first-frame": {"imageFile": first_frame_url},
     }
-    payload = {
-        "version": 5,
-        "editMode": "segment",
-        "totalFrames": frame_count,
-        "frameRate": timeline.fps,
-        "segments": [segment],
-        "timelineMode": "fl2v" if last_frame_url else "i2v",
-        "durationSec": timeline.duration_seconds,
-        "shots": [
-            {
-                "id": "segment-1",
-                "durationSec": frame_count / timeline.fps,
-                "prompt": prompt.strip(),
-                "negativePrompt": "",
-                "continuityFromPrev": False,
-                "startImage": {"imageFile": first_frame_url},
-                "endImage": end_image,
-            }
-        ],
-        "gen": {"defaultFrameCount": frame_count},
-    }
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if last_frame_url:
+        uploaded_frames["legacy-last-frame"] = {"imageFile": last_frame_url}
+    return build_director_payload(
+        timeline,
+        uploaded_frames,
+        aspect_ratio=aspect_ratio,
+        resolution=None,
+    )
 
 
 async def generate_minimax_h3_video(
@@ -133,18 +107,24 @@ async def generate_minimax_h3_video(
     async with factory() as client:
         first_frame_url = await client.upload(first_frame)
         last_frame_url = await client.upload(last_frame) if last_frame else None
-        node_info = [
-            {
-                "nodeId": "12",
-                "fieldName": "timeline_data",
-                "fieldValue": _director_timeline_payload(
-                    first_frame_url=first_frame_url,
-                    last_frame_url=last_frame_url,
-                    prompt=prompt,
-                    duration=duration,
-                ),
-            }
-        ]
+        timeline_data = _director_timeline_payload(
+            first_frame_url=first_frame_url,
+            last_frame_url=last_frame_url,
+            prompt=prompt,
+            duration=duration,
+            aspect_ratio=aspect_ratio,
+        )
+        from novelvideo.media_capabilities.runtime.compiler import compile_node_info
+        from novelvideo.media_capabilities.video.runtime import (
+            _director_semantic_values,
+            load_h3_workflow_profile,
+        )
+
+        profile = load_h3_workflow_profile(workflow_id=workflow_id)
+        node_info = compile_node_info(
+            profile,
+            {**_director_semantic_values(timeline_data), "timeline_data": timeline_data},
+        )
 
         task_id = await client.submit(workflow_id, node_info)
         for _ in range(max_polls):
