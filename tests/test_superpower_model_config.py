@@ -114,3 +114,13 @@ def test_keyframe_prompt_builder_uses_video_optimizer_model(monkeypatch):
     assert calls == [
         ("KEYFRAME_PROMPT_MODEL", "DC-video-prompt-optimizer-LLM")
     ]
+
+
+def test_h3_prompt_optimizer_has_official_default_model():
+    from novelvideo.official_defaults import (
+        DEFAULT_H3_PROMPT_OPTIMIZER_MODEL,
+        DEFAULT_TEXT_MODEL_BY_ENV,
+    )
+
+    assert DEFAULT_H3_PROMPT_OPTIMIZER_MODEL == "DC-h3-prompt-optimizer-LLM"
+    assert DEFAULT_TEXT_MODEL_BY_ENV["H3_PROMPT_MODEL"] == DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
