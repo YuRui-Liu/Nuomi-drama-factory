@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.h3_director_migration import (
     backfill_legacy_h3_manifests,
     detect_legacy_h3_artifacts,
@@ -171,3 +173,68 @@ def test_write_never_overwrites_higher_revision_or_completed_result(tmp_path: Pa
     assert stage.revision == 2
     assert stage.video_asset == "new.mp4"
     assert stage.manifest_asset == "new.json"
+
+
+def test_stems_require_exactly_one_new_manifest_candidate_before_any_write(tmp_path: Path) -> None:
+    first = tmp_path / "videos" / "beats" / "ep001" / "beat_01.mp4"
+    second = tmp_path / "videos" / "beats" / "ep001" / "beat_02.mp4"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    ambience = tmp_path / "stems" / "no_vocals.wav"
+    dialogue = tmp_path / "stems" / "vocals.wav"
+    ambience.parent.mkdir()
+    ambience.write_bytes(b"ambience")
+    dialogue.write_bytes(b"dialogue")
+
+    preview = backfill_legacy_h3_manifests(
+        tmp_path, ambience_stem_path=ambience, dialogue_stem_path=dialogue
+    )
+    assert preview.planned == 2
+    assert not (tmp_path / "videos" / "director").exists()
+
+    with pytest.raises(ValueError, match="exactly one writable legacy artifact"):
+        backfill_legacy_h3_manifests(
+            tmp_path,
+            write=True,
+            ambience_stem_path=ambience,
+            dialogue_stem_path=dialogue,
+        )
+
+    assert not (tmp_path / "videos" / "director").exists()
+    assert first.read_bytes() == b"first"
+    assert second.read_bytes() == b"second"
+
+
+def test_unsafe_preexisting_external_tts_manifest_is_not_attached(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "ep001" / "narrative_groups" / "ng-01_r1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"legacy-group")
+    _group_with_video_revision(tmp_path, revision=1)
+    item = detect_legacy_h3_artifacts(tmp_path)[0]
+    segment = H3DirectorSegment(
+        segment_id="legacy-1",
+        beat_number=1,
+        prompt="legacy",
+        duration_seconds=1,
+        first_frame="legacy://frame",
+        dialogue_source=DialogueSource.EXTERNAL_TTS,
+    )
+    save_h3_director_manifest(item.manifest_path, H3DirectorOutputManifest(
+        physical_video=video.as_posix(),
+        entries=build_h3_timeline_data((segment,)).entries,
+        # Deliberately mimic the old unsafe manifest: external speech selected,
+        # but no verified stem output is available.
+        dialogue_stem_status="not_requested",
+        ambience_stem_status="not_requested",
+    ))
+
+    report = backfill_legacy_h3_manifests(tmp_path, write=True)
+
+    assert report.written == 0
+    assert report.skipped_existing == 1
+    assert report.attached == 0
+    assert report.unattached == 1
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    assert stage.status == "pending"
+    assert not stage.manifest_asset

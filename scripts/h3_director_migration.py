@@ -173,7 +173,12 @@ def _attach_group_manifest(candidate: LegacyH3Artifact, manifest_path: Path) -> 
             and (current.video_asset or current.manifest_asset)
         ):
             return False
-        manifest = load_h3_director_manifest(manifest_path)
+        try:
+            manifest = load_h3_director_manifest(manifest_path)
+        except (OSError, ValueError):
+            return False
+        if not _manifest_has_verified_external_stems(manifest):
+            return False
         updated = record_stage_result(
             root,
             candidate.episode,
@@ -197,6 +202,32 @@ def _attach_group_manifest(candidate: LegacyH3Artifact, manifest_path: Path) -> 
         )
 
 
+def _manifest_has_verified_external_stems(manifest: H3DirectorOutputManifest) -> bool:
+    """Reject unsafe legacy manifests before they reach composition.
+
+    ``external_tts`` must never be attached without the two successful,
+    materialized stems.  Returning false keeps the sidecar unchanged, which
+    makes the migration additive and prevents a resolver from mixing stale
+    H3 speech with a missing external dialogue track.
+    """
+    if not any(
+        entry.segment.dialogue_source is DialogueSource.EXTERNAL_TTS
+        for entry in manifest.entries
+    ):
+        return True
+    if (
+        manifest.ambience_stem_status != "succeeded"
+        or manifest.dialogue_stem_status != "succeeded"
+        or not manifest.ambience_stem_path
+        or not manifest.dialogue_stem_path
+    ):
+        return False
+    return (
+        Path(manifest.ambience_stem_path).is_file()
+        and Path(manifest.dialogue_stem_path).is_file()
+    )
+
+
 def backfill_legacy_h3_manifests(
     project_dir: Path | str,
     *,
@@ -216,6 +247,16 @@ def backfill_legacy_h3_manifests(
         if stem is not None and not stem.is_file():
             raise FileNotFoundError(f"{label} stem is unavailable: {stem}")
     items = detect_legacy_h3_artifacts(project_dir)
+    # A pair of stems belongs to one physical H3 result, never to an episode
+    # batch.  Do this before writing any manifest so an ambiguous invocation
+    # has no partial side effects.  Dry-runs stay useful as candidate reports.
+    if write and ambience_stem is not None:
+        writable = tuple(item for item in items if not item.manifest_path.exists())
+        if len(writable) != 1:
+            raise ValueError(
+                "external_tts stem binding requires exactly one writable legacy artifact; "
+                f"found {len(writable)}"
+            )
     written = 0
     skipped_existing = 0
     attached = 0
