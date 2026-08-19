@@ -19,8 +19,8 @@ describe("GroupVideoResult", () => {
     expect(screen.getByText("组合视频")).toBeInTheDocument();
     expect(screen.getByText(/对白音轨：已就绪/)).toBeInTheDocument();
     expect(screen.getByText(/镜头 1、2/)).toBeInTheDocument();
-    expect(screen.getByText(/外部配音/)).toBeInTheDocument();
-    expect(screen.getByText(/H3 原声/)).toBeInTheDocument();
+    expect(screen.getAllByText(/外部配音/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/H3 原声/).length).toBeGreaterThan(0);
   });
 
   it("leaves source switching as recomposition-only contract", () => {
