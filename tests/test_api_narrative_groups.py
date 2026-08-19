@@ -472,7 +472,7 @@ def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_
     assert len(backend.calls) == 1
 
 
-def test_split_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
+def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
 
     def fail_resolver(*args, **kwargs):
@@ -480,11 +480,14 @@ def test_split_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_
 
     monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", fail_resolver)
     response = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/split"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/split",
+        json={"aspect_ratio": "16:9", "use_style": False},
     )
 
     assert response.status_code == 202
-    assert "reference_selection" not in backend.calls[0][1]["payload"]
+    payload = backend.calls[0][1]["payload"]
+    assert payload["aspect_ratio"] == "16:9"
+    assert "reference_selection" not in payload
 
 
 def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):

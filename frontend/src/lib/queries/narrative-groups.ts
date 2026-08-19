@@ -241,7 +241,7 @@ export function useNarrativeGroupAction(project: string, episode: number) {
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
       json: narrativeGroupActionPayload({
         revision,
-        aspectRatio: action === "split" ? undefined : aspectRatio,
+        aspectRatio,
         selection: action === "split" ? undefined : selection,
       }),
     }).json<TaskResponse>(),

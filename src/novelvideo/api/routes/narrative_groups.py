@@ -624,10 +624,17 @@ async def split_group(
     episode: int,
     group_id: str,
     stage_name: Literal["sketch", "render"],
+    body: NarrativeGroupGenerationRequest | None = None,
     user: dict = Depends(get_api_user),
 ):
     return await _enqueue_group_action(
-        project, episode, group_id, stage_name, user, split_only=True
+        project,
+        episode,
+        group_id,
+        stage_name,
+        user,
+        split_only=True,
+        generation_request=body,
     )
 
 

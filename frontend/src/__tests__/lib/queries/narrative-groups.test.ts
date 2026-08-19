@@ -163,7 +163,7 @@ describe("narrative group reference hooks", () => {
     await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "generate", selection, aspectRatio: "16:9" });
 
     expect(bodies).toEqual([
-      {},
+      { aspect_ratio: "16:9" },
       {
         aspect_ratio: "16:9",
         use_style: true,
