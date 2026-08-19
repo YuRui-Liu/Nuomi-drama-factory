@@ -40,6 +40,14 @@ class GroupStageState:
     revision: int = 0
     grid_asset: str = ""
     cell_assets: tuple[dict, ...] = ()
+    # A video group is one physical H3 director output containing logical shots.
+    video_asset: str = ""
+    manifest_asset: str = ""
+    original_audio_path: str = ""
+    dialogue_stem_path: str = ""
+    ambience_stem_path: str = ""
+    dialogue_stem_status: str = "not_requested"
+    ambience_stem_status: str = "not_requested"
     error: str = ""
     actual_provider: str = ""
     actual_model: str = ""

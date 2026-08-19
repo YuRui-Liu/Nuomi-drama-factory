@@ -115,6 +115,27 @@ def test_unknown_group_returns_404(monkeypatch, tmp_path):
     assert response.status_code == 404
 
 
+def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"model": "minimax-h3", "mode": "auto"},
+    )
+
+    assert response.status_code == 202
+    payload = backend.calls[0][1]["payload"]
+    assert backend.calls[0][1]["task_type"] == "narrative_group_video"
+    assert payload == {
+        "episode": 1,
+        "group_id": "ng-01",
+        "revision": 1,
+        "model": "minimax-h3",
+        "mode": "auto",
+    }
+
+
 def test_list_urlizes_only_project_scoped_assets(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")

@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
@@ -26,6 +27,15 @@ from novelvideo.narrative_groups.service import (
 from novelvideo.ports import get_task_backend
 
 router = APIRouter()
+
+
+class NarrativeGroupVideoRequest(BaseModel):
+    """Client input deliberately excludes mutable frame and beat payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(default="minimax-h3", min_length=1)
+    mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    revision: int | None = Field(default=None, ge=1)
 
 
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
@@ -68,6 +78,11 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
                 url = _asset_url(project, project_dir, str(cell.get("path") or ""))
                 cell["path"] = url
                 cell["url"] = url
+            for field in (
+                "video_asset", "manifest_asset", "original_audio_path",
+                "dialogue_stem_path", "ambience_stem_path",
+            ):
+                state[field] = _asset_url(project, project_dir, state.get(field, ""))
         result.append(item)
     return result
 
@@ -194,29 +209,50 @@ async def _enqueue_group_action(
         "split_only": split_only,
     }
     queued = await get_task_backend().enqueue_project_task(
-        resolved.ctx,
-        task_type=task_type,
-        queue_kind="default",
-        episode=episode,
-        scope=scope,
-        payload=payload,
+        resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
+        scope=scope, payload=payload,
     )
-    return {
-        "ok": True,
-        "data": {
-            "task_id": queued.task_state.task_id,
-            "scope": scope,
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "metadata": {
-                "group_id": group_id,
-                "stage": stage,
-                "revision": revision,
-            },
-        },
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
+    }}
+
+
+async def _enqueue_group_video(
+    project: str,
+    episode: int,
+    group_id: str,
+    user: dict,
+    request: NarrativeGroupVideoRequest,
+):
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        group, revision = advance_revision(
+            resolved.project_dir, episode, group_id, "video",
+            regenerate=False,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
+    if request.revision is not None and request.revision != revision:
+        raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
+    scope = f"group_{group_id}_video_r{revision}"
+    payload = {
+        "episode": episode,
+        "group_id": group.id,
+        "revision": revision,
+        "model": request.model,
+        "mode": request.mode,
     }
-
-
+    queued = await get_task_backend().enqueue_project_task(
+        resolved.ctx, task_type="narrative_group_video", queue_kind="default",
+        episode=episode, scope=scope, payload=payload,
+    )
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/sketch/generate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -243,6 +279,20 @@ async def generate_render_group(
     project: str, episode: int, group_id: str, user: dict = Depends(get_api_user)
 ):
     return await _enqueue_group_action(project, episode, group_id, "render", user)
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_video_group(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
+    user: dict = Depends(get_api_user),
+):
+    return await _enqueue_group_video(project, episode, group_id, user, request)
 
 
 @router.post(

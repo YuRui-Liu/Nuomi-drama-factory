@@ -235,6 +235,13 @@ def advance_revision(
                 actual_mode="" if regenerate else current.actual_mode,
                 created_at="" if regenerate else current.created_at,
                 revision_history=history,
+                video_asset="" if regenerate and stage == "video" else current.video_asset,
+                manifest_asset="" if regenerate and stage == "video" else current.manifest_asset,
+                original_audio_path="" if regenerate and stage == "video" else current.original_audio_path,
+                dialogue_stem_path="" if regenerate and stage == "video" else current.dialogue_stem_path,
+                ambience_stem_path="" if regenerate and stage == "video" else current.ambience_stem_path,
+                dialogue_stem_status="not_requested" if regenerate and stage == "video" else current.dialogue_stem_status,
+                ambience_stem_status="not_requested" if regenerate and stage == "video" else current.ambience_stem_status,
             )
             found = replace(group, stages=stages)
             updated.append(found)
@@ -258,6 +265,13 @@ def record_stage_result(
     actual_provider: str | None = None,
     actual_model: str | None = None,
     actual_mode: str | None = None,
+    video_asset: str | None = None,
+    manifest_asset: str | None = None,
+    original_audio_path: str | None = None,
+    dialogue_stem_path: str | None = None,
+    ambience_stem_path: str | None = None,
+    dialogue_stem_status: str | None = None,
+    ambience_stem_status: str | None = None,
 ) -> NarrativeGroup:
     """Atomically merge a runner outcome into the durable group sidecar."""
     with _sidecar_guard(project_dir, episode):
@@ -281,6 +295,23 @@ def record_stage_result(
                     current.cell_assets
                     if cell_assets is None
                     else tuple(dict(item) for item in cell_assets)
+                ),
+                video_asset=current.video_asset if video_asset is None else str(video_asset),
+                manifest_asset=current.manifest_asset if manifest_asset is None else str(manifest_asset),
+                original_audio_path=(
+                    current.original_audio_path if original_audio_path is None else str(original_audio_path)
+                ),
+                dialogue_stem_path=(
+                    current.dialogue_stem_path if dialogue_stem_path is None else str(dialogue_stem_path)
+                ),
+                ambience_stem_path=(
+                    current.ambience_stem_path if ambience_stem_path is None else str(ambience_stem_path)
+                ),
+                dialogue_stem_status=(
+                    current.dialogue_stem_status if dialogue_stem_status is None else str(dialogue_stem_status)
+                ),
+                ambience_stem_status=(
+                    current.ambience_stem_status if ambience_stem_status is None else str(ambience_stem_status)
                 ),
                 error=current.error if error is None else str(error),
                 actual_provider=(
@@ -312,6 +343,13 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "status": state.status,
         "grid_asset": state.grid_asset,
         "cell_assets": list(state.cell_assets),
+        "video_asset": state.video_asset,
+        "manifest_asset": state.manifest_asset,
+        "original_audio_path": state.original_audio_path,
+        "dialogue_stem_path": state.dialogue_stem_path,
+        "ambience_stem_path": state.ambience_stem_path,
+        "dialogue_stem_status": state.dialogue_stem_status,
+        "ambience_stem_status": state.ambience_stem_status,
         "error": state.error,
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
@@ -366,6 +404,13 @@ def rollback_stage_revision(
                 revision=current.revision + 1,
                 grid_asset=source.get("grid_asset", ""),
                 cell_assets=tuple(source.get("cell_assets") or ()),
+                video_asset=source.get("video_asset", ""),
+                manifest_asset=source.get("manifest_asset", ""),
+                original_audio_path=source.get("original_audio_path", ""),
+                dialogue_stem_path=source.get("dialogue_stem_path", ""),
+                ambience_stem_path=source.get("ambience_stem_path", ""),
+                dialogue_stem_status=source.get("dialogue_stem_status", "not_requested"),
+                ambience_stem_status=source.get("ambience_stem_status", "not_requested"),
                 error=source.get("error", ""),
                 actual_provider=source.get("actual_provider", ""),
                 actual_model=source.get("actual_model", ""),
@@ -390,6 +435,13 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
             return {
                 "grid_asset": state.grid_asset,
                 "cell_assets": list(state.cell_assets),
+                "video_asset": state.video_asset,
+                "manifest_asset": state.manifest_asset,
+                "original_audio_path": state.original_audio_path,
+                "dialogue_stem_path": state.dialogue_stem_path,
+                "ambience_stem_path": state.ambience_stem_path,
+                "dialogue_stem_status": state.dialogue_stem_status,
+                "ambience_stem_status": state.ambience_stem_status,
                 "error": state.error,
                 "revision": state.revision,
                 "cell_to_beat": [item.__dict__ for item in group.cell_to_beat],
