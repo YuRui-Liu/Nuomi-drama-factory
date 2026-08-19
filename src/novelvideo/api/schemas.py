@@ -106,6 +106,10 @@ class ProjectUpdate(BaseModel):
 class MediaDefaultsRequest(BaseModel):
     video_model: str
     h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    narrative_sketch_provider: str = "grsai-main"
+    narrative_sketch_model: str = "nano-banana-2"
+    narrative_render_provider: str = "grsai-main"
+    narrative_render_model: str = "gpt-image-2"
 
 
 class RenderSettingsUpdate(BaseModel):

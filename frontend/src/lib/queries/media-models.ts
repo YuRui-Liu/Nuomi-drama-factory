@@ -32,6 +32,10 @@ export function videoModelRequest(videoModel: string, videoMode: VideoModelMode)
 export interface MediaDefaults {
   video_model: string;
   h3_mode: VideoModelMode;
+  narrative_sketch_provider: string;
+  narrative_sketch_model: string;
+  narrative_render_provider: string;
+  narrative_render_model: string;
 }
 
 export function mergeVideoModelCatalog(
@@ -71,9 +75,22 @@ export function useVideoModels() {
 export function useUpdateMediaDefaults(project: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ videoModel, videoMode = "auto" }: { videoModel: string; videoMode?: VideoModelMode }) =>
+    mutationFn: ({ videoModel, videoMode = "auto", ...imageDefaults }: {
+      videoModel: string;
+      videoMode?: VideoModelMode;
+      narrativeSketchProvider?: string;
+      narrativeSketchModel?: string;
+      narrativeRenderProvider?: string;
+      narrativeRenderModel?: string;
+    }) =>
       api.put(p`api/v1/projects/${project}/media-defaults`, {
-        json: videoModelRequest(videoModel, videoMode),
+        json: {
+          ...videoModelRequest(videoModel, videoMode),
+          narrative_sketch_provider: imageDefaults.narrativeSketchProvider ?? "grsai-main",
+          narrative_sketch_model: imageDefaults.narrativeSketchModel ?? "nano-banana-2",
+          narrative_render_provider: imageDefaults.narrativeRenderProvider ?? "grsai-main",
+          narrative_render_model: imageDefaults.narrativeRenderModel ?? "gpt-image-2",
+        },
       }).json<ApiResponse<MediaDefaults>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.mediaDefaults(project) }),
   });

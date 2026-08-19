@@ -596,12 +596,25 @@ async def get_project_media_defaults(
     config = load_project_config_from_state_dir(
         ctx.state_dir, username=ctx.owner_username, project=ctx.project_name
     )
+    return {"ok": True, "data": _media_defaults_payload(config)}
+
+
+def _media_defaults_payload(config: dict) -> dict[str, str]:
     return {
-        "ok": True,
-        "data": {
-            "video_model": str(config.get("video_backend") or "runninghub:minimax-h3"),
-            "h3_mode": str(config.get("h3_mode") or "auto"),
-        },
+        "video_model": str(config.get("video_backend") or "runninghub:minimax-h3"),
+        "h3_mode": str(config.get("h3_mode") or "auto"),
+        "narrative_sketch_provider": str(
+            config.get("narrative_sketch_provider") or "grsai-main"
+        ),
+        "narrative_sketch_model": str(
+            config.get("narrative_sketch_model") or "nano-banana-2"
+        ),
+        "narrative_render_provider": str(
+            config.get("narrative_render_provider") or "grsai-main"
+        ),
+        "narrative_render_model": str(
+            config.get("narrative_render_model") or "gpt-image-2"
+        ),
     }
 
 
@@ -615,7 +628,14 @@ async def put_project_media_defaults(
     require_project_home_node(ctx, operation="update project media defaults")
     save_project_config_in_state_dir(
         ctx.state_dir,
-        config={"video_backend": body.video_model, "h3_mode": body.h3_mode},
+        config={
+            "video_backend": body.video_model,
+            "h3_mode": body.h3_mode,
+            "narrative_sketch_provider": body.narrative_sketch_provider,
+            "narrative_sketch_model": body.narrative_sketch_model,
+            "narrative_render_provider": body.narrative_render_provider,
+            "narrative_render_model": body.narrative_render_model,
+        },
     )
     return {"ok": True, "data": body.model_dump()}
 
