@@ -60,7 +60,7 @@ def resolve_episode_composition_sources(
         load_h3_director_manifest,
     )
     root = Path(project_dir)
-    spans: list[VideoSpan] = []
+    director_spans: list[tuple[int, int, VideoSpan]] = []
     covered: set[int] = set()
     try:
         groups = load_groups(root, episode)
@@ -87,8 +87,7 @@ def resolve_episode_composition_sources(
                 )
         else:
             ambience = None
-        spans.append(
-            VideoSpan(
+        span = VideoSpan(
                 video_path=video_path,
                 beat_numbers=tuple(entry.segment.beat_number for entry in entries),
                 entries=entries,
@@ -96,19 +95,31 @@ def resolve_episode_composition_sources(
                 ambience_stem_path=ambience,
                 original_audio_path=Path(manifest.original_audio_path)
                 if manifest.original_audio_path else None,
-            )
         )
+        # A physical Director movie is placed once, at its earliest logical
+        # beat.  ``ordinal`` only breaks ties between groups with equal starts.
+        director_spans.append((min(span.beat_numbers), int(getattr(group, "ordinal", 0)), span))
         covered.update(entry.segment.beat_number for entry in entries)
 
     paths = PathResolver(str(root), episode)
+    legacy_spans: list[tuple[int, int, VideoSpan]] = []
     for index, beat in enumerate(beats, start=1):
         beat_num = int(beat.get("beat_number") or index)
         if beat_num in covered:
             continue
         legacy = paths.video(beat_num)
         if legacy.exists():
-            spans.append(VideoSpan(video_path=legacy, beat_numbers=(beat_num,)))
-    return spans
+            legacy_spans.append((beat_num, index, VideoSpan(video_path=legacy, beat_numbers=(beat_num,))))
+
+    ordered = [
+        (beat_number, 0, ordinal, span)
+        for beat_number, ordinal, span in director_spans
+    ]
+    ordered.extend(
+        (beat_number, 1, index, span)
+        for beat_number, index, span in legacy_spans
+    )
+    return [span for _beat, _kind, _tie, span in sorted(ordered)]
 
 
 def _log(manager, ctx: ProjectContext, envelope: dict[str, Any], message: str) -> None:
@@ -695,7 +706,16 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
 
                 # H3-native lines retain the original video audio; external TTS
                 # lines use the separated ambience stem, never the original mix.
-                cmd = ["ffmpeg", "-y", "-i", str(video_path), "-i", str(source.ambience_stem_path)]
+                needs_ambience = any(
+                    entry.dialogue_source is DialogueSource.EXTERNAL_TTS
+                    for entry in source.entries
+                )
+                cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+                if needs_ambience:
+                    # Resolver guarantees this exists for every external-TTS
+                    # Director span; native-only spans must not receive a
+                    # phantom ``None`` input.
+                    cmd.extend(["-i", str(source.ambience_stem_path)])
                 filter_parts: list[str] = []
                 audio_labels: list[str] = []
                 input_index = 2

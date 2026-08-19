@@ -91,3 +91,42 @@ def test_external_tts_director_entry_without_ambience_stem_fails_closed(tmp_path
 
     with pytest.raises(RuntimeError, match="ambience stem"):
         resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
+
+
+def test_composition_interleaves_legacy_and_director_spans_by_beat_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Director movie is emitted once at its earliest covered beat."""
+    from novelvideo.task_backend.runners import video as subject
+
+    director_video = tmp_path / "director.mp4"
+    director_video.touch()
+    manifest_path = tmp_path / "director.manifest.json"
+    segments = (
+        H3DirectorSegment(segment_id="two", beat_number=2, prompt="p", duration_seconds=1,
+                          first_frame="2.png", dialogue_source=DialogueSource.H3_NATIVE),
+        H3DirectorSegment(segment_id="three", beat_number=3, prompt="p", duration_seconds=1,
+                          first_frame="3.png", dialogue_source=DialogueSource.H3_NATIVE),
+    )
+    save_h3_director_manifest(manifest_path, H3DirectorOutputManifest(
+        physical_video=str(director_video), entries=build_h3_timeline_data(segments).entries,
+    ))
+    legacy_one = tmp_path / "legacy-1.mp4"
+    legacy_one.touch()
+
+    class Stage:
+        status = "completed"
+        manifest_asset = str(manifest_path)
+
+    class Group:
+        ordinal = 4
+        stages = {"video": Stage()}
+
+    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(subject.PathResolver, "video", lambda _self, beat: tmp_path / f"legacy-{beat}.mp4")
+
+    spans = resolve_episode_composition_sources(
+        tmp_path, 1, [{"beat_number": value} for value in (1, 2, 3)]
+    )
+
+    assert [span.beat_numbers for span in spans] == [(1,), (2, 3)]

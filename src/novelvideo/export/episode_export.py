@@ -158,13 +158,22 @@ async def build_episode_zip_file(
         audio_path = paths.audio(beat_num)
         if audio_path.exists():
             files_to_pack.append((audio_path, f"audio/{audio_path.name}"))
-    for span in resolve_episode_composition_sources(project_dir, episode, beats):
-        files_to_pack.append((span.video_path, f"video/{span.video_path.name}"))
+    for source_index, span in enumerate(
+        resolve_episode_composition_sources(project_dir, episode, beats), start=1
+    ):
+        # Keep the archive reversible when Director groups use the conventional
+        # manifest/stem names (for example ``manifest.json`` and
+        # ``original.wav``).  The stable composition order provides a compact,
+        # deterministic per-group namespace.
+        group_prefix = f"group_{source_index:03d}"
+        files_to_pack.append((span.video_path, f"video/{group_prefix}_{span.video_path.name}"))
         if span.manifest_path is not None and span.manifest_path.exists():
-            files_to_pack.append((span.manifest_path, f"manifests/{span.manifest_path.name}"))
+            files_to_pack.append(
+                (span.manifest_path, f"manifests/{group_prefix}_{span.manifest_path.name}")
+            )
         for stem in (span.ambience_stem_path, span.original_audio_path):
             if stem is not None and stem.exists():
-                files_to_pack.append((stem, f"stems/{stem.name}"))
+                files_to_pack.append((stem, f"stems/{group_prefix}_{stem.name}"))
 
     final_path = paths.final_video()
     if final_path.exists():
