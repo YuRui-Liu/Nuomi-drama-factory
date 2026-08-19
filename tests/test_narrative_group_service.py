@@ -13,6 +13,7 @@ from novelvideo.narrative_groups.service import (
     stage_history,
     rebuild_groups,
     save_groups,
+    reserve_video_revision,
 )
 
 
@@ -133,6 +134,26 @@ def test_stale_revision_completion_cannot_overwrite_new_revision(tmp_path):
     assert stage.revision == 2
     assert stage.status == "queued"
     assert stage.grid_asset == ""
+
+
+def test_concurrent_video_reservations_accept_only_one_expected_revision(tmp_path, monkeypatch):
+    import threading
+    from novelvideo.narrative_groups import service
+
+    save_groups(tmp_path, 1, group_beats([{"id": "1"}]))
+    monkeypatch.setattr(service, "_sidecar_lock", lambda *_: threading.RLock())
+
+    def reserve():
+        try:
+            return reserve_video_revision(tmp_path, 1, "ng-01", expected_revision=0)[1].revision
+        except RuntimeError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: reserve(), range(2)))
+
+    assert results.count(1) == 1
+    assert sum(isinstance(item, RuntimeError) for item in results) == 1
 
 
 def test_rebuild_resets_stage_when_mapping_changes(tmp_path):

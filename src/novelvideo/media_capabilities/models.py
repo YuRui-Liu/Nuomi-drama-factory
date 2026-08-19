@@ -190,7 +190,7 @@ class RunningHubWorkflowSettings(_ExternalModel):
     """Remote workflow IDs for the RunningHub capabilities shipped by CE."""
 
     image_upscale: str = ""
-    video_minimax_h3: str = "2087934731806658562"
+    video_minimax_h3: str = "2089723723468328961"
     tts_qwen3_voice_design: str = ""
     tts_indextts2_voice_clone: str = ""
 

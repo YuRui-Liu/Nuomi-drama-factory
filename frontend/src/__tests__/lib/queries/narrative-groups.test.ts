@@ -13,6 +13,12 @@ vi.mock("@/lib/api", () => ({
 import {
   narrativeGroupActionPath,
   narrativeGroupActionPayload,
+  narrativeGroupVideoPath,
+  narrativeGroupVideoDialogueSourcePath,
+  narrativeGroupVideoDialogueSourcePayload,
+  narrativeGroupVideoPayload,
+  narrativeGroupVideoTaskScope,
+  narrativeGroupTaskScope,
   narrativeGroupReferencePath,
   narrativeGroupRevisionPath,
   narrativeGroupRollbackPath,
@@ -27,6 +33,32 @@ describe("narrative group query contract", () => {
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/render/regenerate");
     expect(narrativeGroupActionPayload({ revision: 3, apiKey: "must-not-leak" } as never))
       .toEqual({ revision: 3 });
+  });
+
+  it("builds one director-video request with only model, mode, and revision", () => {
+    expect(narrativeGroupVideoPath("demo project", 2, "ng-01"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
+    expect(narrativeGroupVideoPayload({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 }))
+      .toEqual({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 });
+  });
+
+  it("uses the exact server H3 scope for the current video revision", () => {
+    expect(narrativeGroupVideoTaskScope("ng-01", 4)).toBe("group_ng-01_video_r4");
+    expect(narrativeGroupTaskScope("ng-01", "sketch", 2)).toBe("group_ng-01_sketch_r2");
+    expect(narrativeGroupTaskScope("ng-01", "render", 3)).toBe("group_ng-01_render_r3");
+  });
+
+  it("uses a separate recomposition-only dialogue source endpoint", () => {
+    expect(narrativeGroupVideoDialogueSourcePath("demo", 2, "ng-01"))
+      .toBe("api/v1/projects/demo/episodes/2/narrative-groups/ng-01/video/dialogue-source");
+  });
+
+  it("sends the current stage revision when switching a dialogue source", () => {
+    expect(narrativeGroupVideoDialogueSourcePayload({
+      spanIndex: 2,
+      dialogueSource: "h3_native",
+      revision: 4,
+    })).toEqual({ span_index: 2, dialogue_source: "h3_native", revision: 4 });
   });
 
   it("builds an encoded reference-preview path", () => {

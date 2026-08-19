@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Elastic-2.0
+import { Music2, Video } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import type { NarrativeStageState } from "@/lib/queries/narrative-groups";
+
+const stemLabel = (status: NarrativeStageState["dialogue_stem_status"], name: string) =>
+  `${name}：${status === "succeeded" ? "已就绪" : status === "unavailable" ? "不可用" : "待处理"}`;
+
+/** Logical shot view of one physical H3 director output. Changing a source is recomposition-only. */
+export function GroupVideoResult({ stage, onDialogueSourceChange }: {
+  stage: NarrativeStageState;
+  onDialogueSourceChange?: (request: { spanIndex: number; dialogueSource: "external_tts" | "h3_native" }) => void;
+}) {
+  if (stage.status !== "completed" && !stage.video_asset) return null;
+  return <section className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-4" data-group-video-result>
+    <div className="flex items-center gap-2"><Video className="size-4 text-primary" /><h3 className="text-sm font-semibold">组合视频</h3></div>
+    {stage.video_asset ? <video className="mt-3 max-h-72 w-full rounded-md bg-black" controls src={stage.video_asset} /> : null}
+    <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground"><span><Music2 className="mr-1 inline size-3" />{stemLabel(stage.dialogue_stem_status, "对白音轨")}</span><span>{stemLabel(stage.ambience_stem_status, "环境音轨")}</span></div>
+    {stage.video_spans?.length ? <div className="mt-3 space-y-2">{stage.video_spans.map((span, index) => {
+      const native = span.dialogue_source === "h3_native";
+      return <div key={`${span.beat_numbers.join("-")}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-black/20 px-3 py-2 text-xs">
+        <span>镜头 {span.beat_numbers.join("、")} · {span.start_seconds.toFixed(1)}–{span.end_seconds.toFixed(1)} 秒</span>
+        <div className="flex items-center gap-2"><span className="text-muted-foreground">{native ? "H3 原声" : "外部配音"}</span><Button type="button" variant="outline" size="sm" onClick={() => onDialogueSourceChange?.({ spanIndex: index, dialogueSource: native ? "external_tts" : "h3_native" })}>{native ? "改用外部配音" : "改用 H3 原声"}</Button></div>
+      </div>;
+    })}</div> : <p className="mt-3 text-xs text-muted-foreground">镜头切分与对白源将在导演清单就绪后显示。</p>}
+  </section>;
+}

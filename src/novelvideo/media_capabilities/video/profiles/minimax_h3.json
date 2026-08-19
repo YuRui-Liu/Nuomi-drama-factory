@@ -1,19 +1,13 @@
 {
   "id": "minimax-h3-video",
   "version": 1,
-  "workflow_id": "2087934731806658562",
+  "workflow_id": "2089723723468328961",
   "capabilities": ["video.i2va", "video.fl2va"],
   "bindings": {
-    "first_frame": {"node_id": "114", "field": "image"},
-    "aspect_ratio": {"node_id": "115", "field": "aspect_ratio"},
-    "seed": {"node_id": "131", "field": "noise_seed"},
-    "fps": {"node_id": "132", "field": "fps"},
-    "prompt": {"node_id": "133", "field": "prompt"},
-    "duration": {"node_id": "135", "field": "value"},
-    "last_frame": {"node_id": "141", "field": "image"}
+    "timeline_data": {"node_id": "12", "field": "timeline_data"}
   },
-  "outputs": {"video": {"node_id": "136", "media_type": "video"}},
-  "constraints": {"aspect_ratio_values": ["9:16 (Portrait Widescreen)"]},
+  "outputs": {"video": {"node_id": "7", "media_type": "video"}},
+  "constraints": {"required_fields": ["timeline_data"]},
   "source_sha256": "",
   "status": "active"
 }

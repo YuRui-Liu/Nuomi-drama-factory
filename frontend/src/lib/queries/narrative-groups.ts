@@ -59,6 +59,20 @@ export interface NarrativeStageState {
   actual_provider?: string | null;
   actual_model?: string | null;
   actual_mode?: string | null;
+  video_asset?: string | null;
+  manifest_asset?: string | null;
+  original_audio_path?: string | null;
+  dialogue_stem_path?: string | null;
+  ambience_stem_path?: string | null;
+  dialogue_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
+  ambience_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
+  error?: string | null;
+  video_spans?: Array<{
+    beat_numbers: number[];
+    start_seconds: number;
+    end_seconds: number;
+    dialogue_source: "external_tts" | "h3_native";
+  }>;
 }
 export interface NarrativeGroup {
   id: string;
@@ -97,6 +111,53 @@ export function narrativeGroupActionPath(
   stage: NarrativeGridStage, action: NarrativeGroupAction,
 ) {
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/${action}`;
+}
+
+export function narrativeGroupVideoPath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/generate`;
+}
+
+/** Exact backend task scope for one narrative-group stage revision. */
+export function narrativeGroupTaskScope(
+  groupId: string,
+  stage: NarrativeGridStage | "video",
+  revision: number,
+) {
+  return `group_${groupId}_${stage}_r${revision}`;
+}
+
+/** Exact backend task scope for one H3 director output revision. */
+export function narrativeGroupVideoTaskScope(groupId: string, revision: number) {
+  return narrativeGroupTaskScope(groupId, "video", revision);
+}
+
+/** Backend contract: updates the manifest then enqueues composition, never H3 generation. */
+export function narrativeGroupVideoDialogueSourcePath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/dialogue-source`;
+}
+
+export function narrativeGroupVideoPayload(input: {
+  model: string;
+  mode: "auto" | "i2va" | "fl2va";
+  revision: number;
+}) {
+  return {
+    model: input.model,
+    mode: input.mode,
+    revision: input.revision,
+  };
+}
+
+export function narrativeGroupVideoDialogueSourcePayload(input: {
+  spanIndex: number;
+  dialogueSource: "external_tts" | "h3_native";
+  revision: number;
+}) {
+  return {
+    span_index: input.spanIndex,
+    dialogue_source: input.dialogueSource,
+    revision: input.revision,
+  };
 }
 
 export function narrativeGroupRevisionPath(
@@ -166,6 +227,40 @@ export function useNarrativeGroupAction(project: string, episode: number) {
       qc.invalidateQueries({ queryKey: queryKeys.grids(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
     ]),
+  });
+}
+
+/** One H3 director task produces the complete group's physical video. */
+export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, model, mode, revision }: {
+      groupId: string;
+      model: string;
+      mode: "auto" | "i2va" | "fl2va";
+      revision: number;
+    }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
+      json: narrativeGroupVideoPayload({ model, mode, revision }),
+    }).json<TaskResponse>(),
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+    ]),
+  });
+}
+
+export function useUpdateNarrativeGroupVideoDialogueSource(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, spanIndex, dialogueSource, revision }: {
+      groupId: string;
+      spanIndex: number;
+      dialogueSource: "external_tts" | "h3_native";
+      revision: number;
+    }) => api.post(narrativeGroupVideoDialogueSourcePath(project, episode, groupId), {
+      json: narrativeGroupVideoDialogueSourcePayload({ spanIndex, dialogueSource, revision }),
+    }).json<TaskResponse>(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
   });
 }
 

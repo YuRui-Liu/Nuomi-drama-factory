@@ -9,7 +9,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
@@ -208,9 +208,16 @@ def advance_revision(
     stage: StageName,
     *,
     regenerate: bool = False,
+    expected_revision: int | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
         groups = load_groups(project_dir, episode)
+        original = next((group for group in groups if group.id == group_id), None)
+        if original is None:
+            raise KeyError(group_id)
+        current = original.stages.get(stage, GroupStageState())
+        if expected_revision is not None and current.revision != int(expected_revision):
+            raise RuntimeError(f"narrative group {stage} revision is stale")
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         for group in groups:
@@ -235,6 +242,13 @@ def advance_revision(
                 actual_mode="" if regenerate else current.actual_mode,
                 created_at="" if regenerate else current.created_at,
                 revision_history=history,
+                video_asset="" if regenerate and stage == "video" else current.video_asset,
+                manifest_asset="" if regenerate and stage == "video" else current.manifest_asset,
+                original_audio_path="" if regenerate and stage == "video" else current.original_audio_path,
+                dialogue_stem_path="" if regenerate and stage == "video" else current.dialogue_stem_path,
+                ambience_stem_path="" if regenerate and stage == "video" else current.ambience_stem_path,
+                dialogue_stem_status="not_requested" if regenerate and stage == "video" else current.dialogue_stem_status,
+                ambience_stem_status="not_requested" if regenerate and stage == "video" else current.ambience_stem_status,
             )
             found = replace(group, stages=stages)
             updated.append(found)
@@ -242,6 +256,99 @@ def advance_revision(
             raise KeyError(group_id)
         save_groups(project_dir, episode, updated)
         return found, found.stages[stage].revision
+
+
+@dataclass(frozen=True)
+class VideoRevisionReservation:
+    """A queued video revision paired with the exact stage it replaced."""
+
+    group_id: str
+    revision: int
+    previous_stage: GroupStageState
+
+
+def reserve_video_revision(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    *,
+    expected_revision: int,
+) -> tuple[NarrativeGroup, VideoRevisionReservation]:
+    """Atomically reserve the next video revision while retaining rollback data.
+
+    The caller must invoke :func:`restore_video_reservation` if task enqueue
+    fails.  The compare-and-swap restore prevents an older failed request from
+    overwriting a later successful reservation.
+    """
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        found: NarrativeGroup | None = None
+        updated: list[NarrativeGroup] = []
+        reservation: VideoRevisionReservation | None = None
+        for group in groups:
+            if group.id != group_id:
+                updated.append(group)
+                continue
+            current = group.stages.get("video", GroupStageState())
+            if current.revision != int(expected_revision):
+                raise RuntimeError("narrative group video revision is stale")
+            revision = current.revision + 1
+            history = (*current.revision_history, _stage_snapshot(current)) if current.revision else current.revision_history
+            stages = dict(group.stages)
+            stages["video"] = replace(
+                current,
+                status="queued",
+                revision=revision,
+                grid_asset="",
+                cell_assets=(),
+                error="",
+                actual_provider="",
+                actual_model="",
+                actual_mode="",
+                created_at="",
+                revision_history=history,
+                video_asset="",
+                manifest_asset="",
+                original_audio_path="",
+                dialogue_stem_path="",
+                ambience_stem_path="",
+                dialogue_stem_status="not_requested",
+                ambience_stem_status="not_requested",
+            )
+            found = replace(group, stages=stages)
+            reservation = VideoRevisionReservation(group_id=group_id, revision=revision, previous_stage=current)
+            updated.append(found)
+        if found is None or reservation is None:
+            raise KeyError(group_id)
+        save_groups(project_dir, episode, updated)
+        return found, reservation
+
+
+def restore_video_reservation(
+    project_dir: str | Path,
+    episode: int,
+    reservation: VideoRevisionReservation,
+) -> bool:
+    """Restore a failed enqueue only if its reservation is still current."""
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        updated: list[NarrativeGroup] = []
+        restored = False
+        for group in groups:
+            if group.id != reservation.group_id:
+                updated.append(group)
+                continue
+            current = group.stages.get("video", GroupStageState())
+            if current.revision == reservation.revision and current.status == "queued":
+                stages = dict(group.stages)
+                stages["video"] = reservation.previous_stage
+                updated.append(replace(group, stages=stages))
+                restored = True
+            else:
+                updated.append(group)
+        if restored:
+            save_groups(project_dir, episode, updated)
+        return restored
 
 
 def record_stage_result(
@@ -258,6 +365,13 @@ def record_stage_result(
     actual_provider: str | None = None,
     actual_model: str | None = None,
     actual_mode: str | None = None,
+    video_asset: str | None = None,
+    manifest_asset: str | None = None,
+    original_audio_path: str | None = None,
+    dialogue_stem_path: str | None = None,
+    ambience_stem_path: str | None = None,
+    dialogue_stem_status: str | None = None,
+    ambience_stem_status: str | None = None,
 ) -> NarrativeGroup:
     """Atomically merge a runner outcome into the durable group sidecar."""
     with _sidecar_guard(project_dir, episode):
@@ -281,6 +395,23 @@ def record_stage_result(
                     current.cell_assets
                     if cell_assets is None
                     else tuple(dict(item) for item in cell_assets)
+                ),
+                video_asset=current.video_asset if video_asset is None else str(video_asset),
+                manifest_asset=current.manifest_asset if manifest_asset is None else str(manifest_asset),
+                original_audio_path=(
+                    current.original_audio_path if original_audio_path is None else str(original_audio_path)
+                ),
+                dialogue_stem_path=(
+                    current.dialogue_stem_path if dialogue_stem_path is None else str(dialogue_stem_path)
+                ),
+                ambience_stem_path=(
+                    current.ambience_stem_path if ambience_stem_path is None else str(ambience_stem_path)
+                ),
+                dialogue_stem_status=(
+                    current.dialogue_stem_status if dialogue_stem_status is None else str(dialogue_stem_status)
+                ),
+                ambience_stem_status=(
+                    current.ambience_stem_status if ambience_stem_status is None else str(ambience_stem_status)
                 ),
                 error=current.error if error is None else str(error),
                 actual_provider=(
@@ -312,6 +443,13 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "status": state.status,
         "grid_asset": state.grid_asset,
         "cell_assets": list(state.cell_assets),
+        "video_asset": state.video_asset,
+        "manifest_asset": state.manifest_asset,
+        "original_audio_path": state.original_audio_path,
+        "dialogue_stem_path": state.dialogue_stem_path,
+        "ambience_stem_path": state.ambience_stem_path,
+        "dialogue_stem_status": state.dialogue_stem_status,
+        "ambience_stem_status": state.ambience_stem_status,
         "error": state.error,
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
@@ -366,6 +504,13 @@ def rollback_stage_revision(
                 revision=current.revision + 1,
                 grid_asset=source.get("grid_asset", ""),
                 cell_assets=tuple(source.get("cell_assets") or ()),
+                video_asset=source.get("video_asset", ""),
+                manifest_asset=source.get("manifest_asset", ""),
+                original_audio_path=source.get("original_audio_path", ""),
+                dialogue_stem_path=source.get("dialogue_stem_path", ""),
+                ambience_stem_path=source.get("ambience_stem_path", ""),
+                dialogue_stem_status=source.get("dialogue_stem_status", "not_requested"),
+                ambience_stem_status=source.get("ambience_stem_status", "not_requested"),
                 error=source.get("error", ""),
                 actual_provider=source.get("actual_provider", ""),
                 actual_model=source.get("actual_model", ""),
@@ -390,6 +535,13 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
             return {
                 "grid_asset": state.grid_asset,
                 "cell_assets": list(state.cell_assets),
+                "video_asset": state.video_asset,
+                "manifest_asset": state.manifest_asset,
+                "original_audio_path": state.original_audio_path,
+                "dialogue_stem_path": state.dialogue_stem_path,
+                "ambience_stem_path": state.ambience_stem_path,
+                "dialogue_stem_status": state.dialogue_stem_status,
+                "ambience_stem_status": state.ambience_stem_status,
                 "error": state.error,
                 "revision": state.revision,
                 "cell_to_beat": [item.__dict__ for item in group.cell_to_beat],
@@ -397,6 +549,67 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
                 "layout": group.layout.__dict__,
             }
     raise KeyError(group_id)
+
+
+def update_video_manifest_dialogue_source(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    *,
+    span_index: int,
+    dialogue_source: str,
+    expected_revision: int,
+):
+    """Atomically change one logical H3 span without regenerating video.
+
+    The sidecar lock serializes revision checks with any generation task.  The
+    manifest itself is replaced atomically, so a composer sees either the old
+    complete mapping or the new complete mapping, never a partial JSON write.
+    """
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource,
+        H3DirectorOutputManifest,
+        H3TimelineEntry,
+        load_h3_director_manifest,
+        save_h3_director_manifest,
+    )
+
+    with _sidecar_guard(project_dir, episode):
+        group = next((item for item in load_groups(project_dir, episode) if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        state = group.stages.get("video", GroupStageState())
+        if state.revision != int(expected_revision):
+            raise RuntimeError("narrative group video revision is stale")
+        manifest_name = str(state.manifest_asset or "").strip()
+        if not manifest_name:
+            raise FileNotFoundError("narrative group video manifest is unavailable")
+        manifest_path = Path(manifest_name)
+        if not manifest_path.is_file():
+            raise FileNotFoundError("narrative group video manifest is unavailable")
+        manifest = load_h3_director_manifest(manifest_path)
+        if span_index < 0 or span_index >= len(manifest.entries):
+            raise IndexError(span_index)
+        source = DialogueSource(dialogue_source)
+        entries = []
+        for index, entry in enumerate(manifest.entries):
+            segment = entry.segment
+            if index == span_index:
+                segment = segment.model_copy(update={"dialogue_source": source})
+            entries.append(H3TimelineEntry(
+                segment=segment,
+                start_frame=entry.start_frame,
+                frame_count=entry.frame_count,
+                physical_video=entry.physical_video,
+                format_version=entry.format_version,
+                workflow_id=entry.workflow_id,
+                provider_task_id=entry.provider_task_id,
+            ))
+        updated = H3DirectorOutputManifest(
+            **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
+        )
+        save_h3_director_manifest(manifest_path, updated)
+        return updated
 
 
 async def _await_result(value: Any) -> Any:

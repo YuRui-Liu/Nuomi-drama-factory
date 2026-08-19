@@ -29,16 +29,9 @@ MAX_NODES = 10_000
 MAX_BINDINGS = 256
 MAX_OUTPUTS = 256
 MAX_CONTAINER_ITEMS = 100_000
-BINDINGS = {
-    "prompt": {"node_id": "133", "field": "prompt"},
-    "duration": {"node_id": "135", "field": "value"},
-    "first_frame": {"node_id": "114", "field": "image"},
-    "last_frame": {"node_id": "141", "field": "image"},
-    "seed": {"node_id": "131", "field": "noise_seed"},
-    "fps": {"node_id": "132", "field": "fps"},
-}
-OUTPUTS = {"video": {"node_id": "136", "media_type": "video"}}
-FIXTURE_NODE_IDS = {"114", "115", "131", "132", "133", "135", "136", "141"}
+BINDINGS = {"timeline_data": {"node_id": "12", "field": "timeline_data"}}
+OUTPUTS = {"video": {"node_id": "7", "media_type": "video"}}
+FIXTURE_NODE_IDS = {"12", "7"}
 SENSITIVE_FIELD_NAMES = {
     "api_key",
     "access_token",
@@ -139,12 +132,11 @@ def test_runninghub_fixture_serialization_contains_no_sensitive_material() -> No
         assert field_name not in serialized
 
 
-def test_runninghub_fixture_uses_empty_frames_and_neutral_output_prefix() -> None:
+def test_runninghub_fixture_uses_director_timeline_and_neutral_output_prefix() -> None:
     fixture = load_fixture()
 
-    assert fixture["114"]["inputs"]["image"] == ""  # type: ignore[index]
-    assert fixture["141"]["inputs"]["image"] == ""  # type: ignore[index]
-    assert fixture["136"]["inputs"]["filename_prefix"] == "video/output"  # type: ignore[index]
+    assert fixture["12"]["inputs"]["timeline_data"] == ""  # type: ignore[index]
+    assert fixture["7"]["inputs"]["filename_prefix"] == "video/output"  # type: ignore[index]
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytes", "text", "mapping"])
@@ -253,7 +245,7 @@ def test_does_not_mutate_mapping_source() -> None:
     ("overrides", "missing_node"),
     [
         (
-            {"bindings": {**BINDINGS, "prompt": {"node_id": "999", "field": "prompt"}}},
+            {"bindings": {**BINDINGS, "timeline_data": {"node_id": "999", "field": "timeline_data"}}},
             "999",
         ),
         (
@@ -277,7 +269,7 @@ def test_rejects_missing_binding_input_field() -> None:
     attacker_field = "attacker-field-" + ("x" * 1000)
     bindings = {
         **BINDINGS,
-        "prompt": {"node_id": "133", "field": attacker_field},
+        "timeline_data": {"node_id": "12", "field": attacker_field},
     }
 
     with pytest.raises(
@@ -291,9 +283,9 @@ def test_rejects_missing_binding_input_field() -> None:
 @pytest.mark.parametrize(
     ("argument", "descriptor"),
     [
-        ("bindings", {"prompt": {"node_id": "133", "field": "prompt", "extra": 1}}),
-        ("outputs", {"video": {"node_id": "136", "media_type": "video", "extra": 1}}),
-        ("outputs", {"video": {"node_id": "136"}}),
+        ("bindings", {"timeline_data": {"node_id": "12", "field": "timeline_data", "extra": 1}}),
+        ("outputs", {"video": {"node_id": "7", "media_type": "video", "extra": 1}}),
+        ("outputs", {"video": {"node_id": "7"}}),
     ],
 )
 def test_rejects_extra_or_missing_descriptor_fields(
@@ -306,9 +298,9 @@ def test_rejects_extra_or_missing_descriptor_fields(
 @pytest.mark.parametrize(
     ("node_id", "replacement"),
     [
-        ("133", {"class_type": 123, "inputs": {"prompt": "example"}}),
-        ("133", {"class_type": "Example", "inputs": []}),
-        ("136", {"class_type": 123, "inputs": {}}),
+        ("12", {"class_type": 123, "inputs": {"timeline_data": "example"}}),
+        ("12", {"class_type": "Example", "inputs": []}),
+        ("7", {"class_type": 123, "inputs": {}}),
     ],
 )
 def test_rejects_malformed_referenced_nodes(
@@ -370,7 +362,7 @@ def test_rejects_secret_fields_without_echoing_values(
 ) -> None:
     source = load_fixture()
     secret_value = "do-not-leak-this-value"
-    source["133"]["inputs"]["nested"] = {secret_key: secret_value}  # type: ignore[index]
+    source["12"]["inputs"]["nested"] = {secret_key: secret_value}  # type: ignore[index]
 
     with pytest.raises(WorkflowImportError) as exc_info:
         import_minimax(source)
@@ -400,7 +392,7 @@ def test_rejects_secret_fields_without_echoing_values(
 )
 def test_rejects_semantic_secret_key_variants(secret_key: str) -> None:
     source = load_fixture()
-    source["133"]["inputs"]["nested"] = {secret_key: "hidden"}  # type: ignore[index]
+    source["12"]["inputs"]["nested"] = {secret_key: "hidden"}  # type: ignore[index]
 
     with pytest.raises(
         WorkflowImportError, match="^workflow_import.prohibited_field$"
@@ -410,7 +402,7 @@ def test_rejects_semantic_secret_key_variants(secret_key: str) -> None:
 
 def test_does_not_reject_tokenizer_key() -> None:
     source = load_fixture()
-    source["133"]["inputs"]["tokenizer"] = "example"  # type: ignore[index]
+    source["12"]["inputs"]["tokenizer"] = "example"  # type: ignore[index]
 
     profile = import_minimax(source)
 
@@ -423,7 +415,9 @@ def test_scans_profile_metadata_for_secret_fields(location: str) -> None:
     if location == "constraints":
         overrides = {"constraints": {"secretKey": "hidden"}}
     elif location == "bindings":
-        overrides = {"bindings": {**BINDINGS, "apiToken": BINDINGS["prompt"]}}
+        overrides = {
+            "bindings": {**BINDINGS, "apiToken": BINDINGS["timeline_data"]}
+        }
     else:
         overrides = {"outputs": {**OUTPUTS, "x-api-key": OUTPUTS["video"]}}
 
@@ -451,7 +445,7 @@ def test_rejects_cyclic_mapping_as_workflow_import_error() -> None:
     source = load_fixture()
     cycle: dict[str, object] = {}
     cycle["self"] = cycle
-    source["133"]["inputs"]["cycle"] = cycle  # type: ignore[index]
+    source["12"]["inputs"]["cycle"] = cycle  # type: ignore[index]
 
     with pytest.raises(
         WorkflowImportError, match="^workflow_import.invalid_structure$"
@@ -473,7 +467,7 @@ def test_rejects_too_many_workflow_nodes() -> None:
 
 def test_rejects_too_many_bindings() -> None:
     bindings = {
-        f"binding_{index}": {"node_id": "133", "field": "prompt"}
+        f"binding_{index}": {"node_id": "12", "field": "timeline_data"}
         for index in range(MAX_BINDINGS + 1)
     }
 
@@ -485,7 +479,7 @@ def test_rejects_too_many_bindings() -> None:
 
 def test_rejects_too_many_outputs() -> None:
     outputs = {
-        f"output_{index}": {"node_id": "136", "media_type": "video"}
+        f"output_{index}": {"node_id": "7", "media_type": "video"}
         for index in range(MAX_OUTPUTS + 1)
     }
 
@@ -511,10 +505,10 @@ def test_rejects_too_many_container_items() -> None:
         {"workflow_id": " workflow"},
         {"id": ""},
         {"id": "profile "},
-        {"bindings": {"prompt": {"node_id": " 133", "field": "prompt"}}},
-        {"bindings": {"prompt": {"node_id": "133", "field": "prompt "}}},
-        {"outputs": {"video": {"node_id": "136 ", "media_type": "video"}}},
-        {"outputs": {"video": {"node_id": "136", "media_type": " video"}}},
+        {"bindings": {"timeline_data": {"node_id": " 12", "field": "timeline_data"}}},
+        {"bindings": {"timeline_data": {"node_id": "12", "field": "timeline_data "}}},
+        {"outputs": {"video": {"node_id": "7 ", "media_type": "video"}}},
+        {"outputs": {"video": {"node_id": "7", "media_type": " video"}}},
     ],
 )
 def test_rejects_empty_or_edge_whitespace_identifiers(

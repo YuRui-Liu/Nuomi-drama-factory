@@ -19,6 +19,10 @@ from novelvideo.media_capabilities.models import (
     WorkflowProfile,
 )
 from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+from novelvideo.media_capabilities.video.h3_timeline import (
+    H3DirectorSegment,
+    build_h3_timeline_data,
+)
 from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
@@ -45,7 +49,7 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
         profile = profile.model_copy(update={"workflow_id": normalized})
-    required_bindings = {"first_frame", "last_frame", "prompt", "duration"}
+    required_bindings = {"timeline_data"}
     if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
         raise ValueError("H3 production profile is missing required bindings or output")
     return profile
@@ -110,7 +114,183 @@ async def generate_h3_video(
     output_path: str,
     mode: str = "auto",
 ) -> H3GenerationResult:
-    """Generate one H3 video through RunningHub and persist its canonical file."""
+    """Wrap the legacy single-video API as one H3 director segment."""
+    resolve_h3_mode(mode, first_frame, last_frame)
+    return await generate_h3_director_video(
+        ctx,
+        segments=(
+            H3DirectorSegment(
+                segment_id="segment-1",
+                beat_number=1,
+                prompt=prompt,
+                duration_seconds=duration,
+                first_frame=first_frame,
+                last_frame=last_frame,
+            ),
+        ),
+        output_path=output_path,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+    )
+
+
+_DIRECTOR_ASPECT_LABELS = {
+    "1:1": "1:1 (方形)",
+    "2:3": "2:3 (竖版照片)",
+    "3:2": "3:2 (横版照片)",
+    "3:4": "3:4 (竖版标准)",
+    "4:3": "4:3 (标准)",
+    "9:16": "9:16 (竖版宽屏)",
+    "16:9": "16:9 (宽屏)",
+    "21:9": "21:9 (超宽屏)",
+}
+
+
+def _director_output_settings(aspect_ratio: str, resolution: str | None) -> dict:
+    """Map product options into the version-5 Director output contract."""
+    ratio = aspect_ratio if aspect_ratio in _DIRECTOR_ASPECT_LABELS else "9:16"
+    left, right = (int(value) for value in ratio.split(":"))
+    long_edge = 736
+    if resolution:
+        normalized = resolution.lower().strip()
+        if normalized.endswith("p") and normalized[:-1].isdigit():
+            long_edge = int(normalized[:-1])
+        elif "x" in normalized:
+            width, height = (int(value) for value in normalized.split("x", 1))
+            long_edge = max(width, height)
+        else:
+            raise ValueError("H3 resolution must be '<height>p' or '<width>x<height>'")
+    multiple = 32
+    if left >= right:
+        width = ((long_edge + multiple - 1) // multiple) * multiple
+        height = ((width * right / left + multiple - 1) // multiple) * multiple
+    else:
+        height = ((long_edge + multiple - 1) // multiple) * multiple
+        width = ((height * left / right + multiple - 1) // multiple) * multiple
+    long_edge = max(width, height)
+    return {
+        "mode": "fixed",
+        "aspectRatio": _DIRECTOR_ASPECT_LABELS[ratio],
+        "megapixels": round(width * height / 1_000_000, 3),
+        "multiple": multiple,
+        "longEdge": long_edge,
+        "width": width,
+        "height": height,
+        "maxExportFrames": 0,
+        "exportMode": "all",
+        "audioMode": "generate",
+        "continuityEnabled": False,
+        "continuityOverlapFrames": 5,
+    }
+
+
+def _director_timeline_payload(
+    timeline,
+    uploaded_frames: dict[str, str],
+    *,
+    aspect_ratio: str,
+    resolution: str | None,
+) -> str:
+    shots = []
+    segments = []
+    for entry in timeline.entries:
+        segment = entry.segment
+        first = uploaded_frames.get(segment.first_frame or "")
+        last = uploaded_frames.get(segment.last_frame or "")
+        image = lambda value: ({"imageFile": value} if value else None)
+        shot = {
+            "id": segment.segment_id,
+            "durationSec": entry.frame_count / timeline.fps,
+            "prompt": segment.prompt,
+            "negativePrompt": "",
+            "continuityFromPrev": False,
+            "startImage": image(first),
+            "endImage": image(last),
+        }
+        shots.append(shot)
+        segments.append({
+            "id": segment.segment_id,
+            "start": entry.start_frame,
+            "length": entry.frame_count,
+            "frameCount": entry.frame_count,
+            "durationSec": entry.frame_count / timeline.fps,
+            "prompt": segment.prompt,
+            "negativePrompt": "",
+            "continuityFromPrev": False,
+            "isStartFrame": first is not None,
+            "isEndFrame": last is not None,
+            "genImage": image(first),
+            "endImage": image(last),
+            "taskType": "",
+            "refs": [],
+        })
+    output = _director_output_settings(aspect_ratio, resolution)
+    task_type = (
+        "fl2v — 首尾帧生视频(First-Last Frame)"
+        if any(item["endImage"] for item in segments)
+        else "i2v — 首帧生视频(Image-to-Video)"
+    )
+    keyframes = []
+    for entry, segment in zip(timeline.entries, segments, strict=True):
+        half = segment["frameCount"] // 2
+        if segment["isStartFrame"]:
+            keyframes.append({
+                "id": f"{segment['id']}_s", "imageFile": segment["genImage"]["imageFile"],
+                "start": segment["start"], "length": half,
+                "frameCount": half, "durationSec": segment["durationSec"],
+                "prompt": segment["prompt"], "negativePrompt": segment["negativePrompt"],
+                "isStartFrame": True, "isEndFrame": False,
+            })
+        if segment["isEndFrame"]:
+            keyframes.append({
+                "id": f"{segment['id']}_e", "imageFile": segment["endImage"]["imageFile"],
+                "start": segment["start"] + half, "length": segment["frameCount"] - half,
+                "frameCount": segment["frameCount"] - half, "durationSec": segment["durationSec"],
+                "prompt": "", "negativePrompt": segment["negativePrompt"],
+                "isStartFrame": False, "isEndFrame": True,
+            })
+    payload = {
+        "version": 5,
+        "editMode": "segment",
+        "totalFrames": timeline.total_frames,
+        "frameRate": timeline.fps,
+        "video": {
+            "fileName": "", "videoFile": "", "subfolder": "", "type": "input",
+            "frames": [], "frameMap": [], "sourceFrameCount": timeline.total_frames * 2,
+            "deletedSourceRanges": [],
+        },
+        "videoClips": [],
+        "global": {
+            "taskType": task_type, "prompt": "", "refs": [],
+            "referenceVideo": {"videoFile": "", "fileName": "", "type": "input", "subfolder": ""},
+            "continuousReference": False, "genImage": {"imageFile": ""},
+            "sourceWidth": output["width"], "sourceHeight": output["height"],
+            "refAudios": [], "refVideos": [], "commonEnabled": False, "commonCollapsed": False,
+        },
+        "output": output,
+        "runSelectEnabled": False,
+        "runSelection": [],
+        "segments": segments,
+        "timelineMode": "fl2v" if any(item["endImage"] for item in segments) else "i2v",
+        "width": output["width"], "height": output["height"], "refMaxSize": output["longEdge"],
+        "durationSec": timeline.duration_seconds,
+        "shots": shots,
+        "gen": {"defaultFrameCount": timeline.entries[0].frame_count},
+        "keyframes": keyframes,
+        "liveTaePreview": True,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+async def generate_h3_director_video(
+    ctx,
+    *,
+    segments,
+    output_path: str,
+    aspect_ratio: str = "9:16",
+    resolution: str | None = None,
+) -> H3GenerationResult:
+    """Submit all logical shots as one MiniMax H3 director workflow task."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
     from novelvideo.media_capabilities.runtime.artifacts import ArtifactStore
     from novelvideo.media_capabilities.runtime.configuration import (
@@ -118,12 +298,10 @@ async def generate_h3_video(
     )
     from novelvideo.media_capabilities.runtime.executor import RunningHubExecutor
     from novelvideo.media_capabilities.task_store import TaskStore
-    from novelvideo.media_capabilities.video.pipeline import (
-        H3VideoPipeline,
-        UploadedReference,
-    )
+    from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline, UploadedReference
 
-    actual_mode = resolve_h3_mode(mode, first_frame, last_frame)
+    timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+    actual_mode = H3Mode.FL2VA if any(e.segment.last_frame for e in timeline.entries) else H3Mode.I2VA
     runtime = load_runninghub_runtime_configuration(
         get_media_capability_store(), get_media_credential_resolver()
     )
@@ -165,20 +343,56 @@ async def generate_h3_video(
             register_candidate=lambda _candidate: None,
             prompt_profile={"id": "minimax-h3", "version": 1},
         )
+        uploaded_frames: dict[str, UploadedReference] = {}
+        for entry in timeline.entries:
+            for source in (entry.segment.first_frame, entry.segment.last_frame):
+                if source and source not in uploaded_frames:
+                    uploaded_frames[source] = await upload(source)
         request = VideoGenerationRequest(
             capability=(
                 MediaCapability.VIDEO_FL2VA
                 if actual_mode is H3Mode.FL2VA
                 else MediaCapability.VIDEO_I2VA
             ),
-            prompt=prompt,
-            duration=float(duration),
-            first_frame=first_frame,
-            last_frame=last_frame if actual_mode is H3Mode.FL2VA else None,
+            prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
+            duration=timeline.duration_seconds,
+            first_frame=timeline.entries[0].segment.first_frame,
+            last_frame=timeline.entries[-1].segment.last_frame,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
         )
-        candidate = await pipeline.generate(request, MotionSpec(action=prompt))
+        candidate = await pipeline.generate_timeline(
+            request,
+            timeline_data=_director_timeline_payload(
+                timeline,
+                {source: uploaded.url for source, uploaded in uploaded_frames.items()},
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            ),
+            input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
+            idempotency_input={
+                "version": 5,
+                "frame_rate": timeline.fps,
+                "total_frames": timeline.total_frames,
+                "segments": [
+                    {
+                        "id": entry.segment.segment_id,
+                        "start": entry.start_frame,
+                        "frame_count": entry.frame_count,
+                        "prompt": entry.segment.prompt,
+                        "first_frame_sha256": (
+                            uploaded_frames[entry.segment.first_frame].sha256
+                            if entry.segment.first_frame else None
+                        ),
+                        "last_frame_sha256": (
+                            uploaded_frames[entry.segment.last_frame].sha256
+                            if entry.segment.last_frame else None
+                        ),
+                    }
+                    for entry in timeline.entries
+                ],
+            },
+        )
         if candidate.status is not MediaTaskStatus.SUCCEEDED:
             codes = ", ".join(issue.code for issue in candidate.quality_issues)
             raise RuntimeError(f"MiniMax H3 output failed quality checks: {codes}")
@@ -197,6 +411,7 @@ async def generate_h3_video(
 
 __all__ = [
     "H3GenerationResult",
+    "generate_h3_director_video",
     "generate_h3_video",
     "get_h3_concurrency_coordinator",
     "load_h3_workflow_profile",

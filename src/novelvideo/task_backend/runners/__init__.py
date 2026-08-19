@@ -13,6 +13,8 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     identity,
     ingest,
     narrative_group,
+    narrative_group_video,
+    narrative_group_video_compose,
     prop_reference,
     render,
     scene_reference,

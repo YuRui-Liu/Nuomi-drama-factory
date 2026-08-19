@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
@@ -29,7 +29,10 @@ from novelvideo.narrative_groups.service import (
     ensure_groups,
     rebuild_groups,
     rollback_stage_revision,
+    reserve_video_revision,
+    restore_video_reservation,
     stage_history,
+    update_video_manifest_dialogue_source,
 )
 from novelvideo.ports import get_task_backend
 
@@ -40,6 +43,24 @@ class NarrativeGroupGenerationRequest(BaseModel):
     use_style: bool = True
     selected_character_reference_ids: list[str] | None = None
     selected_scene_reference_ids: list[str] | None = None
+
+
+class NarrativeGroupVideoRequest(BaseModel):
+    """Client input deliberately excludes mutable frame and beat payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(default="minimax-h3", min_length=1)
+    mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    revision: int = Field(ge=0)
+
+
+class NarrativeGroupDialogueSourceRequest(BaseModel):
+    """A composition preference for one logical span of a director output."""
+
+    model_config = ConfigDict(extra="forbid")
+    span_index: int = Field(ge=0)
+    dialogue_source: Literal["external_tts", "h3_native"]
+    revision: int = Field(ge=1)
 
 
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
@@ -73,8 +94,37 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
     result = []
     for group in groups:
         item = group.to_dict()
-        for state in item["stages"].values():
+        for stage_name, state in item["stages"].items():
             state.pop("revision_history", None)
+            if stage_name == "video":
+                manifest_name = str(state.get("manifest_asset") or "").strip()
+                if manifest_name:
+                    try:
+                        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+                        manifest = load_h3_director_manifest(manifest_name)
+                        state["video_spans"] = [
+                            {
+                                "span_index": index,
+                                "beat_numbers": [entry.segment.beat_number],
+                                "start_seconds": entry.start_seconds,
+                                "end_seconds": entry.end_seconds,
+                                "dialogue_source": entry.dialogue_source.value,
+                            }
+                            for index, entry in enumerate(manifest.entries)
+                        ]
+                        if not state.get("video_asset"):
+                            state["video_asset"] = manifest.physical_video
+                        if not state.get("original_audio_path"):
+                            state["original_audio_path"] = manifest.original_audio_path or ""
+                        if not state.get("dialogue_stem_path"):
+                            state["dialogue_stem_path"] = manifest.dialogue_stem_path or ""
+                        if not state.get("ambience_stem_path"):
+                            state["ambience_stem_path"] = manifest.ambience_stem_path or ""
+                    except (OSError, ValueError):
+                        state["video_spans"] = []
+                else:
+                    state["video_spans"] = []
             state["grid_asset"] = _asset_url(
                 project, project_dir, state.get("grid_asset", "")
             )
@@ -82,6 +132,11 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
                 url = _asset_url(project, project_dir, str(cell.get("path") or ""))
                 cell["path"] = url
                 cell["url"] = url
+            for field in (
+                "video_asset", "manifest_asset", "original_audio_path",
+                "dialogue_stem_path", "ambience_stem_path",
+            ):
+                state[field] = _asset_url(project, project_dir, state.get(field, ""))
         result.append(item)
     return result
 
@@ -324,29 +379,55 @@ async def _enqueue_group_action(
     if reference_selection is not None:
         payload["reference_selection"] = reference_selection
     queued = await get_task_backend().enqueue_project_task(
-        resolved.ctx,
-        task_type=task_type,
-        queue_kind="default",
-        episode=episode,
-        scope=scope,
-        payload=payload,
+        resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
+        scope=scope, payload=payload,
     )
-    return {
-        "ok": True,
-        "data": {
-            "task_id": queued.task_state.task_id,
-            "scope": scope,
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "metadata": {
-                "group_id": group_id,
-                "stage": stage,
-                "revision": revision,
-            },
-        },
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
+    }}
+
+
+async def _enqueue_group_video(
+    project: str,
+    episode: int,
+    group_id: str,
+    user: dict,
+    request: NarrativeGroupVideoRequest,
+):
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        group, reservation = reserve_video_revision(
+            resolved.project_dir, episode, group_id,
+            expected_revision=request.revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
+    revision = reservation.revision
+    scope = f"group_{group_id}_video_r{revision}"
+    payload = {
+        "episode": episode,
+        "group_id": group.id,
+        "revision": revision,
+        "model": request.model,
+        "mode": request.mode,
     }
-
-
+    try:
+        queued = await get_task_backend().enqueue_project_task(
+            resolved.ctx, task_type="narrative_group_video", queue_kind="default",
+            episode=episode, scope=scope, payload=payload,
+        )
+    except Exception as exc:
+        restore_video_reservation(resolved.project_dir, episode, reservation)
+        raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/sketch/generate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -385,6 +466,74 @@ async def generate_render_group(
     return await _enqueue_group_action(
         project, episode, group_id, "render", user, generation_request=body
     )
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_video_group(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
+    user: dict = Depends(get_api_user),
+):
+    return await _enqueue_group_video(project, episode, group_id, user, request)
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/dialogue-source",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def change_group_video_dialogue_source(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupDialogueSourceRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    try:
+        update_video_manifest_dialogue_source(
+            resolved.project_dir,
+            episode,
+            group_id,
+            span_index=request.span_index,
+            dialogue_source=request.dialogue_source,
+            expected_revision=request.revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except (FileNotFoundError, IndexError) as exc:
+        raise HTTPException(status_code=404, detail="Narrative group video span not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    revision = request.revision
+    scope = f"group_{group_id}_video_compose_r{revision}_s{request.span_index}"
+    payload = {
+        "episode": episode,
+        "group_id": group_id,
+        "revision": revision,
+        "span_index": request.span_index,
+        "dialogue_source": request.dialogue_source,
+    }
+    queued = await get_task_backend().enqueue_project_task(
+        resolved.ctx,
+        task_type="narrative_group_video_compose",
+        queue_kind="default",
+        episode=episode,
+        scope=scope,
+        payload=payload,
+    )
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id,
+        "scope": scope,
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 
 
 @router.post(

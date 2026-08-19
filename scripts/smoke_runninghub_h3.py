@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -12,7 +13,26 @@ from urllib.parse import urlsplit
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubClient
 
 
-WORKFLOW_ID = "2087934731806658562"
+WORKFLOW_ID = "2089723723468328961"
+
+
+def build_smoke_timeline_data(
+    *, first_frame_url: str, last_frame_url: str | None, prompt: str
+) -> str:
+    """Build the one-segment version-5 Director payload used by this smoke test."""
+    from novelvideo.media_capabilities.video.runninghub_h3 import _director_timeline_payload
+
+    return _director_timeline_payload(
+        first_frame_url=first_frame_url,
+        last_frame_url=last_frame_url,
+        prompt=prompt,
+        duration=5.0,
+    )
+
+
+def timeline_summary(payload: dict) -> tuple[int, int]:
+    """Return the logical shot count and total H3 frame count for operator logs."""
+    return len(payload.get("segments") or ()), int(payload["totalFrames"])
 
 
 def _load_key(env_file: Path | None) -> str:
@@ -37,28 +57,24 @@ async def _run(args: argparse.Namespace) -> None:
             if args.image is None:
                 raise ValueError("--image is required when --task-id is omitted")
             remote_image = await client.upload(args.image)
-            remote_last_image = await client.upload(args.last_image or args.image)
+            remote_last_image = await client.upload(args.last_image) if args.last_image else None
+            timeline_data = build_smoke_timeline_data(
+                first_frame_url=remote_image,
+                last_frame_url=remote_last_image,
+                prompt=args.prompt,
+            )
+            shots, total_frames = timeline_summary(json.loads(timeline_data))
             task_id = await client.submit(
                 WORKFLOW_ID,
                 [
-                    {"nodeId": "114", "fieldName": "image", "fieldValue": remote_image},
                     {
-                        "nodeId": "115",
-                        "fieldName": "aspect_ratio",
-                        "fieldValue": "9:16 (Portrait Widescreen)",
-                    },
-                    {"nodeId": "131", "fieldName": "noise_seed", "fieldValue": 7},
-                    {"nodeId": "132", "fieldName": "fps", "fieldValue": 24},
-                    {"nodeId": "133", "fieldName": "prompt", "fieldValue": args.prompt},
-                    {"nodeId": "135", "fieldName": "value", "fieldValue": 5},
-                    {
-                        "nodeId": "141",
-                        "fieldName": "image",
-                        "fieldValue": remote_last_image,
+                        "nodeId": "12",
+                        "fieldName": "timeline_data",
+                        "fieldValue": timeline_data,
                     },
                 ],
             )
-            print(f"submitted task {task_id}")
+            print(f"submitted task {task_id} shots={shots} total_frames={total_frames}")
         deadline = time.monotonic() + args.timeout
         while True:
             snapshot = await client.query(task_id)
@@ -97,7 +113,8 @@ def main() -> None:
     parser.add_argument("--prompt", default="人物轻轻眨眼并缓慢抬头，镜头稳定")
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=1200.0)
-    asyncio.run(_run(parser.parse_args()))
+    args = parser.parse_args()
+    asyncio.run(_run(args))
 
 
 if __name__ == "__main__":
