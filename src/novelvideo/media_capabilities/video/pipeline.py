@@ -216,5 +216,78 @@ class H3VideoPipeline:
         self.register_candidate(candidate)
         return candidate
 
+    async def generate_timeline(
+        self,
+        request: VideoGenerationRequest,
+        *,
+        timeline_data: str,
+        input_asset_hashes: tuple[str, ...] = (),
+    ) -> VideoCandidate:
+        """Run the director workflow with one serialized multi-shot timeline."""
+        input_snapshot = {"timeline_data": timeline_data}
+        implementation_snapshot = {
+            "prompt_profile": self.prompt_profile,
+            "workflow_profile": self.workflow_profile.model_dump(mode="json"),
+        }
+        digest_source = json.dumps(
+            {"request": request.model_dump(mode="json"), **input_snapshot},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+        task = self.store.create_task(
+            request.capability,
+            hashlib.sha256(digest_source).hexdigest(),
+            implementation_snapshot,
+            input_snapshot,
+        )
+        self.store.start_attempt(
+            task.id,
+            self.provider_account_id,
+            workflow_version={
+                "id": self.workflow_profile.id,
+                "version": self.workflow_profile.version,
+                "source_sha256": self.workflow_profile.source_sha256,
+            },
+            input_asset_hashes=list(input_asset_hashes),
+        )
+        deadline = self.monotonic() + self.poll_timeout
+        while True:
+            completed = await self.executor.step(
+                task.id,
+                profile=self.workflow_profile,
+                semantic_values={"timeline_data": timeline_data},
+            )
+            if completed.status is MediaTaskStatus.SUCCEEDED:
+                break
+            if completed.status in {
+                MediaTaskStatus.FAILED,
+                MediaTaskStatus.CANCELLED,
+                MediaTaskStatus.QUALITY_FAILED,
+            }:
+                raise RuntimeError(
+                    f"video generation ended with status {completed.status.value}"
+                )
+            if self.monotonic() >= deadline:
+                await self.executor.cancel(task.id)
+                raise TimeoutError(
+                    f"video generation did not finish within {self.poll_timeout:g} seconds"
+                )
+            await self.wait(self.poll_interval)
+        if not isinstance(completed.output, dict) or not completed.output.get("artifacts"):
+            raise RuntimeError("video generation succeeded without an artifact")
+        artifact = MediaArtifact.model_validate(completed.output["artifacts"][0])
+        issues = validate_video(await self.probe_video(artifact), request)
+        current_attempt = self.store.list_attempts(task.id)[-1]
+        candidate = VideoCandidate(
+            task_id=task.id,
+            provider_task_id=current_attempt.provider_task_id,
+            artifact=artifact,
+            status=(MediaTaskStatus.QUALITY_FAILED if issues else MediaTaskStatus.SUCCEEDED),
+            quality_issues=issues,
+            reference_hashes=tuple(current_attempt.input_asset_hashes or ()),
+        )
+        self.register_candidate(candidate)
+        return candidate
+
 
 __all__ = ["H3VideoPipeline", "UploadedReference", "VideoCandidate"]

@@ -19,6 +19,10 @@ from novelvideo.media_capabilities.models import (
     WorkflowProfile,
 )
 from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+from novelvideo.media_capabilities.video.h3_timeline import (
+    H3DirectorSegment,
+    build_h3_timeline_data,
+)
 from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
@@ -45,7 +49,7 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
         profile = profile.model_copy(update={"workflow_id": normalized})
-    required_bindings = {"first_frame", "last_frame", "prompt", "duration"}
+    required_bindings = {"timeline_data"}
     if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
         raise ValueError("H3 production profile is missing required bindings or output")
     return profile
@@ -110,7 +114,83 @@ async def generate_h3_video(
     output_path: str,
     mode: str = "auto",
 ) -> H3GenerationResult:
-    """Generate one H3 video through RunningHub and persist its canonical file."""
+    """Wrap the legacy single-video API as one H3 director segment."""
+    resolve_h3_mode(mode, first_frame, last_frame)
+    return await generate_h3_director_video(
+        ctx,
+        segments=(
+            H3DirectorSegment(
+                segment_id="segment-1",
+                beat_number=1,
+                prompt=prompt,
+                duration_seconds=duration,
+                first_frame=first_frame,
+                last_frame=last_frame,
+            ),
+        ),
+        output_path=output_path,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+    )
+
+
+def _director_timeline_payload(timeline, uploaded_frames: dict[str, str]) -> str:
+    shots = []
+    segments = []
+    for entry in timeline.entries:
+        segment = entry.segment
+        first = uploaded_frames.get(segment.first_frame or "")
+        last = uploaded_frames.get(segment.last_frame or "")
+        image = lambda value: ({"imageFile": value} if value else None)
+        shot = {
+            "id": segment.segment_id,
+            "durationSec": entry.frame_count / timeline.fps,
+            "prompt": segment.prompt,
+            "negativePrompt": "",
+            "continuityFromPrev": False,
+            "startImage": image(first),
+            "endImage": image(last),
+        }
+        shots.append(shot)
+        segments.append({
+            "id": segment.segment_id,
+            "start": entry.start_frame,
+            "length": entry.frame_count,
+            "frameCount": entry.frame_count,
+            "durationSec": entry.frame_count / timeline.fps,
+            "prompt": segment.prompt,
+            "negativePrompt": "",
+            "continuityFromPrev": False,
+            "isStartFrame": first is not None,
+            "isEndFrame": last is not None,
+            "genImage": image(first),
+            "endImage": image(last),
+            "taskType": "",
+            "refs": [],
+        })
+    payload = {
+        "version": 5,
+        "editMode": "segment",
+        "totalFrames": timeline.total_frames,
+        "frameRate": timeline.fps,
+        "segments": segments,
+        "timelineMode": "fl2v" if any(item["endImage"] for item in segments) else "i2v",
+        "durationSec": timeline.duration_seconds,
+        "shots": shots,
+        "gen": {"defaultFrameCount": timeline.entries[0].frame_count},
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+async def generate_h3_director_video(
+    ctx,
+    *,
+    segments,
+    output_path: str,
+    aspect_ratio: str = "9:16",
+    resolution: str | None = None,
+) -> H3GenerationResult:
+    """Submit all logical shots as one MiniMax H3 director workflow task."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
     from novelvideo.media_capabilities.runtime.artifacts import ArtifactStore
     from novelvideo.media_capabilities.runtime.configuration import (
@@ -118,12 +198,10 @@ async def generate_h3_video(
     )
     from novelvideo.media_capabilities.runtime.executor import RunningHubExecutor
     from novelvideo.media_capabilities.task_store import TaskStore
-    from novelvideo.media_capabilities.video.pipeline import (
-        H3VideoPipeline,
-        UploadedReference,
-    )
+    from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline, UploadedReference
 
-    actual_mode = resolve_h3_mode(mode, first_frame, last_frame)
+    timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+    actual_mode = H3Mode.FL2VA if any(e.segment.last_frame for e in timeline.entries) else H3Mode.I2VA
     runtime = load_runninghub_runtime_configuration(
         get_media_capability_store(), get_media_credential_resolver()
     )
@@ -165,20 +243,29 @@ async def generate_h3_video(
             register_candidate=lambda _candidate: None,
             prompt_profile={"id": "minimax-h3", "version": 1},
         )
+        uploaded_frames: dict[str, str] = {}
+        for entry in timeline.entries:
+            for source in (entry.segment.first_frame, entry.segment.last_frame):
+                if source and source not in uploaded_frames:
+                    uploaded_frames[source] = (await upload(source)).url
         request = VideoGenerationRequest(
             capability=(
                 MediaCapability.VIDEO_FL2VA
                 if actual_mode is H3Mode.FL2VA
                 else MediaCapability.VIDEO_I2VA
             ),
-            prompt=prompt,
-            duration=float(duration),
-            first_frame=first_frame,
-            last_frame=last_frame if actual_mode is H3Mode.FL2VA else None,
+            prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
+            duration=timeline.duration_seconds,
+            first_frame=timeline.entries[0].segment.first_frame,
+            last_frame=timeline.entries[-1].segment.last_frame,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
         )
-        candidate = await pipeline.generate(request, MotionSpec(action=prompt))
+        candidate = await pipeline.generate_timeline(
+            request,
+            timeline_data=_director_timeline_payload(timeline, uploaded_frames),
+            input_asset_hashes=tuple(),
+        )
         if candidate.status is not MediaTaskStatus.SUCCEEDED:
             codes = ", ".join(issue.code for issue in candidate.quality_issues)
             raise RuntimeError(f"MiniMax H3 output failed quality checks: {codes}")
@@ -197,6 +284,7 @@ async def generate_h3_video(
 
 __all__ = [
     "H3GenerationResult",
+    "generate_h3_director_video",
     "generate_h3_video",
     "get_h3_concurrency_coordinator",
     "load_h3_workflow_profile",
