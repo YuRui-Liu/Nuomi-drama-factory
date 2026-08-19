@@ -70,23 +70,16 @@ def runtime_with() -> RunningHubRuntimeConfiguration:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("first_frame", "last_frame", "expected_images", "disconnected_field"),
+    ("first_frame", "last_frame", "expected_mode"),
     [
-        ("first.png", None, [("114", "uploaded/first.png")], "last_frame"),
-        (None, "last.png", [("141", "uploaded/last.png")], "first_frame"),
-        (
-            "first.png",
-            "last.png",
-            [("114", "uploaded/first.png"), ("141", "uploaded/last.png")],
-            None,
-        ),
+        ("first.png", None, "i2v"),
+        ("first.png", "last.png", "fl2v"),
     ],
 )
-async def test_generate_minimax_h3_video_binds_frame_modes(
-    first_frame: str | None,
+async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
+    first_frame: str,
     last_frame: str | None,
-    expected_images: list[tuple[str, str]],
-    disconnected_field: str | None,
+    expected_mode: str,
 ) -> None:
     client = FakeClient(
         [
@@ -97,12 +90,12 @@ async def test_generate_minimax_h3_video_binds_frame_modes(
                     ProviderResult(
                         url="https://rh-images.xiaoyaoyou.com/audio.mp3",
                         output_type="audio",
-                        node_id="136",
+                        node_id="7",
                     ),
                     ProviderResult(
                         url="https://rh-images.xiaoyaoyou.com/video.mp4",
                         output_type="video",
-                        node_id="136",
+                        node_id="7",
                     ),
                 ),
             ),
@@ -129,43 +122,33 @@ async def test_generate_minimax_h3_video_binds_frame_modes(
     )
     assert client.submitted is not None
     workflow_id, node_info = client.submitted
-    assert workflow_id == "2087934731806658562"
-    assert [
-        (item["nodeId"], item["fieldValue"])
-        for item in node_info
-        if item["fieldName"] == "image"
-    ] == expected_images
-    values = {item["nodeId"]: item["fieldValue"] for item in node_info}
-    assert {key: values[key] for key in ("131", "133", "135")} == {
-        "131": 7,
-        "133": "女孩从门口跑到窗边",
-        "135": 5.0,
-    }
-    assert client.downloaded == ["https://rh-images.xiaoyaoyou.com/video.mp4"]
-    disconnected = [
-        item
-        for item in node_info
-        if item["nodeId"] == "133"
-        and item["fieldName"] in {"first_frame", "last_frame"}
-    ]
-    assert disconnected == (
-        []
-        if disconnected_field is None
-        else [
-            {
-                "nodeId": "133",
-                "fieldName": disconnected_field,
-                "fieldValue": None,
-            }
-        ]
+    assert workflow_id == "2089723723468328961"
+    assert node_info and len(node_info) == 1
+    assert node_info[0]["nodeId"] == "12"
+    assert node_info[0]["fieldName"] == "timeline_data"
+    import json
+    payload = json.loads(node_info[0]["fieldValue"])
+    assert payload["timelineMode"] == expected_mode
+    assert payload["frameRate"] == 24
+    assert payload["totalFrames"] == 124
+    assert len(payload["segments"]) == 1
+    segment = payload["segments"][0]
+    assert segment["prompt"] == "女孩从门口跑到窗边"
+    assert segment["genImage"] == {"imageFile": "uploaded/first.png"}
+    assert segment["endImage"] == (
+        {"imageFile": "uploaded/last.png"} if last_frame else None
     )
+    assert [path.name for path in client.uploaded] == (
+        ["first.png", "last.png"] if last_frame else ["first.png"]
+    )
+    assert client.downloaded == ["https://rh-images.xiaoyaoyou.com/video.mp4"]
 
 
 @pytest.mark.asyncio
-async def test_generate_minimax_h3_video_rejects_missing_frames() -> None:
+async def test_generate_minimax_h3_video_rejects_missing_first_frame() -> None:
     client = FakeClient([])
 
-    with pytest.raises(ValueError, match="首帧或尾帧"):
+    with pytest.raises(ValueError, match="首帧"):
         await generate_minimax_h3_video(
             runtime_with(),
             first_frame=None,
