@@ -114,6 +114,51 @@ def test_sketch_keeps_black_and_white_and_style_avoidance(tmp_path, monkeypatch)
     assert "Avoid photorealism and 3D rendering" in value.prompt
 
 
+def test_render_strong_lock_prepends_current_sketch_and_limits_other_references(tmp_path, monkeypatch):
+    from novelvideo.narrative_groups.service import advance_revision, group_beats, record_stage_result, save_groups
+
+    save_groups(tmp_path, 1, group_beats([{"id": "1", "beat_number": 1}]))
+    advance_revision(tmp_path, 1, "ng-01", "sketch")
+    sketch = tmp_path / "sketch-grid.png"
+    sketch.write_bytes(b"sketch")
+    record_stage_result(
+        tmp_path, 1, "ng-01", "sketch", expected_revision=1,
+        status="completed", grid_asset=str(sketch),
+    )
+    preview = _preview(tmp_path)
+    monkeypatch.setattr(narrative_group, "resolve_group_reference_preview", lambda *args, **kwargs: preview)
+
+    value = narrative_group._generation_input(_payload(
+        tmp_path, episode=1, group_id="ng-01", constraint_mode="strong_sketch",
+        source_sketch_revision=1, source_sketch_asset=str(sketch),
+    ))
+
+    assert value.references[0] == str(sketch)
+    assert value.references[1:] == tuple(ref.path for ref in preview.image_references)
+    assert "强构图约束" in value.prompt
+    assert "不得改变分镜数量、画面布局、景别、机位" in value.prompt
+
+
+def test_render_strong_lock_rejects_stale_sketch_revision(tmp_path, monkeypatch):
+    from novelvideo.narrative_groups.service import advance_revision, group_beats, record_stage_result, save_groups
+
+    save_groups(tmp_path, 1, group_beats([{"id": "1", "beat_number": 1}]))
+    advance_revision(tmp_path, 1, "ng-01", "sketch")
+    sketch = tmp_path / "sketch-grid.png"
+    sketch.write_bytes(b"sketch")
+    record_stage_result(
+        tmp_path, 1, "ng-01", "sketch", expected_revision=1,
+        status="completed", grid_asset=str(sketch),
+    )
+    monkeypatch.setattr(narrative_group, "resolve_group_reference_preview", lambda *args, **kwargs: _preview(tmp_path))
+
+    with pytest.raises(RuntimeError, match="sketch revision is stale"):
+        narrative_group._generation_input(_payload(
+            tmp_path, episode=1, group_id="ng-01", constraint_mode="strong_sketch",
+            source_sketch_revision=2, source_sketch_asset=str(sketch),
+        ))
+
+
 def test_unknown_reference_id_fails_at_runner_boundary(tmp_path, monkeypatch):
     preview = _preview(tmp_path)
     monkeypatch.setattr(narrative_group, "resolve_group_reference_preview", lambda *args, **kwargs: preview)
@@ -171,7 +216,7 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
     )
     monkeypatch.setattr(
         "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
-        lambda *args: runtime,
+        lambda *args, **kwargs: runtime,
     )
     payload = _payload(
         tmp_path,
@@ -179,6 +224,8 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
         episode=1,
         group_id="ng-01",
         revision=1,
+        provider_id="grsai-alt",
+        model="gpt-image-2-vip",
     )
 
     result = await narrative_group._generate_grid(
@@ -186,6 +233,7 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
     )
 
     assert submitted[0].references == [ref.path for ref in preview.image_references]
+    assert submitted[0].model == "gpt-image-2-vip"
     assert submitted[0].aspect_ratio == "9:8"
     assert result["reference_count"] == 2
     assert result["reference_warnings"] == []

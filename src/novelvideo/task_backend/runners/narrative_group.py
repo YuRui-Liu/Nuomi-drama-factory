@@ -46,9 +46,11 @@ class GroupGenerationInput:
     warnings: tuple[str, ...] = ()
 
 
-def _reference_mapping(references: tuple[GroupImageReference, ...]) -> str:
+def _reference_mapping(
+    references: tuple[GroupImageReference, ...], *, start: int = 1
+) -> str:
     lines = []
-    for index, ref in enumerate(references, start=1):
+    for index, ref in enumerate(references, start=start):
         beats = ", ".join(str(number) for number in ref.beat_numbers)
         if ref.kind == "character":
             subject = f"character {ref.character_name}, identity {ref.identity_id}"
@@ -86,8 +88,17 @@ def _grid_prompt(
         f"Each cell is a separate {visual}; preserve character, location, lighting and time continuity. "
         "Use equal cells in reading order, no borders, captions, labels, text, collage overlap, or extra panels.\n"
     )
+    strong_lock = str(payload.get("constraint_mode") or "") == "strong_sketch"
+    if strong_lock:
+        grid_rules += (
+            "图片1是本组已确认的草图多宫格，作为强构图约束。"
+            "必须逐格保持图片1的分镜数量、阅读顺序、人物位置、动作轮廓、画面布局、"
+            "景别、机位、透视和主体占比；不得改变分镜数量、画面布局、景别、机位。"
+            "只允许把草图细化为最终成片画面，并结合后续身份图、场景图和风格信息完善材质、"
+            "服装、表情、灯光与细节。\n"
+        )
     parts = [part for part in (style_prompt, grid_rules, "\n".join(panels)) if part]
-    mapping = _reference_mapping(selected_references)
+    mapping = _reference_mapping(selected_references, start=2 if strong_lock else 1)
     if mapping:
         parts.append(mapping)
     return "\n".join(parts)
@@ -106,14 +117,43 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         selected_character_reference_ids=options.get("selected_character_reference_ids"),
         selected_scene_reference_ids=options.get("selected_scene_reference_ids"),
     )
+    references = selection.image_paths
+    prompt_references = selection.selected
+    warnings = list(selection.warnings)
+    if str(payload.get("constraint_mode") or "") == "strong_sketch":
+        from novelvideo.narrative_groups.service import load_groups
+
+        group = next(
+            (
+                item for item in load_groups(Path(str(payload["project_dir"])), int(payload["episode"]))
+                if item.id == str(payload["group_id"])
+            ),
+            None,
+        )
+        sketch = group.stages["sketch"] if group is not None else None
+        frozen_revision = int(payload.get("source_sketch_revision") or 0)
+        frozen_asset = Path(str(payload.get("source_sketch_asset") or ""))
+        if (
+            sketch is None
+            or sketch.status != "completed"
+            or sketch.revision != frozen_revision
+            or not sketch.grid_asset
+            or Path(sketch.grid_asset).resolve() != frozen_asset.resolve()
+            or not frozen_asset.is_file()
+        ):
+            raise RuntimeError("narrative group sketch revision is stale")
+        if len(references) > 8:
+            warnings.append("强构图模式为草图保留首个参考位，仅使用前 8 张其他参考图")
+        references = (str(frozen_asset), *references[:8])
+        prompt_references = selection.selected[:8]
     return GroupGenerationInput(
         prompt=_grid_prompt(
             payload,
             style_prompt=selection.style_prompt,
-            selected_references=selection.selected,
+            selected_references=prompt_references,
         ),
-        references=selection.image_paths,
-        warnings=selection.warnings,
+        references=tuple(references),
+        warnings=tuple(warnings),
     )
 
 
@@ -154,14 +194,16 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
     from novelvideo.media_capabilities.models import ImageGenerationRequest, MediaCapability
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
 
+    provider_id = str(payload.get("provider_id") or "grsai-main")
     runtime = load_grsai_runtime_configuration(
-        get_media_capability_store(), get_media_credential_resolver()
+        get_media_capability_store(), get_media_credential_resolver(),
+        provider_id=provider_id,
     )
     generation_input = _generation_input(payload)
     request = ImageGenerationRequest(
         capability=MediaCapability.IMAGE_STORYBOARD_GRID,
         prompt=generation_input.prompt,
-        model=runtime.model,
+        model=str(payload.get("model") or runtime.model),
         references=list(generation_input.references),
         aspect_ratio=_grid_request_aspect_ratio(payload),
         image_size="2K",
@@ -196,9 +238,11 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         target.write_bytes(image_bytes)
         return {
             "grid_asset": str(target),
-            "actual_provider": "grsai",
-            "actual_model": runtime.model,
+            "actual_provider": provider_id,
+            "actual_model": request.model,
             "actual_mode": str(payload.get("stage") or "render"),
+            "source_sketch_revision": int(payload.get("source_sketch_revision") or 0),
+            "constraint_mode": str(payload.get("constraint_mode") or ""),
             "provider_task_id": task_id,
             "reference_count": len(generation_input.references),
             "reference_warnings": list(generation_input.warnings),
@@ -294,7 +338,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
 
             async def generate(data: Mapping[str, Any]) -> dict[str, Any]:
                 generated = await _generate_grid(data, ctx)
-                for field in ("reference_count", "reference_warnings"):
+                for field in (
+                    "reference_count", "reference_warnings",
+                    "source_sketch_revision", "constraint_mode",
+                ):
                     if field in generated:
                         generation_metadata[field] = generated[field]
                 return generated
@@ -319,6 +366,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             actual_provider=result.get("actual_provider"),
             actual_model=result.get("actual_model"),
             actual_mode=result.get("actual_mode"),
+            source_sketch_revision=result.get("source_sketch_revision"),
+            constraint_mode=result.get("constraint_mode"),
         )
         return result
     except Exception as exc:

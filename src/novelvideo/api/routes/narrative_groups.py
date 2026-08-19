@@ -52,6 +52,8 @@ class NarrativeGroupVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="minimax-h3", min_length=1)
     mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
+    resolution: str | None = None
     revision: int = Field(ge=0)
 
 
@@ -416,6 +418,8 @@ async def _enqueue_group_video(
         "revision": revision,
         "model": request.model,
         "mode": request.mode,
+        "aspect_ratio": request.aspect_ratio,
+        "resolution": request.resolution,
     }
     try:
         queued = await get_task_backend().enqueue_project_task(

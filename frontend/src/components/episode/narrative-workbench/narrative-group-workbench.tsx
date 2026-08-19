@@ -15,6 +15,7 @@ import { GroupVideoStage, groupFrameSummary } from "./group-video-stage";
 import { GroupVideoResult } from "./group-video-result";
 import { ProjectVideoModelSelect } from "./project-video-model-select";
 import { GroupReferenceDialog } from "./group-reference-dialog";
+import { useProjectAspectRatio } from "@/stores/aspect-ratio-store";
 
 function taskScope(response: unknown): string | undefined {
   if (!response || typeof response !== "object") return undefined;
@@ -37,6 +38,8 @@ function activeStageScope(
 }
 
 export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { project: string; episode: number; onRepairBeat: (beatId: string) => void }) {
+  const { orientation } = useProjectAspectRatio(project);
+  const aspectRatio = orientation === "landscape" ? "16:9" as const : "9:16" as const;
   const groupsQuery = useNarrativeGroups(project, episode);
   const action = useNarrativeGroupAction(project, episode);
   const modelsQuery = useVideoModels();
@@ -103,7 +106,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const confirmAction = async (selection: NarrativeGroupGenerationSelection) => {
     if (!pendingAction) return;
     try {
-      const response = await action.mutateAsync({ ...pendingAction, selection });
+      const response = await action.mutateAsync({ ...pendingAction, aspectRatio, selection });
       gridTask.start({ scope: taskScope(response) });
       toast.success("任务已进入队列");
       setPendingAction(null);
@@ -112,7 +115,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   };
   const runGroupVideo = async (request: { video_model: string; h3_mode: "auto" | "i2va" | "fl2va" }) => {
     try {
-      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, revision: group.stages.video.revision });
+      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision });
       groupVideoTask.start({ scope: taskScope(response) });
       toast.success("H3 导演台组合视频已进入队列");
     } catch (error) { toast.error(error instanceof Error ? error.message : "组合视频任务提交失败"); }

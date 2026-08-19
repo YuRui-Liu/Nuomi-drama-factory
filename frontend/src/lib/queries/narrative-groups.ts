@@ -140,11 +140,15 @@ export function narrativeGroupVideoPayload(input: {
   model: string;
   mode: "auto" | "i2va" | "fl2va";
   revision: number;
+  aspectRatio: "9:16" | "16:9";
+  resolution?: string;
 }) {
   return {
     model: input.model,
     mode: input.mode,
     revision: input.revision,
+    aspect_ratio: input.aspectRatio,
+    ...(input.resolution ? { resolution: input.resolution } : {}),
   };
 }
 
@@ -180,15 +184,18 @@ export function narrativeGroupRollbackPath(
 
 export function narrativeGroupActionPayload(input: {
   revision?: number;
+  aspectRatio?: "9:16" | "16:9";
   selection?: NarrativeGroupGenerationSelection;
 } = {}) {
   const payload: {
     revision?: number;
+    aspect_ratio?: "9:16" | "16:9";
     use_style?: boolean;
     selected_character_reference_ids?: string[];
     selected_scene_reference_ids?: string[];
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
+  if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
     payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
@@ -210,15 +217,17 @@ export function useNarrativeGroups(project: string, episode: number) {
 export function useNarrativeGroupAction(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, stage, action, revision, selection }: {
+    mutationFn: ({ groupId, stage, action, revision, selection, aspectRatio }: {
       groupId: string;
       stage: NarrativeGridStage;
       action: NarrativeGroupAction;
       revision?: number;
       selection?: NarrativeGroupGenerationSelection;
+      aspectRatio?: "9:16" | "16:9";
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
       json: narrativeGroupActionPayload({
         revision,
+        aspectRatio: action === "split" ? undefined : aspectRatio,
         selection: action === "split" ? undefined : selection,
       }),
     }).json<TaskResponse>(),
@@ -234,13 +243,15 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision }: {
+    mutationFn: ({ groupId, model, mode, revision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
       revision: number;
+      aspectRatio: "9:16" | "16:9";
+      resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({ model, mode, revision }),
+      json: narrativeGroupVideoPayload({ model, mode, revision, aspectRatio, resolution }),
     }).json<TaskResponse>(),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),

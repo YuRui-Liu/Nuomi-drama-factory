@@ -9,6 +9,10 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:false,refetch:vi.fn()}),
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
+ useGenerateNarrativeGroupVideo:()=>({mutateAsync:vi.fn()}),
+ useUpdateNarrativeGroupVideoDialogueSource:()=>({mutateAsync:vi.fn()}),
+ narrativeGroupTaskScope:()=>"grid-scope",
+ narrativeGroupVideoTaskScope:()=>"video-scope",
 }));
 vi.mock("@/hooks/use-task-controller",()=>({useTaskController:()=>({start:m.start})}));
 vi.mock("sonner",()=>({toast:{success:m.success,error:vi.fn()}}));
@@ -19,13 +23,14 @@ vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({GroupVideoStage:()=>null,groupFrameSummary:()=>({allHaveFirst:false,allHaveLast:false})}));
 vi.mock("@/components/episode/narrative-workbench/narrative-group-list",()=>({NarrativeGroupList:()=>null}));
 vi.mock("@/components/episode/narrative-workbench/project-video-model-select",()=>({ProjectVideoModelSelect:()=>null}));
+vi.mock("@/stores/aspect-ratio-store",()=>({useProjectAspectRatio:()=>({orientation:"landscape",spec:{}})}));
 
 describe("NarrativeGroupWorkbench references",()=>{
  beforeEach(()=>{vi.clearAllMocks();m.groups=[group];m.mutate.mockResolvedValue({scope:"x"});});
  it.each(["生成","重生成"])("confirms references before %s",async(label)=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText(label));
   expect(screen.getByRole("dialog")).toBeInTheDocument(); expect(m.mutate).not.toHaveBeenCalled(); fireEvent.click(screen.getByText("确认"));
-  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",selection:{useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[]}}));
+  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",aspectRatio:"16:9",selection:{useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[]}}));
   expect(m.start).toHaveBeenCalledWith({scope:"x"});
   expect(m.success).toHaveBeenCalledWith("任务已进入队列");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

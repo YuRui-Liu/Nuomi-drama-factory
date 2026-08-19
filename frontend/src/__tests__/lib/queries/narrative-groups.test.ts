@@ -35,11 +35,16 @@ describe("narrative group query contract", () => {
       .toEqual({ revision: 3 });
   });
 
-  it("builds one director-video request with only model, mode, and revision", () => {
+  it("builds one director-video request with configurable aspect and resolution", () => {
     expect(narrativeGroupVideoPath("demo project", 2, "ng-01"))
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
-    expect(narrativeGroupVideoPayload({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 }))
-      .toEqual({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 });
+    expect(narrativeGroupVideoPayload({
+      model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
+      aspectRatio: "16:9", resolution: "720p",
+    })).toEqual({
+      model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
+      aspect_ratio: "16:9", resolution: "720p",
+    });
   });
 
   it("uses the exact server H3 scope for the current video revision", () => {
@@ -69,6 +74,7 @@ describe("narrative group query contract", () => {
   it("serializes only generation selection fields and preserves empty arrays", () => {
     expect(narrativeGroupActionPayload({
       revision: 7,
+      aspectRatio: "9:16",
       selection: {
         useStyle: false,
         selectedCharacterReferenceIds: [],
@@ -77,6 +83,7 @@ describe("narrative group query contract", () => {
       apiKey: "must-not-leak",
     } as never)).toEqual({
       revision: 7,
+      aspect_ratio: "9:16",
       use_style: false,
       selected_character_reference_ids: [],
       selected_scene_reference_ids: ["scene-1"],
@@ -152,12 +159,13 @@ describe("narrative group reference hooks", () => {
       selectedSceneReferenceIds: ["scene-1"],
     };
 
-    await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "split", selection });
-    await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "generate", selection });
+    await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "split", selection, aspectRatio: "16:9" });
+    await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "generate", selection, aspectRatio: "16:9" });
 
     expect(bodies).toEqual([
       {},
       {
+        aspect_ratio: "16:9",
         use_style: true,
         selected_character_reference_ids: [],
         selected_scene_reference_ids: ["scene-1"],
