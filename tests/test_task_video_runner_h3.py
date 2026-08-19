@@ -223,3 +223,35 @@ async def test_h3_runner_explicit_silent_beat_uses_chinese_typed_optimization(tm
     assert context.dialogue_required is False
     assert context.first_frame_sha256 != first
     assert generated_prompts == [_Optimized.prompt]
+
+
+@pytest.mark.asyncio
+async def test_h3_runner_reads_dialogue_from_canonical_beat_fields(tmp_path, monkeypatch) -> None:
+    from novelvideo.task_backend.runners import video as runner
+
+    first, _ = _frames(tmp_path)
+    optimizer = _Optimizer()
+    monkeypatch.setattr(runner, "create_h3_prompt_optimizer", lambda **_: optimizer)
+    beat = {
+        "audio_type": "dialogue",
+        "narration_segment": "这门……还能撑多久？",
+        "speaker": "阿远",
+        "visual_description": "阿远抵住铁门，惊恐回头。",
+    }
+
+    await runner._optimize_h3_single_prompt(
+        ctx=_ctx(tmp_path),
+        beat_num=6,
+        beat=beat,
+        config={},
+        first_frame=first,
+        last_frame=None,
+        duration=5.0,
+        draft="阿远抵住铁门。",
+    )
+
+    segment, context, _mode = optimizer.calls[0]
+    assert segment.dialogue == "这门……还能撑多久？"
+    assert segment.speaker == "阿远"
+    assert segment.tone == ""
+    assert context.dialogue_required is True

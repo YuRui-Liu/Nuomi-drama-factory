@@ -156,15 +156,9 @@ def _frame_content_sha256(path: str, *, label: str) -> str:
 
 def _h3_dialogue_required(beat: dict[str, Any], config: dict[str, Any]) -> bool:
     """Derive lip-sync intent only from explicit beat/config dialogue signals."""
-    if "dialogue_required" in config:
-        return bool(config["dialogue_required"])
-    if "dialogue_required" in beat:
-        return bool(beat["dialogue_required"])
-    dialogue = str(beat.get("dialogue") or beat.get("line") or config.get("dialogue") or "").strip()
-    if dialogue:
-        return True
-    audio_type = str(config.get("audio_type") or beat.get("audio_type") or "").strip().lower()
-    return audio_type in {"dialogue", "character_dialogue", "对白", "台词"}
+    from novelvideo.media_capabilities.video.h3_beat_adapter import h3_dialogue_required
+
+    return h3_dialogue_required(beat, config)
 
 
 def _h3_prompt_context(
@@ -196,14 +190,19 @@ async def _optimize_h3_single_prompt(
     *, ctx: ProjectContext, beat_num: int, beat: dict[str, Any], config: dict[str, Any],
     first_frame: str, last_frame: str | None, duration: float, draft: str,
 ) -> str:
+    from novelvideo.media_capabilities.video.h3_beat_adapter import (
+        h3_dialogue_text,
+        h3_speaker_text,
+        h3_tone_text,
+    )
     from novelvideo.media_capabilities.video.h3_prompt import select_mode
 
     segment = H3DirectorSegment(
         segment_id=f"single-{beat_num}", beat_number=max(1, beat_num), prompt=draft or "当前镜头动作连续推进。",
         duration_seconds=duration, first_frame=first_frame, last_frame=last_frame,
-        dialogue=str(beat.get("dialogue") or beat.get("line") or config.get("dialogue") or "").strip(),
-        speaker=str(beat.get("speaker") or config.get("speaker") or "").strip(),
-        tone=str(beat.get("tone") or beat.get("emotion") or config.get("tone") or "").strip(),
+        dialogue=h3_dialogue_text(beat, config),
+        speaker=h3_speaker_text(beat, config),
+        tone=h3_tone_text(beat, config),
     )
     mode = select_mode(first_frame, last_frame, None)
     if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:

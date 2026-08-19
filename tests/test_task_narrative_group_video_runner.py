@@ -25,6 +25,35 @@ def _seed_group(tmp_path: Path):
     advance_revision(tmp_path, 1, "ng-01", "video")
 
 
+def test_group_video_builds_dialogue_from_canonical_beat_fields(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _build_segments,
+        _dialogue_required,
+    )
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"frame")
+    beat = {
+        "id": "beat-4",
+        "beat_number": 4,
+        "audio_type": "dialogue",
+        "narration_segment": "趴下！",
+        "speaker": "老郑_中年时期",
+        "video_prompt": "老郑猛地把阿远按倒。",
+    }
+
+    segments = _build_segments(
+        {},
+        [beat],
+        {"beat_ids": ["beat-4"], "cell_assets": [{"beat_id": "beat-4", "path": str(frame)}]},
+    )
+
+    assert segments[0].dialogue == "趴下！"
+    assert segments[0].speaker == "老郑_中年时期"
+    assert segments[0].tone == ""
+    assert _dialogue_required(beat, segments[0]) is True
+
+
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import narrative_group_video
     from novelvideo.narrative_groups.service import load_groups

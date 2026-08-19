@@ -13,6 +13,12 @@ from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     create_h3_prompt_optimizer,
 )
+from novelvideo.media_capabilities.video.h3_beat_adapter import (
+    h3_dialogue_required,
+    h3_dialogue_text,
+    h3_speaker_text,
+    h3_tone_text,
+)
 from novelvideo.media_capabilities.video.h3_timeline import (
     DialogueSource,
     H3DirectorOutputManifest,
@@ -87,10 +93,7 @@ def _frame_sha256(path: str) -> str:
 
 
 def _dialogue_required(beat: Mapping[str, Any], segment: H3DirectorSegment) -> bool:
-    value = beat.get("dialogue_required")
-    if value is not None:
-        return str(value).strip().lower() not in {"", "0", "false", "no", "否"}
-    return bool(segment.dialogue)
+    return h3_dialogue_required(beat)
 
 
 def _narrative(beat: Mapping[str, Any]) -> str:
@@ -171,9 +174,9 @@ def _build_segments(
             segment_id=str(beat_id), beat_number=_beat_number(beat, index),
             prompt=_raw_prompt(beat), duration_seconds=_duration(beat),
             first_frame=first, last_frame=_last_frame(cell),
-            dialogue=str(beat.get("dialogue") or beat.get("line") or "").strip(),
-            speaker=str(beat.get("speaker") or beat.get("character") or "").strip(),
-            tone=str(beat.get("tone") or beat.get("emotion") or "").strip(),
+            dialogue=h3_dialogue_text(beat),
+            speaker=h3_speaker_text(beat),
+            tone=h3_tone_text(beat),
             dialogue_source=dialogue_source,
         ))
     return segments
