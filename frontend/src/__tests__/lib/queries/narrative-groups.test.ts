@@ -15,7 +15,9 @@ import {
   narrativeGroupActionPayload,
   narrativeGroupVideoPath,
   narrativeGroupVideoDialogueSourcePath,
+  narrativeGroupVideoDialogueSourcePayload,
   narrativeGroupVideoPayload,
+  narrativeGroupVideoTaskScope,
   narrativeGroupReferencePath,
   narrativeGroupRevisionPath,
   narrativeGroupRollbackPath,
@@ -39,9 +41,21 @@ describe("narrative group query contract", () => {
       .toEqual({ model: "runninghub:minimax-h3", mode: "fl2va", revision: 4 });
   });
 
+  it("uses the exact server H3 scope for the current video revision", () => {
+    expect(narrativeGroupVideoTaskScope("ng-01", 4)).toBe("group_ng-01_video_r4");
+  });
+
   it("uses a separate recomposition-only dialogue source endpoint", () => {
     expect(narrativeGroupVideoDialogueSourcePath("demo", 2, "ng-01"))
       .toBe("api/v1/projects/demo/episodes/2/narrative-groups/ng-01/video/dialogue-source");
+  });
+
+  it("sends the current stage revision when switching a dialogue source", () => {
+    expect(narrativeGroupVideoDialogueSourcePayload({
+      spanIndex: 2,
+      dialogueSource: "h3_native",
+      revision: 4,
+    })).toEqual({ span_index: 2, dialogue_source: "h3_native", revision: 4 });
   });
 
   it("builds an encoded reference-preview path", () => {

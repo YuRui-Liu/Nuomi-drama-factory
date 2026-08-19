@@ -117,6 +117,11 @@ export function narrativeGroupVideoPath(project: string, episode: number, groupI
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/generate`;
 }
 
+/** Exact backend task scope for one H3 director output revision. */
+export function narrativeGroupVideoTaskScope(groupId: string, revision: number) {
+  return `group_${groupId}_video_r${revision}`;
+}
+
 /** Backend contract: updates the manifest then enqueues composition, never H3 generation. */
 export function narrativeGroupVideoDialogueSourcePath(project: string, episode: number, groupId: string) {
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/dialogue-source`;
@@ -125,12 +130,24 @@ export function narrativeGroupVideoDialogueSourcePath(project: string, episode: 
 export function narrativeGroupVideoPayload(input: {
   model: string;
   mode: "auto" | "i2va" | "fl2va";
-  revision?: number;
+  revision: number;
 }) {
   return {
     model: input.model,
     mode: input.mode,
-    ...(input.revision === undefined ? {} : { revision: input.revision }),
+    revision: input.revision,
+  };
+}
+
+export function narrativeGroupVideoDialogueSourcePayload(input: {
+  spanIndex: number;
+  dialogueSource: "external_tts" | "h3_native";
+  revision: number;
+}) {
+  return {
+    span_index: input.spanIndex,
+    dialogue_source: input.dialogueSource,
+    revision: input.revision,
   };
 }
 
@@ -212,7 +229,7 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
-      revision?: number;
+      revision: number;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
       json: narrativeGroupVideoPayload({ model, mode, revision }),
     }).json<TaskResponse>(),
@@ -226,12 +243,13 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
 export function useUpdateNarrativeGroupVideoDialogueSource(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, spanIndex, dialogueSource }: {
+    mutationFn: ({ groupId, spanIndex, dialogueSource, revision }: {
       groupId: string;
       spanIndex: number;
       dialogueSource: "external_tts" | "h3_native";
+      revision: number;
     }) => api.post(narrativeGroupVideoDialogueSourcePath(project, episode, groupId), {
-      json: { span_index: spanIndex, dialogue_source: dialogueSource },
+      json: narrativeGroupVideoDialogueSourcePayload({ spanIndex, dialogueSource, revision }),
     }).json<TaskResponse>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
   });

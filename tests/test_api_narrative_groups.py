@@ -121,7 +121,7 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
-        json={"model": "minimax-h3", "mode": "auto"},
+        json={"model": "minimax-h3", "mode": "auto", "revision": 0},
     )
 
     assert response.status_code == 202
@@ -134,6 +134,36 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "model": "minimax-h3",
         "mode": "auto",
     }
+
+
+def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
+
+    accepted = client.post(endpoint, json={"model": "minimax-h3", "mode": "auto", "revision": 0})
+    assert accepted.status_code == 202
+
+    stale = client.post(endpoint, json={"model": "minimax-h3", "mode": "auto", "revision": 0})
+
+    assert stale.status_code == 409
+    assert len(backend.calls) == 1
+    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["video"]
+    assert stage["revision"] == 1
+    assert stage["status"] == "queued"
+
+
+def test_video_generate_requires_current_revision(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"model": "minimax-h3", "mode": "auto"},
+    )
+
+    assert response.status_code == 422
+    assert backend.calls == []
 
 
 def test_list_urlizes_only_project_scoped_assets(monkeypatch, tmp_path):
@@ -249,7 +279,11 @@ def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(monkeypa
     _seed_director_manifest(tmp_path)
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source"
 
-    assert client.post(endpoint, json={"span_index": 9, "dialogue_source": "h3_native"}).status_code == 404
+    assert client.post(endpoint, json={"span_index": 9, "dialogue_source": "h3_native", "revision": 1}).status_code == 404
     assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "h3_native", "revision": 2}).status_code == 409
+    assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "h3_native"}).status_code == 422
     assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "unknown"}).status_code == 422
     assert backend.calls == []
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
+    assert manifest.entries[0].dialogue_source.value == "external_tts"

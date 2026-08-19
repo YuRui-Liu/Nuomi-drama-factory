@@ -208,9 +208,16 @@ def advance_revision(
     stage: StageName,
     *,
     regenerate: bool = False,
+    expected_revision: int | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
         groups = load_groups(project_dir, episode)
+        original = next((group for group in groups if group.id == group_id), None)
+        if original is None:
+            raise KeyError(group_id)
+        current = original.stages.get(stage, GroupStageState())
+        if expected_revision is not None and current.revision != int(expected_revision):
+            raise RuntimeError(f"narrative group {stage} revision is stale")
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         for group in groups:
@@ -458,7 +465,7 @@ def update_video_manifest_dialogue_source(
     *,
     span_index: int,
     dialogue_source: str,
-    expected_revision: int | None = None,
+    expected_revision: int,
 ):
     """Atomically change one logical H3 span without regenerating video.
 
@@ -479,7 +486,7 @@ def update_video_manifest_dialogue_source(
         if group is None:
             raise KeyError(group_id)
         state = group.stages.get("video", GroupStageState())
-        if expected_revision is not None and state.revision != int(expected_revision):
+        if state.revision != int(expected_revision):
             raise RuntimeError("narrative group video revision is stale")
         manifest_name = str(state.manifest_asset or "").strip()
         if not manifest_name:

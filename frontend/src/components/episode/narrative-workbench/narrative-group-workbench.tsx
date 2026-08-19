@@ -2,7 +2,7 @@
 import { Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage } from "@/lib/queries/narrative-groups";
+import { narrativeGroupVideoTaskScope, useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage } from "@/lib/queries/narrative-groups";
 import { mergeVideoModelCatalog, useMediaDefaults, useUpdateMediaDefaults, useVideoModels } from "@/lib/queries/media-models";
 import { useVideoBackends } from "@/lib/queries/video";
 import { DEFAULT_VIDEO_MODEL, episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
@@ -49,6 +49,9 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     queryKeys.grids(project, episode),
     queryKeys.beats(project, episode),
   ];
+  const groupVideoScope = group
+    ? narrativeGroupVideoTaskScope(group.id, group.stages.video.revision)
+    : undefined;
   const gridTask = useTaskController({
     key: { project, episode, taskType: "narrative_group_grid", scope: group?.id },
     invalidateKeys,
@@ -60,7 +63,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     showCompleteToast: false,
   });
   const groupVideoTask = useTaskController({
-    key: { project, episode, taskType: "narrative_group_video", scope: group?.id },
+    key: { project, episode, taskType: "narrative_group_video", scope: groupVideoScope },
     invalidateKeys,
     showCompleteToast: false,
     onError: (error) => toast.error(`组合视频生成失败：${error}`),
@@ -77,7 +80,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   };
   const runGroupVideo = async (request: { video_model: string; h3_mode: "auto" | "i2va" | "fl2va" }) => {
     try {
-      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, revision: group.stages.video.revision || undefined });
+      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, revision: group.stages.video.revision });
       groupVideoTask.start({ scope: taskScope(response) });
       toast.success("H3 导演台组合视频已进入队列");
     } catch (error) { toast.error(error instanceof Error ? error.message : "组合视频任务提交失败"); }
@@ -89,7 +92,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
       try { await updateDefaults.mutateAsync({ videoModel, videoMode: mediaDefaults?.h3_mode ?? "auto" }); toast.success("项目默认视频模型已保存"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "默认模型保存失败"); }
     }} /></div><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4"><GroupVideoStage modelId={modelId} mode={mediaDefaults?.h3_mode ?? model?.default_mode ?? "auto"} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onGenerate={runGroupVideo} /><GroupVideoResult stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
-      try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
+      try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
     }} /></div></main>
   </div>;

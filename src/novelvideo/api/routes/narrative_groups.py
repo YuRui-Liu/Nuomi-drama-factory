@@ -36,7 +36,7 @@ class NarrativeGroupVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="minimax-h3", min_length=1)
     mode: Literal["auto", "i2va", "fl2va"] = "auto"
-    revision: int | None = Field(default=None, ge=1)
+    revision: int = Field(ge=0)
 
 
 class NarrativeGroupDialogueSourceRequest(BaseModel):
@@ -45,7 +45,7 @@ class NarrativeGroupDialogueSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     span_index: int = Field(ge=0)
     dialogue_source: Literal["external_tts", "h3_native"]
-    revision: int | None = Field(default=None, ge=1)
+    revision: int = Field(ge=1)
 
 
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
@@ -269,11 +269,12 @@ async def _enqueue_group_video(
     try:
         group, revision = advance_revision(
             resolved.project_dir, episode, group_id, "video",
-            regenerate=False,
+            regenerate=True,
+            expected_revision=request.revision,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
-    if request.revision is not None and request.revision != revision:
+    except RuntimeError as exc:
         raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
     scope = f"group_{group_id}_video_r{revision}"
     payload = {
@@ -363,11 +364,6 @@ async def change_group_video_dialogue_source(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     revision = request.revision
-    if revision is None:
-        group = next((item for item in groups if item.id == group_id), None)
-        if group is None:
-            raise HTTPException(status_code=404, detail="Narrative group not found")
-        revision = group.stages["video"].revision
     scope = f"group_{group_id}_video_compose_r{revision}_s{request.span_index}"
     payload = {
         "episode": episode,
