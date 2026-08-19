@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
+import hashlib
 import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from novelvideo.media_capabilities.audio.stem_separator import (
-    DemucsStemSeparator,
-    StemSeparationError,
+from novelvideo.media_capabilities.audio.stem_separator import DemucsStemSeparator
+from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+    H3PromptContext,
+    create_h3_prompt_optimizer,
 )
-from novelvideo.media_capabilities.video.h3_prompt import render_h3_optimized_prompt
 from novelvideo.media_capabilities.video.h3_timeline import (
+    DialogueSource,
     H3DirectorOutputManifest,
     H3DirectorSegment,
     build_h3_timeline_data,
@@ -78,39 +79,77 @@ def _mode_for(segment: H3DirectorSegment) -> H3Mode:
     return H3Mode.FL2VA if segment.last_frame else H3Mode.I2VA
 
 
-async def _optimize_one(segment: H3DirectorSegment) -> H3DirectorSegment:
-    """Deterministic safe fallback that still emits H3's typed wire format.
+def _frame_sha256(path: str) -> str:
+    frame = Path(path)
+    if not frame.is_file():
+        raise FileNotFoundError(f"H3 frame is unavailable: {frame}")
+    return hashlib.sha256(frame.read_bytes()).hexdigest()
 
-    A service deployment can replace this seam with an LLM-backed optimizer;
-    workers never submit a raw drama prompt to H3.
-    """
-    prompt = segment.prompt
-    if "integrated_multimodal_description:" not in prompt:
-        prompt = render_h3_optimized_prompt(
-            mode=_mode_for(segment),
-            integrated_multimodal_description=prompt,
-            overall_soundscape="保留现场环境声与动作音效，避免压过人物对白。",
-            non_diegetic_music="无额外配乐，或使用低存在感的叙事配乐。",
-            duration_seconds=segment.duration_seconds,
-            dialogue=segment.dialogue,
-            speaker=segment.speaker,
-            tone=segment.tone,
-        )
-    return segment.model_copy(update={"prompt": prompt})
+
+def _dialogue_required(beat: Mapping[str, Any], segment: H3DirectorSegment) -> bool:
+    value = beat.get("dialogue_required")
+    if value is not None:
+        return str(value).strip().lower() not in {"", "0", "false", "no", "否"}
+    return bool(segment.dialogue)
+
+
+def _narrative(beat: Mapping[str, Any]) -> str:
+    for name in ("narration", "content", "description", "visual_description", "shot_description"):
+        value = str(beat.get(name) or "").strip()
+        if value:
+            return value
+    return _raw_prompt(beat)
+
+
+def _prompt_context(
+    segment: H3DirectorSegment,
+    beat: Mapping[str, Any],
+    previous: Mapping[str, Any] | None,
+    following: Mapping[str, Any] | None,
+) -> H3PromptContext:
+    from novelvideo.config import get_newapi_text_model_name
+    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+
+    return H3PromptContext(
+        visual_description=_raw_prompt(beat),
+        narration=_narrative(beat),
+        prev_summary=_narrative(previous) if previous else "",
+        next_summary=_narrative(following) if following else "",
+        first_frame_sha256=_frame_sha256(str(segment.first_frame)),
+        last_frame_sha256=_frame_sha256(str(segment.last_frame)) if segment.last_frame else None,
+        model_id=get_newapi_text_model_name(
+            "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+        ),
+        dialogue_required=_dialogue_required(beat, segment),
+    )
 
 
 async def _optimize_missing_prompts(
-    segments: list[H3DirectorSegment], *, max_parallel: int | None = None
+    segments: list[H3DirectorSegment],
+    beats: list[Mapping[str, Any]],
+    *,
+    ctx: ProjectContext,
+    max_parallel: int | None = None,
 ) -> list[H3DirectorSegment]:
     limit = max_parallel or max(1, int(os.getenv("DRAMACLAW_H3_PROMPT_CONCURRENCY", "3")))
     semaphore = asyncio.Semaphore(limit)
+    optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
+    contexts = [
+        _prompt_context(
+            segment, beat,
+            beats[index - 1] if index else None,
+            beats[index + 1] if index + 1 < len(beats) else None,
+        )
+        for index, (segment, beat) in enumerate(zip(segments, beats, strict=True))
+    ]
 
-    async def optimize(segment: H3DirectorSegment) -> H3DirectorSegment:
+    async def optimize(segment: H3DirectorSegment, context: H3PromptContext) -> H3DirectorSegment:
         async with semaphore:
-            return await _optimize_one(segment)
+            result = await optimizer.optimize_segment(segment, context, _mode_for(segment))
+            return segment.model_copy(update={"prompt": result.prompt})
 
     # gather preserves source order even though the work is concurrent.
-    return list(await asyncio.gather(*(optimize(segment) for segment in segments)))
+    return list(await asyncio.gather(*(optimize(segment, context) for segment, context in zip(segments, contexts, strict=True))))
 
 
 def _build_segments(
@@ -127,6 +166,7 @@ def _build_segments(
         first = _first_frame(cell)
         if not first:
             raise ValueError(f"rendered first frame is unavailable: {beat_id}")
+        dialogue_source = DialogueSource(str(beat.get("dialogue_source") or DialogueSource.EXTERNAL_TTS))
         segments.append(H3DirectorSegment(
             segment_id=str(beat_id), beat_number=_beat_number(beat, index),
             prompt=_raw_prompt(beat), duration_seconds=_duration(beat),
@@ -134,15 +174,13 @@ def _build_segments(
             dialogue=str(beat.get("dialogue") or beat.get("line") or "").strip(),
             speaker=str(beat.get("speaker") or beat.get("character") or "").strip(),
             tone=str(beat.get("tone") or beat.get("emotion") or "").strip(),
+            dialogue_source=dialogue_source,
         ))
     return segments
 
 
 async def _separate_stems(video_path: Path, directory: Path) -> dict[str, str]:
-    try:
-        result = await DemucsStemSeparator().separate(video_path, directory)
-    except StemSeparationError:
-        return {"dialogue_stem_status": "unavailable", "ambience_stem_status": "unavailable"}
+    result = await DemucsStemSeparator().separate(video_path, directory)
     return {
         "original_audio_path": str(result.source),
         "dialogue_stem_path": str(result.vocals),
@@ -167,7 +205,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         # The video stage owns revision/status; frame assets are canonical render outputs.
         render_state = stage_payload(project_dir, episode, group_id, "render")
         raw_segments = _build_segments(payload, beats, render_state)
-        segments = await _optimize_missing_prompts(raw_segments)
+        segment_beats = [
+            next(beat for beat in beats if str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number")) == segment.segment_id)
+            for segment in raw_segments
+        ]
+        segments = await _optimize_missing_prompts(raw_segments, segment_beats, ctx=ctx)
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         output = video_dir / f"{group_id}_r{revision}.mp4"
@@ -175,8 +217,12 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             ctx, segments=tuple(segments), output_path=str(output),
             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"), resolution=payload.get("resolution"),
         )
-        separated = _separate_stems(Path(generated.output_path), video_dir / "stems")
-        stems = await separated if inspect.isawaitable(separated) else (separated or {})
+        if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
+            stems = await _separate_stems(Path(generated.output_path), video_dir / "stems")
+            if not stems.get("ambience_stem_path") or stems.get("ambience_stem_status") != "succeeded":
+                raise RuntimeError("external_tts requires successful H3 ambience stem separation")
+        else:
+            stems = {}
         manifest = H3DirectorOutputManifest(
             physical_video=str(generated.output_path), entries=timeline.entries,
             workflow_id=str(payload.get("workflow_id") or "" ) or None,
