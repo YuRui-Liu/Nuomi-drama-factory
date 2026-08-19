@@ -64,17 +64,18 @@ async def test_optimizer_renders_typed_content_with_fixed_fl2va_structure(tmp_pa
 
     assert isinstance(result, H3PromptOptimizationResult)
     assert result.cache_hit is False
-    assert result.format_version == 1
+    assert result.format_version == 2
     assert result.prompt == (
-        "mode: fl2va\n\n"
-        "frame_alignment:\n图片1：0.00 秒；图片2：5.00 秒。首帧为动作起点，尾帧为动作终点；所有运动连续且不可偏离两帧可见事实。\n\n"
-        "integrated_multimodal_description:\n镜头缓慢推近，男人转身看向门口。\n"
-        "[00:00.000-00:05.000] 林默（压低声音、急促）说：\u201c别过来\u201d\n\n"
-        "overall_soundscape:\n脚步声停止，门锁轻响。\n\n"
-        "non_diegetic_music:\n低沉弦乐逐渐增强。"
+        "How the reference pictures align with the target video — Picture 1 (from Shot 1) "
+        "aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) "
+        "aligns with the 5.00-second mark of the target video.\n\n"
+        "integrated_multimodal_description: 镜头缓慢推近，男人转身看向门口。\n"
+        "林默 (S1) says with 压低声音、急促 delivery: <d>[Chinese]别过来</d>\n\n"
+        "overall_soundscape: 脚步声停止，门锁轻响。\n\n"
+        "non_diegetic_music: 低沉弦乐逐渐增强。"
     )
-    assert "优先使用中文" in agent.calls[0]
-    assert "准确、可辨识" in agent.calls[0]
+    assert "English" in agent.calls[0]
+    assert "不得改写" in agent.calls[0]
 
 
 @pytest.mark.asyncio
@@ -116,8 +117,8 @@ async def test_i2va_alignment_uses_official_image_one_zero_timestamp(tmp_path):
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
         _segment().model_copy(update={"last_frame": None}), _context(), H3Mode.I2VA
     )
-    assert "frame_alignment:\n图片1：0.00 秒。" in result.prompt
-    assert "图片2" not in result.prompt
+    assert result.prompt.startswith("For the target video, at 0.00 seconds")
+    assert "Picture 2" not in result.prompt
 
 
 @pytest.mark.asyncio
@@ -126,7 +127,23 @@ async def test_fl2va_alignment_uses_actual_fractional_end_timestamp(tmp_path):
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
         _segment().model_copy(update={"duration_seconds": 4.25}), _context(), H3Mode.FL2VA
     )
-    assert "图片1：0.00 秒；图片2：4.25 秒。" in result.prompt
+    assert "Picture 2 (from Shot 1) aligns with the 4.25-second mark" in result.prompt
+
+
+@pytest.mark.asyncio
+async def test_dialogue_tone_is_optional(tmp_path):
+    agent = FakeAgent(H3PromptStructuredOutput(
+        integrated_multimodal_description="[Shot 1] The man braces the door.",
+        overall_soundscape="The door rattles.",
+        non_diegetic_music="N/A",
+    ))
+    segment = _segment().model_copy(update={"tone": ""})
+
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+        segment, _context(), H3Mode.I2VA
+    )
+
+    assert "林默 (S1) says: <d>[Chinese]别过来</d>" in result.prompt
 
 
 @pytest.mark.asyncio

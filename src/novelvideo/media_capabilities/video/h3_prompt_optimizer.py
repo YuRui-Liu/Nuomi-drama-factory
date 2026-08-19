@@ -17,7 +17,7 @@ from .h3_timeline import H3DirectorSegment
 from .models import H3Mode
 
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -120,8 +120,10 @@ def create_h3_prompt_optimizer(*, cache_dir: Path | str) -> H3PromptOptimizer:
             "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
         ),
         system_prompt=(
-            "你是 MiniMax H3 中文视频提示词导演。严格输出约定的 typed 字段；"
-            "保持输入帧事实，对白必须可辨识并支持口型。"
+            "You are a MiniMax H3 video prompt director. Follow the official H3 "
+            "prompt-writing guide and return only the typed fields. Write visual and "
+            "audio descriptions in English while preserving all input-frame facts. "
+            "Do not quote or rewrite dialogue; the renderer injects the exact original line."
         ),
         output_type=H3PromptStructuredOutput,
         name="MiniMax H3 Prompt Optimizer",
@@ -135,13 +137,10 @@ def _validate_dialogue_contract(
 ) -> None:
     dialogue = segment.dialogue.strip()
     speaker = segment.speaker.strip()
-    tone = segment.tone.strip()
-    if (dialogue_required or speaker or tone) and not dialogue:
+    if (dialogue_required or speaker or segment.tone.strip()) and not dialogue:
         raise ValueError("dialogue is required for a segment with dialogue intent")
     if dialogue and not speaker:
         raise ValueError("speaker is required for recognizable dialogue")
-    if dialogue and not tone:
-        raise ValueError("tone is required for recognizable dialogue")
 
 
 def _input_hash(
@@ -163,9 +162,10 @@ def _build_task(
     segment: H3DirectorSegment, context: H3PromptContext, mode: H3Mode
 ) -> str:
     return f"""你是 MiniMax H3 {mode.value} 视频提示词优化器。
-优先使用中文，只返回约定的三个 typed 字段，不添加标签或时刻。
-动作必须遵守输入帧可见事实并保持单向、连续、可拍摄。
-对白必须准确、可辨识；画面动作需支持说话者口型、语气和给定时间段。
+严格按 H3 官方规范使用 English 编写三个 typed 字段，不添加字段标签或首尾帧指令。
+integrated_multimodal_description 必须以 [Shot 1] 开始，动作遵守输入帧事实并连续可拍摄。
+程序会在渲染阶段注入原始对白；不得改写、翻译、引用或重复对白正文。
+画面动作仍须支持指定说话者的口型与表演，语气为空时从上下文自然推断。
 
 草稿：{segment.prompt}
 时长：{segment.duration_seconds} 秒

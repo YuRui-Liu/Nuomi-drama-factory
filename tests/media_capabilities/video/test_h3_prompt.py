@@ -1,6 +1,10 @@
 import pytest
 
-from novelvideo.media_capabilities.video.h3_prompt import compile_h3, select_mode
+from novelvideo.media_capabilities.video.h3_prompt import (
+    compile_h3,
+    render_h3_optimized_prompt,
+    select_mode,
+)
 from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
 
 
@@ -85,3 +89,40 @@ def test_compile_h3_is_deterministic_for_every_mode(mode):
     spec = MotionSpec(action="人物抬头", dialogue="看那里。")
 
     assert compile_h3(spec, mode) == compile_h3(spec, mode)
+
+
+def test_i2va_optimized_prompt_uses_official_first_line_and_no_custom_mode_header():
+    prompt = render_h3_optimized_prompt(
+        mode=H3Mode.I2VA,
+        integrated_multimodal_description="[Shot 1] The man turns toward the door.",
+        overall_soundscape="Footsteps stop outside.",
+        non_diegetic_music="N/A",
+        duration_seconds=5,
+    )
+
+    assert prompt.startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
+    )
+    assert "mode:" not in prompt
+    assert "frame_alignment:" not in prompt
+
+
+def test_fl2va_optimized_prompt_uses_official_alignment_and_exact_dialogue_markup():
+    prompt = render_h3_optimized_prompt(
+        mode=H3Mode.FL2VA,
+        integrated_multimodal_description="[Shot 1] The man braces the iron door.",
+        overall_soundscape="The iron door rattles.",
+        non_diegetic_music="N/A",
+        duration_seconds=4.25,
+        dialogue="这门……还能撑多久？",
+        speaker="阿远",
+        tone="",
+    )
+
+    assert prompt.startswith(
+        "How the reference pictures align with the target video — Picture 1 "
+        "(from Shot 1) aligns with the 0.00-second mark of the target video; "
+        "Picture 2 (from Shot 1) aligns with the 4.25-second mark of the target video.\n\n"
+    )
+    assert "阿远 (S1) says: <d>[Chinese]这门……还能撑多久？</d>" in prompt
