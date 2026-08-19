@@ -40,6 +40,7 @@ router = APIRouter()
 
 
 class NarrativeGroupGenerationRequest(BaseModel):
+    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     use_style: bool = True
     selected_character_reference_ids: list[str] | None = None
     selected_scene_reference_ids: list[str] | None = None
@@ -344,7 +345,7 @@ async def _enqueue_group_action(
                 status_code=422,
                 detail={"unknown_reference_ids": list(exc.unknown_ids)},
             ) from exc
-        reference_selection = request.model_dump()
+        reference_selection = request.model_dump(exclude={"aspect_ratio"})
     try:
         group, revision = advance_revision(
             resolved.project_dir,
@@ -371,6 +372,7 @@ async def _enqueue_group_action(
         "stage": stage,
         "revision": revision,
         "layout": group.layout.__dict__,
+        "aspect_ratio": request.aspect_ratio,
         "beat_ids": list(group.beat_ids),
         "cell_to_beat": mapping,
         "beats": [beat_by_id[beat_id] for beat_id in group.beat_ids if beat_id in beat_by_id],
@@ -404,7 +406,7 @@ async def _enqueue_group_video(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
-    except RuntimeError as exc:
+    except RuntimeError:
         raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
     revision = reservation.revision
     scope = f"group_{group_id}_video_r{revision}"

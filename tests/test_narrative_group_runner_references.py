@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from novelvideo.narrative_groups.references import (
     GroupImageReference,
@@ -185,9 +186,39 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
     )
 
     assert submitted[0].references == [ref.path for ref in preview.image_references]
+    assert submitted[0].aspect_ratio == "9:8"
     assert result["reference_count"] == 2
     assert result["reference_warnings"] == []
     assert all(str(tmp_path) not in warning for warning in result["reference_warnings"])
+
+
+@pytest.mark.parametrize(
+    ("aspect_ratio", "expected"),
+    [("9:16", (168, 300)), ("16:9", (300, 168))],
+)
+def test_split_normalizes_each_first_frame_to_requested_video_aspect(
+    tmp_path, aspect_ratio, expected
+):
+    grid = tmp_path / "grid.png"
+    Image.new("RGB", (900, 900), "navy").save(grid)
+    payload = {
+        "output_dir": str(tmp_path / "output"),
+        "episode": 1,
+        "group_id": "ng-01",
+        "stage": "render",
+        "revision": 1,
+        "aspect_ratio": aspect_ratio,
+        "layout": {"rows": 3, "columns": 3},
+        "beats": [{"beat_number": index} for index in range(1, 10)],
+        "cell_to_beat": [{"beat_id": str(index)} for index in range(1, 10)],
+    }
+
+    result = narrative_group._split_existing_grid(
+        str(grid), payload, SimpleNamespace(output_dir=tmp_path / "output")
+    )
+
+    with Image.open(result["cell_assets"][0]["path"]) as cell:
+        assert cell.size == expected
 
 
 @pytest.mark.asyncio

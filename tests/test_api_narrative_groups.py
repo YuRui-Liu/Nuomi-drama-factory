@@ -335,6 +335,7 @@ def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypa
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
         json={
+            "aspect_ratio": "16:9",
             "use_style": False,
             "selected_character_reference_ids": ["char-opaque"],
             "selected_scene_reference_ids": [],
@@ -347,6 +348,7 @@ def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypa
         "selected_character_reference_ids": ["char-opaque"],
         "selected_scene_reference_ids": [],
     }
+    assert backend.calls[0][1]["payload"]["aspect_ratio"] == "16:9"
     assert len(calls) == 1
 
 
@@ -365,6 +367,7 @@ def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path)
         "selected_character_reference_ids": None,
         "selected_scene_reference_ids": None,
     }
+    assert backend.calls[0][1]["payload"]["aspect_ratio"] == "9:16"
 
 
 def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp_path):

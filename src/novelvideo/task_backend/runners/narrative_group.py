@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from math import gcd
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -81,6 +82,7 @@ def _grid_prompt(
         panels.append(f"Panel {index}: {description}")
     grid_rules = (
         f"Create one clean {layout.get('rows', 1)}x{layout.get('columns', 1)} storyboard grid. "
+        f"Every individual cell must be composed at {payload.get('aspect_ratio') or '9:16'} aspect ratio. "
         f"Each cell is a separate {visual}; preserve character, location, lighting and time continuity. "
         "Use equal cells in reading order, no borders, captions, labels, text, collage overlap, or extra panels.\n"
     )
@@ -115,6 +117,37 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
     )
 
 
+def _grid_request_aspect_ratio(payload: Mapping[str, Any]) -> str:
+    layout = payload.get("layout") or {}
+    rows = max(1, int(layout.get("rows") or 1))
+    columns = max(1, int(layout.get("columns") or 1))
+    value = str(payload.get("aspect_ratio") or "9:16")
+    if value not in {"9:16", "16:9"}:
+        raise ValueError(f"unsupported narrative-group aspect ratio: {value}")
+    width, height = (int(part) for part in value.split(":"))
+    grid_width, grid_height = width * columns, height * rows
+    divisor = gcd(grid_width, grid_height)
+    return f"{grid_width // divisor}:{grid_height // divisor}"
+
+
+def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
+    from PIL import Image
+
+    target_width, target_height = (int(part) for part in aspect_ratio.split(":"))
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        width, height = image.size
+        if width * target_height > height * target_width:
+            crop_width = max(1, int(height * target_width / target_height))
+            left = (width - crop_width) // 2
+            image = image.crop((left, 0, left + crop_width, height))
+        elif width * target_height < height * target_width:
+            crop_height = max(1, int(width * target_height / target_width))
+            top = (height - crop_height) // 2
+            image = image.crop((0, top, width, top + crop_height))
+        image.save(path, format="PNG")
+
+
 async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     """Generate exactly one group grid through the configured GRSAI account."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
@@ -130,7 +163,7 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         prompt=generation_input.prompt,
         model=runtime.model,
         references=list(generation_input.references),
-        aspect_ratio="1:1",
+        aspect_ratio=_grid_request_aspect_ratio(payload),
         image_size="2K",
     )
     client = runtime.create_client()
@@ -193,11 +226,15 @@ def _split_existing_grid(
     paths = PathResolver(str(output_dir), episode)
     promote_dir = paths.sketches_dir() if stage == "sketch" else paths.frames_dir()
     promote_dir.mkdir(parents=True, exist_ok=True)
+    grid_aspect_ratio = _grid_request_aspect_ratio(payload)
     result = save_grid_and_split(
         grid_image_path=grid_asset,
         episode_grids_dir=output_dir / "grids" / f"ep{episode:03d}",
         grid_type=stage,
-        mode_key=f"{int(layout['rows'])}x{int(layout['columns'])}_1-1",
+        mode_key=(
+            f"{int(layout['rows'])}x{int(layout['columns'])}_"
+            f"{grid_aspect_ratio.replace(':', '-')}"
+        ),
         beat_nums=beat_nums,
         preset="custom",
         rows=int(layout["rows"]),
@@ -207,10 +244,19 @@ def _split_existing_grid(
         force_promote=True,
         beats=beats if stage == "sketch" else None,
     )
+    cell_paths = list(result.get("cell_paths") or [])
+    target_aspect_ratio = str(payload.get("aspect_ratio") or "9:16")
+    import shutil
+
+    for index, path in enumerate(cell_paths):
+        cell_path = Path(path)
+        _normalize_image_aspect(cell_path, target_aspect_ratio)
+        if index < len(beat_nums):
+            shutil.copy2(cell_path, promote_dir / f"beat_{beat_nums[index]:02d}.png")
     return {
         "cell_assets": [
             {"cell": index, "beat_id": mapping[index]["beat_id"], "path": str(path)}
-            for index, path in enumerate(result.get("cell_paths") or [])
+            for index, path in enumerate(cell_paths)
             if index < len(mapping)
         ],
         "errors": [],
