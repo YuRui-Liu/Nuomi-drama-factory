@@ -243,10 +243,10 @@ function BeatsTabContent() {
     const persistedOrientation = orientationForAspectRatio(
       projectConfigRes.data?.data?.aspect_ratio,
     );
-    if (persistedOrientation && persistedOrientation !== orientation) {
+    if (persistedOrientation) {
       setOrientation(persistedOrientation);
     }
-  }, [orientation, projectConfigRes.data?.data?.aspect_ratio, setOrientation]);
+  }, [projectConfigRes.data?.data?.aspect_ratio, setOrientation]);
   const handleVideoBackendChange = useCallback(
     (backend: string) => {
       if (!backend) return;

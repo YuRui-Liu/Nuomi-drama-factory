@@ -173,6 +173,12 @@ describe("beats workbench v2-storage sketch-studio contract", () => {
     expect(route).toContain("orientationForAspectRatio");
     expect(route).toContain("projectConfigRes.data?.data?.aspect_ratio");
     expect(route).toContain("aspect_ratio: aspectRatioForOrientation");
+    expect(route).toContain(
+      "}, [projectConfigRes.data?.data?.aspect_ratio, setOrientation]);",
+    );
+    expect(route).not.toContain(
+      "}, [orientation, projectConfigRes.data?.data?.aspect_ratio, setOrientation]);",
+    );
   });
 
   it("keeps Director Render video first-frame compatibility off the visible React UI", () => {

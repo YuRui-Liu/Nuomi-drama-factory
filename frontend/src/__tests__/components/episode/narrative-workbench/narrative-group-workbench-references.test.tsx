@@ -12,12 +12,13 @@ const m = vi.hoisted(() => ({
  updateProject: vi.fn(),
  setOrientation: vi.fn(),
  orientation: "landscape" as "portrait" | "landscape",
+ groupsLoading: false,
  groups: [] as any[],
 }));
 const group = { id:"g1", ordinal:1, title:"G", beat_ids:["1"], layout:{rows:1,columns:1,capacity:1}, stages:{sketch:{status:"pending",revision:0},render:{status:"partial_failure",revision:0},video:{status:"pending",revision:0}}, cell_to_beat:[],errors:[],video_inputs:[] };
 const group2 = { ...group, id: "g2", ordinal: 2, title: "G2" };
 vi.mock("@/lib/queries/narrative-groups",()=>({
- useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:false,refetch:vi.fn()}),
+ useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:m.groupsLoading,refetch:vi.fn()}),
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
@@ -44,6 +45,7 @@ describe("NarrativeGroupWorkbench references",()=>{
  beforeEach(()=>{
   vi.clearAllMocks();
   m.groups=[group];
+  m.groupsLoading=false;
   m.orientation="landscape";
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
@@ -84,10 +86,21 @@ describe("NarrativeGroupWorkbench references",()=>{
  });
  it("rolls back the optimistic aspect when project persistence fails",async()=>{
   m.updateProject.mockRejectedValueOnce(new Error("save failed"));
-  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  const view=render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByRole("button",{name:"9:16"}));
   await waitFor(()=>expect(m.setOrientation.mock.calls).toEqual([["portrait"],["landscape"]]));
   expect(m.error).toHaveBeenCalledWith("save failed");
+  view.rerender(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.getByRole("button",{name:"16:9"})).toHaveAttribute("aria-pressed","true");
+ });
+ it.each([
+  {name:"loading",loading:true,groups:[group]},
+  {name:"empty",loading:false,groups:[]},
+ ])("keeps the aspect selector visible in the $name state",({loading,groups})=>{
+  m.groupsLoading=loading;
+  m.groups=groups;
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.getByRole("group",{name:"目标画幅"})).toBeInTheDocument();
  });
  it("uses the current landscape aspect for generate, regenerate, split, and group video",async()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
