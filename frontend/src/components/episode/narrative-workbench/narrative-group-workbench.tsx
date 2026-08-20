@@ -9,6 +9,8 @@ import { useVideoBackends } from "@/lib/queries/video";
 import { DEFAULT_VIDEO_MODEL, episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
+import { aspectRatioForOrientation, type Orientation } from "@/lib/aspect-ratio";
+import { useUpdateProject } from "@/lib/queries/projects";
 import { NarrativeGroupList } from "./narrative-group-list";
 import { GroupPipeline } from "./group-pipeline";
 import { GroupVideoStage, groupFrameSummary } from "./group-video-stage";
@@ -16,6 +18,7 @@ import { GroupVideoResult } from "./group-video-result";
 import { ProjectVideoModelSelect } from "./project-video-model-select";
 import { GroupReferenceDialog } from "./group-reference-dialog";
 import { useProjectAspectRatio } from "@/stores/aspect-ratio-store";
+import { NarrativeAspectSelector } from "./narrative-aspect-selector";
 
 function taskScope(response: unknown): string | undefined {
   if (!response || typeof response !== "object") return undefined;
@@ -38,7 +41,8 @@ function activeStageScope(
 }
 
 export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { project: string; episode: number; onRepairBeat: (beatId: string) => void }) {
-  const { orientation } = useProjectAspectRatio(project);
+  const { orientation, setOrientation } = useProjectAspectRatio(project);
+  const updateProject = useUpdateProject(project);
   const aspectRatio = orientation === "landscape" ? "16:9" as const : "9:16" as const;
   const groupsQuery = useNarrativeGroups(project, episode);
   const action = useNarrativeGroupAction(project, episode);
@@ -89,6 +93,20 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     showCompleteToast: false,
     onError: (error) => toast.error(`组合视频生成失败：${error}`),
   });
+  const changeAspect = async (nextOrientation: Orientation) => {
+    if (nextOrientation === orientation || updateProject.isPending) return;
+    const previousOrientation = orientation;
+    setOrientation(nextOrientation);
+    try {
+      await updateProject.mutateAsync({
+        aspect_ratio: aspectRatioForOrientation(nextOrientation),
+      });
+      toast.success("项目画幅已保存");
+    } catch (error) {
+      setOrientation(previousOrientation);
+      toast.error(error instanceof Error ? error.message : "项目画幅保存失败");
+    }
+  };
   if (groupsQuery.isLoading) return <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />加载叙事组…</div>;
   if (!group) return <div className="p-8 text-center text-muted-foreground">暂无叙事组，请先生成分镜 Beat。</div>;
   const runAction = async (stage: NarrativeGridStage, nextAction: "generate" | "split" | "regenerate") => {
@@ -139,10 +157,10 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   return <div className="flex h-full min-h-0 overflow-hidden" data-narrative-group-workbench>
     <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/10 p-4"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">叙事组生产</h2><Button variant="ghost" size="icon" onClick={() => groupsQuery.refetch()}><RefreshCw className="size-4" /></Button></div><NarrativeGroupList groups={groups} selectedId={group.id} onSelect={(id) => select({ project, episode }, id)} /></aside>
     <GroupReferenceDialog open={pendingAction !== null} preview={referencesQuery.data?.ok ? referencesQuery.data.data : null} loading={referencesQuery.isLoading} error={referencesQuery.error instanceof Error ? referencesQuery.error : null} submitting={action.isPending} stage={pendingAction?.stage ?? "render"} defaultProvider={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_provider : mediaDefaults?.narrative_render_provider} defaultModel={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_model : mediaDefaults?.narrative_render_model} sketchReady={group.stages.sketch.status === "completed" && !!group.stages.sketch.grid_asset} onRetry={() => referencesQuery.refetch()} onSubmit={confirmAction} onOpenChange={(open) => { if (!open) setPendingAction(null); }} />
-    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p></div><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending} onChange={async (videoModel) => {
+    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p></div><div className="flex flex-wrap items-start justify-end gap-3"><NarrativeAspectSelector orientation={orientation} saving={updateProject.isPending} onChange={changeAspect} /><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending} onChange={async (videoModel) => {
       try { await updateDefaults.mutateAsync({ videoModel, videoMode: mediaDefaults?.h3_mode ?? "auto", narrativeSketchProvider: mediaDefaults?.narrative_sketch_provider, narrativeSketchModel: mediaDefaults?.narrative_sketch_model, narrativeRenderProvider: mediaDefaults?.narrative_render_provider, narrativeRenderModel: mediaDefaults?.narrative_render_model }); toast.success("项目默认视频模型已保存"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "默认模型保存失败"); }
-    }} /></div><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4"><GroupVideoStage modelId={modelId} mode={mediaDefaults?.h3_mode ?? model?.default_mode ?? "auto"} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onGenerate={runGroupVideo} /><GroupVideoResult stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
+    }} /></div></div><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4"><GroupVideoStage modelId={modelId} mode={mediaDefaults?.h3_mode ?? model?.default_mode ?? "auto"} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onGenerate={runGroupVideo} /><GroupVideoResult stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
       try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
     }} /></div></main>
