@@ -273,11 +273,6 @@
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
-:focus-visible {
-  outline: 2px solid var(--editorial-focus);
-  outline-offset: 2px;
-}
-
 /* Freezone canvas tokens and utilities. These are intentionally global because
    React Flow portals, node overlays, and toolbar popovers render outside a
    single route subtree. */
@@ -1157,6 +1152,11 @@ button:hover .st-keyframe-video-play {
 }
 
 @layer base {
+  :focus-visible {
+    outline: 2px solid var(--editorial-focus);
+    outline-offset: 2px;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }

@@ -54,9 +54,11 @@ describe("Editorial Black design token contract", () => {
     expectToken(name, value);
   });
 
-  it("provides a visible two-pixel keyboard focus ring", () => {
-    expect(stylesheet).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--editorial-focus\)/s);
-    expect(stylesheet).toMatch(/:focus-visible\s*\{[^}]*outline-offset:\s*2px/s);
+  it("provides a base-layer keyboard focus ring that utilities can override", () => {
+    expect(stylesheet).toMatch(
+      /@layer base\s*\{\s*:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--editorial-focus\)[^}]*outline-offset:\s*2px/s,
+    );
+    expect(stylesheet).not.toMatch(/^:focus-visible\s*\{/m);
   });
 
   it("keeps the default semantic theme light for persisted theme compatibility", () => {
