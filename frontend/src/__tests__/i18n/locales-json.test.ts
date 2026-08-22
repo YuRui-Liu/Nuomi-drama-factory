@@ -14,6 +14,12 @@ function collectKeys(value: unknown, prefix = ""): string[] {
   );
 }
 
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!value || typeof value !== "object") return [];
+  return Object.values(value as Record<string, unknown>).flatMap(collectStrings);
+}
+
 describe("locale translation files", () => {
   it.each(["en", "zh"])("%s translation JSON is valid", (language) => {
     const content = readFileSync(`public/locales/${language}/translation.json`, "utf8");
@@ -29,6 +35,44 @@ describe("locale translation files", () => {
 
     expect([...zhKeys].filter((key) => !enKeys.has(key)).sort()).toEqual([]);
     expect([...enKeys].filter((key) => !zhKeys.has(key)).sort()).toEqual([]);
+  });
+
+  it("uses the NuomiDrama product name and the new navigation language", () => {
+    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
+    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+
+    expect(zh.nav).toMatchObject({
+      xiaji: "项目中心",
+      ingest: "剧本导入",
+      assets: "资产中心",
+      episodes: "剧集制作",
+      freezone: "创作画布",
+      styles: "视觉风格",
+      tasks: "任务中心",
+      aiAssistant: "糯米助手",
+    });
+    expect(en.nav).toMatchObject({
+      xiaji: "Project Center",
+      ingest: "Script Import",
+      assets: "Asset Center",
+      episodes: "Episode Production",
+      freezone: "Creation Canvas",
+      styles: "Visual Style",
+      tasks: "Task Center",
+      aiAssistant: "Nuomi Assistant",
+    });
+    expect(zh.auth.community.heading).toBe("作品广场");
+    expect(en.auth.community.heading).toBe("Showcase");
+  });
+
+  it("does not expose legacy product names in locale strings", () => {
+    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
+    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+    const legacyProductLanguage =
+      /DramaClaw|SuperTale|Xia Director|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;
+
+    expect(collectStrings(zh).filter((value) => legacyProductLanguage.test(value))).toEqual([]);
+    expect(collectStrings(en).filter((value) => legacyProductLanguage.test(value))).toEqual([]);
   });
 
   it("defines episode import actions and task statuses in both locales", () => {
