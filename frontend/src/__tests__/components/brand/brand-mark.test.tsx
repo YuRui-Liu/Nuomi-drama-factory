@@ -8,7 +8,9 @@ describe("BrandMark", () => {
     const { container } = render(<BrandMark />);
 
     expect(screen.getByRole("img", { name: "NuomiDrama" })).toBeInTheDocument();
-    expect(container.querySelector("svg")).toBeInTheDocument();
+    expect(container.querySelector("svg")).toHaveAttribute("viewBox", "0 0 24 24");
+    expect(container.querySelector("svg")).toHaveClass("size-6");
+    expect(screen.getAllByTestId("nuomidrama-cut")).toHaveLength(2);
     expect(container.querySelector("img")).not.toBeInTheDocument();
     expect(screen.getByText("Nuomi")).toHaveClass("font-semibold");
     expect(screen.getByText("Drama")).toHaveClass("font-normal");
