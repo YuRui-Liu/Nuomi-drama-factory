@@ -136,7 +136,14 @@ export function ProjectSwitcher({ current }: { current: string }) {
 
 export function ProjectHeaderNavigation({ project }: { project: string }) {
   const { t } = useTranslation();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const location = useRouterState({
+    select: (state) => ({
+      pathname: state.location.pathname,
+      searchStr: state.location.searchStr,
+      hash: state.location.hash,
+    }),
+  });
+  const { pathname } = location;
   const rememberedEpisodeLocation = useEpisodeWorkbenchStore(
     (state) => state.lastEpisodeLocationByProject[project],
   );
@@ -160,13 +167,23 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
     }
     const match = pathname.match(/^\/projects\/([^/]+)\/episodes\/(\d+)(?:\/|$)/);
     if (!match || decodeURIComponent(match[1]) !== project) return;
-    setLastEpisodeLocation(project, `${pathname}${window.location.search}`);
-  }, [clearLastEpisodeLocation, pathname, project, setLastEpisodeLocation]);
+    const hash = location.hash
+      ? `#${location.hash.replace(/^#/, "")}`
+      : "";
+    setLastEpisodeLocation(project, `${pathname}${location.searchStr}${hash}`);
+  }, [
+    clearLastEpisodeLocation,
+    location.hash,
+    location.searchStr,
+    pathname,
+    project,
+    setLastEpisodeLocation,
+  ]);
 
   return (
     <nav
       aria-label={t("nav.projectNavigation")}
-      className="absolute left-1/2 top-0 z-30 flex h-14 max-w-[calc(100vw_-_440px)] -translate-x-1/2 items-stretch overflow-x-auto whitespace-nowrap"
+      className="col-start-2 row-start-1 flex h-14 min-w-0 items-stretch overflow-x-auto whitespace-nowrap max-lg:col-span-2 max-lg:col-start-1 max-lg:row-start-2 max-lg:h-10 max-lg:w-full"
     >
       {PROJECT_NAV_ITEMS.map((item) => {
         const sectionPath = item.to.replace("$project", encodeURIComponent(project));

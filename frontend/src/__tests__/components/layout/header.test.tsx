@@ -18,6 +18,8 @@ const episodeStoreState = vi.hoisted(() => ({
 const projectNavState = vi.hoisted(() => ({ rememberSection: vi.fn() }));
 const routerState = vi.hoisted(() => ({
   pathname: "/",
+  searchStr: "",
+  hash: "",
   project: undefined as string | undefined,
 }));
 
@@ -46,8 +48,15 @@ vi.mock("@tanstack/react-router", () => ({
   },
   useNavigate: () => navigateMock,
   useParams: () => ({ project: routerState.project }),
-  useRouterState: ({ select }: { select: (state: { location: { pathname: string } }) => string }) =>
-    select({ location: { pathname: routerState.pathname } }),
+  useRouterState: ({ select }: {
+    select: (state: { location: { pathname: string; searchStr: string; hash: string } }) => unknown;
+  }) => select({
+    location: {
+      pathname: routerState.pathname,
+      searchStr: routerState.searchStr,
+      hash: routerState.hash,
+    },
+  }),
 }));
 
 vi.mock("@/stores/episode-workbench-store", () => ({
@@ -163,6 +172,8 @@ describe("Header runtime gating", () => {
   beforeEach(() => {
     routerState.project = undefined;
     routerState.pathname = "/";
+    routerState.searchStr = "";
+    routerState.hash = "";
     runtimeState.authRequired = true;
     authState.username = "local";
     authState.logout.mockReset();
@@ -187,6 +198,25 @@ describe("Header runtime gating", () => {
     expect(screen.queryByRole("navigation", { name: "旧模式切换" })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "旧制作菜单" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "虾集" })).not.toBeInTheDocument();
+  });
+
+  it("uses a non-overlapping desktop grid and a scrollable narrow-screen navigation row", () => {
+    renderHeader({ project: "demo" });
+
+    expect(screen.getByRole("banner")).toHaveClass(
+      "grid",
+      "grid-cols-[minmax(0,1fr)_minmax(240px,2fr)_minmax(0,1fr)]",
+      "max-lg:grid-rows-[56px_40px]",
+    );
+    expect(screen.getByRole("navigation", { name: "Project navigation" })).toHaveClass(
+      "min-w-0",
+      "overflow-x-auto",
+      "max-lg:col-span-2",
+      "max-lg:row-start-2",
+    );
+    expect(screen.getByRole("navigation", { name: "Project navigation" })).not.toHaveClass(
+      "absolute",
+    );
   });
 
   it("resolves every direct navigation link for the current project", () => {
@@ -219,6 +249,30 @@ describe("Header runtime gating", () => {
     expect(screen.getByRole("link", { name: "Episode production" })).toHaveAttribute(
       "href",
       "/projects/demo/episodes/12?group=ng-02#video",
+    );
+  });
+
+  it("updates the remembered episode location when only query and hash change", () => {
+    const view = renderHeader({
+      project: "demo",
+      pathname: "/projects/demo/episodes/12",
+    });
+    expect(episodeStoreState.setLastEpisodeLocation).toHaveBeenLastCalledWith(
+      "demo",
+      "/projects/demo/episodes/12",
+    );
+
+    routerState.searchStr = "?group=ng-03";
+    routerState.hash = "#video";
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <Header />
+      </QueryClientProvider>,
+    );
+
+    expect(episodeStoreState.setLastEpisodeLocation).toHaveBeenLastCalledWith(
+      "demo",
+      "/projects/demo/episodes/12?group=ng-03#video",
     );
   });
 

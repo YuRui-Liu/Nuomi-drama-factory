@@ -214,8 +214,8 @@ export function Header() {
 
   return (
     <div className="relative z-20 shrink-0 bg-background/58 text-sidebar-foreground backdrop-blur-xl">
-      <header className="relative flex h-14 items-center justify-between gap-3 px-4">
-        <div className="flex min-w-0 flex-1 items-center">
+      <header className="relative grid min-h-14 grid-cols-[minmax(0,1fr)_minmax(240px,2fr)_minmax(0,1fr)] items-center gap-x-3 px-4 max-lg:grid-cols-[minmax(0,1fr)_auto] max-lg:grid-rows-[56px_40px]">
+        <div className="col-start-1 row-start-1 flex min-w-0 items-center">
           <TooltipProvider delay={80}>
             <Tooltip>
               <TooltipTrigger
@@ -247,7 +247,7 @@ export function Header() {
         {project ? <ProjectHeaderNavigation project={project} /> : null}
 
         {/* Actions */}
-        <div className="flex min-w-0 flex-1 shrink-0 items-center justify-end gap-1">
+        <div className="col-start-3 row-start-1 flex min-w-0 items-center justify-end gap-1 max-lg:col-start-2">
           {/* 设置仅在 CE 版显示,EE 版隐藏 */}
           {ceRuntime ? (
             <div ref={settingsAnchorRef} className="relative">
