@@ -39,76 +39,75 @@
   --brand-accent: var(--editorial-brand);
   --surface-raised: var(--editorial-raised);
 
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
+  --editorial-radius-xs: 4px;
+  --editorial-radius-sm: 6px;
+  --editorial-radius-md: 8px;
+  --editorial-radius-lg: 10px;
   --header-height: 56px;
   --sidebar-width: 232px;
   --control-height-sm: 32px;
   --control-height-md: 36px;
   --control-height-lg: 40px;
 
-  --background: var(--editorial-background);
-  --foreground: var(--editorial-text);
-  --card: var(--editorial-surface-1);
-  --card-foreground: var(--editorial-text);
-  --popover: var(--editorial-surface-2);
-  --popover-foreground: var(--editorial-text);
-  --primary: var(--editorial-brand);
-  --primary-foreground: var(--editorial-background);
-  --secondary: var(--editorial-surface-2);
-  --secondary-foreground: var(--editorial-text);
-  --muted: var(--editorial-surface-2);
-  --muted-foreground: var(--editorial-muted);
-  /* Quiet neutral surface for shadcn hover and active states. */
-  --accent: var(--editorial-surface-2);
-  --accent-foreground: var(--editorial-text);
-  --destructive: var(--editorial-danger);
-  --destructive-foreground: var(--editorial-background);
-  --success: var(--editorial-success);
-  --success-foreground: var(--editorial-background);
-  --warning: var(--editorial-warning);
-  --warning-foreground: var(--editorial-background);
-  --border: var(--editorial-border);
-  --input: var(--editorial-border);
-  --ring: var(--editorial-focus);
+  --background: oklch(0.9605 0.0046 258.3248);
+  --foreground: oklch(0.2153 0.0187 235.1251);
+  --card: oklch(1.0000 0 0);
+  --card-foreground: oklch(0.2153 0.0187 235.1251);
+  --popover: oklch(1.0000 0 0);
+  --popover-foreground: oklch(0.2153 0.0187 235.1251);
+  --primary: oklch(0.5400 0.1300 210.0000);
+  --primary-foreground: oklch(1.0000 0 0);
+  --secondary: oklch(0.9560 0.0260 210.0000);
+  --secondary-foreground: oklch(0.5400 0.1300 210.0000);
+  --muted: oklch(0.9605 0.0046 258.3248);
+  --muted-foreground: oklch(0.5589 0.0255 233.7233);
+  --accent: oklch(0.9560 0.0260 210.0000);
+  --accent-foreground: oklch(0.2153 0.0187 235.1251);
+  --destructive: oklch(0.6257 0.2058 29.0773);
+  --destructive-foreground: oklch(1.0000 0 0);
+  --success: oklch(0.6800 0.1620 150.0000);
+  --success-foreground: oklch(1.0000 0 0);
+  --warning: oklch(0.7500 0.1600 75.0000);
+  --warning-foreground: oklch(0.2153 0.0187 235.1251);
+  --border: oklch(0.9436 0.0051 228.8204);
+  --input: oklch(0.9436 0.0051 228.8204);
+  --ring: oklch(0.6400 0.1500 205.0000);
   --chart-1: oklch(0.6400 0.1500 205.0000);
   --chart-2: oklch(0.5400 0.1300 210.0000);
   --chart-3: oklch(0.6200 0.1200 195.0000);
   --chart-4: oklch(0.7356 0.1370 232.8053);
   --chart-5: oklch(0.7200 0.1520 150.0000);
-  --sidebar: var(--editorial-surface-1);
-  --sidebar-foreground: var(--editorial-text);
-  --sidebar-primary: var(--editorial-brand);
-  --sidebar-primary-foreground: var(--editorial-background);
-  --sidebar-accent: var(--editorial-surface-2);
-  --sidebar-accent-foreground: var(--editorial-text);
-  --sidebar-border: var(--editorial-border);
-  --sidebar-ring: var(--editorial-focus);
-  --radius: var(--radius-md);
+  --sidebar: oklch(1.0000 0 0);
+  --sidebar-foreground: oklch(0.2153 0.0187 235.1251);
+  --sidebar-primary: oklch(0.5400 0.1300 210.0000);
+  --sidebar-primary-foreground: oklch(1.0000 0 0);
+  --sidebar-accent: oklch(0.9560 0.0260 210.0000);
+  --sidebar-accent-foreground: oklch(0.5400 0.1300 210.0000);
+  --sidebar-border: oklch(0.9436 0.0051 228.8204);
+  --sidebar-ring: oklch(0.6400 0.1500 205.0000);
+  --radius: var(--editorial-radius-md);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
   --font-family-ui-default: "Inter Variable", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
   --font-family-ui-macos: "PingFang SC", "PingFang TC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif;
-  --bg-rgb: 13 14 16;
-  --surface-rgb: 20 22 26;
-  --border-rgb: 42 47 55;
-  --text-rgb: 242 244 247;
-  --text-muted-rgb: 146 153 165;
-  --accent-rgb: 229 255 92;
-  --ui-surface-panel: rgba(20, 22, 26, 0.96);
-  --ui-surface-field: rgba(26, 29, 34, 0.95);
-  --ui-border-soft: rgba(42, 47, 55, 0.75);
-  --ui-border-strong: rgba(191, 230, 255, 0.42);
+  --bg-rgb: 255 255 255;
+  --surface-rgb: 245 245 245;
+  --border-rgb: 224 224 224;
+  --text-rgb: 0 0 0;
+  --text-muted-rgb: 102 102 102;
+  --accent-rgb: 59 130 246;
+  --ui-surface-panel: rgba(255, 255, 255, 0.96);
+  --ui-surface-field: rgba(248, 250, 252, 0.95);
+  --ui-border-soft: rgba(15, 23, 42, 0.12);
+  --ui-border-strong: rgba(15, 23, 42, 0.2);
   --canvas-node-input-placeholder: rgba(96, 96, 104, 0.72);
   --canvas-node-input-helper: rgba(104, 104, 112, 0.76);
-  --ui-shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.28);
-  --ui-radius-lg: var(--radius-sm);
-  --ui-radius-xl: var(--radius-md);
-  --ui-radius-2xl: var(--radius-lg);
+  --ui-shadow-panel: 0 14px 34px rgba(15, 23, 42, 0.18);
+  --ui-radius-lg: var(--editorial-radius-sm);
+  --ui-radius-xl: var(--editorial-radius-md);
+  --ui-radius-2xl: var(--editorial-radius-lg);
   --ui-radius-pill: 999px;
-  --node-radius: var(--radius-md);
+  --node-radius: var(--editorial-radius-md);
   --node-inner-radius: var(--node-radius);
 
   /* Shadows — soft, diffuse for light mode */
@@ -121,7 +120,7 @@
   --shadow-xl: 0px 2px 10px 0px hsl(0 0% 0% / 0.10), 0px 8px 10px -1px hsl(0 0% 0% / 0.10);
   --shadow-2xl: 0px 2px 10px 0px hsl(0 0% 0% / 0.25);
 
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 .dark {
@@ -176,11 +175,11 @@
   --canvas-node-input-helper: rgba(184, 184, 192, 0.62);
   --ui-shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.28);
   --ui-glow-accent: none;
-  --ui-radius-lg: var(--radius-sm);
-  --ui-radius-xl: var(--radius-md);
-  --ui-radius-2xl: var(--radius-lg);
+  --ui-radius-lg: var(--editorial-radius-sm);
+  --ui-radius-xl: var(--editorial-radius-md);
+  --ui-radius-2xl: var(--editorial-radius-lg);
   --ui-radius-pill: 999px;
-  --node-radius: var(--radius-md);
+  --node-radius: var(--editorial-radius-md);
   --node-inner-radius: var(--node-radius);
 
   /* Shadows — deeper, higher opacity for dark mode */
@@ -248,10 +247,10 @@
   --font-serif: Georgia, serif;
   --font-mono: 'Geist Mono', SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 10px;
+  --radius-sm: var(--editorial-radius-xs);
+  --radius-md: var(--editorial-radius-sm);
+  --radius-lg: var(--editorial-radius-md);
+  --radius-xl: var(--editorial-radius-lg);
 
   --shadow-2xs: var(--shadow-2xs);
   --shadow-xs: var(--shadow-xs);

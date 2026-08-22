@@ -6,6 +6,13 @@ import { describe, expect, it } from "vitest";
 
 const stylesheet = readFileSync("src/index.css", "utf8");
 
+function block(selector: string) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = stylesheet.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "m"));
+  expect(match, `missing ${selector} block`).not.toBeNull();
+  return match?.[1] ?? "";
+}
+
 function expectToken(name: string, value: string) {
   expect(stylesheet).toMatch(new RegExp(`--${name}\\s*:\\s*${value}\\s*;`, "i"));
 }
@@ -29,10 +36,10 @@ describe("Editorial Black design token contract", () => {
   });
 
   it.each([
-    ["radius-xs", "4px"],
-    ["radius-sm", "6px"],
-    ["radius-md", "8px"],
-    ["radius-lg", "10px"],
+    ["editorial-radius-xs", "4px"],
+    ["editorial-radius-sm", "6px"],
+    ["editorial-radius-md", "8px"],
+    ["editorial-radius-lg", "10px"],
   ])("defines the %s radius tier", (name, value) => {
     expectToken(name, value);
   });
@@ -50,6 +57,36 @@ describe("Editorial Black design token contract", () => {
   it("provides a visible two-pixel keyboard focus ring", () => {
     expect(stylesheet).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--editorial-focus\)/s);
     expect(stylesheet).toMatch(/:focus-visible\s*\{[^}]*outline-offset:\s*2px/s);
+  });
+
+  it("keeps the default semantic theme light for persisted theme compatibility", () => {
+    const root = block(":root");
+    expect(root).toContain("--background: oklch(0.9605 0.0046 258.3248)");
+    expect(root).toContain("--foreground: oklch(0.2153 0.0187 235.1251)");
+    expect(root).toContain("--card: oklch(1.0000 0 0)");
+    expect(root).toContain("color-scheme: light");
+  });
+
+  it("maps only the dark semantic theme to Editorial Black", () => {
+    const dark = block(".dark");
+    expect(dark).toContain("--background: var(--editorial-background)");
+    expect(dark).toContain("--primary: var(--editorial-brand)");
+    expect(dark).toContain("--ring: var(--editorial-focus)");
+    expect(dark).toContain("color-scheme: dark");
+  });
+
+  it("maps Tailwind radii to the four uniquely named tiers", () => {
+    const theme = block("@theme inline");
+    expect(theme).toContain("--radius-sm: var(--editorial-radius-xs)");
+    expect(theme).toContain("--radius-md: var(--editorial-radius-sm)");
+    expect(theme).toContain("--radius-lg: var(--editorial-radius-md)");
+    expect(theme).toContain("--radius-xl: var(--editorial-radius-lg)");
+  });
+
+  it("uses the approved UI and timeline font stacks", () => {
+    const theme = block("@theme inline");
+    expect(theme).toMatch(/--font-sans:[^;]*Inter Variable[^;]*Noto Sans SC/);
+    expect(theme).toMatch(/--font-mono:[^;]*Geist Mono/);
   });
 
   it("disables non-essential animation for reduced-motion users", () => {
