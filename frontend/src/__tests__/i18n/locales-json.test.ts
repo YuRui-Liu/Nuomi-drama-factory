@@ -20,6 +20,25 @@ function collectStrings(value: unknown): string[] {
   return Object.values(value as Record<string, unknown>).flatMap(collectStrings);
 }
 
+function collectPlaceholders(
+  value: unknown,
+  prefix = "",
+): Record<string, string[]> {
+  if (typeof value === "string") {
+    const placeholders = [...value.matchAll(/{{\s*([^{}]+?)\s*}}/g)].map(
+      ([, name]) => name.trim(),
+    );
+    return { [prefix]: [...new Set(placeholders)].sort() };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+      Object.entries(collectPlaceholders(child, prefix ? `${prefix}.${key}` : key)),
+    ),
+  );
+}
+
 describe("locale translation files", () => {
   it.each(["en", "zh"])("%s translation JSON is valid", (language) => {
     const content = readFileSync(`public/locales/${language}/translation.json`, "utf8");
@@ -40,6 +59,11 @@ describe("locale translation files", () => {
   it("uses the NuomiDrama product name and the new navigation language", () => {
     const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
     const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+
+    expect(zh.app.title).toBe("NuomiDrama");
+    expect(en.app.title).toBe("NuomiDrama");
+    expect(zh.settings.aboutAppName).toBe("NuomiDrama");
+    expect(en.settings.aboutAppName).toBe("NuomiDrama");
 
     expect(zh.nav).toMatchObject({
       xiaji: "项目中心",
@@ -73,6 +97,19 @@ describe("locale translation files", () => {
 
     expect(collectStrings(zh).filter((value) => legacyProductLanguage.test(value))).toEqual([]);
     expect(collectStrings(en).filter((value) => legacyProductLanguage.test(value))).toEqual([]);
+  });
+
+  it("deduplicates and sorts interpolation placeholders", () => {
+    expect(collectPlaceholders({ sample: "{{ b }} {{a}} {{a}}" })).toEqual({
+      sample: ["a", "b"],
+    });
+  });
+
+  it("keeps zh and en interpolation placeholders aligned by key", () => {
+    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
+    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+
+    expect(collectPlaceholders(zh)).toEqual(collectPlaceholders(en));
   });
 
   it("defines episode import actions and task statuses in both locales", () => {
