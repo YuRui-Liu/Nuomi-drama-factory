@@ -25,6 +25,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CreditBalanceBadge } from "@/components/layout/credit-balance-badge";
+import { BrandMark } from "@/components/brand/brand-mark";
 import { NotificationDrawer } from "@/components/notifications/notification-drawer";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import {
@@ -45,7 +46,6 @@ import {
 import {
   ProjectHeaderNavigation,
   ProjectSwitcher,
-  ProjectXiajiMenu,
 } from "@/components/layout/project-header-navigation";
 const ACCOUNT_PANEL_TRANSITION_MS = 350;
 
@@ -214,7 +214,7 @@ export function Header() {
 
   return (
     <div className="relative z-20 shrink-0 bg-background/58 text-sidebar-foreground backdrop-blur-xl">
-      <header className="relative flex h-[48px] items-center justify-between gap-3 px-4">
+      <header className="relative flex h-14 items-center justify-between gap-3 px-4">
         <div className="flex min-w-0 flex-1 items-center">
           <TooltipProvider delay={80}>
             <Tooltip>
@@ -227,12 +227,7 @@ export function Header() {
                   />
                 }
               >
-                <img
-                  src="/brand/dramaclaw-wordmark.png"
-                  alt=""
-                  aria-hidden="true"
-                  className="h-[22.7px] w-auto max-w-[113px] object-contain"
-                />
+                <BrandMark />
               </TooltipTrigger>
               <TooltipContent
                 side="bottom"
@@ -341,7 +336,6 @@ export function Header() {
           </div>
         </div>
       </header>
-      {project ? <ProjectXiajiMenu project={project} /> : null}
       {accountPanelOpen
         ? createPortal(
             <AccountPanel

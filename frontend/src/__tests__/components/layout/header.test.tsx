@@ -9,6 +9,10 @@ import { Header } from "@/components/layout/header";
 const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
 const authState = vi.hoisted(() => ({ username: "local", logout: vi.fn() }));
 const resetUserSessionStateMock = vi.hoisted(() => vi.fn());
+const routerState = vi.hoisted(() => ({
+  pathname: "/",
+  project: undefined as string | undefined,
+}));
 
 vi.mock("@/lib/reset-region-state", () => ({
   resetUserSessionState: resetUserSessionStateMock,
@@ -24,11 +28,13 @@ vi.mock("@/lib/queries/model-gateway", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, ...props }: React.ComponentProps<"a">) => <a {...props}>{children}</a>,
+  Link: ({ children, to, params: _params, ...props }: React.ComponentProps<"a"> & { to?: string; params?: unknown }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
   useNavigate: () => vi.fn(),
-  useParams: () => ({}),
+  useParams: () => ({ project: routerState.project }),
   useRouterState: ({ select }: { select: (state: { location: { pathname: string } }) => string }) =>
-    select({ location: { pathname: "/" } }),
+    select({ location: { pathname: routerState.pathname } }),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -42,6 +48,14 @@ vi.mock("react-i18next", () => ({
         "header.account.languageChinese": "Chinese",
         "header.account.languageEnglish": "English",
         "auth.logout": "Log out",
+        "nav.projectNavigation": "Project navigation",
+        "nav.ingest": "Script import",
+        "nav.assets": "Asset center",
+        "nav.episodes": "Episode production",
+        "nav.freezone": "Creation canvas",
+        "nav.styles": "Visual styles",
+        "nav.tasks": "Task center",
+        "nav.aiAssistant": "Nuomi assistant",
       })[key] ?? key,
     i18n: {
       language: "en",
@@ -96,7 +110,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   ),
 }));
 
-function renderHeader() {
+function renderHeader({ project }: { project?: string } = {}) {
+  routerState.project = project;
+  routerState.pathname = project ? `/projects/${project}/ingest` : "/";
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <Header />
@@ -106,10 +122,26 @@ function renderHeader() {
 
 describe("Header runtime gating", () => {
   beforeEach(() => {
+    routerState.project = undefined;
+    routerState.pathname = "/";
     runtimeState.authRequired = true;
     authState.username = "local";
     authState.logout.mockReset();
     resetUserSessionStateMock.mockReset();
+  });
+
+  it("shows the NuomiDrama brand and direct project navigation", () => {
+    renderHeader({ project: "demo" });
+
+    expect(screen.getByLabelText("NuomiDrama")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Project navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Script import" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getAllByRole("link", { name: /Script import|Asset center|Episode production|Creation canvas|Visual styles|Task center|Nuomi assistant/ })).toHaveLength(7);
+    expect(screen.queryByText("虾画")).not.toBeInTheDocument();
+    expect(screen.queryByText("虾集")).not.toBeInTheDocument();
   });
 
   it("renders logout in the account panel when runtime requires auth", async () => {

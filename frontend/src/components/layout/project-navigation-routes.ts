@@ -13,6 +13,16 @@ export const PROJECT_SECTION_ROUTES = {
 
 export type ProjectSection = keyof typeof PROJECT_SECTION_ROUTES;
 
+export const PROJECT_NAV_ITEMS = [
+  { labelKey: "nav.ingest", to: PROJECT_SECTION_ROUTES.ingest },
+  { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },
+  { labelKey: "nav.episodes", to: PROJECT_SECTION_ROUTES.episodes },
+  { labelKey: "nav.freezone", to: PROJECT_SECTION_ROUTES.freezone },
+  { labelKey: "nav.styles", to: PROJECT_SECTION_ROUTES.styles },
+  { labelKey: "nav.tasks", to: PROJECT_SECTION_ROUTES.tasks },
+  { labelKey: "nav.aiAssistant", to: PROJECT_SECTION_ROUTES.assistant },
+] as const;
+
 export function projectSectionFromPath(pathname: string): ProjectSection | null {
   const segment = pathname.match(/^\/projects\/[^/]+\/([^/]+)/)?.[1];
   return segment && segment in PROJECT_SECTION_ROUTES

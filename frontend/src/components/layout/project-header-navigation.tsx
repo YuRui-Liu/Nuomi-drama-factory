@@ -2,7 +2,7 @@
 // Copyright (c) 2026 ClaymoreLab
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { ArrowLeft, Check, ChevronDown, Clapperboard, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   PROJECT_SECTION_ROUTES,
-  projectModeFromPath,
+  PROJECT_NAV_ITEMS,
   projectSectionFromPath,
 } from "@/components/layout/project-navigation-routes";
 import { normalizeLastEpisodeLocation, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
@@ -24,20 +24,6 @@ import { isRememberedSection, useProjectNavStore } from "@/stores/project-nav-st
 import { useAllProjectSummaries } from "@/lib/queries/projects";
 import { getProjectCover } from "@/lib/project-cover";
 import { cn } from "@/lib/utils";
-
-const XIAJI_DEFAULT_ROUTE = PROJECT_SECTION_ROUTES.ingest;
-
-const xiajiMenuItems = [
-  { labelKey: "nav.ingest", to: PROJECT_SECTION_ROUTES.ingest },
-  { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },
-  {
-    labelKey: "nav.episodes",
-    to: PROJECT_SECTION_ROUTES.episodes,
-    rememberKey: "episodes",
-  },
-  { labelKey: "nav.aiAssistant", to: PROJECT_SECTION_ROUTES.assistant },
-  { labelKey: "nav.styles", to: PROJECT_SECTION_ROUTES.styles },
-] as const;
 
 function ProjectAvatar({ name }: { name: string }) {
   const { gradient, initial } = useMemo(() => getProjectCover(name), [name]);
@@ -148,70 +134,17 @@ export function ProjectSwitcher({ current }: { current: string }) {
   );
 }
 
-/**
- * 「虾集」子页菜单，作为 header 的第二行渲染 —— 它必须在文档流里占真实高度，
- * 而不是浮在内容之上：内容区是独立滚动容器，任何浮层都会被滚上来的内容穿过。
- */
-export function ProjectXiajiMenu({ project }: { project: string }) {
-  const { t } = useTranslation();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const rememberedEpisodeLocation = useEpisodeWorkbenchStore(
-    (state) => state.lastEpisodeLocationByProject[project],
-  );
-
-  if (projectModeFromPath(pathname) !== "xiaji") return null;
-
-  return (
-    <div className="flex justify-center px-4 pb-2">
-      <nav
-        aria-label={t("nav.xiajiMenu")}
-        className="flex items-center gap-3 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 py-0.5 text-sidebar-foreground"
-      >
-        {xiajiMenuItems.map((item) => {
-          const target =
-            "rememberKey" in item && rememberedEpisodeLocation
-              ? normalizeLastEpisodeLocation(project, rememberedEpisodeLocation) ?? item.to
-              : item.to;
-          // 高亮按栏目自身的路由判断：target 可能是带 ?query 的剧集深链，
-          // 拿它比 pathname 永远不相等（虾镜里就不会高亮）。
-          const sectionPath = item.to.replace("$project", encodeURIComponent(project));
-          const active = pathname === sectionPath || pathname.startsWith(`${sectionPath}/`);
-          return (
-            <Link
-              key={item.labelKey}
-              to={target}
-              params={{ project }}
-              className={cn(
-                "flex h-7 items-center px-1.5 text-xs font-semibold transition-colors duration-150 ease-[var(--ease-out-quint)]",
-                active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-              aria-current={active ? "page" : undefined}
-            >
-              {t(item.labelKey)}
-            </Link>
-          );
-        })}
-      </nav>
-    </div>
-  );
-}
-
 export function ProjectHeaderNavigation({ project }: { project: string }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const activeMode = projectModeFromPath(pathname);
   const rememberedEpisodeLocation = useEpisodeWorkbenchStore(
     (state) => state.lastEpisodeLocationByProject[project],
   );
   const setLastEpisodeLocation = useEpisodeWorkbenchStore((state) => state.setLastEpisodeLocation);
   const clearLastEpisodeLocation = useEpisodeWorkbenchStore((state) => state.clearLastEpisodeLocation);
   const rememberSection = useProjectNavStore((state) => state.rememberSection);
-  const lastXiajiSection = useProjectNavStore(
-    (state) => state.lastXiajiSectionByProject[project],
-  );
 
-  // 记住当前停留的区块（虾画 / 虾集子页），进项目和切「虾集」时按此恢复。
+  // 保留原有区块记忆，确保项目切换与旧持久化数据继续兼容。
   useEffect(() => {
     const section = projectSectionFromPath(pathname);
     if (isRememberedSection(section)) {
@@ -230,65 +163,37 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
     setLastEpisodeLocation(project, `${pathname}${window.location.search}`);
   }, [clearLastEpisodeLocation, pathname, project, setLastEpisodeLocation]);
 
-  const changeMode = (mode: "xiahua" | "xiaji") => {
-    if (mode === activeMode) return;
-    if (mode === "xiahua") {
-      navigate({ to: PROJECT_SECTION_ROUTES.freezone, params: { project } });
-      return;
-    }
-    // 切「虾集」时回到上次停留的子页（默认虾料）；上次在虾镜且有剧集深链则直达。
-    let target: string = lastXiajiSection
-      ? PROJECT_SECTION_ROUTES[lastXiajiSection]
-      : XIAJI_DEFAULT_ROUTE;
-    if (lastXiajiSection === "episodes" && rememberedEpisodeLocation) {
-      target =
-        normalizeLastEpisodeLocation(project, rememberedEpisodeLocation) ?? target;
-    }
-    navigate({ to: target, params: { project } });
-  };
-
   return (
     <nav
-      aria-label={t("nav.creationMode")}
-      className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center"
+      aria-label={t("nav.projectNavigation")}
+      className="absolute left-1/2 top-0 z-30 flex h-14 max-w-[calc(100vw_-_440px)] -translate-x-1/2 items-stretch overflow-x-auto whitespace-nowrap"
     >
-      <div className="relative flex h-8 items-center rounded-full bg-white/[0.07]">
-        <span
-          aria-hidden="true"
-          className={cn(
-            "absolute left-0 top-1/2 h-7 w-[74px] -translate-y-1/2 rounded-full bg-foreground transition-transform duration-300 ease-[var(--ease-out-quint)]",
-            activeMode === "xiaji" && "translate-x-[74px]",
-          )}
-        />
-        <button
-          type="button"
-          onClick={() => changeMode("xiahua")}
-          className={cn(
-            "relative z-10 inline-flex h-8 w-[74px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
-            activeMode === "xiahua"
-              ? "text-background"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-          aria-pressed={activeMode === "xiahua"}
-        >
-          <Sparkles className="size-3.5" />
-          {t("nav.freezone")}
-        </button>
-        <button
-          type="button"
-          onClick={() => changeMode("xiaji")}
-          className={cn(
-            "relative z-10 inline-flex h-8 w-[74px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
-            activeMode === "xiaji"
-              ? "text-background"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-          aria-pressed={activeMode === "xiaji"}
-        >
-          <Clapperboard className="size-3.5" />
-          {t("nav.xiaji")}
-        </button>
-      </div>
+      {PROJECT_NAV_ITEMS.map((item) => {
+        const sectionPath = item.to.replace("$project", encodeURIComponent(project));
+        const active = pathname === sectionPath || pathname.startsWith(`${sectionPath}/`);
+        const target =
+          item.to === PROJECT_SECTION_ROUTES.episodes && rememberedEpisodeLocation
+            ? normalizeLastEpisodeLocation(project, rememberedEpisodeLocation) ?? item.to
+            : item.to;
+
+        return (
+          <Link
+            key={item.labelKey}
+            to={target}
+            params={{ project }}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "relative inline-flex min-h-10 items-center px-3 text-xs font-medium transition-colors duration-150",
+              "after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-[var(--brand-accent)] after:transition-opacity",
+              active
+                ? "text-foreground after:opacity-100"
+                : "text-muted-foreground after:opacity-0 hover:text-foreground",
+            )}
+          >
+            {t(item.labelKey)}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
