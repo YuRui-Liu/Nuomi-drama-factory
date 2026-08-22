@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import type { ElementType } from "react";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -20,10 +21,12 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/hooks/use-github-stars", () => ({ useGithubStars: () => 1200 }));
-vi.mock("@/components/login/community-showcase", () => ({ CommunityShowcase: () => null }));
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, ...props }: React.ComponentProps<"a">) => <a {...props}>{children}</a>,
+}));
 vi.mock("@/components/login/light-rays", () => ({ default: () => null }));
 vi.mock("@/components/react-bits/split-text", () => ({
-  default: ({ tag: Tag = "div", text, className }: { tag?: "h1"; text: string; className?: string }) => (
+  default: ({ tag: Tag = "h1", text, className }: { tag?: ElementType; text: string; className?: string }) => (
     <Tag className={className}>{text}</Tag>
   ),
 }));
@@ -98,6 +101,7 @@ describe("the real cinematic login entry", () => {
     expect(screen.getByRole("heading", { name: "从故事到成片，一站完成" })).toBeInTheDocument();
     expect(screen.getByLabelText("产品工作台预览")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "让灵感发生" })).not.toBeInTheDocument();
+    expect(screen.queryByText("auth.community.heading")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
     expect(screen.getByRole("dialog", { name: "登录" })).toBeInTheDocument();
@@ -111,5 +115,13 @@ describe("the real cinematic login entry", () => {
     ].map((path) => readFileSync(path, "utf8")).join("\n");
 
     expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);
+  });
+
+  it("consumes the cinematic exit variables on the editorial hero", () => {
+    const css = readFileSync("src/components/login/login.module.css", "utf8");
+
+    expect(css).toMatch(/\.hero\s*\{[^}]*var\(--hero-exit-offset[^}]*var\(--hero-exit-scale/s);
+    expect(css).toMatch(/\.hero\s*\{[^}]*filter:\s*blur\(var\(--hero-exit-blur/s);
+    expect(css).toContain("opacity: var(--hero-exit-opacity, 1)");
   });
 });

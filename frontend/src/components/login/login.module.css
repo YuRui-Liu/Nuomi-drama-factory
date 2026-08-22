@@ -1471,7 +1471,12 @@
   gap: clamp(48px, 7vw, 96px);
   padding: clamp(64px, 10vh, 112px) 0 clamp(40px, 7vh, 72px);
   text-align: left;
-  transform: none;
+  opacity: var(--hero-exit-opacity, 1);
+  transform:
+    translate3d(0, calc(-1 * var(--hero-exit-offset, 0px)), 0)
+    scale(var(--hero-exit-scale, 1));
+  filter: blur(var(--hero-exit-blur, 0px));
+  transition: transform 160ms linear, filter 160ms linear, opacity 160ms linear;
 }
 
 .heroCopy {
@@ -1764,10 +1769,16 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hero,
   .heroPrimary,
   .heroSecondary,
   .stageTopBar {
     transition: none;
+  }
+
+  .hero {
+    transform: none;
+    filter: none;
   }
 }
 

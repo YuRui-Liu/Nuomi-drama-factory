@@ -3,9 +3,9 @@
 import { MessageCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BrandMark } from "@/components/brand/brand-mark";
-import { CommunityShowcase } from "./community-showcase";
 import { useGithubStars } from "@/hooks/use-github-stars";
 import { PRODUCT_MANUAL_URL } from "@/lib/product-manual";
+import { businessWechatQrUrl } from "./cinematic/media";
 import styles from "./login.module.css";
 
 // 登录页右上角 GitHub 链接目标。如需指向具体仓库/主页，改这里即可。
@@ -36,6 +36,63 @@ export function Brand({ className }: { className?: string }) {
   );
 }
 
+export function LoginStageHeader() {
+  const { t } = useTranslation();
+  const stars = useGithubStars(GITHUB_REPO);
+
+  return (
+    <div className={styles.stageTopBar}>
+      <Brand />
+      <div className={styles.stageActions}>
+        <div className={styles.businessWechat}>
+          <button
+            type="button"
+            className={styles.businessWechatTrigger}
+            aria-label={t("auth.businessWechat.open")}
+          >
+            <MessageCircle aria-hidden="true" />
+            {t("auth.businessWechat.label")}
+          </button>
+          <div
+            className={styles.businessWechatPopover}
+            role="dialog"
+            aria-label={t("auth.businessWechat.qrAlt")}
+          >
+            <div className={styles.businessWechatPanel}>
+              <img
+                src={businessWechatQrUrl}
+                alt={t("auth.businessWechat.qrAlt")}
+                draggable={false}
+              />
+              <div className={styles.businessWechatText}>
+                <p className={styles.businessWechatTitle}>{t("auth.businessWechat.title")}</p>
+                <p className={styles.businessWechatSubtitle}>{t("auth.businessWechat.subtitle")}</p>
+                <p className={styles.businessWechatNote}>{t("auth.businessWechat.note")}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <a
+          className={styles.githubLink}
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="GitHub"
+          aria-label="GitHub"
+        >
+          <GithubMark />
+          {stars !== null && (
+            <>
+              <span className={styles.githubStarLabel}>{t("auth.github.star")}</span>
+              <span className={styles.githubStars}>{formatStars(stars)}</span>
+            </>
+          )}
+        </a>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Stage contents — render inside an element already styled with `styles.stage`.
  */
@@ -45,68 +102,11 @@ export function LoginStageContent({
   onStart: () => void;
 }) {
   const { t } = useTranslation();
-  const stars = useGithubStars(GITHUB_REPO);
 
   return (
     <>
       <div className={styles.stageInner}>
-        <div className={styles.stageTopBar}>
-          <Brand />
-          <div className={styles.stageActions}>
-            <div className={styles.businessWechat}>
-              <button
-                type="button"
-                className={styles.businessWechatTrigger}
-                aria-label={t("auth.businessWechat.open")}
-              >
-                <MessageCircle aria-hidden="true" />
-                {t("auth.businessWechat.label")}
-              </button>
-              <div
-                className={styles.businessWechatPopover}
-                role="dialog"
-                aria-label={t("auth.businessWechat.qrAlt")}
-              >
-                <div className={styles.businessWechatPanel}>
-                  <img
-                    src="https://nfg-web-assets.cdnfg.com/dramaclaw/contact/wechat.png"
-                    alt={t("auth.businessWechat.qrAlt")}
-                    draggable={false}
-                  />
-                  <div className={styles.businessWechatText}>
-                    <p className={styles.businessWechatTitle}>
-                      {t("auth.businessWechat.title")}
-                    </p>
-                    <p className={styles.businessWechatSubtitle}>
-                      {t("auth.businessWechat.subtitle")}
-                    </p>
-                    <p className={styles.businessWechatNote}>
-                      {t("auth.businessWechat.note")}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <a
-              className={styles.githubLink}
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="GitHub"
-              aria-label="GitHub"
-            >
-              <GithubMark />
-              {stars !== null && (
-                <>
-                  <span className={styles.githubStarLabel}>
-                    {t("auth.github.star")}
-                  </span>
-                  <span className={styles.githubStars}>{formatStars(stars)}</span>
-                </>
-              )}
-            </a>
-          </div>
-        </div>
+        <LoginStageHeader />
 
         <section className={styles.hero}>
           <div className={styles.heroCopy}>
@@ -162,7 +162,6 @@ export function LoginStageContent({
           </div>
         </section>
 
-        <CommunityShowcase />
       </div>
     </>
   );
