@@ -104,7 +104,7 @@ export function TextRuntimePanel({ enabled = true }: { enabled?: boolean }) {
             <SelectTrigger id="text-runtime-provider"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="deepseek">DeepSeek</SelectItem>
-              <SelectItem value="dramaclaw">DramaClawAPI</SelectItem>
+              <SelectItem value="dramaclaw">NuomiDrama API</SelectItem>
               <SelectItem value="openai_compatible">OpenAI 兼容</SelectItem>
             </SelectContent>
           </Select>

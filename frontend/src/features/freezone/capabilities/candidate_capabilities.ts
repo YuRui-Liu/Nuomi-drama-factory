@@ -27,7 +27,7 @@ const STYLE_PARAM = {
   type: "enum" as const,
   defaultValue: "supertale_production",
   options: [
-    { value: "supertale_production", label: "SuperTale 生产风格" },
+    { value: "supertale_production", label: "NuomiDrama 生产风格" },
     { value: "cinematic_realistic", label: "影视写实" },
     { value: "clean_sketch", label: "干净线稿" },
     { value: "spiderverse_mixed", label: "混合媒介" },
@@ -44,7 +44,7 @@ ${notes ? `Extra notes: ${notes}.` : ""}
 ${nodePrompt ? `Node note:\n${nodePrompt}` : ""}
 
 Hard requirements:
-- Production-ready SuperTale asset candidate.
+- Production-ready asset candidate.
 - No text, watermark, UI frame, contact sheet, or collage unless explicitly requested.
 - Preserve useful identity / scene / prop cues from references.`;
 }
