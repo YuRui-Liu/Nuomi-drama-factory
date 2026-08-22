@@ -2,9 +2,8 @@
 // Copyright (c) 2026 ClaymoreLab
 import { MessageCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { BrandMark } from "@/components/brand/brand-mark";
 import { CommunityShowcase } from "./community-showcase";
-import LightRays from "./light-rays";
-import SplitText from "@/components/react-bits/split-text";
 import { useGithubStars } from "@/hooks/use-github-stars";
 import { PRODUCT_MANUAL_URL } from "@/lib/product-manual";
 import styles from "./login.module.css";
@@ -31,13 +30,8 @@ function GithubMark() {
 
 export function Brand({ className }: { className?: string }) {
   return (
-    <div className={className ?? styles.brand} aria-label="DramaClaw">
-      <img
-        className={styles.brandLogo}
-        src="/brand/dramaclaw-wordmark.png"
-        alt=""
-        aria-hidden="true"
-      />
+    <div className={className ?? styles.brand}>
+      <BrandMark />
     </div>
   );
 }
@@ -55,23 +49,6 @@ export function LoginStageContent({
 
   return (
     <>
-      <div className={styles.stageLightRays} aria-hidden="true">
-        <LightRays
-          raysOrigin="top-center"
-          raysColor="#ffffff"
-          raysSpeed={1}
-          lightSpread={0.5}
-          rayLength={3}
-          pulsating={false}
-          fadeDistance={1}
-          saturation={1}
-          followMouse={false}
-          mouseInfluence={0.1}
-          noiseAmount={0}
-          distortion={0}
-        />
-      </div>
-
       <div className={styles.stageInner}>
         <div className={styles.stageTopBar}>
           <Brand />
@@ -131,52 +108,59 @@ export function LoginStageContent({
           </div>
         </div>
 
-        <div className={styles.hero}>
-          <SplitText
-            tag="h1"
-            text={t("auth.stage.headlines.createUniverse")}
-            className={styles.heroTitle}
-            delay={70}
-            duration={0.8}
-            ease="power3.out"
-            splitType="chars"
-            from={{ opacity: 0, y: 36 }}
-            to={{ opacity: 1, y: 0 }}
-            threshold={0.1}
-            rootMargin="-100px"
-            textAlign="center"
-          />
-          <p className={styles.heroSubtitle}>
-            <span className={styles.heroSubtitlePrefix}>
-              {t("auth.stage.subtitlePrefix")}
-            </span>
-            <span className={styles.heroSubtitleBrand}>
-              {t("auth.stage.subtitleBrand")}
-            </span>
-            <span className={styles.heroSubtitleSuffix}>
-              {t("auth.stage.subtitleSuffix")}
-            </span>
-          </p>
-          <div className={styles.heroActions}>
-            <button
-              type="button"
-              className={styles.heroPrimary}
-              onClick={onStart}
-            >
-              {t("auth.stage.start")}
-            </button>
-            <a
-              className={styles.heroSecondary}
-              href={PRODUCT_MANUAL_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={t("auth.openManual")}
-              aria-label={t("auth.openManual")}
-            >
-              {t("auth.learnMore")}
-            </a>
+        <section className={styles.hero}>
+          <div className={styles.heroCopy}>
+            <p className={styles.heroEyebrow}>AI 短剧制片工作台</p>
+            <h1 className={styles.heroTitle}>从故事到成片，一站完成</h1>
+            <p className={styles.heroSubtitle}>
+              统一管理剧本、角色资产、分镜与视频任务，让角色、场景和风格贯穿每个镜头。
+            </p>
+            <div className={styles.heroActions}>
+              <button type="button" className={styles.heroPrimary} onClick={onStart}>
+                开始创作
+              </button>
+              <a
+                className={styles.heroSecondary}
+                href={PRODUCT_MANUAL_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={t("auth.openManual")}
+                aria-label={t("auth.openManual")}
+              >
+                {t("auth.learnMore")}
+              </a>
+            </div>
           </div>
-        </div>
+
+          <div className={styles.productPreview} aria-label="产品工作台预览">
+            <div className={styles.previewToolbar}>
+              <span>EP 03 · 夜行者</span>
+              <span className={styles.previewStatus}>生成完成</span>
+            </div>
+            <div className={styles.previewWorkspace}>
+              <aside className={styles.previewSidebar}>
+                <strong>资产中心</strong>
+                <span className={styles.previewAsset}>角色 · 林夏</span>
+                <span className={styles.previewAsset}>场景 · 雨夜街口</span>
+                <span className={styles.previewAsset}>风格 · 动漫电影感</span>
+              </aside>
+              <div className={styles.previewCanvas}>
+                <div className={styles.previewFrame}>
+                  <span>9:16</span>
+                  <div className={styles.previewSubject} aria-hidden="true" />
+                  <small>镜头 08</small>
+                </div>
+              </div>
+            </div>
+            <div className={styles.previewTimeline} aria-label="镜头时间轴">
+              <div className={styles.previewTrackLabel}>视频</div>
+              <span className={styles.previewClip}>08A</span>
+              <span className={styles.previewClip}>08B</span>
+              <span className={styles.previewClip}>08C</span>
+              <i aria-hidden="true" />
+            </div>
+          </div>
+        </section>
 
         <CommunityShowcase />
       </div>

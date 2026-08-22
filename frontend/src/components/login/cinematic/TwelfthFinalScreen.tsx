@@ -44,11 +44,11 @@ export function TwelfthFinalScreen({
           draggable={false}
           aria-hidden="true"
         />
-        <h2>把一句设定推进成可看的宇宙</h2>
-        <p>输入角色冲突或世界观 让 DramaClaw 拆成镜头节点并持续延展</p>
+        <h2>把一句设定推进成完整剧集</h2>
+        <p>输入角色冲突或世界观，让 NuomiDrama 拆成可制作、可调整的镜头节点</p>
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onStart}>
-            开启无限创作
+            开始创作
           </button>
           <div className={styles.business}>
             <button type="button" className={styles.secondary}>

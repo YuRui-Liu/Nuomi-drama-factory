@@ -7,14 +7,18 @@
   height: 100dvh;
   overflow-x: hidden;
   overflow-y: auto;
-  background: #181818;
+  background: var(--background, #0d0e10);
   scrollbar-gutter: stable;
 }
 
 .stage {
   position: relative;
   min-height: 100vh;
-  background: #181818;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    var(--background, #0d0e10);
+  background-size: 40px 40px;
   overflow-x: hidden;
   isolation: isolate;
 }
@@ -35,7 +39,7 @@
   padding: var(--login-header-height) var(--stage-x) clamp(96px, 12vh, 150px);
   display: flex;
   flex-direction: column;
-  color: #eaf2ef;
+  color: var(--foreground, #f2f4f7);
 }
 
 .stageTopBar {
@@ -216,8 +220,8 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: auto;
-  padding: 0;
+  min-height: 40px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
   color: rgba(246, 248, 255, 0.72);
@@ -321,8 +325,8 @@
   justify-content: center;
   gap: 10px;
   min-width: 0;
-  height: auto;
-  padding: 0;
+  min-height: 40px;
+  padding: 0 4px;
   border-radius: 0;
   background: transparent;
   border: 0;
@@ -1440,6 +1444,330 @@
 
   .watchRailControlNext {
     right: 8px;
+  }
+}
+
+/* NuomiDrama editorial hero ------------------------------------------------ */
+.stageTopBar {
+  min-height: 56px;
+  padding: 8px clamp(20px, 3vw, 42px);
+  background: color-mix(in srgb, var(--background, #0d0e10) 92%, transparent);
+  border-bottom-color: var(--border, #2a2f37);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.brand {
+  min-height: 40px;
+}
+
+.hero {
+  align-self: center;
+  width: min(1240px, 100%);
+  min-height: min(720px, calc(100vh - 80px));
+  display: grid;
+  grid-template-columns: minmax(0, 0.84fr) minmax(520px, 1.16fr);
+  align-items: center;
+  gap: clamp(48px, 7vw, 96px);
+  padding: clamp(64px, 10vh, 112px) 0 clamp(40px, 7vh, 72px);
+  text-align: left;
+  transform: none;
+}
+
+.heroCopy {
+  max-width: 540px;
+}
+
+.heroEyebrow {
+  margin: 0 0 18px;
+  color: var(--brand-accent, #e5ff5c);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.heroTitle {
+  min-width: 0;
+  margin: 0;
+  color: var(--foreground, #f2f4f7);
+  font-size: clamp(42px, 4.2vw, 64px);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+  text-align: left;
+  text-shadow: none;
+}
+
+.heroSubtitle {
+  max-width: 520px;
+  margin: 24px 0 0;
+  color: var(--muted-foreground, #9299a5);
+  font-size: clamp(16px, 1.25vw, 19px);
+  font-weight: 400;
+  line-height: 1.75;
+  letter-spacing: 0;
+  text-transform: none;
+  text-shadow: none;
+}
+
+.heroActions {
+  justify-content: flex-start;
+  gap: 12px;
+  margin-top: 34px;
+}
+
+.heroPrimary,
+.heroSecondary {
+  min-width: 124px;
+  min-height: 40px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.heroPrimary {
+  border: 1px solid var(--brand-accent, #e5ff5c);
+  background: var(--brand-accent, #e5ff5c);
+  color: var(--background, #0d0e10);
+}
+
+.heroPrimary::before,
+.heroSecondary::before {
+  display: none;
+}
+
+.heroPrimary:hover {
+  background: #f0ff92;
+}
+
+.heroSecondary {
+  border: 1px solid var(--border, #2a2f37);
+  background: var(--card, #14161a);
+  color: var(--foreground, #f2f4f7);
+}
+
+.heroSecondary:hover {
+  border-color: var(--muted-foreground, #9299a5);
+  color: var(--foreground, #f2f4f7);
+}
+
+.productPreview {
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid var(--border, #2a2f37);
+  border-radius: 8px;
+  background: var(--card, #14161a);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.previewToolbar {
+  min-height: 44px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border, #2a2f37);
+  color: var(--foreground, #f2f4f7);
+  font: 500 12px/1 var(--font-mono, monospace);
+}
+
+.previewStatus {
+  color: var(--success, #52d89b);
+}
+
+.previewWorkspace {
+  min-height: 390px;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+}
+
+.previewSidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 12px;
+  border-right: 1px solid var(--border, #2a2f37);
+  background: var(--popover, #1a1d22);
+}
+
+.previewSidebar strong {
+  margin: 0 4px 8px;
+  color: var(--foreground, #f2f4f7);
+  font-size: 12px;
+}
+
+.previewAsset {
+  padding: 10px;
+  border: 1px solid var(--border, #2a2f37);
+  border-radius: 6px;
+  color: var(--muted-foreground, #9299a5);
+  background: var(--card, #14161a);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.previewCanvas {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--background, #0d0e10);
+}
+
+.previewFrame {
+  position: relative;
+  width: min(172px, 52%);
+  aspect-ratio: 9 / 16;
+  overflow: hidden;
+  border: 1px solid #3b424d;
+  border-radius: 6px;
+  background:
+    linear-gradient(155deg, transparent 54%, rgba(229, 255, 92, 0.12) 55%),
+    #20242a;
+}
+
+.previewFrame > span,
+.previewFrame > small {
+  position: absolute;
+  z-index: 2;
+  padding: 3px 5px;
+  color: #f2f4f7;
+  background: rgba(13, 14, 16, 0.72);
+  font: 500 10px/1.2 var(--font-mono, monospace);
+}
+
+.previewFrame > span { top: 8px; right: 8px; }
+.previewFrame > small { left: 8px; bottom: 8px; }
+
+.previewSubject {
+  position: absolute;
+  left: 28%;
+  right: 20%;
+  bottom: -3%;
+  height: 72%;
+  border-radius: 48% 48% 8% 8%;
+  background: #363d47;
+  clip-path: polygon(24% 0, 76% 0, 88% 24%, 72% 35%, 100% 100%, 0 100%, 28% 35%, 12% 24%);
+}
+
+.previewTimeline {
+  position: relative;
+  min-height: 86px;
+  display: grid;
+  grid-template-columns: 54px repeat(3, 1fr);
+  gap: 6px;
+  padding: 16px;
+  border-top: 1px solid var(--border, #2a2f37);
+  background: var(--popover, #1a1d22);
+}
+
+.previewTrackLabel {
+  display: flex;
+  align-items: center;
+  color: var(--muted-foreground, #9299a5);
+  font: 500 10px/1 var(--font-mono, monospace);
+}
+
+.previewClip {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid #3a414b;
+  border-radius: 4px;
+  color: #cbd0d8;
+  background: #20242a;
+  font: 500 10px/1 var(--font-mono, monospace);
+}
+
+.previewTimeline i {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 51%;
+  width: 1px;
+  background: var(--brand-accent, #e5ff5c);
+}
+
+@media (max-width: 960px) {
+  .stageInner {
+    --stage-x: clamp(24px, 5vw, 56px);
+  }
+
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 44px;
+    min-height: auto;
+    padding-top: 100px;
+  }
+
+  .heroCopy {
+    max-width: 640px;
+  }
+}
+
+@media (max-width: 640px) {
+  .stageTopBar {
+    padding: 8px 16px;
+  }
+
+  .stageActions {
+    gap: 10px;
+  }
+
+  .githubStarLabel,
+  .githubStars {
+    display: none;
+  }
+
+  .hero {
+    width: 100%;
+    padding-top: 84px;
+  }
+
+  .heroTitle {
+    font-size: clamp(38px, 12vw, 50px);
+    letter-spacing: -0.04em;
+  }
+
+  .heroActions {
+    align-items: stretch;
+  }
+
+  .heroPrimary,
+  .heroSecondary {
+    flex: 1 1 0;
+    padding-inline: 12px;
+  }
+
+  .previewWorkspace {
+    min-height: 310px;
+    grid-template-columns: 112px minmax(0, 1fr);
+  }
+
+  .previewAsset {
+    padding: 8px 6px;
+    font-size: 10px;
+  }
+
+  .previewCanvas {
+    padding: 16px;
+  }
+
+  .previewFrame {
+    width: min(138px, 72%);
+  }
+
+  .previewTimeline {
+    grid-template-columns: 40px repeat(3, 1fr);
+    padding: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heroPrimary,
+  .heroSecondary,
+  .stageTopBar {
+    transition: none;
   }
 }
 

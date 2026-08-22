@@ -23,7 +23,7 @@ export function IntroRitualScreen({
   return (
     <section
       className={styles.layer}
-      aria-label="DramaClaw intro"
+      aria-label="NuomiDrama 介绍"
       onClick={onComplete}
       onWheel={onComplete}
     >

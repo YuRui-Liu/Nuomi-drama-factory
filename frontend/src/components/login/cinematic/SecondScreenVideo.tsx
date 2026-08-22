@@ -21,7 +21,7 @@ export function SecondScreenVideo({
       isActive={isActive}
       kicker="ENTER THE FRAME"
       layerBackdropOpacity={1}
-      subtitle="在 DramaClaw 中，创作不再停留在一次提示词和一次生成结果"
+      subtitle="在 NuomiDrama 中，灵感会进入可追踪、可复用的项目流程"
       title="从灵感到项目"
       videoExitProgress={videoExitProgress}
       videoOpacity={videoOpacity}
