@@ -14,8 +14,8 @@ export function BrandMark({ compact = false, className }: BrandMarkProps) {
     >
       <svg aria-hidden="true" className="size-6 shrink-0" viewBox="0 0 24 24">
         <path d="M4 19V5h4l8 10V5h4v14h-4L8 9v10H4Z" fill="currentColor" />
-        <path data-testid="nuomidrama-cut" d="M8 5h8l-2 3H6l2-3Z" fill="var(--brand-accent)" />
-        <path data-testid="nuomidrama-cut" d="M10 16h8l-2 3H8l2-3Z" fill="var(--brand-accent)" />
+        <path data-kind="edit-cut" data-testid="nuomidrama-cut" d="M8 5h8l-2 3H6l2-3Z" fill="var(--brand-accent)" />
+        <path data-kind="edit-cut" data-testid="nuomidrama-cut" d="M10 16h8l-2 3H8l2-3Z" fill="var(--brand-accent)" />
       </svg>
       {!compact ? (
         <span aria-hidden="true" className="text-[15px] tracking-[-0.02em]">
