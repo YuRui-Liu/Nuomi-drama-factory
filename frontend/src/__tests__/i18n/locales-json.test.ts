@@ -100,7 +100,7 @@ describe("locale translation files", () => {
     const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
     const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
     const legacyProductLanguage =
-      /DramaClaw|SuperTale|Xia Director|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;
+      /DramaClaw|SuperTale|Xia Director|Xia(?:Hua|Liao|Tang|Jing|Dao|Ge)|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;
 
     expect(collectStrings(zh).filter((value) => legacyProductLanguage.test(value))).toEqual([]);
     expect(collectStrings(en).filter((value) => legacyProductLanguage.test(value))).toEqual([]);

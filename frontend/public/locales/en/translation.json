@@ -3927,13 +3927,13 @@
         "multimodalRequiredBadge": "Multimodal required",
         "cogneeDescription": "Novel import and knowledge retrieval require both an understanding model and an embedding model; together they form the Cognee novel knowledge base.",
         "groups": {
-          "xiahua": "XiaHua",
-          "xialiao": "XiaLiao",
-          "xiatan": "XiaTang",
-          "xiajing": "XiaJing",
-          "xiadao": "XiaDao",
-          "xiage": "XiaGe",
-          "novelImport": "XiaLiao · Novel Knowledge Base (Cognee)"
+          "xiahua": "Creation Canvas",
+          "xialiao": "Script Import",
+          "xiatan": "Asset Center",
+          "xiajing": "Episode Production",
+          "xiadao": "Nuomi Assistant",
+          "xiage": "Visual Style",
+          "novelImport": "Script Import · Novel Knowledge Base (Cognee)"
         },
         "features": {
           "HERMES": "AI Director chat model",
@@ -4016,7 +4016,7 @@
       "configured": "Configured",
       "notConfigured": "Not configured",
       "warningIconLabel": "Reference media storage is not configured",
-      "notConfiguredImpact": "Reference media storage is not configured. Text-only flows and text-to-image usually still work; features that need to upload local reference images will fail, including XiaHua reference images, character references, identity images, image-to-image, video first frames, and image-to-video. Configure Aliyun OSS or Cloudinary.",
+      "notConfiguredImpact": "Reference media storage is not configured. Text-only flows and text-to-image usually still work; features that need to upload local reference images will fail, including canvas reference images, character references, identity images, image-to-image, video first frames, and image-to-video. Configure Aliyun OSS or Cloudinary.",
       "showSecret": "Show",
       "hideSecret": "Hide",
       "fieldsHint": "Saved values are stored in the local CE settings database; full AccessKeys are not returned. Leave saved credentials blank and enter only the fields you want to replace.",
