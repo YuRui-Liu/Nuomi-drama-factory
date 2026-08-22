@@ -92,7 +92,7 @@ export const portraitFromRefCapability: GenerationCapability = {
     const outfit = stringifyParamValue(params.outfit);
     const notes = stringifyParamValue(params.notes);
 
-    const prompt = `Create a SuperTale character identity portrait candidate for ${character}.
+    const prompt = `Create a production-ready character identity portrait candidate for ${character}.
 
 Character phase:
 - Age band: ${ageBand}.
@@ -207,7 +207,7 @@ ${nodePrompt ? `\nNode note:\n${nodePrompt}` : ""}
 
 Output requirements:
 - Keep the same face identity, age, hairstyle, body proportion, outfit palette, and production style across all cells.
-- Use a clean, readable contact-sheet layout suitable for SuperTale character assets.
+- Use a clean, readable contact-sheet layout suitable for production character assets.
 - No text labels, watermark, UI frame, or unrelated background scene.
 - If references conflict, prioritize the first reference image as identity source.`;
 

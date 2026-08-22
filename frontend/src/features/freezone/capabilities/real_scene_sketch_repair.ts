@@ -146,7 +146,7 @@ export const realSceneSketchRepairCapability: GenerationCapability = {
     const lens = stringifyParamValue(params.lens) || "35mm";
     const lighting = stringifyParamValue(params.lighting) || "昏暗市井暖光";
 
-    const prompt = `Create a repaired real-scene storyboard sketch for the current SuperTale beat.
+    const prompt = `Create a repaired real-scene storyboard sketch for the current production beat.
 
 Camera parameters:
 - shot size: ${shotType}

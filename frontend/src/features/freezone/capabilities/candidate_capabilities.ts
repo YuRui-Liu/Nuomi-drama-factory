@@ -34,8 +34,16 @@ const STYLE_PARAM = {
   ],
 };
 
+const PRODUCTION_STYLE_DESCRIPTOR =
+  "cohesive production style with consistent characters, environments, and shot-to-shot continuity";
+
+function stylePromptDescriptor(value: unknown): string {
+  const style = stringifyParamValue(value) || "supertale_production";
+  return style === "supertale_production" ? PRODUCTION_STYLE_DESCRIPTOR : style;
+}
+
 function suffix(params: Record<string, unknown>, nodePrompt?: string): string {
-  const style = stringifyParamValue(params.style) || "supertale_production";
+  const style = stylePromptDescriptor(params.style);
   const notes = stringifyParamValue(params.notes);
   return `
 
