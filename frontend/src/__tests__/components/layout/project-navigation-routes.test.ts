@@ -21,14 +21,21 @@ describe("project navigation routes", () => {
       "nav.aiAssistant",
     ]);
     expect(PROJECT_NAV_ITEMS.map((item) => item.to)).toEqual([
-      PROJECT_SECTION_ROUTES.ingest,
-      PROJECT_SECTION_ROUTES.characters,
-      PROJECT_SECTION_ROUTES.episodes,
-      PROJECT_SECTION_ROUTES.freezone,
-      PROJECT_SECTION_ROUTES.styles,
-      PROJECT_SECTION_ROUTES.tasks,
-      PROJECT_SECTION_ROUTES.assistant,
+      "/projects/$project/ingest",
+      "/projects/$project/characters",
+      "/projects/$project/episodes",
+      "/projects/$project/freezone",
+      "/projects/$project/styles",
+      "/projects/$project/tasks",
+      "/projects/$project/assistant",
     ]);
+    expect(projectSectionFromPath("/projects/demo/ingest")).toBe("ingest");
+    expect(projectSectionFromPath("/projects/demo/characters")).toBe("characters");
+    expect(projectSectionFromPath("/projects/demo/episodes/12")).toBe("episodes");
+    expect(projectSectionFromPath("/projects/demo/freezone")).toBe("freezone");
+    expect(projectSectionFromPath("/projects/demo/styles")).toBe("styles");
+    expect(projectSectionFromPath("/projects/demo/tasks")).toBe("tasks");
+    expect(projectSectionFromPath("/projects/demo/assistant")).toBe("assistant");
   });
 
   it("uses freezone as the project dashboard entry", () => {

@@ -9,6 +9,13 @@ import { Header } from "@/components/layout/header";
 const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
 const authState = vi.hoisted(() => ({ username: "local", logout: vi.fn() }));
 const resetUserSessionStateMock = vi.hoisted(() => vi.fn());
+const navigateMock = vi.hoisted(() => vi.fn());
+const episodeStoreState = vi.hoisted(() => ({
+  lastEpisodeLocationByProject: {} as Record<string, string>,
+  setLastEpisodeLocation: vi.fn(),
+  clearLastEpisodeLocation: vi.fn(),
+}));
+const projectNavState = vi.hoisted(() => ({ rememberSection: vi.fn() }));
 const routerState = vi.hoisted(() => ({
   pathname: "/",
   project: undefined as string | undefined,
@@ -28,13 +35,42 @@ vi.mock("@/lib/queries/model-gateway", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to, params: _params, ...props }: React.ComponentProps<"a"> & { to?: string; params?: unknown }) => (
-    <a href={to} {...props}>{children}</a>
-  ),
-  useNavigate: () => vi.fn(),
+  Link: ({ children, to = "", params, ...props }: React.ComponentProps<"a"> & {
+    to?: string;
+    params?: { project?: string };
+  }) => {
+    const href = params?.project
+      ? to.replace("$project", encodeURIComponent(params.project))
+      : to;
+    return <a href={href} {...props}>{children}</a>;
+  },
+  useNavigate: () => navigateMock,
   useParams: () => ({ project: routerState.project }),
   useRouterState: ({ select }: { select: (state: { location: { pathname: string } }) => string }) =>
     select({ location: { pathname: routerState.pathname } }),
+}));
+
+vi.mock("@/stores/episode-workbench-store", () => ({
+  normalizeLastEpisodeLocation: (_project: string, location: unknown) =>
+    typeof location === "string" ? location : null,
+  useEpisodeWorkbenchStore: (selector: (state: typeof episodeStoreState) => unknown) =>
+    selector(episodeStoreState),
+}));
+
+vi.mock("@/stores/project-nav-store", () => ({
+  isRememberedSection: (section: string | null) =>
+    section !== null && section !== "tasks",
+  useProjectNavStore: (selector: (state: typeof projectNavState) => unknown) =>
+    selector(projectNavState),
+}));
+
+vi.mock("@/lib/queries/projects", () => ({
+  useAllProjectSummaries: () => ({
+    data: [
+      { id: "demo", name: "Demo", status: "active" },
+      { id: "next", name: "Next", status: "active" },
+    ],
+  }),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -56,6 +92,9 @@ vi.mock("react-i18next", () => ({
         "nav.styles": "Visual styles",
         "nav.tasks": "Task center",
         "nav.aiAssistant": "Nuomi assistant",
+        "nav.creationMode": "旧模式切换",
+        "nav.xiaji": "虾集",
+        "nav.xiajiMenu": "旧制作菜单",
       })[key] ?? key,
     i18n: {
       language: "en",
@@ -110,9 +149,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   ),
 }));
 
-function renderHeader({ project }: { project?: string } = {}) {
+function renderHeader({ project, pathname }: { project?: string; pathname?: string } = {}) {
   routerState.project = project;
-  routerState.pathname = project ? `/projects/${project}/ingest` : "/";
+  routerState.pathname = pathname ?? (project ? `/projects/${project}/ingest` : "/");
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <Header />
@@ -128,6 +167,11 @@ describe("Header runtime gating", () => {
     authState.username = "local";
     authState.logout.mockReset();
     resetUserSessionStateMock.mockReset();
+    navigateMock.mockReset();
+    episodeStoreState.lastEpisodeLocationByProject = {};
+    episodeStoreState.setLastEpisodeLocation.mockReset();
+    episodeStoreState.clearLastEpisodeLocation.mockReset();
+    projectNavState.rememberSection.mockReset();
   });
 
   it("shows the NuomiDrama brand and direct project navigation", () => {
@@ -140,8 +184,42 @@ describe("Header runtime gating", () => {
       "page",
     );
     expect(screen.getAllByRole("link", { name: /Script import|Asset center|Episode production|Creation canvas|Visual styles|Task center|Nuomi assistant/ })).toHaveLength(7);
-    expect(screen.queryByText("虾画")).not.toBeInTheDocument();
-    expect(screen.queryByText("虾集")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "旧模式切换" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "旧制作菜单" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "虾集" })).not.toBeInTheDocument();
+  });
+
+  it("resolves every direct navigation link for the current project", () => {
+    renderHeader({ project: "demo" });
+
+    expect(screen.getByRole("link", { name: "Script import" })).toHaveAttribute("href", "/projects/demo/ingest");
+    expect(screen.getByRole("link", { name: "Asset center" })).toHaveAttribute("href", "/projects/demo/characters");
+    expect(screen.getByRole("link", { name: "Episode production" })).toHaveAttribute("href", "/projects/demo/episodes");
+    expect(screen.getByRole("link", { name: "Creation canvas" })).toHaveAttribute("href", "/projects/demo/freezone");
+    expect(screen.getByRole("link", { name: "Visual styles" })).toHaveAttribute("href", "/projects/demo/styles");
+    expect(screen.getByRole("link", { name: "Task center" })).toHaveAttribute("href", "/projects/demo/tasks");
+    expect(screen.getByRole("link", { name: "Nuomi assistant" })).toHaveAttribute("href", "/projects/demo/assistant");
+  });
+
+  it("keeps the current section when switching projects", () => {
+    renderHeader({ project: "demo", pathname: "/projects/demo/tasks" });
+
+    fireEvent.click(screen.getByText("Next"));
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: "/projects/$project/tasks",
+      params: { project: "next" },
+    });
+  });
+
+  it("restores the remembered episode deep link", () => {
+    episodeStoreState.lastEpisodeLocationByProject.demo =
+      "/projects/demo/episodes/12?group=ng-02#video";
+    renderHeader({ project: "demo" });
+
+    expect(screen.getByRole("link", { name: "Episode production" })).toHaveAttribute(
+      "href",
+      "/projects/demo/episodes/12?group=ng-02#video",
+    );
   });
 
   it("renders logout in the account panel when runtime requires auth", async () => {
