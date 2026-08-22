@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Download, MessageCircle, Mouse } from "lucide-react";
+import { ChevronDown, Download, MessageCircle } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Brand } from "@/components/login/login-stage";
-import Aurora from "@/components/react-bits/aurora";
-import SplitText from "@/components/react-bits/split-text";
-import { PRODUCT_MANUAL_URL } from "@/lib/product-manual";
+import { Brand, LoginStageContent } from "@/components/login/login-stage";
 import {
   FALLBACK_DOWNLOAD_URL,
   detectDesktopPlatform,
@@ -249,101 +246,10 @@ export function LoginCinematicHeader({
 }
 
 export function LoginCinematicHero({
-  heroExitProgress,
   onStart,
 }: {
   heroExitProgress: number;
   onStart: () => void;
 }) {
-  const { t } = useTranslation();
-  const scrollCueExitStyle =
-    heroExitProgress > 0.002
-      ? ({
-          opacity: Math.max(0, 1 - heroExitProgress * 7),
-          filter: `blur(${heroExitProgress * 8}px)`,
-        } satisfies CSSProperties)
-      : undefined;
-  const headerStyle =
-    heroExitProgress > 0.002
-      ? ({
-          "--stage-header-opacity": Math.max(0, 1 - heroExitProgress * 3.2),
-          "--stage-header-offset": `${heroExitProgress * -18}px`,
-          "--stage-header-blur": `${heroExitProgress * 8}px`,
-          pointerEvents: heroExitProgress < 0.22 ? "auto" : "none",
-        } as CSSProperties)
-      : undefined;
-
-  return (
-    <>
-      <Aurora
-        className={layout.heroAurora}
-        colorStops={["#06B6D4", "#A855F7", "#5227FF"]}
-        speed={0.5}
-      />
-
-      <div className={`${styles.stageInner} ${layout.stageInner}`}>
-        <LoginCinematicHeader style={headerStyle} />
-
-        <div className={`${styles.hero} ${layout.hero}`}>
-          <SplitText
-            tag="h1"
-            text={t("auth.stage.headlines.createUniverse")}
-            className={`${styles.heroTitle} ${layout.heroTitle}`}
-            delay={70}
-            duration={0.8}
-            ease="power3.out"
-            splitType="chars"
-            from={{ opacity: 0, y: 36 }}
-            to={{ opacity: 1, y: 0 }}
-            threshold={0.1}
-            rootMargin="-100px"
-            textAlign="center"
-            initiallyHidden
-          />
-          <p className={`${styles.heroSubtitle} ${layout.heroSubtitle}`}>
-            <span className={styles.heroSubtitlePrefix}>
-              {t("auth.stage.subtitlePrefix")}
-            </span>
-            <span className={styles.heroSubtitleBrand}>
-              {t("auth.stage.subtitleBrand")}
-            </span>
-            <span className={styles.heroSubtitleSuffix}>
-              {t("auth.stage.subtitleSuffix")}
-            </span>
-          </p>
-          <div className={`${styles.heroActions} ${layout.heroActions}`}>
-            <button
-              type="button"
-              className={`${styles.heroPrimary} ${layout.heroPrimary}`}
-              onClick={onStart}
-            >
-              让灵感发生
-            </button>
-            <a
-              className={`${styles.heroSecondary} ${layout.heroSecondary}`}
-              href={PRODUCT_MANUAL_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={t("auth.openManual")}
-              aria-label={t("auth.openManual")}
-            >
-              {t("auth.learnMore")}
-            </a>
-          </div>
-        </div>
-
-        <div
-          className={layout.scrollCue}
-          style={scrollCueExitStyle}
-          aria-hidden="true"
-        >
-          <div className={layout.scrollCueInner}>
-            <Mouse className={layout.scrollMouseIcon} />
-            <span>向下滑动</span>
-            <ChevronDown className={layout.scrollArrowIcon} />
-          </div>
-        </div>
-      </div>
-    </>
-  );
+  return <LoginStageContent onStart={onStart} />;
 }

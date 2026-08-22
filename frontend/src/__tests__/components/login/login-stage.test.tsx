@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -26,8 +27,46 @@ vi.mock("@/components/react-bits/split-text", () => ({
     <Tag className={className}>{text}</Tag>
   ),
 }));
+vi.mock("@/components/react-bits/aurora", () => ({ default: () => null }));
+vi.mock("@/hooks/use-reduced-motion", () => ({ useReducedMotion: () => true }));
+vi.mock("lenis", () => ({
+  default: class {
+    scroll = 0;
+    on() {}
+    raf() {}
+    scrollTo() {}
+    destroy() {}
+  },
+}));
+vi.mock("gsap", () => ({
+  gsap: { registerPlugin: vi.fn(), ticker: { add: vi.fn(), remove: vi.fn(), lagSmoothing: vi.fn() } },
+}));
+vi.mock("gsap/ScrollTrigger", () => ({
+  ScrollTrigger: {
+    create: () => ({ kill: vi.fn() }),
+    refresh: vi.fn(),
+    update: vi.fn(),
+    scrollerProxy: vi.fn(),
+  },
+}));
+vi.mock("@/components/login/login-modal", () => ({
+  LoginModal: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="登录">登录</div> : null),
+}));
+
+vi.mock("@/components/login/cinematic/SecondScreenVideo", () => ({ SecondScreenVideo: () => null }));
+vi.mock("@/components/login/cinematic/ThirdScreenVideo", () => ({ ThirdScreenVideo: () => null }));
+vi.mock("@/components/login/cinematic/FourthScreen", () => ({ FourthScreen: () => null }));
+vi.mock("@/components/login/cinematic/FifthScreenVideo", () => ({ FifthScreenVideo: () => null }));
+vi.mock("@/components/login/cinematic/SixthShowcaseScreen", () => ({ SixthShowcaseScreen: () => null }));
+vi.mock("@/components/login/cinematic/SeventhPipelineScreen", () => ({ SeventhPipelineScreen: () => null }));
+vi.mock("@/components/login/cinematic/EighthControlScreen", () => ({ EighthControlScreen: () => null }));
+vi.mock("@/components/login/cinematic/NinthWorkflowScreen", () => ({ NinthWorkflowScreen: () => null }));
+vi.mock("@/components/login/cinematic/TenthTestimonialsScreen", () => ({ TenthTestimonialsScreen: () => null }));
+vi.mock("@/components/login/cinematic/EleventhFaqScreen", () => ({ EleventhFaqScreen: () => null }));
+vi.mock("@/components/login/cinematic/TwelfthFinalScreen", () => ({ TwelfthFinalScreen: () => null }));
 
 import { LoginStageContent } from "@/components/login/login-stage";
+import { LoginCinematicPage } from "@/components/login/cinematic/LoginCinematicPage";
 
 describe("LoginStageContent", () => {
   it("presents NuomiDrama as a professional production workspace", () => {
@@ -49,5 +88,28 @@ describe("LoginStageContent", () => {
     expect(screen.getByRole("link", { name: "打开产品手册" })).toHaveAttribute("href");
     expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute("href", "https://github.com/dramaclaw/dramaclaw");
     expect(screen.getByRole("button", { name: "打开商务联系" })).toBeInTheDocument();
+  });
+});
+
+describe("the real cinematic login entry", () => {
+  it("mounts the editorial workspace hero and opens the existing login modal", () => {
+    render(<LoginCinematicPage />);
+
+    expect(screen.getByRole("heading", { name: "从故事到成片，一站完成" })).toBeInTheDocument();
+    expect(screen.getByLabelText("产品工作台预览")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "让灵感发生" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+    expect(screen.getByRole("dialog", { name: "登录" })).toBeInTheDocument();
+  });
+
+  it("does not retain the retired HUD wordmark or final-mark image", () => {
+    const sources = [
+      "src/components/login/cinematic/IntroRitualScreen.tsx",
+      "src/components/login/cinematic/TwelfthFinalScreen.tsx",
+      "src/components/login/cinematic/LoginCinematicHero.tsx",
+    ].map((path) => readFileSync(path, "utf8")).join("\n");
+
+    expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);
   });
 });

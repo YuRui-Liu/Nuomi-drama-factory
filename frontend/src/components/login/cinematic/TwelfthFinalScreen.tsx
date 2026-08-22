@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { BrandMark } from "@/components/brand/brand-mark";
 import LightRays from "@/components/login/light-rays";
 import { LoginCinematicHeader } from "./LoginCinematicHero";
 import { businessWechatQrUrl } from "./media";
@@ -37,13 +38,7 @@ export function TwelfthFinalScreen({
       />
       <LoginCinematicHeader className={styles.header} />
       <div className={styles.content}>
-        <img
-          className={styles.mark}
-          src="/login-cinematic/final-mark.png"
-          alt=""
-          draggable={false}
-          aria-hidden="true"
-        />
+        <BrandMark compact className={`${styles.mark} [&_svg]:size-full`} />
         <h2>把一句设定推进成完整剧集</h2>
         <p>输入角色冲突或世界观，让 NuomiDrama 拆成可制作、可调整的镜头节点</p>
         <div className={styles.actions}>

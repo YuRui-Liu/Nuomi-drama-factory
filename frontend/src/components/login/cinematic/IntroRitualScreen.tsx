@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { BrandMark } from "@/components/brand/brand-mark";
 import styles from "./intro-ritual-screen.module.css";
 
 export function IntroRitualScreen({
@@ -30,20 +31,14 @@ export function IntroRitualScreen({
       <div className={styles.aperture} aria-hidden="true" />
       <div className={styles.scanline} aria-hidden="true" />
       <div className={styles.focusFrame} aria-hidden="true">
-        <div className={styles.hudTopLeft}>A001_C012 · DRAMACLAW</div>
+        <div className={styles.hudTopLeft}>A001_C012 · NUOMIDRAMA</div>
         <div className={styles.hudTopRight}>TC 00:00:00:10</div>
         <div className={styles.hudBottomLeft}>
           <span className={styles.recDot} />
           REC
         </div>
         <div className={styles.hudBottomRight}>4K · 24FPS</div>
-        <img
-          className={styles.brandMark}
-          src="/login-cinematic/final-mark.png"
-          alt=""
-          aria-hidden="true"
-          draggable={false}
-        />
+        <BrandMark compact className={`${styles.brandMark} [&_svg]:size-full`} />
       </div>
       <div className={styles.focusCore} aria-hidden="true" />
       <div className={styles.shutter} aria-hidden="true" />
