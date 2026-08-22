@@ -30,7 +30,14 @@ function collectPlaceholders(
     );
     return { [prefix]: [...new Set(placeholders)].sort() };
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  if (Array.isArray(value)) {
+    return Object.fromEntries(
+      value.flatMap((child, index) =>
+        Object.entries(collectPlaceholders(child, prefix ? `${prefix}.${index}` : `${index}`)),
+      ),
+    );
+  }
+  if (!value || typeof value !== "object") return {};
 
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
@@ -102,6 +109,15 @@ describe("locale translation files", () => {
   it("deduplicates and sorts interpolation placeholders", () => {
     expect(collectPlaceholders({ sample: "{{ b }} {{a}} {{a}}" })).toEqual({
       sample: ["a", "b"],
+    });
+  });
+
+  it("collects interpolation placeholders from array string leaves", () => {
+    expect(
+      collectPlaceholders({ waitingResponses: ["Waiting for {{name}}", "Done"] }),
+    ).toEqual({
+      "waitingResponses.0": ["name"],
+      "waitingResponses.1": [],
     });
   });
 
