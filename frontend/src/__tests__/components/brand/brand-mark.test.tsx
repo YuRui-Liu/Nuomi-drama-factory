@@ -16,7 +16,7 @@ describe("BrandMark", () => {
     expect(editCuts).toHaveLength(2);
     for (const editCut of editCuts) {
       expect(editCut).toHaveAttribute("data-kind", "edit-cut");
-      expect(editCut).toHaveAttribute("fill", "var(--brand-accent)");
+      expect(editCut).toHaveAttribute("fill", "var(--brand-accent, #e5ff5c)");
     }
     expect(container.querySelector("img")).not.toBeInTheDocument();
     expect(screen.getByText("Nuomi")).toHaveClass("font-semibold");
@@ -36,6 +36,7 @@ describe("NuomiDrama page metadata", () => {
   const page = new DOMParser().parseFromString(html, "text/html");
 
   it("uses the NuomiDrama brand in search and social metadata", () => {
+    expect(page.documentElement.getAttribute("lang")).toBe("zh-CN");
     expect(page.title).toContain("NuomiDrama");
     expect(page.querySelector('meta[name="description"]')?.getAttribute("content")).toContain("NuomiDrama");
     expect(page.querySelector('meta[property="og:site_name"]')?.getAttribute("content")).toContain("NuomiDrama");
@@ -43,10 +44,11 @@ describe("NuomiDrama page metadata", () => {
     expect(page.querySelector('meta[property="og:description"]')?.getAttribute("content")).toContain("NuomiDrama");
     expect(page.querySelector('meta[name="twitter:title"]')?.getAttribute("content")).toContain("NuomiDrama");
     expect(page.querySelector('meta[name="twitter:description"]')?.getAttribute("content")).toContain("NuomiDrama");
+    expect(page.querySelector('meta[name="twitter:card"]')?.getAttribute("content")).toBe("summary");
     expect(html).not.toMatch(/DramaClaw|SuperTale/);
   });
 
   it("preserves the internal storage compatibility key", () => {
-    expect(html).toContain('localStorage.getItem("supertale-app")');
+    expect(html).toMatch(/localStorage\.getItem\(\s*["']supertale-app["']\s*\)/);
   });
 });
