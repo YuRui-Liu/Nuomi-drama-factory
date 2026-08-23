@@ -111,7 +111,7 @@ type NormalizedDirectorSource = {
   isManifestSourceFallback?: boolean;
 };
 
-interface ThreeDDirectorDialogProps {
+export interface ThreeDDirectorDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   manifest: DirectorStageManifest | null;

@@ -20,10 +20,8 @@ import {
   type BeatBackgroundAnchorsData,
   type PoolImage,
 } from "@/lib/queries/sketches";
-import {
-  ThreeDDirectorDialog,
-  type ThreeDDirectorCaptureMeta,
-} from "@/features/viewer-kit/three-d/ThreeDDirectorDialog";
+import { LazyThreeDDirectorDialog as ThreeDDirectorDialog } from "@/features/viewer-kit/three-d/LazyThreeDDirectorDialog";
+import type { ThreeDDirectorCaptureMeta } from "@/features/viewer-kit/three-d/ThreeDDirectorDialog";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
 import { useCharacters } from "@/lib/queries/characters";
 import { useEpisodeDetail } from "@/lib/queries/episodes";

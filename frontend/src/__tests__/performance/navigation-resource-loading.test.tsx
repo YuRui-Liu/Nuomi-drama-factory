@@ -87,4 +87,36 @@ describe("navigation resource loading", () => {
       /^\s*import\s+\{\s*VersionUpdateDialog\s*\}\s+from\s+["']@\/features\/version-update\/VersionUpdateDialog["']/m,
     );
   });
+
+  it("routes every production 3D director entry through the lazy wrapper", () => {
+    const entrypoints = [
+      "src/components/assets/scenes-panel.tsx",
+      "src/components/episode/beat-workbench/sketch-section.tsx",
+      "src/components/episode/beat-workbench/render-section.tsx",
+      "src/features/canvas/nodes/ImageGenNode.tsx",
+      "src/features/canvas/nodes/SkillNode.tsx",
+      "src/features/canvas/nodes/UploadNode.tsx",
+      "src/features/canvas/nodes/ThreeDWorldNode.tsx",
+      "src/features/canvas/ui/CanvasHistoryAssetsModal.tsx",
+    ];
+
+    for (const entrypoint of entrypoints) {
+      const source = readSource(entrypoint);
+      expect(source, entrypoint).not.toMatch(
+        /^\s*import(?!\s+type\b)[^\r\n]*["']@\/features\/viewer-kit\/three-d\/ThreeDDirectorDialog["']/m,
+      );
+      expect(source, entrypoint).toContain("@/features/viewer-kit/three-d/LazyThreeDDirectorDialog");
+    }
+  });
+
+  it("loads the 3D director implementation only through React.lazy", () => {
+    const wrapper = readSource("src/features/viewer-kit/three-d/LazyThreeDDirectorDialog.tsx");
+
+    expect(wrapper).toMatch(/lazy\(\(\)\s*=>\s*import\([\s\S]*ThreeDDirectorDialog/);
+    expect(wrapper).toMatch(/import\s+type\s+\{\s*ThreeDDirectorDialogProps\s*\}/);
+    expect(wrapper).toMatch(/if\s*\(!open\)\s*return\s+null/);
+    expect(wrapper).not.toContain("<Suspense fallback={null}>");
+    expect(wrapper).toMatch(/role=["']status["']/);
+    expect(wrapper).toMatch(/aria-live=["']polite["']/);
+  });
 });
