@@ -8,7 +8,7 @@ grid.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -40,6 +40,7 @@ from novelvideo.narrative_groups.references import (
 from novelvideo.narrative_groups.service import (
     advance_revision,
     ensure_groups,
+    load_group_video_prompt_manifest,
     rebuild_groups,
     rollback_stage_revision,
     reserve_video_revision,
@@ -261,6 +262,129 @@ def _serialize_reference_preview(
     }
 
 
+_PROMPT_REVIEW_SECRET_KEYS = (
+    "api_key", "authorization", "credential", "secret", "workflow_json",
+)
+_SAFE_INPUT_SUMMARY_KEYS = {
+    "beat_ids", "mode", "duration_seconds", "aspect_ratio", "resolution",
+    "first_frame_sha256", "last_frame_sha256",
+}
+
+
+def _manifest_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    dump = getattr(value, "model_dump", None)
+    return dict(dump(mode="json")) if callable(dump) else {}
+
+
+def _safe_prompt_review_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            lowered = key.lower()
+            if any(secret in lowered for secret in _PROMPT_REVIEW_SECRET_KEYS):
+                continue
+            if lowered.endswith("_path") or lowered.endswith("_paths"):
+                continue
+            sanitized = _safe_prompt_review_value(item)
+            if sanitized is not None:
+                result[key] = sanitized
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            sanitized
+            for item in value
+            if (sanitized := _safe_prompt_review_value(item)) is not None
+        ]
+    if isinstance(value, str) and Path(value).is_absolute():
+        return None
+    return value
+
+
+def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> list[str]:
+    summary = _manifest_mapping(entry.get("input_summary"))
+    beat_ids = [str(value) for value in summary.get("beat_ids") or () if str(value)]
+    if beat_ids:
+        return beat_ids
+    segment_id = str(segment.get("segment_id") or "").strip()
+    if segment_id:
+        return [part for part in segment_id.split("--") if part]
+    beat_number = segment.get("beat_number")
+    return [f"beat-{beat_number}"] if beat_number is not None else []
+
+
+def _review_label(beat_ids: list[str]) -> str:
+    labels = []
+    for beat_id in beat_ids:
+        suffix = beat_id[5:] if beat_id.lower().startswith("beat-") else beat_id
+        labels.append(f"Beat {suffix}")
+    return " → ".join(labels)
+
+
+def _serialize_prompt_review(
+    project: str,
+    project_dir: Path,
+    manifest: Mapping[str, Any],
+    stage: Any,
+) -> dict[str, Any]:
+    units = []
+    for raw_entry in manifest.get("entries") or ():
+        entry = _manifest_mapping(raw_entry)
+        segment = _manifest_mapping(entry.get("segment"))
+        summary = _manifest_mapping(entry.get("input_summary"))
+        plan = _manifest_mapping(entry.get("director_plan"))
+        beat_ids = _review_beat_ids(entry, segment)
+        first_frame = str(segment.get("first_frame") or "")
+        last_frame = str(segment.get("last_frame") or "")
+        mode = str(
+            summary.get("mode")
+            or plan.get("mode")
+            or getattr(stage, "actual_mode", "")
+            or ("fl2va" if last_frame else "i2va")
+        )
+        duration = (
+            summary.get("duration_seconds")
+            or entry.get("actual_duration_seconds")
+            or segment.get("duration_seconds")
+            or 0
+        )
+        safe_summary = {
+            key: value
+            for key, value in summary.items()
+            if key in _SAFE_INPUT_SUMMARY_KEYS
+        }
+        units.append({
+            "beat_ids": beat_ids,
+            "label": _review_label(beat_ids),
+            "mode": mode,
+            "duration_seconds": duration,
+            "first_frame_url": _asset_url(project, project_dir, first_frame),
+            "last_frame_url": _asset_url(project, project_dir, last_frame),
+            "director_plan": (
+                _safe_prompt_review_value(plan) if entry.get("director_plan") is not None else None
+            ),
+            "final_prompt": str(segment.get("prompt") or ""),
+            "prompt_profile": (
+                _safe_prompt_review_value(_manifest_mapping(entry.get("prompt_profile")))
+                if entry.get("prompt_profile") is not None else None
+            ),
+            "quality_report": (
+                _safe_prompt_review_value(_manifest_mapping(entry.get("quality_report")))
+                if entry.get("quality_report") is not None else None
+            ),
+            "input_summary": _safe_prompt_review_value(safe_summary),
+            "workflow": str(entry.get("workflow_id") or manifest.get("workflow_id") or ""),
+            "model": str(entry.get("model") or manifest.get("model") or getattr(stage, "actual_model", "")),
+            "provider": str(getattr(stage, "actual_provider", "") or ""),
+            "provider_task_id": str(
+                entry.get("provider_task_id") or manifest.get("provider_task_id") or ""
+            ),
+        })
+    return {"units": units}
+
+
 @router.get("/projects/{project}/episodes/{episode}/narrative-groups")
 async def list_narrative_groups(
     project: str,
@@ -269,6 +393,35 @@ async def list_narrative_groups(
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     return {"ok": True, "data": _serialize(project, resolved.project_dir, groups)}
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/video/prompts"
+)
+async def get_group_video_prompts(
+    project: str,
+    episode: int,
+    group_id: str,
+    user: dict = Depends(get_api_user),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    try:
+        manifest, stage = load_group_video_prompt_manifest(
+            resolved.project_dir, episode, group_id
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Video prompt manifest not found") from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Video prompt manifest is invalid") from exc
+    return {
+        "ok": True,
+        "data": _serialize_prompt_review(
+            project, resolved.project_dir, manifest, stage
+        ),
+    }
 
 
 @router.post("/projects/{project}/episodes/{episode}/narrative-groups/rebuild")

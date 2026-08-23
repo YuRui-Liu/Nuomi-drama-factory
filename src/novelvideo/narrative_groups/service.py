@@ -15,7 +15,15 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 import portalocker
 
-from .models import CellMapping, GridLayout, GroupStageState, NarrativeGroup, StageName
+from .models import (
+    CellMapping,
+    GridLayout,
+    GroupStageState,
+    NarrativeGroup,
+    StageName,
+    VideoPlan,
+    VideoPlanUnit,
+)
 
 SIDECAR_VERSION = 1
 _SIDECAR_LOCKS: dict[str, threading.RLock] = {}
@@ -53,6 +61,10 @@ def _sidecar_guard(project_dir: str | Path, episode: int):
 def layout_for_group(count: int) -> GridLayout:
     if count < 1 or count > 9:
         raise ValueError("a narrative group must contain between 1 and 9 beats")
+    if count == 1:
+        return GridLayout(rows=1, columns=1, capacity=1)
+    if count == 2:
+        return GridLayout(rows=1, columns=2, capacity=2)
     if count <= 4:
         return GridLayout(rows=2, columns=2, capacity=4)
     if count <= 6:
@@ -83,6 +95,94 @@ def _continuity_key(beat: Any) -> tuple[str, str]:
     return (
         value("scene_id", "scene", "location", "scene_name"),
         value("time_of_day", "scene_time", "time", "time_label"),
+    )
+
+
+def _beat_duration(beat: Any) -> float:
+    for name in ("duration_seconds", "video_duration", "duration"):
+        raw = beat.get(name) if isinstance(beat, Mapping) else getattr(beat, name, None)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 5.0
+
+
+def _derive_video_plan(
+    group: NarrativeGroup,
+    beat_by_id: Mapping[str, Any],
+    partitions: Iterable[Iterable[str]],
+    *,
+    revision: int,
+    source: str,
+) -> VideoPlan:
+    units = []
+    for index, raw_ids in enumerate(partitions, start=1):
+        beat_ids = tuple(str(value) for value in raw_ids)
+        duration = sum(_beat_duration(beat_by_id.get(beat_id)) for beat_id in beat_ids)
+        pair = len(beat_ids) == 2
+        units.append(
+            VideoPlanUnit(
+                id=f"unit-{index:02d}",
+                beat_ids=beat_ids,
+                mode="fl2va" if pair else "i2va",
+                duration_seconds=duration,
+                reason=(
+                    f"{source}_adjacent_pair" if pair else f"{source}_singleton"
+                ),
+            )
+        )
+    return VideoPlan(
+        revision=revision,
+        source=source,
+        units=tuple(units),
+        total_duration_seconds=sum(unit.duration_seconds for unit in units),
+    )
+
+
+def _recommended_video_plan(
+    group: NarrativeGroup, beat_by_id: Mapping[str, Any]
+) -> VideoPlan:
+    partitions: list[tuple[str, ...]] = []
+    index = 0
+    pair_turn = True
+    while index < len(group.beat_ids):
+        current = group.beat_ids[index]
+        if pair_turn and index + 1 < len(group.beat_ids):
+            following = group.beat_ids[index + 1]
+            if (
+                _beat_duration(beat_by_id.get(current))
+                + _beat_duration(beat_by_id.get(following))
+                <= 10
+            ):
+                partitions.append((current, following))
+                index += 2
+                pair_turn = False
+                continue
+        partitions.append((current,))
+        index += 1
+        pair_turn = True
+    return _derive_video_plan(
+        group,
+        beat_by_id,
+        partitions,
+        revision=1,
+        source="recommended",
+    )
+
+
+def _has_valid_video_plan(group: NarrativeGroup) -> bool:
+    plan = group.video_plan
+    return bool(
+        plan.revision > 0
+        and plan.units
+        and all(len(unit.beat_ids) in {1, 2} for unit in plan.units)
+        and tuple(
+            beat_id for unit in plan.units for beat_id in unit.beat_ids
+        )
+        == group.beat_ids
     )
 
 
@@ -118,7 +218,11 @@ def group_beats(beats: Iterable[Any]) -> list[NarrativeGroup]:
                 ),
             )
         )
-    return groups
+    beat_by_id = {_beat_id(beat): beat for beat in source}
+    return [
+        replace(group, video_plan=_recommended_video_plan(group, beat_by_id))
+        for group in groups
+    ]
 
 
 def sidecar_path(project_dir: str | Path, episode: int) -> Path:
@@ -150,12 +254,33 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         "render": GroupStageState(),
         "video": GroupStageState(),
     }
+    raw_plan = dict(data.get("video_plan") or {})
+    plan_units = tuple(
+        VideoPlanUnit(
+            id=str(item.get("id") or f"unit-{index:02d}"),
+            beat_ids=tuple(str(value) for value in item.get("beat_ids") or ()),
+            mode=str(item.get("mode") or "i2va"),
+            duration_seconds=float(item.get("duration_seconds") or 0),
+            reason=str(item.get("reason") or ""),
+        )
+        for index, item in enumerate(raw_plan.get("units") or (), start=1)
+    )
+    video_plan = VideoPlan(
+        revision=int(raw_plan.get("revision") or 0),
+        source=str(raw_plan.get("source") or "recommended"),
+        units=plan_units,
+        total_duration_seconds=float(
+            raw_plan.get("total_duration_seconds")
+            or sum(unit.duration_seconds for unit in plan_units)
+        ),
+    )
     return NarrativeGroup(
         id=str(data["id"]),
         ordinal=int(data["ordinal"]),
         beat_ids=tuple(str(value) for value in data["beat_ids"]),
         layout=GridLayout(**layout),
         cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
+        video_plan=video_plan,
         stages=stages or default_stages,
         errors=tuple(data.get("errors") or ()),
     )
@@ -173,11 +298,26 @@ def load_groups(project_dir: str | Path, episode: int) -> list[NarrativeGroup]:
 
 
 def ensure_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:
+    source = list(beats)
     with _sidecar_guard(project_dir, episode):
         groups = load_groups(project_dir, episode)
         if groups:
-            return groups
-        groups = group_beats(beats)
+            beat_by_id = {_beat_id(beat): beat for beat in source}
+            migrated = [
+                (
+                    group
+                    if _has_valid_video_plan(group)
+                    else replace(
+                        group,
+                        video_plan=_recommended_video_plan(group, beat_by_id),
+                    )
+                )
+                for group in groups
+            ]
+            if migrated != groups:
+                save_groups(project_dir, episode, migrated)
+            return migrated
+        groups = group_beats(source)
         save_groups(project_dir, episode, groups)
         return groups
 
@@ -195,10 +335,102 @@ def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) 
                 and old.cell_to_beat == group.cell_to_beat
             )
             rebuilt.append(
-                replace(group, stages=old.stages, errors=old.errors) if unchanged else group
+                (
+                    replace(
+                        group,
+                        video_plan=(
+                            old.video_plan
+                            if old.video_plan.revision > 0 and old.video_plan.units
+                            else group.video_plan
+                        ),
+                        stages=old.stages,
+                        errors=old.errors,
+                    )
+                    if unchanged
+                    else group
+                )
             )
         save_groups(project_dir, episode, rebuilt)
         return rebuilt
+
+
+def update_video_plan(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    beats: Iterable[Any],
+    *,
+    expected_revision: int,
+    units: Iterable[Mapping[str, Any]],
+) -> NarrativeGroup:
+    source = list(beats)
+    beat_by_id = {_beat_id(beat): beat for beat in source}
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        if group.video_plan.revision != int(expected_revision):
+            raise RuntimeError("narrative group video plan revision is stale")
+        video_stage = group.stages.get("video", GroupStageState())
+        if video_stage.status in {"queued", "running"}:
+            raise RuntimeError(
+                f"cannot update video plan while video stage is {video_stage.status}"
+            )
+
+        partitions = []
+        for raw_unit in units:
+            beat_ids = tuple(str(value) for value in raw_unit.get("beat_ids") or ())
+            if len(beat_ids) not in {1, 2}:
+                raise ValueError("each video plan unit must contain one or two beats")
+            partitions.append(beat_ids)
+        flattened = tuple(beat_id for unit in partitions for beat_id in unit)
+        if flattened != group.beat_ids:
+            raise ValueError(
+                "video plan units must form a complete ordered partition"
+            )
+        positions = {beat_id: index for index, beat_id in enumerate(group.beat_ids)}
+        if any(
+            len(unit) == 2 and positions[unit[1]] != positions[unit[0]] + 1
+            for unit in partitions
+        ):
+            raise ValueError("paired video plan beats must be adjacent")
+
+        plan = _derive_video_plan(
+            group,
+            beat_by_id,
+            partitions,
+            revision=group.video_plan.revision + 1,
+            source="manual",
+        )
+        current = group.stages.get("video", GroupStageState())
+        invalidated = replace(
+            current,
+            status="pending",
+            grid_asset="",
+            cell_assets=(),
+            video_asset="",
+            manifest_asset="",
+            original_audio_path="",
+            dialogue_stem_path="",
+            ambience_stem_path="",
+            dialogue_stem_status="not_requested",
+            ambience_stem_status="not_requested",
+            error="",
+            actual_provider="",
+            actual_model="",
+            actual_mode="",
+            created_at="",
+        )
+        stages = dict(group.stages)
+        stages["video"] = invalidated
+        updated_group = replace(group, video_plan=plan, stages=stages)
+        updated = [
+            updated_group if item.id == group_id else item
+            for item in groups
+        ]
+        save_groups(project_dir, episode, updated)
+        return updated_group
 
 
 def advance_revision(
@@ -273,6 +505,7 @@ def reserve_video_revision(
     group_id: str,
     *,
     expected_revision: int,
+    expected_plan_revision: int | None = None,
 ) -> tuple[NarrativeGroup, VideoRevisionReservation]:
     """Atomically reserve the next video revision while retaining rollback data.
 
@@ -289,6 +522,11 @@ def reserve_video_revision(
             if group.id != group_id:
                 updated.append(group)
                 continue
+            if (
+                expected_plan_revision is not None
+                and group.video_plan.revision != int(expected_plan_revision)
+            ):
+                raise RuntimeError("narrative group video plan revision is stale")
             current = group.stages.get("video", GroupStageState())
             if current.revision != int(expected_revision):
                 raise RuntimeError("narrative group video revision is stale")
@@ -561,8 +799,35 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
                 "cell_to_beat": [item.__dict__ for item in group.cell_to_beat],
                 "beat_ids": list(group.beat_ids),
                 "layout": group.layout.__dict__,
+                "video_plan": group.video_plan.to_dict(),
             }
     raise KeyError(group_id)
+
+
+def load_group_video_prompt_manifest(
+    project_dir: str | Path, episode: int, group_id: str
+) -> tuple[dict[str, Any], GroupStageState]:
+    """Load the current video manifest without trusting a client-supplied path."""
+    root = Path(project_dir).resolve()
+    group = next(
+        (item for item in load_groups(root, episode) if item.id == group_id), None
+    )
+    if group is None:
+        raise KeyError(group_id)
+    stage = group.stages.get("video", GroupStageState())
+    stored = str(stage.manifest_asset or "").strip()
+    if not stored:
+        raise FileNotFoundError("narrative group video manifest is unavailable")
+    candidate = Path(stored)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        raise FileNotFoundError("narrative group video manifest is unavailable")
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+        raise ValueError("narrative group video manifest is invalid")
+    return payload, stage
 
 
 def update_video_manifest_dialogue_source(

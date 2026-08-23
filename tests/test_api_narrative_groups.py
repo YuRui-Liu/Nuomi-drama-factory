@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -833,3 +834,149 @@ def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(monkeypa
     from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
     manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
     assert manifest.entries[0].dialogue_source.value == "external_tts"
+
+
+def _seed_prompt_review_manifest(tmp_path: Path, payload: dict) -> Path:
+    manifest = tmp_path / "videos" / "prompt-review.manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path,
+        1,
+        "ng-01",
+        "video",
+        expected_revision=1,
+        status="completed",
+        manifest_asset=str(manifest),
+        actual_provider="runninghub",
+        actual_model="runninghub:minimax-h3",
+        actual_mode="fl2va",
+    )
+    return manifest
+
+
+def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    first = tmp_path / "frames" / "beat-1.png"
+    last = tmp_path / "frames" / "beat-2.png"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    last.write_bytes(b"last")
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": "workflow-136",
+        "provider_task_id": "task-42",
+        "api_key": "manifest-secret",
+        "workflow_json": {"authorization": "Bearer secret"},
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1--beat-2",
+                "beat_number": 1,
+                "prompt": "the exact submitted prompt",
+                "duration_seconds": 8.5,
+                "first_frame": str(first),
+                "last_frame": str(last),
+            },
+            "workflow_id": "workflow-136",
+            "provider_task_id": "task-42",
+            "director_plan": {
+                "mode": "fl2va",
+                "shots": [{"action": "camera tracks quickly to the locked end pose"}],
+                "credential": "must-not-leak",
+                "source_path": str(tmp_path / "private" / "plan.json"),
+            },
+            "prompt_profile": {
+                "id": "minimax-h3-director", "version": 4, "compiler_version": 1,
+            },
+            "quality_report": {"passed": True, "issues": []},
+            "input_summary": {
+                "beat_ids": ["beat-1", "beat-2"],
+                "mode": "fl2va",
+                "duration_seconds": 8.5,
+                "first_frame_sha256": "a" * 64,
+                "last_frame_sha256": "b" * 64,
+                "authorization": "Bearer secret",
+                "server_path": str(tmp_path),
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    item = response.json()["data"]["units"][0]
+    assert item["beat_ids"] == ["beat-1", "beat-2"]
+    assert item["label"] == "Beat 1 → Beat 2"
+    assert item["mode"] == "fl2va"
+    assert item["duration_seconds"] == 8.5
+    assert item["first_frame_url"] == "/api/v1/projects/demo/media/frames/beat-1.png"
+    assert item["last_frame_url"] == "/api/v1/projects/demo/media/frames/beat-2.png"
+    assert item["director_plan"]["mode"] == "fl2va"
+    assert item["final_prompt"] == "the exact submitted prompt"
+    assert item["prompt_profile"]["version"] == 4
+    assert item["quality_report"]["passed"] is True
+    assert item["workflow"] == "workflow-136"
+    assert item["model"] == "runninghub:minimax-h3"
+    assert item["provider_task_id"] == "task-42"
+    serialized = response.text.lower()
+    for forbidden in ("api_key", "authorization", "credential", "workflow_json"):
+        assert forbidden not in serialized
+    assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
+
+
+def test_get_video_prompts_keeps_legacy_final_prompt(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "legacy submitted prompt", "duration_seconds": 5,
+                "first_frame": None, "last_frame": None,
+            }
+        }]
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    item = response.json()["data"]["units"][0]
+    assert item["final_prompt"] == "legacy submitted prompt"
+    assert item["director_plan"] is None
+    assert item["prompt_profile"] is None
+    assert item["quality_report"] is None
+
+
+def test_get_video_prompts_rejects_missing_group_and_unsafe_manifest(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+
+    assert client.get(endpoint.replace("ng-01", "missing")).status_code == 404
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1,
+        status="completed", manifest_asset=str(tmp_path.parent / "secret.json"),
+    )
+    response = client.get(endpoint)
+    assert response.status_code == 404
+    assert str(tmp_path.parent).lower() not in response.text.lower()
+
+
+def test_get_video_prompts_reports_corrupt_manifest_without_path_leak(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    manifest = _seed_prompt_review_manifest(tmp_path, {"entries": []})
+    manifest.write_text("{broken", encoding="utf-8")
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 409
+    assert str(manifest).lower() not in response.text.lower()
