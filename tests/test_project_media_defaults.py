@@ -14,20 +14,25 @@ from novelvideo.media_capabilities.video.workflow_registry import (
 )
 
 
-def _registry(*models: str) -> VideoWorkflowRegistry:
-    return VideoWorkflowRegistry(
-        tuple(
-            VideoWorkflowDefinition(
-                id=model,
-                label=model,
-                provider=model.partition(":")[0],
-                adapter_key=model.partition(":")[2],
-                scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                supported_modes=("auto", "i2va", "fl2va"),
-            )
-            for model in models
-        )
+def _workflow(
+    model: str,
+    *,
+    supported_modes: tuple[str, ...] = ("auto", "i2va", "fl2va"),
+    default_mode: str = "auto",
+) -> VideoWorkflowDefinition:
+    return VideoWorkflowDefinition(
+        id=model,
+        label=model,
+        provider=model.partition(":")[0],
+        adapter_key=model.partition(":")[2],
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=supported_modes,
+        default_mode=default_mode,
     )
+
+
+def _registry(*models: str) -> VideoWorkflowRegistry:
+    return VideoWorkflowRegistry(tuple(_workflow(model) for model in models))
 
 
 def _make_client(monkeypatch, tmp_path, *, registry=None):
@@ -113,6 +118,88 @@ def test_get_media_defaults_preserves_future_registered_model(monkeypatch, tmp_p
     assert response.json()["data"]["video_model"] == future_model
 
 
+def test_get_media_defaults_uses_fallback_workflow_default_mode(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "project_config.json").write_text(
+        json.dumps(
+            {
+                "video_backend": "unknown:video",
+                "h3_mode": "fl2va",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = VideoWorkflowRegistry(
+        (
+            _workflow(
+                "runninghub:minimax-h3",
+                supported_modes=("i2va",),
+                default_mode="i2va",
+            ),
+        )
+    )
+    client = _make_client(monkeypatch, tmp_path, registry=registry)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_model"] == "runninghub:minimax-h3"
+    assert response.json()["data"]["h3_mode"] == "i2va"
+
+
+def test_get_media_defaults_uses_resolved_workflow_default_for_unsupported_mode(
+    monkeypatch, tmp_path
+):
+    future_model = "future:director-v2"
+    (tmp_path / "project_config.json").write_text(
+        json.dumps({"video_backend": future_model, "h3_mode": "auto"}),
+        encoding="utf-8",
+    )
+    registry = VideoWorkflowRegistry(
+        (
+            _workflow("runninghub:minimax-h3"),
+            _workflow(
+                future_model,
+                supported_modes=("i2va",),
+                default_mode="i2va",
+            ),
+        )
+    )
+    client = _make_client(monkeypatch, tmp_path, registry=registry)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_model"] == future_model
+    assert response.json()["data"]["h3_mode"] == "i2va"
+
+
+def test_get_media_defaults_preserves_supported_mode(monkeypatch, tmp_path):
+    future_model = "future:director-v2"
+    (tmp_path / "project_config.json").write_text(
+        json.dumps({"video_backend": future_model, "h3_mode": "fl2va"}),
+        encoding="utf-8",
+    )
+    registry = VideoWorkflowRegistry(
+        (
+            _workflow("runninghub:minimax-h3"),
+            _workflow(
+                future_model,
+                supported_modes=("i2va", "fl2va"),
+                default_mode="i2va",
+            ),
+        )
+    )
+    client = _make_client(monkeypatch, tmp_path, registry=registry)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_model"] == future_model
+    assert response.json()["data"]["h3_mode"] == "fl2va"
+
+
 def test_put_media_defaults_rejects_unknown_without_persisting(monkeypatch, tmp_path):
     original = {
         "video_backend": "runninghub:minimax-h3",
@@ -145,12 +232,8 @@ def test_put_media_defaults_rejects_unsupported_mode_without_persisting(
     config_path.write_text(json.dumps(original), encoding="utf-8")
     registry = VideoWorkflowRegistry(
         (
-            VideoWorkflowDefinition(
-                id="runninghub:minimax-h3",
-                label="RunningHub MiniMax H3",
-                provider="runninghub",
-                adapter_key="minimax-h3",
-                scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+            _workflow(
+                "runninghub:minimax-h3",
                 supported_modes=("i2va",),
                 default_mode="i2va",
             ),

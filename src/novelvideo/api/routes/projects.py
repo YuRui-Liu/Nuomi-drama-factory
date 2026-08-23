@@ -621,16 +621,20 @@ def _media_defaults_payload(
     registry: VideoWorkflowRegistry | None = None,
 ) -> dict[str, str]:
     video_model = str(config.get("video_backend") or "runninghub:minimax-h3")
+    h3_mode = str(config.get("h3_mode") or "auto")
     if registry is not None:
         try:
-            video_model = registry.resolve(
+            workflow = registry.resolve(
                 video_model, VideoWorkflowScene.NARRATIVE_GROUP
-            ).id
+            )
         except VideoWorkflowUnavailable:
-            video_model = registry.default(VideoWorkflowScene.NARRATIVE_GROUP).id
+            workflow = registry.default(VideoWorkflowScene.NARRATIVE_GROUP)
+        video_model = workflow.id
+        if h3_mode not in workflow.supported_modes:
+            h3_mode = workflow.default_mode
     return {
         "video_model": video_model,
-        "h3_mode": str(config.get("h3_mode") or "auto"),
+        "h3_mode": h3_mode,
         "narrative_sketch_provider": str(
             config.get("narrative_sketch_provider") or "grsai-main"
         ),
