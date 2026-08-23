@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { Download, Copy } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   narrativeGroupVideoPromptUnitKey,
   useNarrativeGroupVideoPrompts,
-  type NarrativeGroupVideoPromptManifest,
 } from "@/lib/queries/narrative-groups";
 
 const pretty = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
-
-function downloadManifest(manifest: NarrativeGroupVideoPromptManifest, groupId: string) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `narrative-group-${groupId}-video-manifest.json`;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
 
 export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, groupId }: {
   open: boolean;
@@ -30,6 +20,9 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
   const query = useNarrativeGroupVideoPrompts(project, episode, groupId, open);
   const manifest = query.data?.data;
   const units = manifest?.units ?? [];
+  const manifestHref = manifest
+    ? `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(manifest, null, 2))}`
+    : undefined;
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl" aria-describedby={undefined}>
@@ -50,7 +43,7 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
           <PromptSection title="质量报告" value={unit.quality_report} empty="无质量报告" />
         </article>;
       })}</div> : null}
-      {manifest ? <div className="flex justify-end"><Button type="button" variant="outline" onClick={() => downloadManifest(manifest, groupId)}><Download className="mr-1 size-4" />下载 manifest</Button></div> : null}
+      {manifestHref ? <div className="flex justify-end"><a className={buttonVariants({ variant: "outline" })} href={manifestHref} download={`narrative-group-${groupId}-video-manifest.json`}><Download className="mr-1 size-4" />下载 manifest</a></div> : null}
     </DialogContent>
   </Dialog>;
 }

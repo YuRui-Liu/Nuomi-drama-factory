@@ -67,7 +67,7 @@ describe("GroupVideoPromptDrawer", () => {
 
     await user.click(screen.getByRole("button", { name: "复制最终提示词" }));
     expect(writeText).toHaveBeenCalledWith("[Shot 1] The hero turns quickly.");
-    expect(screen.getByRole("button", { name: "下载 manifest" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "下载 manifest" })).toBeInTheDocument();
   });
 
   it("keeps legacy final prompts visible without a director plan", () => {
