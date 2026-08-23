@@ -189,9 +189,8 @@ def create_h3_prompt_optimizer(
 
 def _default_director_model_factory() -> Any:
     from novelvideo.config import get_pydantic_model
-    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
 
-    return get_pydantic_model(model_name_override=DEFAULT_H3_PROMPT_OPTIMIZER_MODEL)
+    return get_pydantic_model()
 
 
 def _default_model_settings() -> dict[str, Any] | None:

@@ -456,3 +456,21 @@ def test_production_optimizer_accepts_generic_director_model_factory(monkeypatch
 
     assert captured["model"] is model
     assert captured["output_type"].outputs is H3DirectorPlan
+
+
+def test_default_director_model_uses_configured_text_runtime_model(monkeypatch):
+    import novelvideo.config as config
+
+    calls = []
+    configured_model = object()
+
+    def get_pydantic_model(*args, **kwargs):
+        calls.append((args, kwargs))
+        return configured_model
+
+    monkeypatch.setattr(config, "get_pydantic_model", get_pydantic_model)
+
+    result = h3_prompt_optimizer._default_director_model_factory()
+
+    assert result is configured_model
+    assert calls == [((), {})]
