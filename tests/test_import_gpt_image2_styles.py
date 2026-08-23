@@ -189,3 +189,101 @@ def test_cli_requires_source_revision_and_output() -> None:
     assert "--source" in result.stderr
     assert "--revision" in result.stderr
     assert "--output" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"unexpected": []}, "unsupported style library schema"),
+        ({"categories": "wrong"}, "categories must be a list or object"),
+        ({"categories": [None, "bad", {"name": "Photography & Realism", "styles": [None]}]}, "no valid style records"),
+    ],
+)
+def test_rejects_unknown_or_fully_malformed_source_schema(
+    tmp_path: Path, payload: object, message: str
+) -> None:
+    source = tmp_path / "style-library.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(tmp_path / "out"))
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert str(source) in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / "out" / "diff.json").exists()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"categories": []},
+        {"categories": [{"name": "Not Allowed", "styles": [{"id": "x", "name": "X", "prompt": "x"}]}]},
+    ],
+)
+def test_valid_empty_or_entirely_non_allowlisted_source_produces_empty_candidates(
+    tmp_path: Path, payload: object
+) -> None:
+    source = tmp_path / "style-library.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "out"
+    result = run_cli(
+        "--source", str(source), "--revision", REVISION, "--output", str(output),
+        "--catalog", str(tmp_path / "missing-catalog.json"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((output / "candidates.json").read_text(encoding="utf-8"))["candidates"] == []
+    assert json.loads((output / "diff.json").read_text(encoding="utf-8")) == {
+        "added": [], "changed": [], "removed": []
+    }
+
+
+def test_rejects_duplicate_normalized_style_ids(tmp_path: Path) -> None:
+    source = tmp_path / "style-library.json"
+    source.write_text(
+        json.dumps({"styles": [
+            {"id": "same", "category": "Illustration & Art", "prompt": "one"},
+            {"id": "same", "category": "Characters & People", "prompt": "two"},
+        ]}),
+        encoding="utf-8",
+    )
+    result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(tmp_path / "out"))
+    assert result.returncode != 0
+    assert "duplicate style id: same" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("target", ["source", "catalog"])
+def test_invalid_json_reports_path_line_and_column_without_traceback(tmp_path: Path, target: str) -> None:
+    source = tmp_path / "source.json"
+    source.write_text("{\n bad", encoding="utf-8")
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("{\n bad", encoding="utf-8")
+    if target == "catalog":
+        write_source(source)
+    result = run_cli(
+        "--source", str(source), "--revision", REVISION, "--output", str(tmp_path / "out"),
+        "--catalog", str(catalog),
+    )
+    expected_path = source if target == "source" else catalog
+    assert result.returncode != 0
+    assert str(expected_path) in result.stderr
+    assert "line 2 column" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_missing_source_reports_path_without_traceback(tmp_path: Path) -> None:
+    source = tmp_path / "missing.json"
+    result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(tmp_path / "out"))
+    assert result.returncode != 0
+    assert str(source) in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_output_write_failure_reports_path_without_traceback(tmp_path: Path) -> None:
+    source = tmp_path / "source.json"
+    write_source(source)
+    output = tmp_path / "already-a-file"
+    output.write_text("block mkdir", encoding="utf-8")
+    result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(output))
+    assert result.returncode != 0
+    assert str(output) in result.stderr
+    assert "Traceback" not in result.stderr

@@ -24,6 +24,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = REPOSITORY_ROOT / "src" / "novelvideo" / "extension_styles" / "catalog.json"
 
 
+class StyleImportError(ValueError):
+    """Raised when an input cannot safely produce import candidates."""
+
+
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -32,33 +36,64 @@ def _category_groups(payload: Any) -> Iterable[tuple[str, list[Any]]]:
     if isinstance(payload, list):
         categories = payload
     elif isinstance(payload, dict):
-        categories = payload.get("categories", payload.get("style_categories", []))
-        if not categories and isinstance(payload.get("styles"), list):
+        if "categories" in payload:
+            categories = payload["categories"]
+        elif "style_categories" in payload:
+            categories = payload["style_categories"]
+        elif "styles" in payload:
+            styles = payload["styles"]
+            if not isinstance(styles, list):
+                raise StyleImportError("styles must be a list")
             grouped: dict[str, list[Any]] = {}
-            for style in payload["styles"]:
-                if isinstance(style, dict):
+            valid_records = 0
+            for style in styles:
+                if isinstance(style, dict) and _text(style.get("id") or style.get("slug") or style.get("key")):
                     grouped.setdefault(_text(style.get("category")), []).append(style)
+                    valid_records += 1
+            if styles and not valid_records:
+                raise StyleImportError("no valid style records")
             yield from grouped.items()
             return
+        else:
+            raise StyleImportError("unsupported style library schema")
     else:
-        categories = []
+        raise StyleImportError("unsupported style library schema")
 
     if isinstance(categories, dict):
-        yield from ((str(name), styles) for name, styles in categories.items() if isinstance(styles, list))
+        invalid = [name for name, styles in categories.items() if not isinstance(styles, list)]
+        if invalid:
+            raise StyleImportError("category styles must be a list")
+        groups = [(str(name), styles) for name, styles in categories.items()]
+        if any(styles for _, styles in groups) and not any(
+            isinstance(style, dict) and _text(style.get("id") or style.get("slug") or style.get("key"))
+            for _, styles in groups for style in styles
+        ):
+            raise StyleImportError("no valid style records")
+        yield from groups
         return
     if not isinstance(categories, list):
-        return
+        raise StyleImportError("categories must be a list or object")
+    groups: list[tuple[str, list[Any]]] = []
     for category in categories:
         if not isinstance(category, dict):
             continue
         name = _text(category.get("name") or category.get("category") or category.get("title"))
         styles = category.get("styles", category.get("items", []))
-        if isinstance(styles, list):
-            yield name, styles
+        if name and isinstance(styles, list):
+            groups.append((name, styles))
+    if categories and not groups:
+        raise StyleImportError("no valid style records")
+    if any(styles for _, styles in groups) and not any(
+        isinstance(style, dict) and _text(style.get("id") or style.get("slug") or style.get("key"))
+        for _, styles in groups for style in styles
+    ):
+        raise StyleImportError("no valid style records")
+    yield from groups
 
 
 def normalize_candidates(payload: Any, revision: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for category, styles in _category_groups(payload):
         if category not in ALLOWED_CATEGORIES:
             continue
@@ -68,6 +103,9 @@ def normalize_candidates(payload: Any, revision: str) -> list[dict[str, Any]]:
             style_id = _text(raw.get("id") or raw.get("slug") or raw.get("key"))
             if not style_id:
                 continue
+            if style_id in seen_ids:
+                raise StyleImportError(f"duplicate style id: {style_id}")
+            seen_ids.add(style_id)
             source_ids = raw.get("source_ids")
             if not isinstance(source_ids, list) or not all(isinstance(item, str) for item in source_ids):
                 source_ids = [style_id]
@@ -99,7 +137,7 @@ def _catalog_styles(payload: Any) -> list[dict[str, Any]]:
 def build_diff(candidates: list[dict[str, Any]], catalog_path: Path) -> dict[str, list[str]]:
     if not catalog_path.exists():
         return {"added": [item["id"] for item in candidates], "changed": [], "removed": []}
-    existing_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    existing_payload = _read_json(catalog_path)
     existing = {item.get("id"): item for item in _catalog_styles(existing_payload) if isinstance(item.get("id"), str)}
     incoming = {item["id"]: item for item in candidates}
     comparable = ("category", "name", "prompt", "negative_prompt")
@@ -115,6 +153,17 @@ def build_diff(candidates: list[dict[str, Any]], catalog_path: Path) -> dict[str
     }
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise StyleImportError(
+            f"invalid JSON in {path}: line {exc.lineno} column {exc.colno}: {exc.msg}"
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise StyleImportError(f"cannot read {path}: {getattr(exc, 'strerror', None) or str(exc)}") from exc
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -126,20 +175,30 @@ def _write_json(path: Path, payload: Any) -> None:
 def import_styles(source: Path, revision: str, output: Path, catalog: Path = DEFAULT_CATALOG) -> None:
     if not REVISION_PATTERN.fullmatch(revision):
         raise ValueError("revision must be exactly 40 lowercase hexadecimal characters")
-    payload = json.loads(source.read_text(encoding="utf-8"))
-    candidates = normalize_candidates(payload, revision)
+    payload = _read_json(source)
+    try:
+        candidates = normalize_candidates(payload, revision)
+    except StyleImportError as exc:
+        raise StyleImportError(f"invalid style library {source}: {exc}") from exc
     diff = build_diff(candidates, catalog)
-    output.mkdir(parents=True, exist_ok=True)
-    _write_json(output / "candidates.json", {"candidates": candidates, "revision": revision})
-    _write_json(output / "diff.json", diff)
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        _write_json(output / "candidates.json", {"candidates": candidates, "revision": revision})
+        _write_json(output / "diff.json", diff)
+    except (OSError, UnicodeError) as exc:
+        raise StyleImportError(f"cannot write {output}: {getattr(exc, 'strerror', None) or str(exc)}") from exc
 
 
-def parse_args() -> argparse.Namespace:
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG, help=argparse.SUPPRESS)
+    return parser
+
+
+def parse_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
     args = parser.parse_args()
     if not REVISION_PATTERN.fullmatch(args.revision):
         parser.error("--revision must be exactly 40 lowercase hexadecimal characters")
@@ -147,8 +206,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    import_styles(args.source, args.revision, args.output, args.catalog)
+    parser = create_parser()
+    args = parse_args(parser)
+    try:
+        import_styles(args.source, args.revision, args.output, args.catalog)
+    except (OSError, UnicodeError, json.JSONDecodeError, StyleImportError) as exc:
+        parser.error(str(exc))
     return 0
 
 
