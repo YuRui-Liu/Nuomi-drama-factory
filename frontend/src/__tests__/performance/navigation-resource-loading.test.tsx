@@ -119,4 +119,19 @@ describe("navigation resource loading", () => {
     expect(wrapper).toMatch(/role=["']status["']/);
     expect(wrapper).toMatch(/aria-live=["']polite["']/);
   });
+
+  it("limits eager asset thumbnails to the first eight items in every asset card", () => {
+    const assetLibrary = readSource("src/features/freezone/AssetLibraryPanel.tsx");
+
+    expect(assetLibrary).not.toContain('index < 20 ? "eager" : "lazy"');
+    expect(assetLibrary.match(/index < 8 \? "eager" : "lazy"/g)).toHaveLength(2);
+  });
+
+  it("does not fetch video metadata for coverless asset cards", () => {
+    const assetLibrary = readSource("src/features/freezone/AssetLibraryPanel.tsx");
+
+    expect(assetLibrary).not.toContain("<video");
+    expect(assetLibrary).not.toContain('preload="metadata"');
+    expect(assetLibrary.match(/aria-label=\{`视频：\$\{asset\.label\}`\}/g)).toHaveLength(2);
+  });
 });
