@@ -200,11 +200,6 @@ function MiniThumb({
     Boolean(thumbUrl) &&
     (!isThreeD || Boolean(asset.coverUrl)) &&
     (!isVideo || Boolean(asset.coverUrl));
-  // 视频没有后端封面时，用 <video> 抓首帧当缩略图（#t 强制浏览器渲染一帧）。
-  const videoPosterUrl =
-    isVideo && !imageFailed && !asset.coverUrl && asset.url
-      ? `${withImageCacheBust(asset.url, cacheToken)}#t=0.1`
-      : null;
   const disabled = !isThreeD && (asset.mediaType === "text" || asset.mediaType === "file");
   const dragPayload = disabled ? null : assetToDragPayload(asset);
 
@@ -237,7 +232,7 @@ function MiniThumb({
           src={displayThumbUrl ?? ""}
           alt={asset.label}
           className="h-full w-full rounded object-contain"
-          loading={index < 20 ? "eager" : "lazy"}
+          loading={index < 8 ? "eager" : "lazy"}
           draggable={false}
           onError={() => setImageFailed(true)}
         />
@@ -245,24 +240,13 @@ function MiniThumb({
         <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[rgba(21,215,232,0.15)] to-transparent rounded">
           <AudioLines className="h-5 w-5 text-white/50" />
         </div>
-      ) : videoPosterUrl ? (
-        <div className="relative h-full w-full">
-          <video
-            src={videoPosterUrl}
-            className="h-full w-full rounded object-contain bg-black"
-            preload="metadata"
-            muted
-            playsInline
-            tabIndex={-1}
-            onError={() => setImageFailed(true)}
-          />
-          <div className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded bg-black/65 ring-1 ring-white/15">
-            <Video className="h-2.5 w-2.5 text-white/90" />
-          </div>
-        </div>
       ) : isVideo ? (
-        <div className="flex h-full w-full items-center justify-center rounded bg-gradient-to-br from-white/[0.08] to-transparent">
-          <Video className="h-5 w-5 text-white/45" />
+        <div
+          role="img"
+          aria-label={`视频：${asset.label}`}
+          className="flex h-full w-full items-center justify-center rounded bg-gradient-to-br from-white/[0.08] to-transparent"
+        >
+          <Video aria-hidden="true" className="h-5 w-5 text-white/45" />
         </div>
       ) : (
         <div className="flex h-full w-full items-center justify-center rounded">
@@ -960,11 +944,6 @@ function AssetCard({
     Boolean(thumbUrl) &&
     (!isThreeD || Boolean(asset.coverUrl)) &&
     (!isVideo || Boolean(asset.coverUrl));
-  // 视频没有后端封面时，用 <video> 抓首帧当缩略图。
-  const videoPosterUrl =
-    isVideo && !asset.coverUrl && asset.url
-      ? `${withImageCacheBust(asset.url, cacheToken)}#t=0.1`
-      : null;
   const disabled = !isThreeD && (asset.mediaType === "text" || asset.mediaType === "file");
   const dropMediaType = assetDropMediaType(asset);
   const activeDrag = useAssetDropStore((s) => s.activeDrag);
@@ -1020,23 +999,13 @@ function AssetCard({
           <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[rgba(21,215,232,0.15)] to-transparent">
             <AudioLines className="h-5 w-5 text-white/40" />
           </div>
-        ) : videoPosterUrl ? (
-          <div className="relative h-full w-full">
-            <video
-              src={videoPosterUrl}
-              className="h-full w-full object-cover bg-black"
-              preload="metadata"
-              muted
-              playsInline
-              tabIndex={-1}
-            />
-            <div className="pointer-events-none absolute bottom-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded bg-black/65 ring-1 ring-white/15">
-              <Video className="h-2.5 w-2.5 text-white/90" />
-            </div>
-          </div>
         ) : isVideo ? (
-          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-white/[0.08] to-transparent">
-            <Video className="h-5 w-5 text-white/40" />
+          <div
+            role="img"
+            aria-label={`视频：${asset.label}`}
+            className="flex h-full w-full items-center justify-center bg-gradient-to-br from-white/[0.08] to-transparent"
+          >
+            <Video aria-hidden="true" className="h-5 w-5 text-white/40" />
           </div>
         ) : (
           <span className="text-[10px] uppercase tracking-wide text-white/25">

@@ -49,7 +49,7 @@ const router = createRouter({
   // Prefetch route chunks on link hover/focus so navigation is instant
   // once the user commits.
   defaultPreload: "intent",
-  defaultPreloadStaleTime: 0,
+  defaultPreloadStaleTime: 30_000,
   // No defaultViewTransition. A global view-transition on every navigation
   // fires for search-param updates too (e.g. ?beat=3), which means every
   // beat click in the workbench triggers a full-document snapshot +

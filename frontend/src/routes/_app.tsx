@@ -8,7 +8,7 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Header } from "@/components/layout/header";
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
@@ -29,7 +29,12 @@ import { TaskPanel } from "@/components/task-center/panel";
 import { MyBuddyCompanion } from "@/features/companion/MyBuddyCompanion";
 import { AccessoryUnlockPrompt } from "@/features/rewards/AccessoryUnlockPrompt";
 import { VersionUpdateDialog } from "@/features/version-update/VersionUpdateDialog";
-import { PikoInspirationStation } from "@/features/piko-mini-game/PikoInspirationStation";
+
+const PikoInspirationStation = lazy(() =>
+  import("@/features/piko-mini-game/PikoInspirationStation").then((module) => ({
+    default: module.PikoInspirationStation,
+  })),
+);
 
 export function shouldRedirectMissingUsernameToLogin(): boolean {
   return authRequired();
@@ -172,10 +177,25 @@ function AppLayout() {
             <MyBuddyCompanion />
             <AccessoryUnlockPrompt />
             <VersionUpdateDialog />
-            <PikoInspirationStation
-              open={pikoStationOpen}
-              onClose={() => setPikoStationOpen(false)}
-            />
+            {pikoStationOpen && (
+              <Suspense
+                fallback={
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="fixed bottom-20 right-6 z-50 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground shadow-lg"
+                  >
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                    正在打开灵感游戏…
+                  </div>
+                }
+              >
+                <PikoInspirationStation
+                  open={pikoStationOpen}
+                  onClose={() => setPikoStationOpen(false)}
+                />
+              </Suspense>
+            )}
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <main
                 id="main-content"

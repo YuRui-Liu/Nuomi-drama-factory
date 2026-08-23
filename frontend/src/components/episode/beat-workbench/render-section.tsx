@@ -39,10 +39,8 @@ import {
   type BeatBackgroundReference,
   type PoolImage,
 } from "@/lib/queries/sketches";
-import {
-  ThreeDDirectorDialog,
-  type ThreeDDirectorCaptureMeta,
-} from "@/features/viewer-kit/three-d/ThreeDDirectorDialog";
+import { LazyThreeDDirectorDialog as ThreeDDirectorDialog } from "@/features/viewer-kit/three-d/LazyThreeDDirectorDialog";
+import type { ThreeDDirectorCaptureMeta } from "@/features/viewer-kit/three-d/ThreeDDirectorDialog";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
 import { useRenderSettings } from "@/lib/queries/render-settings";
 import { useScenePlatePreview } from "@/lib/queries/scenes";

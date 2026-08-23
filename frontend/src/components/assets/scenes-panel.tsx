@@ -18,7 +18,7 @@ import {
 } from "@/components/assets/scene-environment-prompt";
 import { PanoCaptureDialog } from "@/features/viewer-kit/pano/PanoCaptureDialog";
 import type { PanoCaptureResult } from "@/features/viewer-kit/pano/panoManifest";
-import { ThreeDDirectorDialog } from "@/features/viewer-kit/three-d/ThreeDDirectorDialog";
+import { LazyThreeDDirectorDialog as ThreeDDirectorDialog } from "@/features/viewer-kit/three-d/LazyThreeDDirectorDialog";
 import type { ThreeDSceneSnapshot } from "@/features/viewer-kit/three-d/engine/viewerApp";
 import {
   AssetSearchBox,
