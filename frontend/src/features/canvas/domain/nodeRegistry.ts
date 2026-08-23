@@ -151,6 +151,7 @@ const imageGenNodeDefinition: CanvasNodeDefinition<ImageGenNodeData> = {
     size: '2K' as ImageSize,
     count: 1,
     styleTemplateId: null,
+    extensionStyleId: null,
     focusRegion: null,
     cameraSelection: null,
     referenceImageUrl: null,

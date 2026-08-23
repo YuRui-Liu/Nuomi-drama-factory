@@ -85,6 +85,7 @@ import {
   fetchFreezoneTextTranslateResult,
   submitFreezoneGen,
   submitFreezoneTextTranslate,
+  type FreezoneGenPayload,
   uploadFreezoneImage,
 } from '@/api/ops';
 import {
@@ -176,6 +177,8 @@ import {
 import { hasImageGenPromptOverride } from '@/features/canvas/nodes/imageGenPrompt';
 import { orderedReferenceUrlsWithOwnFirst } from '@/features/canvas/nodes/referenceOrdering';
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
+import { composeImagePrompt } from '@/features/canvas/extension-styles/composePrompt';
+import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -250,6 +253,38 @@ function resolveOutputUrl(result: Record<string, unknown> | null | undefined): s
   return null;
 }
 
+export function buildImageGenerationRequestPayloads<T extends { prompt: string }>(
+  basePayload: T,
+  extensionStyleId: string | null | undefined,
+  count: number,
+): T[] {
+  const composedPrompt = composeImagePrompt(basePayload.prompt, extensionStyleId);
+  return Array.from({ length: count }, () => ({
+    ...basePayload,
+    prompt: composedPrompt,
+  }));
+}
+
+export async function submitImageGenerationPayloadAtIndex<TResult>(
+  projectId: string,
+  payloads: readonly FreezoneGenPayload[],
+  runIndex: number,
+  context: { canvasId: string; nodeId: string },
+  submitter: (
+    projectId: string,
+    payload: FreezoneGenPayload,
+  ) => Promise<TResult>,
+): Promise<TResult> {
+  const payload = payloads[runIndex];
+  if (!payload) {
+    throw new RangeError(`Missing image generation payload at index ${runIndex}`);
+  }
+  return submitter(projectId, {
+    ...payload,
+    ...context,
+  });
+}
+
 export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGenNodeProps) => {
   const { t } = useTranslation();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -309,6 +344,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const styleTemplateId =
     typeof data.styleTemplateId === 'string' && data.styleTemplateId.length > 0
       ? data.styleTemplateId
+      : null;
+  const extensionStyleId =
+    typeof data.extensionStyleId === 'string'
+      ? data.extensionStyleId
       : null;
   const referenceImageUrl =
     typeof data.referenceImageUrl === 'string' && data.referenceImageUrl.length > 0
@@ -609,6 +648,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // 收起态浮动面板固定基础尺寸；放大用居中弹窗（见下方 OperationPanelShell）。
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [stylePickerOpen, setStylePickerOpen] = useState(false);
+  const [extensionStyleDrawerOpen, setExtensionStyleDrawerOpen] = useState(false);
   const panelHeight = OPERATIONS_PANEL_HEIGHT;
   const panelWidth = Math.max(resolvedWidth, OPERATIONS_PANEL_MIN_WIDTH);
 
@@ -875,7 +915,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       : [upstreamTextJoined, ownPrompt]
         .filter((s) => s.length > 0)
         .join('\n\n');
-    const genPayload = {
+    const baseGenPayload = {
       prompt: effectivePrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
       // 非标准值（如 "43:24"）或 "auto"，提交前吸附到最接近的合法比例（auto→1:1）。
@@ -906,6 +946,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // generationBatch（叠卡画册）：第 1 张完成的设为主图（imageUrl），其余
     // 逐张追加进画册，收拢态渲染成叠起的卡片。
     const total = Math.min(Math.max(effectiveCount, 1), 4);
+    const genPayloads = buildImageGenerationRequestPayloads(
+      baseGenPayload,
+      extensionStyleId,
+      total,
+    );
     // Clear any prior failure / album on resubmit — the on-node error banner
     // should only reflect the most recent attempt.
     updateNodeData(id, {
@@ -925,11 +970,13 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     const runOne = async (runIndex: number) => {
       let taskKey: string | null = null;
       try {
-        const ref = await submitFreezoneGen(projectId, {
-          ...genPayload,
-          canvasId,
-          nodeId: id,
-        });
+        const ref = await submitImageGenerationPayloadAtIndex(
+          projectId,
+          genPayloads,
+          runIndex,
+          { canvasId, nodeId: id },
+          submitFreezoneGen,
+        );
         taskKey = ref.task_key;
         // Persist the task handle so a page refresh can resume polling this
         // job. With N concurrent runs on one node only one handle can persist —
@@ -1038,6 +1085,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     cameraSelection,
     count,
     effectiveCount,
+    extensionStyleId,
     id,
     isImage2,
     modelId,
@@ -1706,6 +1754,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               onChange={(nextId) => updateNodeData(id, { styleTemplateId: nextId })}
               onOpenChange={setStylePickerOpen}
             />
+            <ExtensionStyleChip
+              value={extensionStyleId}
+              onChange={(nextId) => updateNodeData(id, { extensionStyleId: nextId })}
+              onOpenChange={setExtensionStyleDrawerOpen}
+            />
             <NodeContextPromptPaletteButton
               nodeId={id}
               onInsert={insertContextPaletteEntry}
@@ -1876,7 +1929,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
           </div>
         </OperationPanelShell>
       )}
-      {selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && hasCompletedHistoryRecords(historyRecords) && (
+      {selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && !extensionStyleDrawerOpen && hasCompletedHistoryRecords(historyRecords) && (
         <div
           className={`nodrag absolute left-1/2 z-[300] -translate-x-1/2 rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS} ${NODE_OPS_PANEL_ENTER_CLASS} px-3 py-2`}
           style={{
