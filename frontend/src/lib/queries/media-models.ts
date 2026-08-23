@@ -38,6 +38,19 @@ export interface MediaDefaults {
   narrative_render_model: string;
 }
 
+export function availableVideoModels(catalog: VideoModelCatalogItem[]): VideoModelCatalogItem[] {
+  return catalog.filter((item) => item.available);
+}
+
+export function resolveVideoModel(
+  savedModel: string | null | undefined,
+  catalog: VideoModelCatalogItem[],
+): VideoModelCatalogItem | undefined {
+  const available = availableVideoModels(catalog);
+  return available.find((item) => item.id === savedModel) ?? available[0];
+}
+
+// Kept for the single-Beat editor until that separate legacy workflow is migrated.
 export function mergeVideoModelCatalog(
   capabilityModels: VideoModelCatalogItem[], legacyBackends: VideoBackendOption[],
 ): VideoModelCatalogItem[] {

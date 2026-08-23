@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { effectiveVideoMode, mergeVideoModelCatalog, videoModelRequest } from "@/lib/queries/media-models";
+import {
+  availableVideoModels,
+  effectiveVideoMode,
+  resolveVideoModel,
+  videoModelRequest,
+  type VideoModelCatalogItem,
+} from "@/lib/queries/media-models";
 import { queryKeys } from "@/lib/query-keys";
 
 describe("video media model contract", () => {
@@ -10,14 +16,26 @@ describe("video media model contract", () => {
     expect(effectiveVideoMode("fl2va", true, false)).toBe("fl2va");
   });
 
-  it("keeps legacy backends alongside capability models", () => {
-    const merged = mergeVideoModelCatalog(
-      [{ id: "runninghub:minimax-h3", label: "MiniMax H3", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto" }],
-      [{ value: "huimeng_seedance-1.0-pro-fast", label: "Seedance", is_default: true, is_seedance2: false, dialogue_only: false }],
-    );
-    expect(merged.map((item) => item.id)).toEqual([
-      "runninghub:minimax-h3", "huimeng_seedance-1.0-pro-fast",
-    ]);
+  it.each(["newapi_seedance-1.0-pro-fast", "unknown:video-model"])(
+    "falls back from saved model %s to the only available workflow",
+    (savedModel) => {
+      const catalog: VideoModelCatalogItem[] = [
+        { id: "runninghub:disabled", label: "Disabled", provider: "runninghub", available: false, supported_modes: ["auto"], default_mode: "auto" },
+        { id: "runninghub:minimax-h3", label: "RunningHub MiniMax H3", provider: "runninghub", available: true, supported_modes: ["auto", "i2va", "fl2va"], default_mode: "auto" },
+      ];
+
+      expect(availableVideoModels(catalog).map((item) => item.id)).toEqual(["runninghub:minimax-h3"]);
+      expect(resolveVideoModel(savedModel, catalog)?.id).toBe("runninghub:minimax-h3");
+    },
+  );
+
+  it("never resolves an unavailable saved workflow", () => {
+    const catalog: VideoModelCatalogItem[] = [
+      { id: "runninghub:minimax-h3", label: "RunningHub MiniMax H3", provider: "runninghub", available: false, supported_modes: ["auto"], default_mode: "auto" },
+      { id: "runninghub:future", label: "Future Workflow", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto" },
+    ];
+
+    expect(resolveVideoModel("runninghub:minimax-h3", catalog)?.id).toBe("runninghub:future");
   });
 
   it("serializes only stable model identifiers and mode", () => {
