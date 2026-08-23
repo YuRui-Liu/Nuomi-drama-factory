@@ -20,27 +20,28 @@ ALLOWED_CATEGORIES = frozenset(
 # Terms are grouped by story dimension so this policy remains easy to extend.
 STORY_CONTENT_BIAS_TERMS = {
     "character": (
-        "princess", "prince", "emperor", "soldier", "detective",
+        "princess", "prince", "emperor", "soldier", "detective", "cowboy",
         "公主", "王子", "皇帝", "士兵", "侦探",
     ),
     "era": (
         "tang dynasty", "song dynasty", "ming dynasty", "qing dynasty",
-        "victorian era", "medieval", "唐朝", "宋朝", "明朝", "清朝", "民国",
+        "victorian era", "medieval", "1920s", "唐朝", "宋朝", "明朝", "清朝",
+        "民国",
     ),
     "location": (
-        "palace", "castle", "classroom", "hospital", "battlefield",
+        "palace", "castle", "classroom", "hospital", "battlefield", "new york",
         "皇宫", "城堡", "教室", "医院", "战场",
     ),
     "costume": (
-        "hanfu", "kimono", "wedding dress", "school uniform", "armor",
+        "hanfu", "kimono", "wedding dress", "school uniform", "armor", "tuxedo",
         "汉服", "和服", "婚纱", "校服", "盔甲",
     ),
     "prop": (
-        "sword", "gun", "smartphone", "umbrella",
+        "sword", "gun", "smartphone", "umbrella", "dagger",
         "宝剑", "手枪", "手机", "雨伞",
     ),
     "action": (
-        "running", "fighting", "kissing", "holding a",
+        "running", "fighting", "kissing", "holding a", "dancing",
         "骑马", "奔跑", "打斗", "亲吻", "手持",
     ),
 }
@@ -64,19 +65,31 @@ def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value)
 
 
-def _story_bias_match(fragments: Mapping[str, tuple[str, ...]]) -> str | None:
+def _story_bias_match(
+    fragments: Mapping[str, tuple[str, ...]],
+) -> tuple[str, str] | None:
     text = " ".join(
         phrase.casefold() for key in FRAGMENT_KEYS for phrase in fragments[key]
     )
-    for terms in STORY_CONTENT_BIAS_TERMS.values():
+    for dimension, terms in STORY_CONTENT_BIAS_TERMS.items():
         for term in terms:
             folded = term.casefold()
             if folded.isascii():
                 if re.search(rf"(?<![a-z]){re.escape(folded)}(?![a-z])", text):
-                    return term
+                    return dimension, term
             elif folded in text:
-                return term
+                return dimension, term
     return None
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -131,10 +144,11 @@ class ExtensionStyle:
             key: _string_tuple(raw_fragments[key], f"prompt_fragment.{key}")
             for key in FRAGMENT_KEYS
         }
-        biased_term = _story_bias_match(fragments)
-        if biased_term is not None:
+        biased_match = _story_bias_match(fragments)
+        if biased_match is not None:
+            dimension, term = biased_match
             raise ValueError(
-                f"prompt_fragment contains story content bias: {biased_term}"
+                f"prompt_fragment contains story content bias ({dimension}): {term}"
             )
 
         return cls(
@@ -145,7 +159,7 @@ class ExtensionStyle:
             prompt_fragment=MappingProxyType(fragments),
             use_cases=_string_tuple(data.get("use_cases"), "use_cases"),
             preview_asset=preview_asset,
-            source=MappingProxyType(dict(source)),
+            source=_deep_freeze(source),
             version=_required_string(data, "version"),
         )
 
