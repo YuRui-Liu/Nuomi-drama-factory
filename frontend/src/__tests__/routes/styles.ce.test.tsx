@@ -3,7 +3,7 @@
 import type { ComponentType } from "react";
 import type { Style } from "@/types/style";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18next from "i18next";
@@ -20,6 +20,10 @@ const styleMutationMocks = vi.hoisted(() => ({
   upload: vi.fn(),
 }));
 const styleQueryState = vi.hoisted(() => ({
+  isLoading: false,
+  isError: false,
+  error: null as Error | null,
+  refetch: vi.fn(),
   list: [
     {
       id: "ink",
@@ -36,7 +40,7 @@ const styleQueryState = vi.hoisted(() => ({
     style_instructions: "clean ink lines",
     avoid_instructions: "muddy colors",
     style_tag: "ink",
-  } as Style,
+  } as Style | null,
 }));
 
 vi.mock("@/lib/runtime-config", () => ({
@@ -59,9 +63,11 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("@/lib/queries/styles", () => ({
   useStyles: () => ({
-    isLoading: false,
+    isLoading: styleQueryState.isLoading,
+    isError: styleQueryState.isError,
+    error: styleQueryState.error,
     isRefetching: false,
-    refetch: vi.fn(),
+    refetch: styleQueryState.refetch,
     data: {
       ok: true,
       data: styleQueryState.list,
@@ -69,10 +75,12 @@ vi.mock("@/lib/queries/styles", () => ({
   }),
   useStyleDetail: () => ({
     isFetching: false,
-    data: {
-      ok: true,
-      data: styleQueryState.detail,
-    },
+    data: styleQueryState.detail
+      ? {
+          ok: true,
+          data: styleQueryState.detail,
+        }
+      : undefined,
   }),
   useCreateStyle: () => ({ mutateAsync: styleMutationMocks.create, isPending: false }),
   useDeleteStyle: () => ({ mutateAsync: styleMutationMocks.remove, isPending: false }),
@@ -139,6 +147,8 @@ beforeAll(async () => {
             uploadedPreview: "Uploaded preview",
             analyzingPreview: "Analyzing image...",
             styleIdRequiredBeforeUpload: "Enter a style ID first.",
+            noStyles: "No styles yet",
+            noStylesHint: "Create a style to continue.",
           },
         },
       },
@@ -175,6 +185,52 @@ describe("styles page CE generation credit gating", () => {
       avoid_instructions: "muddy colors",
       style_tag: "ink",
     };
+    styleQueryState.isLoading = false;
+    styleQueryState.isError = false;
+    styleQueryState.error = null;
+    styleQueryState.refetch.mockReset();
+    styleQueryState.refetch.mockResolvedValue({ isError: false });
+  });
+
+  it("keeps both panes in loading state until the style list settles", () => {
+    styleQueryState.isLoading = true;
+    styleQueryState.list = [];
+    styleQueryState.detail = null;
+    const Component = Route.options.component as ComponentType;
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nextProvider i18n={i18n}>
+          <Component />
+        </I18nextProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getAllByLabelText("Loading")).toHaveLength(2);
+    expect(screen.queryByText("No styles yet")).not.toBeInTheDocument();
+  });
+
+  it("shows a retryable error instead of an empty-style state after list failure", async () => {
+    styleQueryState.isError = true;
+    styleQueryState.error = new Error("Request timed out");
+    styleQueryState.list = [];
+    styleQueryState.detail = null;
+    const Component = Route.options.component as ComponentType;
+    const user = userEvent.setup();
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nextProvider i18n={i18n}>
+          <Component />
+        </I18nextProvider>
+      </QueryClientProvider>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Request timed out");
+    expect(screen.queryByText("No styles yet")).not.toBeInTheDocument();
+    await user.click(within(alert).getByRole("button", { name: "Refresh" }));
+    expect(styleQueryState.refetch).toHaveBeenCalledTimes(1);
   });
 
   it("renders style controls without credit UI, credit styling, or credit errors", async () => {

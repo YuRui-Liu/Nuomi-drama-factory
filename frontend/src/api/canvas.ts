@@ -2,6 +2,9 @@
 // Copyright (c) 2026 ClaymoreLab
 import { apiCall } from "./client";
 
+const CANVAS_HYDRATE_ATTEMPT_TIMEOUT_MS = 8_000;
+const CANVAS_HYDRATE_TOTAL_TIMEOUT_MS = 18_000;
+
 // SuperTale-side canvas storage (`/api/v1/projects/<project_id>/freezone/canvases/*`).
 // The wire format is intentionally generic: `{nodes, edges, viewport}`. The
 // backend treats the canvas graph as opaque JSON, so node/capability evolutions stay
@@ -159,7 +162,15 @@ export async function getFreezoneCanvas(
 ): Promise<FreezoneCanvasPayload> {
   return await apiCall<FreezoneCanvasPayload>(
     `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}`,
-    options?.signal ? { signal: options.signal } : undefined,
+    {
+      ...(options?.signal ? { signal: options.signal } : {}),
+      timeout: CANVAS_HYDRATE_ATTEMPT_TIMEOUT_MS,
+      totalTimeout: CANVAS_HYDRATE_TOTAL_TIMEOUT_MS,
+      retry: {
+        limit: 1,
+        retryOnTimeout: true,
+      },
+    },
   );
 }
 

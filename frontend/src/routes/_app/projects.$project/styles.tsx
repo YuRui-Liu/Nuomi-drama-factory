@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CheckCircle2,
   Code,
+  CircleAlert,
   Image as ImageIcon,
   Info,
   Loader2,
@@ -741,6 +742,45 @@ function EmptyDetail({
   );
 }
 
+function StylesLoadError({
+  error,
+  onRetry,
+}: {
+  error: unknown;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  const message = error instanceof Error ? error.message : t("common.error");
+
+  return (
+    <div className="flex flex-1 items-center justify-center p-8">
+      <div
+        role="alert"
+        className="flex max-w-md flex-col items-center gap-3 text-center"
+      >
+        <div className="flex size-16 items-center justify-center rounded-full border border-destructive/30 bg-destructive/10">
+          <CircleAlert className="size-6 text-destructive" />
+        </div>
+        <h2 className="text-sm font-semibold text-foreground">
+          {t("common.error")}
+        </h2>
+        <p className="max-w-sm break-words text-xs text-muted-foreground">
+          {message}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onRetry}
+          className="mt-1 h-8 rounded-[8px]"
+        >
+          {t("common.refresh")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Create dialog ──────────────────────────────────────────────────────────
 
 function CreateStyleDialog({
@@ -1014,7 +1054,14 @@ function StylesPage() {
   const { t } = useTranslation();
   const { project } = Route.useParams();
 
-  const { data: stylesRes, isLoading, isRefetching, refetch } = useStyles(project);
+  const {
+    data: stylesRes,
+    isLoading,
+    isError,
+    error: stylesError,
+    isRefetching,
+    refetch,
+  } = useStyles(project);
   const { data: projectRes } = useProject(project);
 
   const styles = stylesRes?.data ?? [];
@@ -1064,6 +1111,10 @@ function StylesPage() {
           <div className="flex-1 overflow-y-auto p-3">
             {isLoading ? (
               <SidebarListSkeleton label={t("common.loading")} />
+            ) : isError ? (
+              <div className="mt-8 text-center text-sm text-destructive">
+                {t("common.error")}
+              </div>
             ) : styles.length === 0 ? (
               <div className="mt-8 flex flex-col items-center text-center">
                 <div className="mb-3 flex size-12 items-center justify-center rounded-full border border-border bg-card">
@@ -1091,7 +1142,11 @@ function StylesPage() {
 
         {/* RIGHT: detail */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-          {selectedStyle ? (
+          {isLoading ? (
+            <DetailPaneSkeleton label={t("common.loading")} />
+          ) : isError ? (
+            <StylesLoadError error={stylesError} onRetry={() => void refetch()} />
+          ) : selectedStyle ? (
             <StyleDetailPanel
               key={selectedStyle.id}
               style={selectedStyle}

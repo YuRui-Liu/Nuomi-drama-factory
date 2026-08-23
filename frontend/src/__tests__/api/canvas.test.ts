@@ -34,7 +34,15 @@ describe("canvas projection api", () => {
 
     expect(apiCall).toHaveBeenCalledWith(
       "projects/project-a/freezone/canvases/user_eric",
-      { signal: controller.signal },
+      {
+        signal: controller.signal,
+        timeout: 8_000,
+        totalTimeout: 18_000,
+        retry: {
+          limit: 1,
+          retryOnTimeout: true,
+        },
+      },
     );
   });
 
