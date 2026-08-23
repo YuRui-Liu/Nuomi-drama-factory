@@ -1,5 +1,6 @@
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -330,3 +331,70 @@ def test_load_catalog_rejects_duplicate_ids(tmp_path):
 
     with pytest.raises(ValueError, match="duplicate.*drama_ext.ink_wash"):
         load_catalog(path)
+
+
+CURATED_STYLE_NAMES = {
+    "日系赛璐璐", "少女漫画", "热血少年漫", "韩式条漫",
+    "欧美超级英雄漫画", "美式复古漫画", "法式绘本", "水彩故事书",
+    "水墨国漫", "工笔重彩", "敦煌壁画国风", "2D 国漫厚涂",
+    "3D 国漫动画", "黏土定格", "剪纸动画", "黑白悬疑漫画",
+    "电影级写实", "复古胶片写实",
+}
+CURATED_REVISION = "3a9c63baa03e6bbe2f28c89a2654cf9845466646"
+
+
+@pytest.fixture
+def curated_catalog_path():
+    return (
+        Path(__file__).parents[1]
+        / "src"
+        / "novelvideo"
+        / "extension_styles"
+        / "catalog.json"
+    )
+
+
+def test_curated_catalog_has_exactly_the_required_styles(curated_catalog_path):
+    catalog = load_catalog(curated_catalog_path)
+
+    assert len(catalog) == 18
+    assert {style.name for style in catalog} == CURATED_STYLE_NAMES
+    assert len({style.id for style in catalog}) == 18
+    assert all(style.id.startswith("drama_ext.") for style in catalog)
+
+
+def test_curated_catalog_entries_have_complete_provenance_and_fragments(
+    curated_catalog_path,
+):
+    catalog = load_catalog(curated_catalog_path)
+
+    for style in catalog:
+        assert style.category in {"2d", "3d", "realistic", "chinese", "experimental"}
+        assert tuple(style.prompt_fragment) == FRAGMENT_KEYS
+        assert all(style.prompt_fragment[key] for key in FRAGMENT_KEYS)
+        assert style.use_cases
+        assert style.preview_asset.startswith("/images/extension-styles/")
+        assert style.preview_asset.endswith(".webp")
+        assert style.source["repository"] == "freestylefly/awesome-gpt-image-2"
+        assert style.source["source_ids"]
+        assert style.source["license_review"] == "approved"
+        assert style.source["imported_revision"] == CURATED_REVISION
+        assert style.version == "1"
+        assert compile_prompt_fragment(style)
+        assert "preserve identity" in " ".join(style.prompt_fragment["constraints"])
+        assert "wardrobe/props/action/setting from base prompt" in " ".join(
+            style.prompt_fragment["constraints"]
+        )
+
+
+def test_existing_builtin_style_preset_json_set_is_unchanged():
+    preset_dir = Path(__file__).parents[1] / "src" / "novelvideo" / "styles" / "presets"
+
+    assert {path.stem for path in preset_dir.glob("*.json")} == {
+        "anime",
+        "chinese_period_drama",
+        "guoman_fantasy",
+        "post_apocalyptic",
+        "realistic",
+        "republican_era_drama",
+    }
