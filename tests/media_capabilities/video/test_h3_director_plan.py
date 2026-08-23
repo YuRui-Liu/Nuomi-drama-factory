@@ -108,6 +108,99 @@ def test_actions_and_dialogue_must_be_increasing_and_inside_their_shot():
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "cues", "message"),
+    (
+        (
+            "actions",
+            (
+                H3ActionPlan(
+                    phase="execute",
+                    start_frame=20,
+                    end_frame=40,
+                    description="He turns.",
+                ),
+                H3ActionPlan(
+                    phase="react",
+                    start_frame=10,
+                    end_frame=20,
+                    description="He freezes.",
+                ),
+            ),
+            "actions.*in increasing frame order",
+        ),
+        (
+            "actions",
+            (
+                H3ActionPlan(
+                    phase="establish",
+                    start_frame=0,
+                    end_frame=30,
+                    description="He waits.",
+                ),
+                H3ActionPlan(
+                    phase="execute",
+                    start_frame=20,
+                    end_frame=50,
+                    description="He turns.",
+                ),
+            ),
+            "actions.*must not overlap",
+        ),
+        (
+            "dialogue",
+            (
+                H3DialogueCue(
+                    start_frame=40,
+                    end_frame=60,
+                    speaker="Lin Mo",
+                    speaker_id="S1",
+                    text="First in the tuple.",
+                    language="English",
+                ),
+                H3DialogueCue(
+                    start_frame=20,
+                    end_frame=30,
+                    speaker="Lin Mo",
+                    speaker_id="S1",
+                    text="Earlier in time.",
+                    language="English",
+                ),
+            ),
+            "dialogue.*in increasing frame order",
+        ),
+        (
+            "dialogue",
+            (
+                H3DialogueCue(
+                    start_frame=20,
+                    end_frame=50,
+                    speaker="Lin Mo",
+                    speaker_id="S1",
+                    text="One.",
+                    language="English",
+                ),
+                H3DialogueCue(
+                    start_frame=40,
+                    end_frame=60,
+                    speaker="Lin Mo",
+                    speaker_id="S1",
+                    text="Two.",
+                    language="English",
+                ),
+            ),
+            "dialogue.*must not overlap",
+        ),
+    ),
+)
+def test_cues_must_be_ordered_and_non_overlapping(field, cues, message):
+    payload = _shot().model_dump()
+    payload[field] = [cue.model_dump() for cue in cues]
+
+    with pytest.raises(ValidationError, match=message):
+        H3ShotPlan.model_validate(payload)
+
+
 def test_dynamic_camera_requires_direction_amplitude_and_speed():
     with pytest.raises(ValidationError, match="dynamic camera"):
         H3CameraPlan(type="orbit", direction="clockwise", amplitude=None, speed="slow")
@@ -130,12 +223,21 @@ def test_i2va_requires_first_frame_establish_anchor_and_later_change():
 
 
 def test_fl2va_requires_one_shot_and_differences_converging_before_last_frame():
+    shot = _shot()
+    converged_shot = shot.model_copy(
+        update={
+            "actions": (
+                shot.actions[0],
+                shot.actions[1].model_copy(update={"phase": "settle"}),
+            )
+        }
+    )
     base = dict(
         mode=H3Mode.FL2VA,
         total_frames=101,
         visual_style="cinematic realism",
         continuity_locks=("identity",),
-        shots=(_shot(),),
+        shots=(converged_shot,),
         soundscape="door rattle",
         music="low strings",
     )
@@ -151,6 +253,56 @@ def test_fl2va_requires_one_shot_and_differences_converging_before_last_frame():
                     convergence_frame=101,
                 ),
             ),
+        )
+
+
+def test_fl2va_requires_final_settle_or_end_lock_at_total_frames():
+    base = dict(
+        mode=H3Mode.FL2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        frame_differences=(
+            H3FrameDifference(
+                description="The hand reaches the handle.", convergence_frame=96
+            ),
+        ),
+        soundscape="door rattle",
+        music="low strings",
+    )
+
+    with pytest.raises(ValidationError, match="settle or end_lock"):
+        H3DirectorPlan(**base, shots=(_shot(),))
+
+    shot = _shot()
+    early_settle = shot.model_copy(
+        update={
+            "actions": (
+                shot.actions[0],
+                shot.actions[1].model_copy(
+                    update={"phase": "settle", "end_frame": 100}
+                ),
+            )
+        }
+    )
+    with pytest.raises(ValidationError, match="total_frames"):
+        H3DirectorPlan(**base, shots=(early_settle,))
+
+
+@pytest.mark.parametrize("shot_ids", (("1", "1"), ("2", "1")))
+def test_shot_ids_must_be_continuous_string_numbers_from_one(shot_ids):
+    with pytest.raises(ValidationError, match="shot_id.*continuous"):
+        H3DirectorPlan(
+            mode=H3Mode.I2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(
+                _shot(shot_id=shot_ids[0], end_frame=50),
+                _shot(shot_id=shot_ids[1], start_frame=50, end_frame=101),
+            ),
+            soundscape="door rattle",
+            music="low strings",
         )
 
 

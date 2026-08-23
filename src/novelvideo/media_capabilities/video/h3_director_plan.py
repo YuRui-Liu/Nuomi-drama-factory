@@ -41,7 +41,9 @@ class H3CameraPlan(BaseModel):
 class H3ActionPlan(BaseModel):
     model_config = _MODEL_CONFIG
 
-    phase: Literal["establish", "prepare", "execute", "react", "end_lock"]
+    phase: Literal[
+        "establish", "prepare", "execute", "react", "settle", "end_lock"
+    ]
     start_frame: int = Field(ge=0)
     end_frame: int = Field(gt=0)
     description: str = Field(min_length=1)
@@ -127,12 +129,16 @@ class H3ShotPlan(BaseModel):
         self, cues: tuple[H3ActionPlan, ...] | tuple[H3DialogueCue, ...], name: str
     ) -> None:
         previous_start = -1
+        previous_end = -1
         for cue in cues:
             if cue.start_frame < self.start_frame or cue.end_frame > self.end_frame:
                 raise ValueError(f"{name} must remain inside shot boundaries")
             if cue.start_frame < previous_start:
                 raise ValueError(f"{name} must be in increasing frame order")
+            if cue.start_frame < previous_end:
+                raise ValueError(f"{name} must not overlap")
             previous_start = cue.start_frame
+            previous_end = cue.end_frame
 
 
 class H3DirectorPlan(BaseModel):
@@ -174,7 +180,11 @@ class H3DirectorPlan(BaseModel):
 
     def _validate_shot_coverage(self) -> None:
         expected = 0
-        for shot in self.shots:
+        for number, shot in enumerate(self.shots, start=1):
+            if shot.shot_id != str(number):
+                raise ValueError(
+                    "shot_id values must be continuous string numbers from 1"
+                )
             if shot.start_frame != expected:
                 raise ValueError("shots must be contiguous from frame 0")
             expected = shot.end_frame
@@ -204,6 +214,11 @@ class H3DirectorPlan(BaseModel):
             if difference.convergence_frame < previous:
                 raise ValueError("frame differences must converge in increasing frame order")
             previous = difference.convergence_frame
+        final_action = self.shots[0].actions[-1]
+        if final_action.phase not in {"settle", "end_lock"}:
+            raise ValueError("fl2va final action must be settle or end_lock")
+        if final_action.end_frame != self.total_frames:
+            raise ValueError("fl2va final action must converge at total_frames")
 
     def _validate_speaker_identity(self) -> None:
         ids_by_speaker: dict[str, str] = {}

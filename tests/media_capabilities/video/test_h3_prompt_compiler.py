@@ -24,6 +24,7 @@ def _shot(
     start_frame: int = 0,
     end_frame: int = 101,
     dialogue: tuple[H3DialogueCue, ...] = (),
+    final_phase: str = "execute",
 ) -> H3ShotPlan:
     return H3ShotPlan(
         shot_id=shot_id,
@@ -44,7 +45,7 @@ def _shot(
                 description="Lin Mo braces against the door.",
             ),
             H3ActionPlan(
-                phase="execute",
+                phase=final_phase,
                 start_frame=start_frame + 12,
                 end_frame=end_frame,
                 description="He turns toward the rattling handle.",
@@ -106,7 +107,7 @@ def test_compiles_complete_fl2va_using_actual_legal_frame_end_time():
         total_frames=101,
         visual_style="cinematic realism",
         continuity_locks=("same face",),
-        shots=(_shot(),),
+        shots=(_shot(final_phase="settle"),),
         frame_differences=(
             H3FrameDifference(
                 description="His right hand finishes on the handle.",
@@ -126,6 +127,10 @@ def test_compiles_complete_fl2va_using_actual_legal_frame_end_time():
     )
     assert "Frame differences (Picture 1 to Picture 2):" in prompt
     assert "Converge by frame 96 (4.00s): His right hand finishes on the handle." in prompt
+    assert (
+        "Action settle, frames 12-101 (0.50-4.21s): "
+        "He turns toward the rattling handle."
+    ) in prompt
     assert prompt.index("integrated_multimodal_description") < prompt.index(
         "overall_soundscape"
     ) < prompt.index("non_diegetic_music")
