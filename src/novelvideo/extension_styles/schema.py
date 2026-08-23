@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,8 @@ ALLOWED_CATEGORIES = frozenset(
 # Terms are grouped by story dimension so this policy remains easy to extend.
 STORY_CONTENT_BIAS_TERMS = {
     "character": (
-        "princess", "prince", "emperor", "soldier", "detective", "cowboy",
+        "princess", "princesses", "prince", "emperor", "soldier", "soldiers",
+        "detective", "cowboy",
         "公主", "王子", "皇帝", "士兵", "侦探",
     ),
     "era": (
@@ -41,7 +43,7 @@ STORY_CONTENT_BIAS_TERMS = {
         "宝剑", "手枪", "手机", "雨伞",
     ),
     "action": (
-        "running", "fighting", "kissing", "holding a", "dancing",
+        "running", "fighting", "fights", "kissing", "holding a", "dancing",
         "骑马", "奔跑", "打斗", "亲吻", "手持",
     ),
 }
@@ -65,20 +67,38 @@ def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value)
 
 
+def _parse_fragments(value: Any) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, Mapping):
+        raise ValueError("prompt_fragment must be an object")
+    if set(value) != set(FRAGMENT_KEYS):
+        raise ValueError(
+            "prompt_fragment must contain exactly: " + ", ".join(FRAGMENT_KEYS)
+        )
+    return {
+        key: _string_tuple(value[key], f"prompt_fragment.{key}")
+        for key in FRAGMENT_KEYS
+    }
+
+
 def _story_bias_match(
     fragments: Mapping[str, tuple[str, ...]],
 ) -> tuple[str, str] | None:
-    text = " ".join(
-        phrase.casefold() for key in FRAGMENT_KEYS for phrase in fragments[key]
-    )
-    for dimension, terms in STORY_CONTENT_BIAS_TERMS.items():
-        for term in terms:
-            folded = term.casefold()
-            if folded.isascii():
-                if re.search(rf"(?<![a-z]){re.escape(folded)}(?![a-z])", text):
-                    return dimension, term
-            elif folded in text:
-                return dimension, term
+    for key in FRAGMENT_KEYS:
+        for phrase in fragments[key]:
+            folded_phrase = phrase.casefold()
+            for dimension, terms in STORY_CONTENT_BIAS_TERMS.items():
+                for term in terms:
+                    folded_term = term.casefold()
+                    if folded_term.isascii():
+                        pattern = rf"(?<!\w){re.escape(folded_term)}(?!\w)"
+                    else:
+                        pattern = (
+                            rf"(?<![\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
+                            rf"{re.escape(folded_term)}"
+                            rf"(?![\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
+                        )
+                    if re.search(pattern, folded_phrase):
+                        return dimension, term
     return None
 
 
@@ -93,6 +113,8 @@ def _deep_freeze(value: Any) -> Any:
         )
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("source only supports finite JSON-compatible numbers")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise ValueError("source only supports JSON-compatible values")
@@ -139,17 +161,7 @@ class ExtensionStyle:
                 "source.imported_revision must be 40 lowercase hexadecimal characters"
             )
 
-        raw_fragments = data.get("prompt_fragment")
-        if not isinstance(raw_fragments, Mapping):
-            raise ValueError("prompt_fragment must be an object")
-        if set(raw_fragments) != set(FRAGMENT_KEYS):
-            raise ValueError(
-                "prompt_fragment must contain exactly: " + ", ".join(FRAGMENT_KEYS)
-            )
-        fragments = {
-            key: _string_tuple(raw_fragments[key], f"prompt_fragment.{key}")
-            for key in FRAGMENT_KEYS
-        }
+        fragments = _parse_fragments(data.get("prompt_fragment"))
         biased_match = _story_bias_match(fragments)
         if biased_match is not None:
             dimension, term = biased_match
@@ -174,11 +186,10 @@ def compile_prompt_fragment(
     style_or_fragments: ExtensionStyle | Mapping[str, Sequence[str]],
 ) -> str:
     """Compile non-empty phrases in the catalog's fixed fragment order."""
-    fragments = (
-        style_or_fragments.prompt_fragment
-        if isinstance(style_or_fragments, ExtensionStyle)
-        else style_or_fragments
-    )
+    if isinstance(style_or_fragments, ExtensionStyle):
+        fragments = style_or_fragments.prompt_fragment
+    else:
+        fragments = _parse_fragments(style_or_fragments)
     return ", ".join(
         phrase.strip()
         for key in FRAGMENT_KEYS

@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 
@@ -104,6 +105,15 @@ def test_source_rejects_non_json_compatible_values(unsupported):
         ExtensionStyle.from_dict(data)
 
 
+@pytest.mark.parametrize("unsupported", [math.nan, math.inf, -math.inf])
+def test_source_rejects_non_finite_floats(unsupported):
+    data = valid_style()
+    data["source"]["confidence"] = unsupported
+
+    with pytest.raises(ValueError, match="source.*finite"):
+        ExtensionStyle.from_dict(data)
+
+
 def test_compiles_fragments_in_fixed_order_and_omits_empty_phrases():
     style = ExtensionStyle.from_dict(valid_style())
 
@@ -111,6 +121,23 @@ def test_compiles_fragments_in_fixed_order_and_omits_empty_phrases():
         "ink wash painting, rice-paper texture, expressive brushwork, "
         "restrained ink tones, layered depth, clean silhouettes"
     )
+
+
+@pytest.mark.parametrize(
+    "fragments",
+    [
+        {**valid_style()["prompt_fragment"], "medium": "ink wash"},
+        {
+            key: value
+            for key, value in valid_style()["prompt_fragment"].items()
+            if key != "camera"
+        },
+    ],
+    ids=["bare-string-value", "missing-key"],
+)
+def test_compile_rejects_invalid_fragment_mappings_with_value_error(fragments):
+    with pytest.raises(ValueError, match="prompt_fragment"):
+        compile_prompt_fragment(fragments)
 
 
 @pytest.mark.parametrize(
@@ -171,6 +198,45 @@ def test_rejects_each_story_content_bias_dimension(dimension, phrase):
 
     with pytest.raises(ValueError, match=rf"story content bias.*{dimension}"):
         ExtensionStyle.from_dict(data)
+
+
+@pytest.mark.parametrize(
+    "phrases",
+    [
+        ["holding", "a soft glow"],
+        ["tang", "dynasty texture"],
+    ],
+    ids=["holding-split", "dynasty-split"],
+)
+def test_story_bias_terms_do_not_match_across_phrases(phrases):
+    data = valid_style()
+    data["prompt_fragment"]["rendering"] = phrases
+
+    ExtensionStyle.from_dict(data)
+
+
+@pytest.mark.parametrize("phrase", ["princess2", "princess_name"])
+def test_english_story_terms_require_token_boundaries(phrase):
+    data = valid_style()
+    data["prompt_fragment"]["rendering"] = [phrase]
+
+    ExtensionStyle.from_dict(data)
+
+
+@pytest.mark.parametrize("phrase", ["princesses", "soldiers", "fights"])
+def test_rejects_common_story_term_inflections(phrase):
+    data = valid_style()
+    data["prompt_fragment"]["rendering"] = [phrase]
+
+    with pytest.raises(ValueError, match="story content bias"):
+        ExtensionStyle.from_dict(data)
+
+
+def test_chinese_story_term_does_not_match_inside_larger_word():
+    data = valid_style()
+    data["prompt_fragment"]["rendering"] = ["公主岭般的层叠山势"]
+
+    ExtensionStyle.from_dict(data)
 
 
 @pytest.mark.parametrize(
