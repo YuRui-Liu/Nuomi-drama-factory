@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { useState } from "react";
-import { FileText, Music2, Video } from "lucide-react";
+import { CircleSlash2, FileText, Music2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GroupVideoPromptDrawer } from "@/components/episode/narrative-workbench/group-video-prompt-drawer";
 import type { NarrativeStageState } from "@/lib/queries/narrative-groups";
 
 const stemLabel = (status: NarrativeStageState["dialogue_stem_status"], name: string) =>
   `${name}：${status === "succeeded" ? "已就绪" : status === "unavailable" ? "不可用" : "待处理"}`;
+
+export const isNonvisualVideoSkip = (stage: NarrativeStageState) =>
+  stage.status === "completed"
+  && stage.actual_mode === "skipped_nonvisual"
+  && !stage.video_asset;
 
 /** Logical shot view of one physical H3 director output. Changing a source is recomposition-only. */
 export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "", onDialogueSourceChange }: {
@@ -17,6 +22,13 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
   onDialogueSourceChange?: (request: { spanIndex: number; dialogueSource: "external_tts" | "h3_native" }) => void;
 }) {
   const [promptsOpen, setPromptsOpen] = useState(false);
+  if (isNonvisualVideoSkip(stage)) {
+    return <section className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-4" data-group-video-result data-group-video-skip>
+      <div className="flex items-center gap-2 text-amber-300"><CircleSlash2 className="size-4" /><h3 className="text-sm font-semibold">已跳过</h3></div>
+      <p className="mt-2 text-sm">该 Beat 仅包含制作/时长说明，没有可生成的视频画面</p>
+      <p className="mt-1 text-xs text-muted-foreground">编辑 Beat 后重新生成</p>
+    </section>;
+  }
   if (stage.status !== "completed" && !stage.video_asset) return null;
   return <section className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-4" data-group-video-result>
     <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Video className="size-4 text-primary" /><h3 className="text-sm font-semibold">组合视频</h3></div>{stage.status === "completed" || stage.manifest_asset ? <Button type="button" variant="outline" size="sm" onClick={() => setPromptsOpen(true)}><FileText className="mr-1 size-3" />生成提示词</Button> : null}</div>

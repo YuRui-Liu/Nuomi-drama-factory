@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { GroupVideoResult } from "@/components/episode/narrative-workbench/group-video-result";
+import { GroupVideoResult, isNonvisualVideoSkip } from "@/components/episode/narrative-workbench/group-video-result";
 
 vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/queries/narrative-groups")>();
@@ -15,6 +15,38 @@ vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
 });
 
 describe("GroupVideoResult", () => {
+  it("identifies only a completed nonvisual result without a video as skipped", () => {
+    expect(isNonvisualVideoSkip({ status: "completed", revision: 6, actual_mode: "skipped_nonvisual" })).toBe(true);
+    expect(isNonvisualVideoSkip({ status: "running", revision: 6, actual_mode: "skipped_nonvisual" })).toBe(false);
+    expect(isNonvisualVideoSkip({ status: "completed", revision: 6, actual_mode: "i2va" })).toBe(false);
+    expect(isNonvisualVideoSkip({
+      status: "completed",
+      revision: 6,
+      actual_mode: "skipped_nonvisual",
+      video_asset: "/media/group.mp4",
+    })).toBe(false);
+  });
+
+  it("explains a nonvisual skip without showing video production controls", () => {
+    render(<GroupVideoResult stage={{
+      status: "completed",
+      revision: 6,
+      actual_mode: "skipped_nonvisual",
+      manifest_asset: "/media/group.manifest.json",
+    }} />);
+
+    expect(screen.getByText("已跳过")).toBeInTheDocument();
+    expect(screen.getByText("该 Beat 仅包含制作/时长说明，没有可生成的视频画面")).toBeInTheDocument();
+    expect(screen.getByText("编辑 Beat 后重新生成")).toBeInTheDocument();
+    expect(screen.queryByText("组合视频")).not.toBeInTheDocument();
+    expect(screen.queryByText(/对白音轨/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/环境音轨/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成提示词" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/镜头切分/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /改用/ })).not.toBeInTheDocument();
+    expect(document.querySelector("video")).not.toBeInTheDocument();
+  });
+
   it("shows one physical video, stem state, and its logical VideoSpan dialogue sources", () => {
     render(<GroupVideoResult
       stage={{
