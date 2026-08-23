@@ -22,6 +22,15 @@ describe("composeImagePrompt", () => {
     },
   );
 
+  it.each(["toString", "constructor", "__proto__"])(
+    "treats inherited object key %s as an unknown id",
+    (id) => {
+      const prompt = "original prompt";
+      expect(() => composeImagePrompt(prompt, id)).not.toThrow();
+      expect(composeImagePrompt(prompt, id)).toBe(prompt);
+    },
+  );
+
   it("does not trim or normalize prompt whitespace", () => {
     const prompt = "\n  leading and trailing  \n";
     expect(composeImagePrompt(prompt, STYLE_ID)).toBe(`${prompt}\n\n${SUFFIX}`);

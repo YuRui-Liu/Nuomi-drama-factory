@@ -5,6 +5,7 @@ import {
   EXTENSION_STYLES_BY_ID,
   FRAGMENT_KEYS,
   getExtensionStyle,
+  parseExtensionStyleCatalog,
 } from "@/features/canvas/extension-styles/catalog";
 
 describe("extension style catalog", () => {
@@ -36,5 +37,38 @@ describe("extension style catalog", () => {
     expect(getExtensionStyle(id)).toBe(EXTENSION_STYLES_BY_ID[id]);
     expect(getExtensionStyle(id)?.name).toBe("日系赛璐璐");
     expect(getExtensionStyle("drama_ext.missing")).toBeUndefined();
+  });
+
+  it("publishes a deeply frozen catalog view", () => {
+    const style = EXTENSION_STYLES[0];
+    expect(Object.isFrozen(EXTENSION_STYLES)).toBe(true);
+    expect(Object.isFrozen(style)).toBe(true);
+    expect(Object.isFrozen(style.prompt_fragment)).toBe(true);
+    expect(Object.isFrozen(style.prompt_fragment.medium)).toBe(true);
+    expect(Object.isFrozen(style.source)).toBe(true);
+    expect(Object.isFrozen(style.source.source_ids)).toBe(true);
+  });
+
+  it.each([
+    ["non-array catalog", {}],
+    ["invalid category", [{ ...EXTENSION_STYLES[0], category: "photo" }]],
+    ["extra fragment key", [{
+      ...EXTENSION_STYLES[0],
+      prompt_fragment: {
+        ...EXTENSION_STYLES[0].prompt_fragment,
+        extra: ["bad"],
+      },
+    }]],
+    ["non-string fragment", [{
+      ...EXTENSION_STYLES[0],
+      prompt_fragment: {
+        ...EXTENSION_STYLES[0].prompt_fragment,
+        medium: [42],
+      },
+    }]],
+    ["missing source field", [{ ...EXTENSION_STYLES[0], source: {} }]],
+    ["non-string use case", [{ ...EXTENSION_STYLES[0], use_cases: [1] }]],
+  ])("rejects malformed runtime data: %s", (_label, value) => {
+    expect(() => parseExtensionStyleCatalog(value)).toThrow(/extension style catalog/i);
   });
 });

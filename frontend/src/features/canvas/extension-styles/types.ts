@@ -16,8 +16,9 @@ export type ExtensionStyleCategory =
   | "chinese"
   | "experimental";
 
-export interface ExtensionStylePromptFragment
-  extends Record<ExtensionStyleFragmentKey, readonly string[]> {}
+export type ExtensionStylePromptFragment = Readonly<
+  Record<ExtensionStyleFragmentKey, readonly string[]>
+>;
 
 export interface ExtensionStyleSource {
   readonly repository: string;
