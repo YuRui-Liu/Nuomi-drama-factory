@@ -37,6 +37,11 @@ def valid_style(**overrides):
     return data
 
 
+class MutableMetadata:
+    def __init__(self):
+        self.value = "mutable"
+
+
 def test_parses_valid_style_and_freezes_sequences():
     style = ExtensionStyle.from_dict(valid_style())
 
@@ -80,6 +85,23 @@ def test_source_is_recursively_immutable():
         style.source["provenance"]["authors"] = ()
     with pytest.raises(TypeError):
         style.source["provenance"]["authors"][0] = "Changed"
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        {"unapproved"},
+        bytearray(b"mutable"),
+        MutableMetadata(),
+    ],
+    ids=["set", "bytearray", "custom-mutable-object"],
+)
+def test_source_rejects_non_json_compatible_values(unsupported):
+    data = valid_style()
+    data["source"]["metadata"] = unsupported
+
+    with pytest.raises(ValueError, match="source.*JSON-compatible values"):
+        ExtensionStyle.from_dict(data)
 
 
 def test_compiles_fragments_in_fixed_order_and_omits_empty_phrases():

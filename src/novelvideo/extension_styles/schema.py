@@ -84,12 +84,18 @@ def _story_bias_match(
 
 def _deep_freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError(
+                "source only supports JSON-compatible values with string keys"
+            )
         return MappingProxyType(
             {key: _deep_freeze(item) for key, item in value.items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ValueError("source only supports JSON-compatible values")
 
 
 @dataclass(frozen=True)
