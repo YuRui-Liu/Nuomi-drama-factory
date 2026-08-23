@@ -884,12 +884,21 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
                 "mode": "fl2va",
                 "shots": [{"action": "camera tracks quickly to the locked end pose"}],
                 "credential": "must-not-leak",
+                "token": "director-token-secret",
+                "headers": {"X-Api-Key": "director-header-secret"},
+                "workflow": {"nodes": [{"secret": "director-workflow-secret"}]},
                 "source_path": str(tmp_path / "private" / "plan.json"),
             },
             "prompt_profile": {
                 "id": "minimax-h3-director", "version": 4, "compiler_version": 1,
+                "token": "profile-token-secret",
             },
-            "quality_report": {"passed": True, "issues": []},
+            "quality_report": {
+                "passed": True,
+                "issues": [],
+                "headers": {"X-Api-Key": "quality-header-secret"},
+                "workflow_json": {"token": "quality-workflow-secret"},
+            },
             "input_summary": {
                 "beat_ids": ["beat-1", "beat-2"],
                 "mode": "fl2va",
@@ -897,6 +906,9 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
                 "first_frame_sha256": "a" * 64,
                 "last_frame_sha256": "b" * 64,
                 "authorization": "Bearer secret",
+                "token": "summary-token-secret",
+                "headers": {"X-Api-Key": "summary-header-secret"},
+                "workflow": {"credential": "summary-workflow-secret"},
                 "server_path": str(tmp_path),
             },
         }],
@@ -922,9 +934,75 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
     assert item["model"] == "runninghub:minimax-h3"
     assert item["provider_task_id"] == "task-42"
     serialized = response.text.lower()
-    for forbidden in ("api_key", "authorization", "credential", "workflow_json"):
+    for forbidden in (
+        "api_key", "authorization", "credential", "workflow_json", "x-api-key",
+        '"token"', '"headers"', '"workflow":{"nodes"',
+    ):
         assert forbidden not in serialized
+    for secret in (
+        "manifest-secret", "must-not-leak", "director-token-secret",
+        "director-header-secret", "director-workflow-secret", "profile-token-secret",
+        "quality-header-secret", "quality-workflow-secret", "summary-token-secret",
+        "summary-header-secret", "summary-workflow-secret",
+    ):
+        assert secret not in serialized
     assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
+
+
+def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+            "director_plan": {
+                "mode": "i2va", "visual_style": str(tmp_path),
+                "api_key": "plan-api-secret", "token": "plan-token-secret",
+                "headers": {"X-Api-Key": "plan-header-secret"},
+                "workflow": {"nodes": [{"credential": "plan-workflow-secret"}]},
+            },
+            "prompt_profile": {
+                "id": "minimax-h3-director", "version": 4,
+                "authorization": "profile-auth-secret",
+            },
+            "quality_report": {
+                "passed": True,
+                "issues": [{
+                    "code": "safe-code", "message": str(tmp_path),
+                    "credential": "quality-credential-secret",
+                }],
+                "workflow_json": {"token": "quality-workflow-secret"},
+            },
+            "input_summary": {
+                "beat_ids": ["beat-1"], "mode": "i2va", "duration_seconds": 5,
+                "first_frame_sha256": "a" * 64,
+                "server_path": str(tmp_path), "token": "summary-token-secret",
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    unit = response.json()["data"]["units"][0]
+    assert unit["director_plan"] == {"mode": "i2va"}
+    assert unit["quality_report"] == {
+        "passed": True, "issues": [{"code": "safe-code"}],
+    }
+    serialized = response.text.lower()
+    for forbidden in (
+        "api_key", "authorization", "credential", "workflow_json", "x-api-key",
+        '"token"', '"headers"', '"nodes"', str(tmp_path).lower(),
+        "plan-api-secret", "plan-token-secret", "plan-header-secret",
+        "plan-workflow-secret", "profile-auth-secret", "quality-credential-secret",
+        "quality-workflow-secret", "summary-token-secret",
+    ):
+        assert forbidden not in serialized
 
 
 def test_get_video_prompts_keeps_legacy_final_prompt(monkeypatch, tmp_path):

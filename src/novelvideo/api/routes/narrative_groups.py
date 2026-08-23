@@ -262,12 +262,79 @@ def _serialize_reference_preview(
     }
 
 
-_PROMPT_REVIEW_SECRET_KEYS = (
-    "api_key", "authorization", "credential", "secret", "workflow_json",
-)
-_SAFE_INPUT_SUMMARY_KEYS = {
-    "beat_ids", "mode", "duration_seconds", "aspect_ratio", "resolution",
-    "first_frame_sha256", "last_frame_sha256",
+_REJECTED_REVIEW_VALUE = object()
+_SAFE_SCALAR = object()
+_CAMERA_PLAN_SCHEMA = {
+    "type": _SAFE_SCALAR,
+    "direction": _SAFE_SCALAR,
+    "amplitude": _SAFE_SCALAR,
+    "speed": _SAFE_SCALAR,
+}
+_ACTION_PLAN_SCHEMA = {
+    "phase": _SAFE_SCALAR,
+    "start_frame": _SAFE_SCALAR,
+    "end_frame": _SAFE_SCALAR,
+    "description": _SAFE_SCALAR,
+}
+_DIALOGUE_CUE_SCHEMA = {
+    "start_frame": _SAFE_SCALAR,
+    "end_frame": _SAFE_SCALAR,
+    "speaker": _SAFE_SCALAR,
+    "speaker_id": _SAFE_SCALAR,
+    "text": _SAFE_SCALAR,
+    "language": _SAFE_SCALAR,
+    "continuation": _SAFE_SCALAR,
+    "truncated": _SAFE_SCALAR,
+}
+_SHOT_PLAN_SCHEMA = {
+    "shot_id": _SAFE_SCALAR,
+    "start_frame": _SAFE_SCALAR,
+    "end_frame": _SAFE_SCALAR,
+    "framing": _SAFE_SCALAR,
+    "angle": _SAFE_SCALAR,
+    "focus": _SAFE_SCALAR,
+    "composition": _SAFE_SCALAR,
+    "camera": _CAMERA_PLAN_SCHEMA,
+    "actions": [_ACTION_PLAN_SCHEMA],
+    "dialogue": [_DIALOGUE_CUE_SCHEMA],
+}
+_DIRECTOR_PLAN_SCHEMA = {
+    "mode": _SAFE_SCALAR,
+    "fps": _SAFE_SCALAR,
+    "total_frames": _SAFE_SCALAR,
+    "visual_style": _SAFE_SCALAR,
+    "continuity_locks": [_SAFE_SCALAR],
+    "shots": [_SHOT_PLAN_SCHEMA],
+    "frame_differences": [{
+        "description": _SAFE_SCALAR,
+        "convergence_frame": _SAFE_SCALAR,
+    }],
+    "soundscape": _SAFE_SCALAR,
+    "music": _SAFE_SCALAR,
+}
+_PROMPT_PROFILE_SCHEMA = {
+    "id": _SAFE_SCALAR,
+    "version": _SAFE_SCALAR,
+    "compiler_version": _SAFE_SCALAR,
+}
+_QUALITY_REPORT_SCHEMA = {
+    "passed": _SAFE_SCALAR,
+    "issues": [{
+        "code": _SAFE_SCALAR,
+        "message": _SAFE_SCALAR,
+        "severity": _SAFE_SCALAR,
+        "location": _SAFE_SCALAR,
+    }],
+    "version": _SAFE_SCALAR,
+}
+_INPUT_SUMMARY_SCHEMA = {
+    "beat_ids": [_SAFE_SCALAR],
+    "mode": _SAFE_SCALAR,
+    "duration_seconds": _SAFE_SCALAR,
+    "aspect_ratio": _SAFE_SCALAR,
+    "resolution": _SAFE_SCALAR,
+    "first_frame_sha256": _SAFE_SCALAR,
+    "last_frame_sha256": _SAFE_SCALAR,
 }
 
 
@@ -278,33 +345,44 @@ def _manifest_mapping(value: Any) -> dict[str, Any]:
     return dict(dump(mode="json")) if callable(dump) else {}
 
 
-def _safe_prompt_review_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        result = {}
-        for raw_key, item in value.items():
-            key = str(raw_key)
-            lowered = key.lower()
-            if any(secret in lowered for secret in _PROMPT_REVIEW_SECRET_KEYS):
+def _project_review_value(value: Any, schema: Any) -> Any:
+    if schema is _SAFE_SCALAR:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str) and not Path(value).is_absolute():
+            return value
+        return _REJECTED_REVIEW_VALUE
+    if isinstance(schema, dict):
+        source = _manifest_mapping(value)
+        projected = {}
+        for key, child_schema in schema.items():
+            if key not in source:
                 continue
-            if lowered.endswith("_path") or lowered.endswith("_paths"):
-                continue
-            sanitized = _safe_prompt_review_value(item)
-            if sanitized is not None:
-                result[key] = sanitized
-        return result
-    if isinstance(value, (list, tuple)):
+            child = _project_review_value(source[key], child_schema)
+            if child is not _REJECTED_REVIEW_VALUE:
+                projected[key] = child
+        return projected
+    if isinstance(schema, list) and len(schema) == 1:
+        if not isinstance(value, (list, tuple)):
+            return []
         return [
-            sanitized
+            child
             for item in value
-            if (sanitized := _safe_prompt_review_value(item)) is not None
+            if (child := _project_review_value(item, schema[0]))
+            is not _REJECTED_REVIEW_VALUE
         ]
-    if isinstance(value, str) and Path(value).is_absolute():
-        return None
-    return value
+    return _REJECTED_REVIEW_VALUE
+
+
+def _safe_review_string(value: Any) -> str:
+    projected = _project_review_value(value, _SAFE_SCALAR)
+    return projected if isinstance(projected, str) else ""
 
 
 def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> list[str]:
-    summary = _manifest_mapping(entry.get("input_summary"))
+    summary = _project_review_value(
+        entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
+    )
     beat_ids = [str(value) for value in summary.get("beat_ids") or () if str(value)]
     if beat_ids:
         return beat_ids
@@ -333,8 +411,12 @@ def _serialize_prompt_review(
     for raw_entry in manifest.get("entries") or ():
         entry = _manifest_mapping(raw_entry)
         segment = _manifest_mapping(entry.get("segment"))
-        summary = _manifest_mapping(entry.get("input_summary"))
-        plan = _manifest_mapping(entry.get("director_plan"))
+        summary = _project_review_value(
+            entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
+        )
+        plan = _project_review_value(
+            entry.get("director_plan"), _DIRECTOR_PLAN_SCHEMA
+        )
         beat_ids = _review_beat_ids(entry, segment)
         first_frame = str(segment.get("first_frame") or "")
         last_frame = str(segment.get("last_frame") or "")
@@ -350,11 +432,6 @@ def _serialize_prompt_review(
             or segment.get("duration_seconds")
             or 0
         )
-        safe_summary = {
-            key: value
-            for key, value in summary.items()
-            if key in _SAFE_INPUT_SUMMARY_KEYS
-        }
         units.append({
             "beat_ids": beat_ids,
             "label": _review_label(beat_ids),
@@ -363,22 +440,33 @@ def _serialize_prompt_review(
             "first_frame_url": _asset_url(project, project_dir, first_frame),
             "last_frame_url": _asset_url(project, project_dir, last_frame),
             "director_plan": (
-                _safe_prompt_review_value(plan) if entry.get("director_plan") is not None else None
+                plan if entry.get("director_plan") is not None else None
             ),
             "final_prompt": str(segment.get("prompt") or ""),
             "prompt_profile": (
-                _safe_prompt_review_value(_manifest_mapping(entry.get("prompt_profile")))
+                _project_review_value(
+                    entry.get("prompt_profile"), _PROMPT_PROFILE_SCHEMA
+                )
                 if entry.get("prompt_profile") is not None else None
             ),
             "quality_report": (
-                _safe_prompt_review_value(_manifest_mapping(entry.get("quality_report")))
+                _project_review_value(
+                    entry.get("quality_report"), _QUALITY_REPORT_SCHEMA
+                )
                 if entry.get("quality_report") is not None else None
             ),
-            "input_summary": _safe_prompt_review_value(safe_summary),
-            "workflow": str(entry.get("workflow_id") or manifest.get("workflow_id") or ""),
-            "model": str(entry.get("model") or manifest.get("model") or getattr(stage, "actual_model", "")),
-            "provider": str(getattr(stage, "actual_provider", "") or ""),
-            "provider_task_id": str(
+            "input_summary": summary,
+            "workflow": _safe_review_string(
+                entry.get("workflow_id") or manifest.get("workflow_id") or ""
+            ),
+            "model": _safe_review_string(
+                entry.get("model") or manifest.get("model")
+                or getattr(stage, "actual_model", "")
+            ),
+            "provider": _safe_review_string(
+                getattr(stage, "actual_provider", "") or ""
+            ),
+            "provider_task_id": _safe_review_string(
                 entry.get("provider_task_id") or manifest.get("provider_task_id") or ""
             ),
         })
