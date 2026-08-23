@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,6 +27,14 @@ DEFAULT_CATALOG = REPOSITORY_ROOT / "src" / "novelvideo" / "extension_styles" / 
 
 class StyleImportError(ValueError):
     """Raised when an input cannot safely produce import candidates."""
+
+
+def _io_error(action: str, path: Path, exc: OSError | UnicodeError) -> StyleImportError:
+    details = type(exc).__name__
+    errno = getattr(exc, "errno", None)
+    if errno is not None:
+        details += f", errno={errno}"
+    return StyleImportError(f"cannot {action} {path} ({details})")
 
 
 def _text(value: Any) -> str:
@@ -161,7 +170,7 @@ def _read_json(path: Path) -> Any:
             f"invalid JSON in {path}: line {exc.lineno} column {exc.colno}: {exc.msg}"
         ) from exc
     except (OSError, UnicodeError) as exc:
-        raise StyleImportError(f"cannot read {path}: {getattr(exc, 'strerror', None) or str(exc)}") from exc
+        raise _io_error("read", path, exc) from exc
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -186,7 +195,7 @@ def import_styles(source: Path, revision: str, output: Path, catalog: Path = DEF
         _write_json(output / "candidates.json", {"candidates": candidates, "revision": revision})
         _write_json(output / "diff.json", diff)
     except (OSError, UnicodeError) as exc:
-        raise StyleImportError(f"cannot write {output}: {getattr(exc, 'strerror', None) or str(exc)}") from exc
+        raise _io_error("write", output, exc) from exc
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -206,6 +215,8 @@ def parse_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
 
 
 def main() -> int:
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = create_parser()
     args = parse_args(parser)
     try:

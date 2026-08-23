@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,12 +64,16 @@ def write_source(path: Path) -> None:
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("PYTHONUTF8", None)
+    env.pop("PYTHONIOENCODING", None)
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
         check=False,
     )
 
@@ -271,10 +276,11 @@ def test_invalid_json_reports_path_line_and_column_without_traceback(tmp_path: P
 
 
 def test_missing_source_reports_path_without_traceback(tmp_path: Path) -> None:
-    source = tmp_path / "missing.json"
+    source = tmp_path / "缺失.json"
     result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(tmp_path / "out"))
     assert result.returncode != 0
     assert str(source) in result.stderr
+    assert "(FileNotFoundError, errno=2)" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -286,4 +292,5 @@ def test_output_write_failure_reports_path_without_traceback(tmp_path: Path) -> 
     result = run_cli("--source", str(source), "--revision", REVISION, "--output", str(output))
     assert result.returncode != 0
     assert str(output) in result.stderr
+    assert "(FileExistsError, errno=17)" in result.stderr
     assert "Traceback" not in result.stderr
