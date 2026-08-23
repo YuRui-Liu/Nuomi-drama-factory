@@ -47,8 +47,27 @@ describe("ExtensionStyleDrawer", () => {
     expect(screen.getByRole("dialog", { name: "漫剧提示词库" })).toBeVisible();
     expect(screen.getByText("选择一个扩展风格，仅在生成请求中追加风格片段。")).toBeVisible();
     expect(screen.getByRole("searchbox", { name: "搜索扩展风格" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "扩展风格分类" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps the drawer and its interactive backdrop above the operations panel", () => {
+    const onOpenChange = vi.fn();
+    render(
+      <ExtensionStyleDrawer
+        open
+        value={null}
+        onChange={vi.fn()}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "漫剧提示词库" })).toHaveClass("z-[70]");
+    const backdrop = screen.getByTestId("extension-style-drawer-backdrop");
+    expect(backdrop).toHaveClass("fixed", "inset-0", "-z-10");
+    fireEvent.pointerDown(backdrop);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
@@ -109,6 +128,44 @@ describe("ExtensionStyleDrawer", () => {
     expect(screen.getByRole("button", { name: "已应用" })).toBeDisabled();
   });
 
+  it("drops filtered pending details so a hidden style cannot be applied", async () => {
+    const user = userEvent.setup();
+    render(<DrawerHarness initialValue={CEL_STYLE.id} />);
+
+    expect(screen.getByRole("heading", { name: CEL_STYLE.name })).toBeVisible();
+    await user.type(
+      screen.getByRole("searchbox", { name: "搜索扩展风格" }),
+      "肯定不存在的风格关键词",
+    );
+
+    expect(screen.getByText("没有找到匹配的扩展风格")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: CEL_STYLE.name })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已应用" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("extension-style-mobile-actions")).not.toBeInTheDocument();
+  });
+
+  it("keeps details sticky on desktop and exposes immediate mobile actions", async () => {
+    const user = userEvent.setup();
+    render(
+      <ExtensionStyleDrawer open value={null} onChange={vi.fn()} onOpenChange={vi.fn()} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: `查看风格：${REALISTIC_STYLE.name}` }));
+    const desktopDetails = screen.getByTestId("extension-style-desktop-details");
+    expect(desktopDetails).toHaveClass("sticky", "top-0");
+    expect(within(desktopDetails).getByRole("heading", { name: REALISTIC_STYLE.name })).toBeVisible();
+
+    const mobileActions = screen.getByTestId("extension-style-mobile-actions");
+    expect(mobileActions).toHaveClass("sticky", "bottom-0", "md:hidden");
+    expect(within(mobileActions).getByText(REALISTIC_STYLE.name)).toBeVisible();
+    expect(within(mobileActions).getByRole("button", { name: "立即应用风格" })).toBeVisible();
+
+    await user.click(within(mobileActions).getByRole("button", { name: "查看详情" }));
+    const mobileDetails = screen.getByTestId("extension-style-mobile-details");
+    expect(within(mobileDetails).getByRole("heading", { name: REALISTIC_STYLE.name })).toBeVisible();
+    expect(within(mobileDetails).getByRole("button", { name: "关闭详情" })).toBeVisible();
+  });
+
   it("shows card and detail preview fallbacks and resets detail fallback on switching", async () => {
     const user = userEvent.setup();
     render(
@@ -126,6 +183,35 @@ describe("ExtensionStyleDrawer", () => {
     expect(screen.queryByText("详情预览暂不可用")).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: `${REALISTIC_STYLE.name}详情预览` })).toBeVisible();
   });
+
+  it("lazy-loads previews and announces applied versus pending selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <ExtensionStyleDrawer
+        open
+        value={CEL_STYLE.id}
+        onChange={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const appliedCard = screen.getByRole("button", {
+      name: `查看风格：${CEL_STYLE.name}，已应用，已选中`,
+    });
+    expect(appliedCard).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("img", { name: `${CEL_STYLE.name}预览` })).toHaveAttribute(
+      "loading",
+      "lazy",
+    );
+
+    await user.click(screen.getByRole("button", { name: `查看风格：${REALISTIC_STYLE.name}` }));
+    expect(
+      screen.getByRole("button", { name: `查看风格：${REALISTIC_STYLE.name}，已选中` }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: `查看风格：${CEL_STYLE.name}，已应用` }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
 });
 
 describe("ExtensionStyleChip", () => {
@@ -134,7 +220,11 @@ describe("ExtensionStyleChip", () => {
     const onChange = vi.fn();
     const { rerender } = render(<ExtensionStyleChip value={null} onChange={onChange} />);
 
-    await user.click(screen.getByRole("button", { name: "提示词库" }));
+    const libraryTrigger = screen.getByRole("button", { name: "提示词库" });
+    expect(libraryTrigger).toHaveAttribute("aria-haspopup", "dialog");
+    expect(libraryTrigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(libraryTrigger);
+    expect(libraryTrigger).toHaveAttribute("aria-expanded", "true");
     await user.type(screen.getByRole("searchbox", { name: "搜索扩展风格" }), "赛璐璐");
     await user.click(screen.getByRole("button", { name: `查看风格：${CEL_STYLE.name}` }));
     await user.click(screen.getByRole("button", { name: "应用风格" }));
@@ -146,6 +236,8 @@ describe("ExtensionStyleChip", () => {
       name: `打开提示词库，当前风格：${CEL_STYLE.name}`,
     });
     expect(selectedStyleButton).toBeVisible();
+    expect(selectedStyleButton).toHaveAttribute("aria-haspopup", "dialog");
+    expect(selectedStyleButton).toHaveAttribute("aria-expanded", "false");
     await user.click(selectedStyleButton);
     const dialog = screen.getByRole("dialog", { name: "漫剧提示词库" });
     expect(within(dialog).getByRole("heading", { name: CEL_STYLE.name })).toBeVisible();
@@ -172,6 +264,31 @@ describe("ExtensionStyleChip", () => {
     expect(onOpenChange).toHaveBeenLastCalledWith(true);
     unmount();
     expect(onOpenChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("isolates trigger and remove clicks from the image node", async () => {
+    const user = userEvent.setup();
+    const parentClick = vi.fn();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <div onClick={parentClick}>
+        <ExtensionStyleChip value={null} onChange={onChange} />
+      </div>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "提示词库" }));
+    expect(parentClick).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    rerender(
+      <div onClick={parentClick}>
+        <ExtensionStyleChip value={CEL_STYLE.id} onChange={onChange} />
+      </div>,
+    );
+    await user.click(
+      await screen.findByRole("button", { name: `移除扩展风格：${CEL_STYLE.name}` }),
+    );
+    expect(parentClick).not.toHaveBeenCalled();
   });
 });
 

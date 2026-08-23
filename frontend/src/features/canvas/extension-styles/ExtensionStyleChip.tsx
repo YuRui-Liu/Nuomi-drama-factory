@@ -42,8 +42,13 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange }: ExtensionS
           <button
             type="button"
             aria-label={`打开提示词库，当前风格：${style.name}`}
+            aria-haspopup="dialog"
+            aria-expanded={open}
             className="inline-flex h-7 items-center gap-1.5 rounded-l-md px-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => handleOpenChange(true)}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleOpenChange(true);
+            }}
           >
             <Library aria-hidden className="size-3.5" />
             <span>{style.name}</span>
@@ -52,13 +57,26 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange }: ExtensionS
             type="button"
             aria-label={`移除扩展风格：${style.name}`}
             className="inline-flex size-7 items-center justify-center rounded-r-md border-l border-border text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => onChange(null)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onChange(null);
+            }}
           >
             <X aria-hidden className="size-3.5" />
           </button>
         </div>
       ) : (
-        <Button type="button" variant="outline" size="sm" onClick={() => handleOpenChange(true)}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleOpenChange(true);
+          }}
+        >
           <Library aria-hidden />
           提示词库
         </Button>
