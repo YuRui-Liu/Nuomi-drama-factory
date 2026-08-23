@@ -178,6 +178,7 @@ import {
 import { hasImageGenPromptOverride } from '@/features/canvas/nodes/imageGenPrompt';
 import { orderedReferenceUrlsWithOwnFirst } from '@/features/canvas/nodes/referenceOrdering';
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
+import { composeImagePrompt } from '@/features/canvas/extension-styles/composePrompt';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -311,6 +312,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const styleTemplateId =
     typeof data.styleTemplateId === 'string' && data.styleTemplateId.length > 0
       ? data.styleTemplateId
+      : null;
+  const extensionStyleId =
+    typeof data.extensionStyleId === 'string'
+      ? data.extensionStyleId
       : null;
   const referenceImageUrl =
     typeof data.referenceImageUrl === 'string' && data.referenceImageUrl.length > 0
@@ -877,8 +882,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       : [upstreamTextJoined, ownPrompt]
         .filter((s) => s.length > 0)
         .join('\n\n');
+    const composedPrompt = composeImagePrompt(effectivePrompt, extensionStyleId);
     const genPayload = {
-      prompt: effectivePrompt,
+      prompt: composedPrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
       // 非标准值（如 "43:24"）或 "auto"，提交前吸附到最接近的合法比例（auto→1:1）。
       aspectRatio: snapToAllowedAspectRatio(
@@ -1040,6 +1046,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     cameraSelection,
     count,
     effectiveCount,
+    extensionStyleId,
     id,
     isImage2,
     modelId,

@@ -347,6 +347,7 @@ export interface ImageGenNodeData extends NodeImageData {
   requestAspectRatio?: string;
   count?: ImageGenCount;
   styleTemplateId?: string | null;
+  extensionStyleId?: string | null;
   focusRegion?: ImageGenFocusRegion | null;
   cameraSelection?: ImageGenCameraSelection | null;
   /** User-uploaded reference image, fed into the generation request. */
