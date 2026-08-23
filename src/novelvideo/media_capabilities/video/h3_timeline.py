@@ -7,7 +7,7 @@ import math
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -66,6 +66,10 @@ class H3TimelineEntry(BaseModel):
     dialogue_end_seconds: float | None = None
     speaker: str | None = None
     dialogue_source: DialogueSource | None = None
+    director_plan: dict[str, Any] | None = None
+    prompt_profile: dict[str, Any] | None = None
+    quality_report: dict[str, Any] | None = None
+    input_summary: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def derive_metadata(self) -> "H3TimelineEntry":

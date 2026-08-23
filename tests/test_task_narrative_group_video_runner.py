@@ -3,6 +3,26 @@ from types import SimpleNamespace
 import asyncio
 
 
+class _JsonEvidence:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def model_dump(self, *, mode):
+        assert mode == "json"
+        return self.payload
+
+
+def _optimizer_result(prompt: str):
+    return SimpleNamespace(
+        prompt=prompt,
+        plan=_JsonEvidence({"mode": "i2va", "total_frames": 120, "shots": []}),
+        quality_report=_JsonEvidence({"passed": True, "issues": [], "version": 1}),
+        prompt_profile_id="minimax-h3-director",
+        prompt_profile_version=4,
+        compiler_version=1,
+    )
+
+
 def _seed_group(tmp_path: Path):
     from novelvideo.narrative_groups.service import advance_revision, group_beats, record_stage_result, save_groups
 
@@ -91,7 +111,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
             optimization_contexts.append((segment.segment_id, context, mode))
             await asyncio.sleep(0)
             active -= 1
-            return SimpleNamespace(prompt=f"优化：{segment.segment_id}")
+            return _optimizer_result(f"优化：{segment.segment_id}")
 
     async def get_beats(_ctx, _episode):
         return [
@@ -135,53 +155,134 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     state = load_groups(tmp_path, 1)[0].stages["video"]
     assert state.video_asset.endswith("ng-01_r1.mp4")
     assert state.manifest_asset.endswith("ng-01_r1.manifest.json")
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+    manifest = load_h3_director_manifest(state.manifest_asset)
+    assert [entry.segment.prompt for entry in manifest.entries] == [
+        "优化：beat-1", "优化：beat-2"
+    ]
+    assert manifest.entries[0].prompt_profile == {
+        "id": "minimax-h3-director", "version": 4, "compiler_version": 1
+    }
+    assert manifest.entries[0].director_plan["mode"] == "i2va"
+    assert manifest.entries[0].quality_report["passed"] is True
+    assert manifest.entries[0].input_summary == {
+        "beat_ids": ["beat-1"],
+        "mode": "i2va",
+        "duration_seconds": 5.0,
+        "first_frame_sha256": optimization_contexts[0][1].first_frame_sha256,
+        "last_frame_sha256": None,
+    }
 
 
-def test_group_video_optimizer_failure_does_not_submit_director_task(tmp_path, monkeypatch):
+def test_group_video_optimizer_connection_failure_fails_before_transport(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import narrative_group_video
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+        H3PromptOptimizationUnavailable,
+    )
     from novelvideo.narrative_groups.service import load_groups
 
     _seed_group(tmp_path)
-    submitted = []
+    transport_calls = []
 
     class FailingOptimizer:
         async def optimize_segment(self, *_args, **_kwargs):
-            raise RuntimeError("optimizer unavailable")
+            raise H3PromptOptimizationUnavailable("Connection error after 3 attempts")
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
+
+    async def generate(_ctx, *, segments, output_path, **_kwargs):
+        transport_calls.extend(segment.prompt for segment in segments)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path, provider_task_id="provider-1", actual_mode="i2va"
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: FailingOptimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
+
+    import pytest
+
+    with pytest.raises(H3PromptOptimizationUnavailable):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        )
+
+    assert transport_calls == []
+    assert load_groups(tmp_path, 1)[0].stages["video"].status == "failed"
+
+
+def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatch):
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+        H3PromptQualityIssue,
+        H3PromptQualityReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    transport_calls = []
+
+    class BadPlanner:
+        async def optimize_segment(self, *_args, **_kwargs):
+            raise H3PromptQualityError(H3PromptQualityReport(
+                passed=False,
+                issues=(H3PromptQualityIssue(
+                    code="vague_action", message="bad plan", location="shots.0"
+                ),),
+            ))
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
 
     async def generate(*_args, **_kwargs):
-        submitted.append(True)
-        raise AssertionError("must not submit")
+        transport_calls.append("called")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: FailingOptimizer())
+    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: BadPlanner())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
-    ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
 
-    try:
+    import pytest
+
+    with pytest.raises(H3PromptQualityError, match="vague_action"):
         narrative_group_video.run_narrative_group_video(
             {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
         )
-    except RuntimeError as exc:
-        assert "optimizer unavailable" in str(exc)
-    else:
-        raise AssertionError("expected optimizer failure")
-
-    assert submitted == []
-    assert load_groups(tmp_path, 1)[0].stages["video"].status == "failed"
+    assert transport_calls == []
 
 
-def test_group_video_external_tts_requires_successful_stems(tmp_path, monkeypatch):
+def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
+    tmp_path, monkeypatch
+):
     from novelvideo.task_backend.runners import narrative_group_video
+    from novelvideo.media_capabilities.audio.stem_separator import (
+        StemSeparationUnavailable,
+    )
     from novelvideo.narrative_groups.service import load_groups
 
     _seed_group(tmp_path)
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return SimpleNamespace(prompt=segment.prompt)
+            return _optimizer_result(segment.prompt)
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
@@ -194,18 +295,25 @@ def test_group_video_external_tts_requires_successful_stems(tmp_path, monkeypatc
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
-    monkeypatch.setattr(narrative_group_video, "_separate_stems", lambda *_args: (_ for _ in ()).throw(RuntimeError("demucs failed")))
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_separate_stems",
+        lambda *_args: (_ for _ in ()).throw(
+            StemSeparationUnavailable("demucs is not installed")
+        ),
+    )
     ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
 
-    try:
-        narrative_group_video.run_narrative_group_video(
-            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
-        )
-    except RuntimeError as exc:
-        assert "demucs failed" in str(exc)
-    else:
-        raise AssertionError("expected stem separation failure")
-    assert load_groups(tmp_path, 1)[0].stages["video"].status == "failed"
+    result = narrative_group_video.run_narrative_group_video(
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+    )
+
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    assert result["status"] == "completed"
+    assert stage.status == "completed"
+    assert stage.video_asset
+    assert stage.dialogue_stem_status == "unavailable"
+    assert stage.ambience_stem_status == "unavailable"
 
 
 def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch):
@@ -215,7 +323,7 @@ def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return SimpleNamespace(prompt=segment.prompt)
+            return _optimizer_result(segment.prompt)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -258,7 +366,7 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return SimpleNamespace(prompt=segment.prompt)
+            return _optimizer_result(segment.prompt)
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
@@ -279,3 +387,404 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
     state = load_groups(tmp_path, 1)[0].stages["video"]
     assert state.revision == 2
     assert state.status == "queued"
+
+
+def test_director_context_uses_saved_camera_actor_and_prop_data(tmp_path):
+    from novelvideo.director_world.store import save_beat_blocking
+    from novelvideo.task_backend.runners.narrative_group_video import _director_context
+
+    save_beat_blocking(tmp_path, 1, 4, {
+        "frame_aspect": "9:16",
+        "scene_id": "地下商场",
+        "snapshot": {
+            "camera": {"azim": 12, "elev": 3, "distance": 8},
+            "actors": [{"label": "阿远", "position": [1, 0, 2]}],
+            "props": [{"label": "手电筒", "position": [1, 1, 2]}],
+        },
+    })
+
+    context = _director_context(tmp_path, 1, 4)
+
+    assert '"scene_id":"地下商场"' in context
+    assert '"azim":12' in context
+    assert "阿远" in context
+    assert "手电筒" in context
+
+
+def test_nonvisual_production_note_is_not_shootable():
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _is_nonvisual_production_note,
+    )
+
+    assert _is_nonvisual_production_note({
+        "visual_description": "时长信息卡片（185s）——属于制作说明性质，无可直接拍摄的画面内容。",
+        "dialogue": "",
+        "narration": "",
+    }) is True
+    assert _is_nonvisual_production_note({
+        "visual_description": "阿远抬起手电筒照向走廊尽头。",
+        "dialogue": "",
+        "narration": "",
+    }) is False
+
+
+def test_group_video_skips_provider_when_every_beat_is_nonvisual(tmp_path, monkeypatch):
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "visual_description": "时长信息卡片（185s），制作说明，无可直接拍摄的画面内容。"},
+            {"id": "beat-2", "beat_number": 2, "visual_description": "制作说明：本段仅标注时长，无可直接拍摄画面。"},
+        ]
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "create_h3_prompt_optimizer",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer not called")),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "generate_h3_director_video",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider not called")),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "nonvisual_beats"
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    assert stage.status == "completed"
+    assert stage.actual_mode == "skipped_nonvisual"
+
+
+def _planned_render_state(tmp_path: Path):
+    frames = {}
+    cells = []
+    for index in range(1, 4):
+        frame = tmp_path / f"frame-{index}.png"
+        frame.write_bytes(f"frame-{index}".encode())
+        frames[f"beat-{index}"] = str(frame)
+        cells.append({"beat_id": f"beat-{index}", "path": str(frame)})
+    return frames, {
+        "beat_ids": ["beat-1", "beat-2", "beat-3"],
+        "cell_assets": cells,
+        "video_plan": {
+            "revision": 7,
+            "source": "manual",
+            "units": [
+                {
+                    "id": "unit-01",
+                    "beat_ids": ["beat-1"],
+                    "mode": "i2va",
+                    "duration_seconds": 3.0,
+                },
+                {
+                    "id": "unit-02",
+                    "beat_ids": ["beat-2", "beat-3"],
+                    "mode": "fl2va",
+                    "duration_seconds": 99.0,
+                },
+            ],
+        },
+    }
+
+
+def _planned_beats():
+    return [
+        {
+            "id": "beat-1",
+            "beat_number": 1,
+            "duration_seconds": 3,
+            "visual_description": "老人独自站在雨中",
+            "dialogue": "等等。",
+            "speaker": "老人",
+            "tone": "迟疑",
+        },
+        {
+            "id": "beat-2",
+            "beat_number": 2,
+            "duration_seconds": 4,
+            "visual_description": "阿明握紧门把手",
+            "dialogue": "我必须走。",
+            "speaker": "阿明",
+            "tone": "坚定",
+            "narration": "雨声骤然变大。",
+        },
+        {
+            "id": "beat-3",
+            "beat_number": 3,
+            "duration_seconds": 5,
+            "visual_description": "小雨挡在门前",
+            "dialogue": "你不能去。",
+            "speaker": "小雨",
+            "tone": "焦急",
+            "narration": "门外闪电划过。",
+        },
+    ]
+
+
+def test_first_frame_ignores_bool_and_falls_back_to_nonempty_path():
+    from novelvideo.task_backend.runners.narrative_group_video import _first_frame
+
+    assert _first_frame({"first_frame": True, "path": " frame.png "}) == "frame.png"
+    assert _first_frame({"first_frame": True, "path": False}) is None
+
+
+def test_auto_plan_pair_builds_semantic_transition_with_both_dialogues(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frames, saved = _planned_render_state(tmp_path)
+    saved["video_plan"]["units"] = [saved["video_plan"]["units"][1]]
+    saved["beat_ids"] = ["beat-2", "beat-3"]
+
+    segments = _build_segments({"mode": "auto"}, _planned_beats(), saved)
+
+    assert len(segments) == 1
+    segment = segments[0]
+    assert segment.segment_id == "beat-2--beat-3"
+    assert segment.first_frame == frames["beat-2"]
+    assert segment.last_frame == frames["beat-3"]
+    assert segment.duration_seconds == 9
+    assert segment.prompt == (
+        "起始状态：阿明握紧门把手。目标状态：小雨挡在门前。"
+        "镜头保持人物、场景与空间关系连续，以连贯动作完成从起始状态到目标状态的自然过渡。"
+    )
+    assert "我必须走。" in segment.dialogue
+    assert "你不能去。" in segment.dialogue
+    assert "阿明" in segment.speaker and "小雨" in segment.speaker
+    assert "坚定" in segment.tone and "焦急" in segment.tone
+
+
+def test_fl2va_plan_supports_mixed_singleton_and_pair(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frames, saved = _planned_render_state(tmp_path)
+
+    segments = _build_segments({"mode": "fl2va"}, _planned_beats(), saved)
+
+    assert [segment.segment_id for segment in segments] == [
+        "beat-1",
+        "beat-2--beat-3",
+    ]
+    assert segments[0].first_frame == frames["beat-1"]
+    assert segments[0].last_frame is None
+    assert segments[0].duration_seconds == 3
+    assert segments[1].last_frame == frames["beat-3"]
+
+
+def test_i2va_mode_expands_every_planned_unit_to_singletons(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frames, saved = _planned_render_state(tmp_path)
+
+    segments = _build_segments({"mode": "i2va"}, _planned_beats(), saved)
+
+    assert [segment.segment_id for segment in segments] == [
+        "beat-1",
+        "beat-2",
+        "beat-3",
+    ]
+    assert [segment.first_frame for segment in segments] == list(frames.values())
+    assert all(segment.last_frame is None for segment in segments)
+    assert [segment.duration_seconds for segment in segments] == [3, 4, 5]
+
+
+def test_execute_rejects_stale_plan_before_provider_submit(tmp_path, monkeypatch):
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    def saved_stage(_project_dir, _episode, _group_id, _stage):
+        return {"revision": 1, "video_plan": {"revision": 8}}
+
+    monkeypatch.setattr(narrative_group_video, "stage_payload", saved_stage)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "record_stage_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale plan must not update stage")
+        ),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "generate_h3_director_video",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale plan must not call provider")
+        ),
+    )
+    ctx = SimpleNamespace(output_dir=str(tmp_path), state_dir=tmp_path / "state")
+
+    result = asyncio.run(narrative_group_video._execute(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "plan_revision": 7,
+            },
+        },
+        ctx,
+    ))
+
+    assert result == {"status": "stale", "group_id": "ng-01", "revision": 1}
+
+
+def test_execute_maps_pair_to_synthetic_canonical_beat_for_optimizer(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    frames, saved = _planned_render_state(tmp_path)
+    saved["video_plan"]["units"] = [saved["video_plan"]["units"][1]]
+    saved["beat_ids"] = ["beat-2", "beat-3"]
+    captured = []
+
+    def saved_stage(_project_dir, _episode, _group_id, stage):
+        if stage == "video":
+            return {"revision": 1, "video_plan": saved["video_plan"]}
+        return saved
+
+    async def load_beats(_ctx, _episode):
+        return _planned_beats()
+
+    async def optimize(segments, beats, **kwargs):
+        captured.extend(beats)
+        evidence = kwargs["evidence_by_segment"]
+        for segment in segments:
+            result = _optimizer_result(segment.prompt)
+            evidence[segment.segment_id] = {
+                "director_plan": result.plan.model_dump(mode="json"),
+                "prompt_profile": {
+                    "id": result.prompt_profile_id,
+                    "version": result.prompt_profile_version,
+                    "compiler_version": result.compiler_version,
+                },
+                "quality_report": result.quality_report.model_dump(mode="json"),
+                "input_summary": {
+                    "beat_ids": segment.segment_id.split("--"),
+                    "mode": "fl2va" if segment.last_frame else "i2va",
+                    "duration_seconds": segment.duration_seconds,
+                    "first_frame_sha256": "a" * 64,
+                    "last_frame_sha256": "b" * 64 if segment.last_frame else None,
+                },
+            }
+        return segments
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id="provider-1",
+            actual_mode="fl2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "stage_payload", saved_stage)
+    monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", load_beats)
+    monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(output_dir=str(tmp_path), state_dir=tmp_path / "state")
+
+    result = asyncio.run(narrative_group_video._execute(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "plan_revision": 7,
+                "mode": "auto",
+            },
+        },
+        ctx,
+    ))
+
+    assert result["status"] == "completed"
+    assert len(captured) == 1
+    assert captured[0]["id"] == "beat-2--beat-3"
+    assert captured[0]["start_beat_number"] == 2
+    assert captured[0]["target_beat_number"] == 3
+    assert captured[0]["visual_description"].startswith("起始状态：阿明握紧门把手")
+    assert "我必须走。" in captured[0]["dialogue"]
+    assert "你不能去。" in captured[0]["dialogue"]
+    assert frames["beat-3"]
+
+
+def test_pair_optimizer_context_contains_start_and_target_director_context(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    first = tmp_path / "left.png"
+    last = tmp_path / "right.png"
+    first.write_bytes(b"left")
+    last.write_bytes(b"right")
+    segment = H3DirectorSegment(
+        segment_id="beat-2--beat-3",
+        beat_number=2,
+        prompt="transition",
+        duration_seconds=9,
+        first_frame=str(first),
+        last_frame=str(last),
+    )
+    synthetic = {
+        "id": "beat-2--beat-3",
+        "beat_number": 2,
+        "start_beat_number": 2,
+        "target_beat_number": 3,
+        "visual_description": "transition",
+    }
+    captured = []
+
+    class Optimizer:
+        async def optimize_segment(self, current, context, _mode):
+            captured.append(json.loads(context.director_context))
+            return _optimizer_result(current.prompt)
+
+    monkeypatch.setattr(
+        narrative_group_video,
+        "create_h3_prompt_optimizer",
+        lambda **_kwargs: Optimizer(),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_director_context",
+        lambda _project_dir, _episode, beat_number: json.dumps(
+            {"beat_number": beat_number, "camera": {"azim": beat_number}}
+        ),
+    )
+    ctx = SimpleNamespace(state_dir=tmp_path / "state")
+
+    asyncio.run(narrative_group_video._optimize_missing_prompts(
+        [segment],
+        [synthetic],
+        ctx=ctx,
+        project_dir=tmp_path,
+        episode=1,
+    ))
+
+    assert captured == [{
+        "start_context": {"beat_number": 2, "camera": {"azim": 2}},
+        "target_context": {"beat_number": 3, "camera": {"azim": 3}},
+    }]

@@ -211,6 +211,66 @@ def test_manifest_round_trip_maps_one_physical_video_to_multiple_entries(tmp_pat
     assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_manifest_entry_round_trip_preserves_submitted_prompt_evidence(tmp_path: Path) -> None:
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1, prompt="submitted prompt")])
+    evidenced = timeline.entries[0].model_copy(update={
+        "director_plan": {"mode": "i2va", "total_frames": 24, "shots": []},
+        "prompt_profile": {
+            "id": "minimax-h3-director",
+            "version": 4,
+            "compiler_version": 1,
+        },
+        "quality_report": {"passed": True, "issues": [], "version": 1},
+        "input_summary": {
+            "beat_ids": ["beat-1"],
+            "mode": "i2va",
+            "duration_seconds": 1.0,
+            "first_frame_sha256": "a" * 64,
+            "last_frame_sha256": None,
+        },
+    })
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4", entries=(evidenced,)
+    )
+    target = tmp_path / "manifest.json"
+
+    save_director_manifest(target, manifest)
+    restored = load_h3_director_manifest(target)
+
+    entry = restored.entries[0]
+    assert entry.segment.prompt == "submitted prompt"
+    assert entry.director_plan["mode"] == "i2va"
+    assert entry.prompt_profile == {
+        "id": "minimax-h3-director",
+        "version": 4,
+        "compiler_version": 1,
+    }
+    assert entry.quality_report["passed"] is True
+    assert entry.input_summary["beat_ids"] == ["beat-1"]
+
+
+def test_old_manifest_without_prompt_evidence_remains_loadable(tmp_path: Path) -> None:
+    timeline = build_h3_timeline_data([_segment("legacy", 1, 1)])
+    manifest = H3DirectorOutputManifest(
+        physical_video="legacy.mp4", entries=timeline.entries
+    )
+    payload = manifest.model_dump(mode="json")
+    for entry in payload["entries"]:
+        entry.pop("director_plan", None)
+        entry.pop("prompt_profile", None)
+        entry.pop("quality_report", None)
+        entry.pop("input_summary", None)
+    target = tmp_path / "legacy.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    restored = load_h3_director_manifest(target)
+
+    assert restored.entries[0].director_plan is None
+    assert restored.entries[0].prompt_profile is None
+    assert restored.entries[0].quality_report is None
+    assert restored.entries[0].input_summary is None
+
+
 def test_load_rejects_manifest_with_a_timeline_gap(tmp_path: Path) -> None:
     target = tmp_path / "bad.json"
     timeline = build_h3_timeline_data([_segment("s1", 1, 1), _segment("s2", 2, 1)])
