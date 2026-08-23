@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from novelvideo.media_capabilities.models import MediaCapability
 from novelvideo.media_capabilities.runtime.configuration import (
@@ -38,6 +39,20 @@ class VideoWorkflowDefinition(BaseModel):
     available: bool = True
     unavailable_reason: str | None = None
 
+    @model_validator(mode="after")
+    def validate_definition(self) -> Self:
+        if not self.scenes:
+            raise ValueError("workflow scenes must not be empty")
+        if not self.supported_modes:
+            raise ValueError("workflow supported_modes must not be empty")
+        if self.default_mode not in self.supported_modes:
+            raise ValueError("workflow default_mode must be supported")
+        if self.available and self.unavailable_reason is not None:
+            raise ValueError("available workflow must not have an unavailable reason")
+        if not self.available and not str(self.unavailable_reason or "").strip():
+            raise ValueError("unavailable workflow must have a reason")
+        return self
+
 
 class VideoWorkflowUnavailable(LookupError):
     """A workflow cannot be used for the requested scene."""
@@ -46,13 +61,25 @@ class VideoWorkflowUnavailable(LookupError):
 class VideoWorkflowRegistry:
     def __init__(self, definitions: tuple[VideoWorkflowDefinition, ...]) -> None:
         self._definitions = definitions
+        self._by_id: dict[str, VideoWorkflowDefinition] = {}
+        for definition in definitions:
+            if definition.id in self._by_id:
+                raise ValueError(f"duplicate workflow id: {definition.id}")
+            self._by_id[definition.id] = definition
+
+    @staticmethod
+    def _normalize_scene(scene: VideoWorkflowScene | str) -> VideoWorkflowScene:
+        try:
+            return VideoWorkflowScene(scene)
+        except (TypeError, ValueError) as exc:
+            raise VideoWorkflowUnavailable(f"unknown workflow scene: {scene}") from exc
 
     def list(
         self, scene: VideoWorkflowScene | str | None = None
     ) -> tuple[VideoWorkflowDefinition, ...]:
         if scene is None:
             return self._definitions
-        requested_scene = VideoWorkflowScene(scene)
+        requested_scene = self._normalize_scene(scene)
         return tuple(
             definition
             for definition in self._definitions
@@ -64,10 +91,8 @@ class VideoWorkflowRegistry:
         identifier: str,
         scene: VideoWorkflowScene | str,
     ) -> VideoWorkflowDefinition:
-        requested_scene = VideoWorkflowScene(scene)
-        definition = next(
-            (item for item in self._definitions if item.id == identifier), None
-        )
+        requested_scene = self._normalize_scene(scene)
+        definition = self._by_id.get(identifier)
         if definition is None:
             raise VideoWorkflowUnavailable(f"unknown workflow: {identifier}")
         if requested_scene not in definition.scenes:
@@ -83,7 +108,7 @@ class VideoWorkflowRegistry:
         return definition
 
     def default(self, scene: VideoWorkflowScene | str) -> VideoWorkflowDefinition:
-        requested_scene = VideoWorkflowScene(scene)
+        requested_scene = self._normalize_scene(scene)
         for definition in self.list(requested_scene):
             if definition.available:
                 return definition
@@ -109,7 +134,7 @@ def _h3_unavailable_reason(
         return "workflow_not_configured"
     try:
         load_h3_workflow_profile(workflow_id=workflow_id)
-    except Exception:
+    except (OSError, ValueError):
         return "profile_invalid"
     return None
 

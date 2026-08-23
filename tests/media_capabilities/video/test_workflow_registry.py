@@ -35,6 +35,19 @@ def _configured_registry(tmp_path) -> VideoWorkflowRegistry:
     )
 
 
+def _definition(**updates) -> VideoWorkflowDefinition:
+    values = {
+        "id": "workflow",
+        "label": "Workflow",
+        "provider": "provider",
+        "adapter_key": "adapter",
+        "scenes": frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        "supported_modes": ("auto",),
+    }
+    values.update(updates)
+    return VideoWorkflowDefinition(**values)
+
+
 def test_registry_filters_workflows_by_scene(tmp_path) -> None:
     registry = _configured_registry(tmp_path)
 
@@ -92,6 +105,42 @@ def test_workflow_definition_exposes_supported_modes(tmp_path) -> None:
     assert "modes" not in VideoWorkflowDefinition.model_fields
 
 
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"scenes": frozenset()},
+        {"supported_modes": ()},
+        {"default_mode": "fl2va"},
+        {"available": True, "unavailable_reason": "unexpected"},
+        {"available": False, "unavailable_reason": None},
+        {"available": False, "unavailable_reason": "  "},
+    ],
+)
+def test_workflow_definition_rejects_invalid_invariants(updates) -> None:
+    with pytest.raises(ValidationError):
+        _definition(**updates)
+
+
+def test_registry_rejects_duplicate_workflow_ids() -> None:
+    definition = _definition()
+
+    with pytest.raises(ValueError, match="duplicate workflow id: workflow"):
+        VideoWorkflowRegistry((definition, definition))
+
+
+@pytest.mark.parametrize("method", ["list", "resolve", "default"])
+def test_registry_rejects_invalid_scene_consistently(tmp_path, method: str) -> None:
+    registry = _configured_registry(tmp_path)
+
+    with pytest.raises(VideoWorkflowUnavailable, match="unknown workflow scene"):
+        if method == "list":
+            registry.list("invalid")
+        elif method == "resolve":
+            registry.resolve("runninghub:minimax-h3", "invalid")
+        else:
+            registry.default("invalid")
+
+
 def test_registry_rejects_unknown_wrong_scene_and_unavailable_workflows(
     tmp_path,
 ) -> None:
@@ -139,12 +188,43 @@ def test_h3_availability_reports_specific_reason(
     if setup == "workflow":
         store.save_runninghub_workflows(RunningHubWorkflowSettings(video_minimax_h3=""))
     if setup == "profile":
+
+        def invalid_profile(*, workflow_id: str | None = None):
+            raise ValueError(f"invalid profile: {workflow_id}")
+
         monkeypatch.setattr(
             "novelvideo.media_capabilities.video.workflow_registry.load_h3_workflow_profile",
-            lambda: (_ for _ in ()).throw(ValueError("invalid profile")),
+            invalid_profile,
         )
 
     definition = build_video_workflow_registry(store, resolver).list()[0]
 
     assert definition.available is False
     assert definition.unavailable_reason == expected_reason
+
+
+@pytest.mark.parametrize("unexpected", [TypeError("bug"), AssertionError("bug")])
+def test_h3_availability_propagates_unexpected_profile_errors(
+    tmp_path, monkeypatch, unexpected: Exception
+) -> None:
+    store = MediaCapabilityStore(tmp_path / "unexpected.db")
+    store.save_provider(
+        ProviderAccount(
+            id="runninghub-main",
+            provider_type="runninghub",
+            credential_ref="env://RUNNINGHUB_API_KEY",
+            enabled=True,
+        )
+    )
+    resolver = CredentialResolver(env={"RUNNINGHUB_API_KEY": "rh-secret"})
+
+    def broken_profile(*, workflow_id: str | None = None):
+        raise unexpected
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.video.workflow_registry.load_h3_workflow_profile",
+        broken_profile,
+    )
+
+    with pytest.raises(type(unexpected), match="bug"):
+        build_video_workflow_registry(store, resolver)
