@@ -214,7 +214,7 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
     assert defaults.status_code == 200
     assert defaults.json() == {
         "image_upscale": "",
-        "video_minimax_h3": "2087934731806658562",
+        "video_minimax_h3": "2089723723468328961",
         "tts_qwen3_voice_design": "",
         "tts_indextts2_voice_clone": "",
     }
@@ -351,7 +351,7 @@ def test_non_runninghub_provider_cannot_overwrite_runninghub_workflows(
     )
     assert response.status_code == 422
     assert store.get_runninghub_workflows().video_minimax_h3 == (
-        "2087934731806658562"
+        "2089723723468328961"
     )
 
 

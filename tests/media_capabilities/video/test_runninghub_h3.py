@@ -20,6 +20,9 @@ from novelvideo.media_capabilities.video.runninghub_h3 import (
     MiniMaxH3VideoResult,
     generate_minimax_h3_video,
 )
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_GLOBAL_CONTINUITY_PROMPT,
+)
 
 
 @dataclass
@@ -140,7 +143,7 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
         if last_frame
         else "i2v — 首帧生视频(Image-to-Video)"
     )
-    assert fields["global_prompt"] == ""
+    assert fields["global_prompt"] == H3_GLOBAL_CONTINUITY_PROMPT
     assert fields["frame_rate"] == 24
     assert (fields["width"], fields["height"]) == expected_size
     assert fields["ref_max_size"] == 736
