@@ -37,6 +37,18 @@ def write_source(path: Path) -> None:
                         ],
                     },
                     {
+                        "name": "Illustration & Art",
+                        "styles": [{"id": "ink", "name": "Ink", "prompt": "ink wash"}],
+                    },
+                    {
+                        "name": "Characters & People",
+                        "styles": [{"id": "portrait", "name": "Portrait", "prompt": "person"}],
+                    },
+                    {
+                        "name": "Scenes & Storytelling",
+                        "styles": [{"id": "story", "name": "Story", "prompt": "scene"}],
+                    },
+                    {
                         "name": "History & Classical Chinese Themes",
                         "styles": [
                             {"id": "han", "name": "Han Court", "prompt": "palace"}
@@ -70,10 +82,22 @@ def test_filters_allowlist_and_normalizes_unapproved_candidates(tmp_path: Path) 
 
     assert result.returncode == 0, result.stderr
     payload = json.loads((output / "candidates.json").read_text(encoding="utf-8"))
-    assert [item["id"] for item in payload["candidates"]] == ["han", "photo-real"]
-    photo = payload["candidates"][1]
+    assert [item["id"] for item in payload["candidates"]] == [
+        "han",
+        "ink",
+        "photo-real",
+        "portrait",
+        "story",
+    ]
+    assert {item["category"] for item in payload["candidates"]} == {
+        "Photography & Realism",
+        "Illustration & Art",
+        "Characters & People",
+        "Scenes & Storytelling",
+        "History & Classical Chinese Themes",
+    }
+    photo = payload["candidates"][2]
     assert photo == {
-        "approved": False,
         "category": "Photography & Realism",
         "id": "photo-real",
         "name": "Photo Real",
@@ -82,7 +106,7 @@ def test_filters_allowlist_and_normalizes_unapproved_candidates(tmp_path: Path) 
         "revision": REVISION,
         "source_ids": ["photo-real"],
     }
-    assert all(item["approved"] is False for item in payload["candidates"])
+    assert all("approved" not in item for item in payload["candidates"])
 
 
 @pytest.mark.parametrize("revision", ["main", "v1.0.0", "abc1234", "A" * 40, "a" * 39])
@@ -139,7 +163,11 @@ def test_diff_reports_added_changed_and_removed(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     diff = json.loads((output / "diff.json").read_text(encoding="utf-8"))
-    assert diff == {"added": ["han"], "changed": ["photo-real"], "removed": ["removed"]}
+    assert diff == {
+        "added": ["han", "ink", "portrait", "story"],
+        "changed": ["photo-real"],
+        "removed": ["removed"],
+    }
 
 
 def test_missing_catalog_marks_every_candidate_added(tmp_path: Path) -> None:
@@ -151,7 +179,7 @@ def test_missing_catalog_marks_every_candidate_added(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert json.loads((output / "diff.json").read_text(encoding="utf-8")) == {
-        "added": ["han", "photo-real"], "changed": [], "removed": []
+        "added": ["han", "ink", "photo-real", "portrait", "story"], "changed": [], "removed": []
     }
 
 

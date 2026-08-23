@@ -72,7 +72,6 @@ def normalize_candidates(payload: Any, revision: str) -> list[dict[str, Any]]:
             if not isinstance(source_ids, list) or not all(isinstance(item, str) for item in source_ids):
                 source_ids = [style_id]
             candidate: dict[str, Any] = {
-                "approved": False,
                 "category": category,
                 "id": style_id,
                 "name": _text(raw.get("name") or raw.get("title")) or style_id,
