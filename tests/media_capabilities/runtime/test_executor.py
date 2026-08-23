@@ -137,6 +137,56 @@ async def test_missing_provider_task_submits_once_and_returns_submitted(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_provider_task_is_persisted_before_submission_callback_failure(
+    tmp_path: Path,
+) -> None:
+    store, task, attempt = setup_attempt(tmp_path, submitted=False)
+    client = FakeClient()
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+    callbacks: list[str] = []
+
+    async def fail_after_submit(provider_task_id: str) -> None:
+        callbacks.append(provider_task_id)
+        raise RuntimeError("manifest write failed")
+
+    with pytest.raises(
+        RuntimeError,
+        match="provider submission callback failed after task ID persistence",
+    ) as caught:
+        await executor.step(
+            task.id,
+            profile=profile(),
+            semantic_values={"prompt": "hello"},
+            on_provider_submitted=fail_after_submit,
+        )
+
+    assert str(caught.value.__cause__) == "manifest write failed"
+    assert callbacks == ["remote-1"]
+    assert store.get_attempt(attempt.id).provider_task_id == "remote-1"
+    assert client.submit_calls != []
+
+
+@pytest.mark.asyncio
+async def test_existing_provider_task_invokes_callback_without_resubmitting(
+    tmp_path: Path,
+) -> None:
+    store, task, _ = setup_attempt(tmp_path, submitted=True)
+    client = FakeClient(ProviderTaskSnapshot(status="failed"))
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+    callbacks: list[str] = []
+
+    await executor.step(
+        task.id,
+        profile=profile(),
+        semantic_values={},
+        on_provider_submitted=callbacks.append,
+    )
+
+    assert callbacks == ["remote-existing"]
+    assert client.submit_calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider_status", ["pending", "running"])
 async def test_pending_or_running_records_provider_status_and_returns(
     tmp_path: Path, provider_status: str

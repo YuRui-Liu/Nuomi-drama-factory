@@ -715,6 +715,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             NarrativeGroupVideoRequest,
         )
 
+        async def on_provider_submitted(provider_task_id: str) -> None:
+            nonlocal manifest
+            manifest = _manifest_with_status(
+                manifest,
+                "submitted",
+                provider_task_id=provider_task_id,
+            )
+            save_h3_director_manifest(manifest_path, manifest)
+
         try:
             generated = await adapter.generate_narrative_group(
                 ctx,
@@ -723,10 +732,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     output_path=str(output),
                     aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
                     resolution=payload.get("resolution"),
+                    on_provider_submitted=on_provider_submitted,
                 ),
             )
         except Exception:
-            manifest = _manifest_with_status(manifest, "transport_failed")
+            manifest = _manifest_with_status(
+                manifest,
+                "transport_failed",
+                provider_task_id=manifest.provider_task_id,
+            )
             save_h3_director_manifest(manifest_path, manifest)
             raise
 

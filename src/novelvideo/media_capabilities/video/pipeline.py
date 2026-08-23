@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -63,6 +64,7 @@ class _Executor:
         *,
         profile: WorkflowProfile,
         semantic_values: Mapping[str, JsonValue],
+        on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ): ...
 
     async def cancel(self, task_id: str): ...
@@ -224,6 +226,7 @@ class H3VideoPipeline:
         director_params: Mapping[str, JsonValue] | None = None,
         input_asset_hashes: tuple[str, ...] = (),
         idempotency_input: Mapping[str, JsonValue],
+        on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
         stable_timeline = dict(idempotency_input)
@@ -251,12 +254,25 @@ class H3VideoPipeline:
             implementation_snapshot,
             input_snapshot,
         )
+        callback_sent = False
+
+        async def notify_once(provider_task_id: str) -> None:
+            nonlocal callback_sent
+            if callback_sent or on_provider_submitted is None:
+                return
+            result = on_provider_submitted(provider_task_id)
+            if inspect.isawaitable(result):
+                await result
+            callback_sent = True
+
         if task.status is MediaTaskStatus.SUCCEEDED:
             if not isinstance(task.output, dict) or not task.output.get("artifacts"):
                 raise RuntimeError("idempotent timeline task succeeded without an artifact")
             artifact = MediaArtifact.model_validate(task.output["artifacts"][0])
             attempts = self.store.list_attempts(task.id)
             current_attempt = attempts[-1] if attempts else None
+            if current_attempt and current_attempt.provider_task_id:
+                await notify_once(current_attempt.provider_task_id)
             # Provider completion is not a quality verdict.  The artifact can
             # have failed QC on the original request (or changed on disk), so
             # every idempotent reuse must probe it again.
@@ -279,24 +295,41 @@ class H3VideoPipeline:
             )
             self.register_candidate(candidate)
             return candidate
-        self.store.start_attempt(
-            task.id,
-            self.provider_account_id,
-            workflow_version={
-                "id": self.workflow_profile.id,
-                "version": self.workflow_profile.version,
-                "source_sha256": self.workflow_profile.source_sha256,
-            },
-            input_asset_hashes=list(input_asset_hashes),
-            effective_params=semantic_values,
+        attempts = self.store.list_attempts(task.id)
+        active_attempt = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.status not in {
+                    MediaTaskStatus.SUCCEEDED,
+                    MediaTaskStatus.FAILED,
+                    MediaTaskStatus.QUALITY_FAILED,
+                    MediaTaskStatus.CANCELLED,
+                }
+            ),
+            None,
         )
+        if active_attempt is None:
+            self.store.start_attempt(
+                task.id,
+                self.provider_account_id,
+                workflow_version={
+                    "id": self.workflow_profile.id,
+                    "version": self.workflow_profile.version,
+                    "source_sha256": self.workflow_profile.source_sha256,
+                },
+                input_asset_hashes=list(input_asset_hashes),
+                effective_params=semantic_values,
+            )
         deadline = self.monotonic() + self.poll_timeout
         while True:
-            completed = await self.executor.step(
-                task.id,
-                profile=self.workflow_profile,
-                semantic_values=semantic_values,
-            )
+            step_kwargs = {
+                "profile": self.workflow_profile,
+                "semantic_values": semantic_values,
+            }
+            if on_provider_submitted is not None:
+                step_kwargs["on_provider_submitted"] = notify_once
+            completed = await self.executor.step(task.id, **step_kwargs)
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
             if completed.status in {

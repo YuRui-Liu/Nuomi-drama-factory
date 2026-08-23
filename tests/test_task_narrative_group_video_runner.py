@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import asyncio
+import pytest
 
 
 class _JsonEvidence:
@@ -337,6 +338,51 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
     assert persisted.physical_video is None
     assert persisted.entries[0].director_plan is not None
     assert persisted.entries[0].provider_task_id is None
+
+
+def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
+
+    async def generate(_ctx, *, on_provider_submitted, **_kwargs):
+        result = on_provider_submitted("provider-before-poll")
+        if asyncio.iscoroutine(result):
+            await result
+        raise RuntimeError("poll failed")
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    with pytest.raises(RuntimeError, match="poll failed"):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        )
+
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    persisted = load_h3_director_manifest(stage.manifest_asset)
+    assert persisted.status == "transport_failed"
+    assert persisted.provider_task_id == "provider-before-poll"
+    assert all(
+        entry.provider_task_id == "provider-before-poll"
+        for entry in persisted.entries
+    )
 
 
 def test_group_video_updates_generated_evidence_before_postprocess(

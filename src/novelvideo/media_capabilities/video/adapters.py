@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,6 +20,7 @@ class NarrativeGroupVideoRequest:
     output_path: str
     aspect_ratio: str
     resolution: str | None = None
+    on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,7 @@ class H3DirectorGenerator(Protocol):
         output_path: str,
         aspect_ratio: str,
         resolution: str | None,
+        on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
 
 
@@ -95,13 +97,15 @@ class H3WorkflowAdapter:
         ctx: ProjectContext,
         request: NarrativeGroupVideoRequest,
     ) -> NarrativeGroupVideoResult:
-        generated = await self._generator(
-            ctx,
-            segments=request.segments,
-            output_path=request.output_path,
-            aspect_ratio=request.aspect_ratio,
-            resolution=request.resolution,
-        )
+        kwargs = {
+            "segments": request.segments,
+            "output_path": request.output_path,
+            "aspect_ratio": request.aspect_ratio,
+            "resolution": request.resolution,
+        }
+        if request.on_provider_submitted is not None:
+            kwargs["on_provider_submitted"] = request.on_provider_submitted
+        generated = await self._generator(ctx, **kwargs)
         return NarrativeGroupVideoResult(
             output_path=str(generated.output_path),
             provider_task_id=(

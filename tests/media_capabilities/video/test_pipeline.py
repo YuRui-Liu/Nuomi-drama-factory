@@ -349,6 +349,74 @@ async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload
 
 
 @pytest.mark.asyncio
+async def test_director_timeline_reuses_active_provider_attempt_after_callback_failure(
+    tmp_path: Path,
+) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    profile = WorkflowProfile(
+        id="minimax-h3-director", version=1, workflow_id="workflow-1",
+        capabilities=[MediaCapability.VIDEO_I2VA],
+        bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+    )
+    callback_ids: list[str] = []
+
+    class Executor:
+        def __init__(self):
+            self.submit_count = 0
+            self.task_ids = []
+
+        async def step(self, task_id, *, on_provider_submitted=None, **_kwargs):
+            self.task_ids.append(task_id)
+            attempt = store.list_attempts(task_id)[-1]
+            if attempt.provider_task_id is None:
+                self.submit_count += 1
+                attempt = store.record_provider_task(attempt.id, "provider-existing")
+            result = on_provider_submitted(attempt.provider_task_id)
+            if asyncio.iscoroutine(result):
+                await result
+            return store.get_task(task_id)
+
+    executor = Executor()
+    pipeline = H3VideoPipeline(
+        store=store, executor=executor, workflow_profile=profile,
+        provider_account_id="runninghub-main", upload_reference=FakeUploader(),
+        probe_video=lambda _artifact: None, register_candidate=lambda _: None,
+        prompt_profile={"id": "minimax-h3", "version": 1},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA, prompt="director", duration=5,
+        first_frame="first.png", aspect_ratio="9:16", resolution="576x1024",
+    )
+    kwargs = {
+        "timeline_data": "{}",
+        "idempotency_input": {"segments": [{"id": "one"}]},
+    }
+
+    async def fail_callback(task_id: str) -> None:
+        callback_ids.append(task_id)
+        raise RuntimeError("manifest callback failed")
+
+    with pytest.raises(RuntimeError, match="manifest callback failed"):
+        await pipeline.generate_timeline(
+            request, on_provider_submitted=fail_callback, **kwargs
+        )
+
+    async def stop_after_reuse(task_id: str) -> None:
+        callback_ids.append(task_id)
+        raise RuntimeError("stop after reuse")
+
+    with pytest.raises(RuntimeError, match="stop after reuse"):
+        await pipeline.generate_timeline(
+            request, on_provider_submitted=stop_after_reuse, **kwargs
+        )
+
+    assert callback_ids == ["provider-existing", "provider-existing"]
+    assert executor.submit_count == 1
+    assert len(set(executor.task_ids)) == 1
+    assert len(store.list_attempts(executor.task_ids[0])) == 1
+
+
+@pytest.mark.asyncio
 async def test_director_timeline_revalidates_a_reused_succeeded_artifact(
     tmp_path: Path,
 ) -> None:

@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -311,6 +312,7 @@ async def generate_h3_director_video(
     output_path: str,
     aspect_ratio: str = "9:16",
     resolution: str | None = None,
+    on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> H3GenerationResult:
     """Submit all logical shots as one MiniMax H3 director workflow task."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
@@ -426,6 +428,7 @@ async def generate_h3_director_video(
                     for entry in timeline.entries
                 ],
             },
+            on_provider_submitted=on_provider_submitted,
         )
         if candidate.status is not MediaTaskStatus.SUCCEEDED:
             codes = ", ".join(issue.code for issue in candidate.quality_issues)

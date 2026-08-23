@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -72,6 +73,7 @@ class RunningHubExecutor:
         *,
         profile: WorkflowProfile,
         semantic_values: Mapping[str, JsonValue],
+        on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> MediaTaskRecord:
         task = self._store.get_task(task_id)
         if task is None:
@@ -95,9 +97,17 @@ class RunningHubExecutor:
                     provider_task_id = await self._client.submit(
                         profile.workflow_id, node_info
                     )
-                    self._store.record_provider_task(attempt.id, provider_task_id)
+                    attempt = self._store.record_provider_task(
+                        attempt.id, provider_task_id
+                    )
+                    await self._notify_provider_submitted(
+                        attempt.provider_task_id, on_provider_submitted
+                    )
                     return self._current_task(task_id)
 
+                await self._notify_provider_submitted(
+                    attempt.provider_task_id, on_provider_submitted
+                )
                 snapshot = await self._client.query(attempt.provider_task_id)
                 if snapshot.status == "failed":
                     self._store.record_provider_status(attempt.id, snapshot.status)
@@ -180,6 +190,22 @@ class RunningHubExecutor:
                 error_message="RunningHub provider operation failed",
             )
             return self._current_task(task_id)
+
+    @staticmethod
+    async def _notify_provider_submitted(
+        provider_task_id: str | None,
+        callback: Callable[[str], Awaitable[None] | None] | None,
+    ) -> None:
+        if callback is None or provider_task_id is None:
+            return
+        try:
+            result = callback(provider_task_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            raise RuntimeError(
+                "provider submission callback failed after task ID persistence"
+            ) from exc
 
     def _current_task(self, task_id: str) -> MediaTaskRecord:
         task = self._store.get_task(task_id)

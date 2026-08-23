@@ -78,6 +78,38 @@ def test_h3_adapter_delegates_to_injected_director_generator():
     ]
 
 
+def test_h3_adapter_forwards_provider_submission_callback():
+    from novelvideo.media_capabilities.video.adapters import (
+        H3WorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    captured = {}
+
+    async def generate(_ctx, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            output_path="result.mp4", provider_task_id="provider-1", actual_mode="i2va"
+        )
+
+    async def on_provider_submitted(_task_id: str) -> None:
+        return None
+
+    segment = H3DirectorSegment(
+        segment_id="segment-1", beat_number=1, prompt="move",
+        duration_seconds=5, first_frame="first.png",
+    )
+    request = NarrativeGroupVideoRequest(
+        segments=(segment,), output_path="result.mp4", aspect_ratio="9:16",
+        on_provider_submitted=on_provider_submitted,
+    )
+
+    asyncio.run(H3WorkflowAdapter(generator=generate).generate_narrative_group(object(), request))
+
+    assert captured["on_provider_submitted"] is on_provider_submitted
+
+
 def test_adapter_protocol_exposes_typed_request_and_result_contract():
     from typing import get_type_hints
 
