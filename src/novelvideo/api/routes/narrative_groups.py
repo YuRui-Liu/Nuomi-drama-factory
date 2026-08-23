@@ -17,10 +17,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import (
     get_media_capability_store,
+    get_media_credential_resolver,
     make_sqlite_store_for_context,
     resolve_project_scope,
 )
 from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
+from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.workflow_registry import (
+    VideoWorkflowScene,
+    VideoWorkflowUnavailable,
+    build_video_workflow_registry,
+)
 from novelvideo.narrative_groups.models import NarrativeGroup, StageName
 from novelvideo.narrative_groups.references import (
     MAX_GROUP_IMAGE_REFERENCES,
@@ -38,6 +46,7 @@ from novelvideo.narrative_groups.service import (
     restore_video_reservation,
     stage_history,
     update_video_manifest_dialogue_source,
+    update_video_plan,
 )
 from novelvideo.ports import get_task_backend
 
@@ -84,11 +93,23 @@ class NarrativeGroupVideoRequest(BaseModel):
     """Client input deliberately excludes mutable frame and beat payloads."""
 
     model_config = ConfigDict(extra="forbid")
-    model: str = Field(default="minimax-h3", min_length=1)
+    model: str = Field(default="runninghub:minimax-h3", min_length=1)
     mode: Literal["auto", "i2va", "fl2va"] = "auto"
     aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     resolution: str | None = None
     revision: int = Field(ge=0)
+    plan_revision: int = Field(ge=1)
+
+
+class NarrativeGroupVideoPlanUnitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    beat_ids: list[str] = Field(min_length=1, max_length=2)
+
+
+class NarrativeGroupVideoPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    units: list[NarrativeGroupVideoPlanUnitRequest] = Field(min_length=1)
 
 
 class NarrativeGroupDialogueSourceRequest(BaseModel):
@@ -472,12 +493,28 @@ async def _enqueue_group_video(
     group_id: str,
     user: dict,
     request: NarrativeGroupVideoRequest,
+    media_store: MediaCapabilityStore,
+    credential_resolver: CredentialResolver,
 ):
+    registry = build_video_workflow_registry(media_store, credential_resolver)
+    try:
+        workflow = registry.resolve(request.model, VideoWorkflowScene.NARRATIVE_GROUP)
+    except VideoWorkflowUnavailable as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Video workflow is unavailable for narrative groups",
+        ) from exc
+    if request.mode not in workflow.supported_modes:
+        raise HTTPException(
+            status_code=422,
+            detail="Video mode is unsupported by the selected workflow",
+        )
     resolved, _, _ = await _resolve_groups(project, episode, user)
     try:
         group, reservation = reserve_video_revision(
             resolved.project_dir, episode, group_id,
             expected_revision=request.revision,
+            expected_plan_revision=request.plan_revision,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -489,6 +526,7 @@ async def _enqueue_group_video(
         "episode": episode,
         "group_id": group.id,
         "revision": revision,
+        "plan_revision": request.plan_revision,
         "model": request.model,
         "mode": request.mode,
         "aspect_ratio": request.aspect_ratio,
@@ -496,7 +534,7 @@ async def _enqueue_group_video(
     }
     try:
         queued = await get_task_backend().enqueue_project_task(
-            resolved.ctx, task_type="narrative_group_video", queue_kind="default",
+            resolved.ctx, task_type="narrative_group_video", queue_kind="video",
             episode=episode, scope=scope, payload=payload,
         )
     except Exception as exc:
@@ -547,6 +585,40 @@ async def generate_render_group(
     )
 
 
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/plan"
+)
+async def put_group_video_plan(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupVideoPlanRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved, _, beats = await _resolve_groups(project, episode, user)
+    try:
+        group = update_video_plan(
+            resolved.project_dir,
+            episode,
+            group_id,
+            beats,
+            expected_revision=request.expected_revision,
+            units=[unit.model_dump() for unit in request.units],
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="Narrative group not found"
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "data": _serialize(project, resolved.project_dir, [group])[0],
+    }
+
+
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/generate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -556,9 +628,19 @@ async def generate_video_group(
     episode: int,
     group_id: str,
     request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
     user: dict = Depends(get_api_user),
 ):
-    return await _enqueue_group_video(project, episode, group_id, user, request)
+    return await _enqueue_group_video(
+        project,
+        episode,
+        group_id,
+        user,
+        request,
+        media_store,
+        credential_resolver,
+    )
 
 
 @router.post(

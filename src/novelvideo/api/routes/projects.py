@@ -13,10 +13,20 @@ from fastapi.responses import JSONResponse
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
+    get_media_capability_store,
+    get_media_credential_resolver,
     get_project_paths,
     make_sqlite_store_for_context,
     make_static_url_for_context,
     validate_project_name,
+)
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
+from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.workflow_registry import (
+    VideoWorkflowRegistry,
+    VideoWorkflowScene,
+    VideoWorkflowUnavailable,
+    build_video_workflow_registry,
 )
 from novelvideo.api.routes._project_audit import emit_project_audit
 from novelvideo.api.schemas import (
@@ -590,18 +600,36 @@ async def update_project(
 @router.get("/projects/{project}/media-defaults")
 async def get_project_media_defaults(
     project: str,
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
     user: dict = Depends(get_api_user),
 ):
     ctx = await resolve_project_context(user=user, project_id=project, required_role="viewer")
     config = load_project_config_from_state_dir(
         ctx.state_dir, username=ctx.owner_username, project=ctx.project_name
     )
-    return {"ok": True, "data": _media_defaults_payload(config)}
-
-
-def _media_defaults_payload(config: dict) -> dict[str, str]:
+    registry = build_video_workflow_registry(media_store, credential_resolver)
     return {
-        "video_model": str(config.get("video_backend") or "runninghub:minimax-h3"),
+        "ok": True,
+        "data": _media_defaults_payload(config, registry=registry),
+    }
+
+
+def _media_defaults_payload(
+    config: dict,
+    *,
+    registry: VideoWorkflowRegistry | None = None,
+) -> dict[str, str]:
+    video_model = str(config.get("video_backend") or "runninghub:minimax-h3")
+    if registry is not None:
+        try:
+            video_model = registry.resolve(
+                video_model, VideoWorkflowScene.NARRATIVE_GROUP
+            ).id
+        except VideoWorkflowUnavailable:
+            video_model = registry.default(VideoWorkflowScene.NARRATIVE_GROUP).id
+    return {
+        "video_model": video_model,
         "h3_mode": str(config.get("h3_mode") or "auto"),
         "narrative_sketch_provider": str(
             config.get("narrative_sketch_provider") or "grsai-main"
@@ -622,8 +650,25 @@ def _media_defaults_payload(config: dict) -> dict[str, str]:
 async def put_project_media_defaults(
     project: str,
     body: MediaDefaultsRequest,
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
     user: dict = Depends(require_scope("projects:write")),
 ):
+    registry = build_video_workflow_registry(media_store, credential_resolver)
+    try:
+        workflow = registry.resolve(
+            body.video_model, VideoWorkflowScene.NARRATIVE_GROUP
+        )
+    except VideoWorkflowUnavailable as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Video workflow is unavailable for narrative groups",
+        ) from exc
+    if body.h3_mode not in workflow.supported_modes:
+        raise HTTPException(
+            status_code=422,
+            detail="Video mode is unsupported by the selected workflow",
+        )
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     require_project_home_node(ctx, operation="update project media defaults")
     save_project_config_in_state_dir(

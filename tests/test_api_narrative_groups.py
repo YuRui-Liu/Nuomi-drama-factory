@@ -1,10 +1,16 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import narrative_groups
+from novelvideo.media_capabilities.video.workflow_registry import (
+    VideoWorkflowDefinition,
+    VideoWorkflowRegistry,
+    VideoWorkflowScene,
+)
 from novelvideo.narrative_groups.references import (
     GroupImageReference,
     GroupReferencePreview,
@@ -54,15 +60,34 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
         return FakeStore(beat_count)
 
     backend = FakeBackend()
+    capability_store = SimpleNamespace(
+        get_provider=lambda provider_id: SimpleNamespace(
+            id=provider_id, provider_type="grsai", enabled=True
+        )
+    )
+    credential_resolver = object()
+    media_store_dependency = narrative_groups.get_media_capability_store
     monkeypatch.setattr(narrative_groups, "resolve_project_scope", resolve)
     monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
     monkeypatch.setattr(narrative_groups, "get_task_backend", lambda: backend)
     monkeypatch.setattr(
         narrative_groups,
         "get_media_capability_store",
-        lambda: SimpleNamespace(
-            get_provider=lambda provider_id: SimpleNamespace(
-                id=provider_id, provider_type="grsai", enabled=True
+        lambda: capability_store,
+    )
+    monkeypatch.setattr(
+        narrative_groups,
+        "build_video_workflow_registry",
+        lambda store, resolver: VideoWorkflowRegistry(
+            (
+                VideoWorkflowDefinition(
+                    id="runninghub:minimax-h3",
+                    label="RunningHub MiniMax H3",
+                    provider="runninghub",
+                    adapter_key="minimax-h3",
+                    scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+                    supported_modes=("auto", "i2va", "fl2va"),
+                ),
             )
         ),
     )
@@ -72,6 +97,10 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
         "id": "user-1",
         "username": "tester",
     }
+    app.dependency_overrides[media_store_dependency] = lambda: capability_store
+    app.dependency_overrides[
+        narrative_groups.get_media_credential_resolver
+    ] = lambda: credential_resolver
     return TestClient(app), backend
 
 
@@ -226,6 +255,196 @@ def test_unknown_group_returns_404(monkeypatch, tmp_path):
     assert response.status_code == 404
 
 
+def test_put_video_plan_updates_units_and_enforces_cas(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    groups = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).json()["data"]
+    assert groups[0]["video_plan"]["revision"] == 1
+    endpoint = (
+        "/api/v1/projects/demo/episodes/1/narrative-groups/"
+        "ng-01/video/plan"
+    )
+    body = {
+        "expected_revision": 1,
+        "units": [
+            {"beat_ids": ["beat-1", "beat-2"]},
+            {"beat_ids": ["beat-3"]},
+            {"beat_ids": ["beat-4", "beat-5"]},
+            {"beat_ids": ["beat-6"]},
+        ],
+    }
+
+    accepted = client.put(endpoint, json=body)
+    stale = client.put(endpoint, json=body)
+
+    assert accepted.status_code == 200
+    plan = accepted.json()["data"]["video_plan"]
+    assert plan["revision"] == 2
+    assert plan["source"] == "manual"
+    assert [unit["mode"] for unit in plan["units"]] == [
+        "fl2va",
+        "i2va",
+        "fl2va",
+        "i2va",
+    ]
+    assert stale.status_code == 409
+
+
+def test_put_video_plan_rejects_non_partition(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.put(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/plan",
+        json={
+            "expected_revision": 1,
+            "units": [
+                {"beat_ids": ["beat-1", "beat-3"]},
+                {"beat_ids": ["beat-2"]},
+                {"beat_ids": ["beat-4", "beat-5"]},
+                {"beat_ids": ["beat-6"]},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_video_generate_rejects_stale_plan_revision(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3",
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 999,
+        },
+    )
+
+    assert response.status_code == 409
+    assert backend.calls == []
+
+
+def test_video_generate_rejects_newapi_model(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "newapi_seedance-1.0-pro-fast",
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Video workflow is unavailable for narrative groups"
+    )
+    assert backend.calls == []
+
+
+def test_video_generate_accepts_future_registered_model(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    future_model = "future:director-v2"
+    monkeypatch.setattr(
+        narrative_groups,
+        "build_video_workflow_registry",
+        lambda store, resolver: VideoWorkflowRegistry(
+            (
+                VideoWorkflowDefinition(
+                    id=future_model,
+                    label="Future Director V2",
+                    provider="future",
+                    adapter_key="director-v2",
+                    scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+                    supported_modes=("auto",),
+                ),
+            )
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": future_model,
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 1,
+        },
+    )
+
+    assert response.status_code == 202
+    assert backend.calls[0][1]["payload"]["model"] == future_model
+
+
+def test_video_generate_rejects_unsupported_registered_mode(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(
+        narrative_groups,
+        "build_video_workflow_registry",
+        lambda store, resolver: VideoWorkflowRegistry(
+            (
+                VideoWorkflowDefinition(
+                    id="runninghub:minimax-h3",
+                    label="RunningHub MiniMax H3",
+                    provider="runninghub",
+                    adapter_key="minimax-h3",
+                    scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+                    supported_modes=("i2va",),
+                    default_mode="i2va",
+                ),
+            )
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3",
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert backend.calls == []
+
+
+def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    def fail_registry(store, resolver):
+        raise RuntimeError("registry configuration is broken")
+
+    monkeypatch.setattr(
+        narrative_groups, "build_video_workflow_registry", fail_registry
+    )
+
+    with pytest.raises(RuntimeError, match="registry configuration is broken"):
+        client.post(
+            "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+            json={
+                "model": "runninghub:minimax-h3",
+                "mode": "auto",
+                "revision": 0,
+                "plan_revision": 1,
+            },
+        )
+
+    assert backend.calls == []
+
+
 def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -233,7 +452,8 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
-            "model": "minimax-h3", "mode": "auto", "revision": 0,
+            "model": "runninghub:minimax-h3", "mode": "auto", "revision": 0,
+            "plan_revision": 1,
             "aspect_ratio": "16:9", "resolution": "720p",
         },
     )
@@ -241,11 +461,13 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     assert response.status_code == 202
     payload = backend.calls[0][1]["payload"]
     assert backend.calls[0][1]["task_type"] == "narrative_group_video"
+    assert backend.calls[0][1]["queue_kind"] == "video"
     assert payload == {
         "episode": 1,
         "group_id": "ng-01",
         "revision": 1,
-        "model": "minimax-h3",
+        "plan_revision": 1,
+        "model": "runninghub:minimax-h3",
         "mode": "auto",
         "aspect_ratio": "16:9",
         "resolution": "720p",
@@ -257,10 +479,16 @@ def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypa
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
 
-    accepted = client.post(endpoint, json={"model": "minimax-h3", "mode": "auto", "revision": 0})
+    request = {
+        "model": "runninghub:minimax-h3",
+        "mode": "auto",
+        "revision": 0,
+        "plan_revision": 1,
+    }
+    accepted = client.post(endpoint, json=request)
     assert accepted.status_code == 202
 
-    stale = client.post(endpoint, json={"model": "minimax-h3", "mode": "auto", "revision": 0})
+    stale = client.post(endpoint, json=request)
 
     assert stale.status_code == 409
     assert len(backend.calls) == 1
@@ -291,7 +519,10 @@ def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
-        json={"model": "minimax-h3", "mode": "auto", "revision": 1},
+        json={
+            "model": "runninghub:minimax-h3", "mode": "auto",
+            "revision": 1, "plan_revision": 1,
+        },
     )
 
     assert response.status_code == 503
@@ -305,7 +536,7 @@ def test_video_generate_requires_current_revision(monkeypatch, tmp_path):
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
-        json={"model": "minimax-h3", "mode": "auto"},
+        json={"model": "runninghub:minimax-h3", "mode": "auto"},
     )
 
     assert response.status_code == 422
