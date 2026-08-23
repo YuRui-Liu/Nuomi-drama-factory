@@ -28,6 +28,12 @@ from novelvideo.media_capabilities.video.h3_timeline import (
 )
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
+from novelvideo.media_capabilities.video.workflow_registry import (
+    H3_WORKFLOW_ID,
+    VideoWorkflowDefinition,
+    VideoWorkflowScene,
+    build_video_workflow_registry,
+)
 from novelvideo.narrative_groups.service import record_stage_result, stage_payload
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -35,6 +41,49 @@ from novelvideo.task_backend.registry import register_project_task_runner
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
     return Path(str(payload.get("project_dir") or ctx.output_dir))
+
+
+def _resolve_workflow_definition(model: str) -> VideoWorkflowDefinition:
+    from novelvideo.api.deps import (
+        get_media_capability_store,
+        get_media_credential_resolver,
+    )
+
+    return build_video_workflow_registry(
+        get_media_capability_store(), get_media_credential_resolver()
+    ).resolve(model, VideoWorkflowScene.NARRATIVE_GROUP)
+
+
+def _legacy_h3_workflow_definition() -> VideoWorkflowDefinition:
+    """Keep already-queued pre-registry jobs executable during migration."""
+    return VideoWorkflowDefinition(
+        id=H3_WORKFLOW_ID,
+        label="RunningHub MiniMax H3",
+        provider="runninghub",
+        adapter_key="minimax-h3",
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=("auto", "i2va", "fl2va"),
+    )
+
+
+def _workflow_definition_for_payload(
+    payload: Mapping[str, Any],
+) -> VideoWorkflowDefinition:
+    model = str(payload.get("model") or "").strip()
+    return _resolve_workflow_definition(model) if model else _legacy_h3_workflow_definition()
+
+
+def _video_workflow_adapters():
+    from novelvideo.media_capabilities.video.adapters import (
+        H3WorkflowAdapter,
+        VideoWorkflowAdapters,
+    )
+
+    # Inject through this module so existing tests and runtime instrumentation
+    # can replace the H3 transport without changing adapter internals.
+    return VideoWorkflowAdapters(
+        (H3WorkflowAdapter(generator=generate_h3_director_video),)
+    )
 
 
 async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[str, Any]]:
@@ -212,6 +261,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         return {"status": "stale", "group_id": group_id, "revision": revision}
     record_stage_result(project_dir, episode, group_id, "video", expected_revision=revision, status="running", error="")
     try:
+        workflow = _workflow_definition_for_payload(payload)
+        adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
         beats = await _load_canonical_beats(ctx, episode)
         # The video stage owns revision/status; frame assets are canonical render outputs.
         render_state = stage_payload(project_dir, episode, group_id, "render")
@@ -224,7 +275,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         output = video_dir / f"{group_id}_r{revision}.mp4"
-        generated = await generate_h3_director_video(
+        generated = await adapter.generate_narrative_group(
             ctx, segments=tuple(segments), output_path=str(output),
             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"), resolution=payload.get("resolution"),
         )
@@ -250,7 +301,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         record_stage_result(
             project_dir, episode, group_id, "video", expected_revision=revision, status="completed",
             video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
-            actual_provider="runninghub", actual_model=str(payload.get("model") or "minimax-h3"),
+            actual_provider=workflow.provider, actual_model=workflow.id,
             actual_mode=generated.actual_mode, **stems,
         )
         return {"status": "completed", "group_id": group_id, "revision": revision,

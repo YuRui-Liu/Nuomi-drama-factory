@@ -120,7 +120,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
     ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
     result = narrative_group_video.run_narrative_group_video(
-        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1, "model": "MiniMax-H3", "mode": "auto"}},
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1, "mode": "auto"}},
         ctx,
     )
 
