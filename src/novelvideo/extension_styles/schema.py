@@ -48,6 +48,10 @@ STORY_CONTENT_BIAS_TERMS = {
     ),
 }
 
+# Exact known names containing a story term but carrying no story-content bias.
+# Add exceptions narrowly; Chinese terms otherwise use substring matching.
+CHINESE_STORY_CONTENT_EXCEPTIONS = ("公主岭",)
+
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _PREVIEW_RE = re.compile(r"^/images/extension-styles/[^/]+\.webp$")
 
@@ -86,18 +90,20 @@ def _story_bias_match(
     for key in FRAGMENT_KEYS:
         for phrase in fragments[key]:
             folded_phrase = phrase.casefold()
+            chinese_scan_phrase = folded_phrase
+            for exception in CHINESE_STORY_CONTENT_EXCEPTIONS:
+                chinese_scan_phrase = chinese_scan_phrase.replace(
+                    exception.casefold(), ""
+                )
             for dimension, terms in STORY_CONTENT_BIAS_TERMS.items():
                 for term in terms:
                     folded_term = term.casefold()
                     if folded_term.isascii():
                         pattern = rf"(?<!\w){re.escape(folded_term)}(?!\w)"
+                        matched = re.search(pattern, folded_phrase) is not None
                     else:
-                        pattern = (
-                            rf"(?<![\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
-                            rf"{re.escape(folded_term)}"
-                            rf"(?![\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
-                        )
-                    if re.search(pattern, folded_phrase):
+                        matched = folded_term in chinese_scan_phrase
+                    if matched:
                         return dimension, term
     return None
 

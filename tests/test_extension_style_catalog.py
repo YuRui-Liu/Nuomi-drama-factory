@@ -240,6 +240,18 @@ def test_chinese_story_term_does_not_match_inside_larger_word():
 
 
 @pytest.mark.parametrize(
+    "phrase",
+    ["手持宝剑", "唐朝皇宫", "公主穿汉服"],
+)
+def test_rejects_story_terms_embedded_in_continuous_chinese(phrase):
+    data = valid_style()
+    data["prompt_fragment"]["rendering"] = [phrase]
+
+    with pytest.raises(ValueError, match="story content bias"):
+        ExtensionStyle.from_dict(data)
+
+
+@pytest.mark.parametrize(
     "category",
     ["2d", "3d", "realistic", "chinese", "experimental"],
 )
