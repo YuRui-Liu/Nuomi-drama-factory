@@ -595,7 +595,32 @@ def test_nonvisual_production_note_is_not_shootable():
     }) is False
 
 
-def test_group_video_skips_provider_when_every_beat_is_nonvisual(tmp_path, monkeypatch):
+def test_group_video_uses_rendered_frame_even_for_production_note(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"frame")
+    beat = {
+        "id": "beat-1",
+        "beat_number": 1,
+        "visual_description": "时长信息卡片（185s），制作说明，无可直接拍摄的画面内容。",
+    }
+
+    segments = _build_segments(
+        {"mode": "i2va"},
+        [beat],
+        {
+            "beat_ids": ["beat-1"],
+            "cell_assets": [{"beat_id": "beat-1", "path": str(frame)}],
+        },
+    )
+
+    assert len(segments) == 1
+    assert segments[0].segment_id == "beat-1"
+    assert segments[0].first_frame == str(frame)
+
+
+def test_group_video_generates_when_production_notes_have_rendered_frames(tmp_path, monkeypatch):
     from novelvideo.narrative_groups.service import load_groups
     from novelvideo.task_backend.runners import narrative_group_video
 
@@ -608,16 +633,36 @@ def test_group_video_skips_provider_when_every_beat_is_nonvisual(tmp_path, monke
         ]
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    class Optimizer:
+        async def optimize_segment(self, segment, _context, _mode):
+            return _optimizer_result(f"优化：{segment.segment_id}")
+
+    submitted = []
+
+    async def generate(_ctx, *, segments, output_path, **_kwargs):
+        submitted.extend(segments)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id="provider-note-1",
+            actual_mode="fl2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": None,
+            "ambience_stem_path": None,
+            "dialogue_stem_status": "unavailable",
+            "ambience_stem_status": "unavailable",
+        }
+
     monkeypatch.setattr(
-        narrative_group_video,
-        "create_h3_prompt_optimizer",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer not called")),
+        narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer()
     )
-    monkeypatch.setattr(
-        narrative_group_video,
-        "generate_h3_director_video",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider not called")),
-    )
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path),
         state_dir=tmp_path / "state", project_id="demo",
@@ -627,11 +672,11 @@ def test_group_video_skips_provider_when_every_beat_is_nonvisual(tmp_path, monke
         {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
     )
 
-    assert result["status"] == "skipped"
-    assert result["reason"] == "nonvisual_beats"
+    assert result["status"] == "completed"
+    assert [segment.segment_id for segment in submitted] == ["beat-1", "beat-2"]
     stage = load_groups(tmp_path, 1)[0].stages["video"]
     assert stage.status == "completed"
-    assert stage.actual_mode == "skipped_nonvisual"
+    assert stage.video_asset.endswith("ng-01_r1.mp4")
 
 
 def _planned_render_state(tmp_path: Path):

@@ -454,8 +454,6 @@ def _build_segments(
         beat = by_id.get(str(beat_id))
         if beat is None:
             raise ValueError(f"canonical beat is unavailable: {beat_id}")
-        if _is_nonvisual_production_note(beat):
-            continue
         cell = cells.get(str(beat_id), {})
         first = _first_frame(cell)
         if not first:
@@ -511,8 +509,6 @@ def _build_planned_segments(
 
         if len(beats) == 1:
             beat = beats[0]
-            if _is_nonvisual_production_note(beat):
-                continue
             segments.append(H3DirectorSegment(
                 segment_id=beat_ids[0],
                 beat_number=_beat_number(beat, index),
