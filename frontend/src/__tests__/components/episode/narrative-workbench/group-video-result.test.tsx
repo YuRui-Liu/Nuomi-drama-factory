@@ -27,7 +27,7 @@ describe("GroupVideoResult", () => {
     })).toBe(false);
   });
 
-  it("explains a nonvisual skip without showing video production controls", () => {
+  it("explains that a legacy nonvisual skip can now be retried", () => {
     render(<GroupVideoResult stage={{
       status: "completed",
       revision: 6,
@@ -36,8 +36,8 @@ describe("GroupVideoResult", () => {
     }} />);
 
     expect(screen.getByText("已跳过")).toBeInTheDocument();
-    expect(screen.getByText("该 Beat 仅包含制作/时长说明，没有可生成的视频画面")).toBeInTheDocument();
-    expect(screen.getByText("编辑 Beat 后重新生成")).toBeInTheDocument();
+    expect(screen.getByText("上次任务按旧策略跳过，未生成视频")).toBeInTheDocument();
+    expect(screen.getByText("已有渲染首帧时，可直接点击上方“生成组合视频”重试")).toBeInTheDocument();
     expect(screen.queryByText("组合视频")).not.toBeInTheDocument();
     expect(screen.queryByText(/对白音轨/)).not.toBeInTheDocument();
     expect(screen.queryByText(/环境音轨/)).not.toBeInTheDocument();

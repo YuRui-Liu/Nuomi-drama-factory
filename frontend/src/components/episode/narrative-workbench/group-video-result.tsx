@@ -25,8 +25,8 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
   if (isNonvisualVideoSkip(stage)) {
     return <section className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-4" data-group-video-result data-group-video-skip>
       <div className="flex items-center gap-2 text-amber-300"><CircleSlash2 className="size-4" /><h3 className="text-sm font-semibold">已跳过</h3></div>
-      <p className="mt-2 text-sm">该 Beat 仅包含制作/时长说明，没有可生成的视频画面</p>
-      <p className="mt-1 text-xs text-muted-foreground">编辑 Beat 后重新生成</p>
+      <p className="mt-2 text-sm">上次任务按旧策略跳过，未生成视频</p>
+      <p className="mt-1 text-xs text-muted-foreground">已有渲染首帧时，可直接点击上方“生成组合视频”重试</p>
     </section>;
   }
   if (stage.status !== "completed" && !stage.video_asset) return null;
