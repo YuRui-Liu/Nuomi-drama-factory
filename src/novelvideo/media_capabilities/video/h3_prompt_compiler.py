@@ -78,8 +78,8 @@ def _compile_shot_heading(
             f"continuity locks: {locks}. {setup}"
         )
     return (
-        f"At {_timestamp(shot.start_frame, plan.fps)}, the camera cuts to "
-        f"[{shot_label}]: {setup}"
+        f"[{shot_label}] At {_timestamp(shot.start_frame, plan.fps)}, "
+        f"the camera cuts to: {setup}"
     )
 
 

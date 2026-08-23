@@ -349,6 +349,7 @@ def test_speaker_identity_is_stable_across_shots():
                     speaker_id="S1",
                     text="Stay back.",
                     language="English",
+                    continuation=True,
                 ),
             )
         }
@@ -382,11 +383,11 @@ def test_speaker_identity_is_stable_across_shots():
 
 
 @pytest.mark.parametrize(
-    ("left_truncated", "right_continuation", "right_speaker_id"),
+    ("left_continuation", "right_continuation", "right_speaker_id"),
     ((False, True, "S1"), (True, False, "S1"), (True, True, "S2")),
 )
 def test_cross_shot_dialogue_continuation_must_be_paired_and_keep_speaker_id(
-    left_truncated, right_continuation, right_speaker_id
+    left_continuation, right_continuation, right_speaker_id
 ):
     first = _shot(end_frame=50).model_copy(
         update={
@@ -398,7 +399,7 @@ def test_cross_shot_dialogue_continuation_must_be_paired_and_keep_speaker_id(
                     speaker_id="S1",
                     text="Stay—",
                     language="English",
-                    truncated=left_truncated,
+                    continuation=left_continuation,
                 ),
             )
         }
@@ -426,6 +427,68 @@ def test_cross_shot_dialogue_continuation_must_be_paired_and_keep_speaker_id(
             visual_style="cinematic realism",
             continuity_locks=("identity",),
             shots=(first, second),
+            soundscape="door rattle",
+            music="low strings",
+        )
+
+
+def test_truncated_is_only_valid_on_final_cue_ending_at_total_frames():
+    terminal = H3DialogueCue(
+        start_frame=80,
+        end_frame=101,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="Stay—",
+        language="English",
+        truncated=True,
+    )
+    first = _shot(end_frame=50).model_copy(
+        update={"dialogue": (terminal.model_copy(update={"end_frame": 45}),)}
+    )
+    second = _shot(shot_id="2", start_frame=50, end_frame=101)
+
+    with pytest.raises(ValidationError, match="truncated.*final shot"):
+        H3DirectorPlan(
+            mode=H3Mode.I2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(first, second),
+            soundscape="door rattle",
+            music="low strings",
+        )
+
+    not_last = second.model_copy(
+        update={
+            "dialogue": (
+                terminal.model_copy(update={"start_frame": 60, "end_frame": 70}),
+                terminal.model_copy(
+                    update={"start_frame": 80, "truncated": False}
+                ),
+            )
+        }
+    )
+    with pytest.raises(ValidationError, match="truncated.*last dialogue cue"):
+        H3DirectorPlan(
+            mode=H3Mode.I2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(_shot(end_frame=50), not_last),
+            soundscape="door rattle",
+            music="low strings",
+        )
+
+    early_end = second.model_copy(
+        update={"dialogue": (terminal.model_copy(update={"end_frame": 100}),)}
+    )
+    with pytest.raises(ValidationError, match="truncated.*total_frames"):
+        H3DirectorPlan(
+            mode=H3Mode.I2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(_shot(end_frame=50), early_end),
             soundscape="door rattle",
             music="low strings",
         )

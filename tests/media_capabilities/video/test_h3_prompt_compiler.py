@@ -153,7 +153,7 @@ def test_compiles_complete_multi_shot_with_official_cut_and_dialogue_markers():
                 speaker_id="S1",
                 text="别开门——",
                 language="Chinese",
-                truncated=True,
+                continuation=True,
             ),
         ),
     )
@@ -192,8 +192,9 @@ def test_compiles_complete_multi_shot_with_official_cut_and_dialogue_markers():
         "Camera: slow, subtle push-in moving forward.\n"
         "At 00:00.000, establish: Lin Mo braces against the door.\n"
         "At 00:00.500, execute: He turns toward the rattling handle.\n"
-        "At 00:00.833, Lin Mo (S1) says: <d>[Chinese]别开门——</d><cutoff>\n"
-        "At 00:02.083, the camera cuts to [Shot 2]: medium close-up; eye level; "
+        "At 00:00.833, Lin Mo (S1) says: "
+        "<scenetrans><d>[Chinese]别开门——</d>\n"
+        "[Shot 2] At 00:02.083, the camera cuts to: medium close-up; eye level; "
         "focus on Lin Mo; composition: Lin Mo remains centered against the iron door. "
         "Camera: slow, subtle push-in moving forward.\n"
         "At 00:02.083, establish: Lin Mo braces against the door.\n"
@@ -203,6 +204,37 @@ def test_compiles_complete_multi_shot_with_official_cut_and_dialogue_markers():
         "overall_soundscape: Rain and breath.\n\n"
         "non_diegetic_music: None."
     )
+
+
+def test_terminal_truncated_dialogue_compiles_to_cutoff_only_at_video_end():
+    plan = H3DirectorPlan(
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("same face",),
+        shots=(
+            _shot(
+                dialogue=(
+                    H3DialogueCue(
+                        start_frame=80,
+                        end_frame=101,
+                        speaker="Lin Mo",
+                        speaker_id="S1",
+                        text="Stay—",
+                        language="English",
+                        truncated=True,
+                    ),
+                )
+            ),
+        ),
+        soundscape="Rain.",
+        music="None.",
+    )
+
+    prompt = compile_h3_director_plan(plan)
+
+    assert "<d>[English]Stay—</d><cutoff>" in prompt
+    assert "<scenetrans>" not in prompt
 
 
 def test_compiler_never_emits_custom_frame_ranges():

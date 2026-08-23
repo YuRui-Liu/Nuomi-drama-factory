@@ -296,29 +296,52 @@ class H3DirectorPlan(BaseModel):
         last_shot_index = len(self.shots) - 1
         for index, shot in enumerate(self.shots):
             for cue_index, cue in enumerate(shot.dialogue):
-                if cue.continuation and (index == 0 or cue_index != 0):
-                    raise ValueError(
-                        "cross-shot continuation must be paired at adjacent shot ends"
-                    )
-                if cue.truncated and index < last_shot_index:
+                if cue.truncated:
+                    if index != last_shot_index:
+                        raise ValueError("truncated dialogue is only valid in final shot")
                     if cue_index != len(shot.dialogue) - 1:
                         raise ValueError(
-                            "cross-shot continuation must be paired at adjacent shot ends"
+                            "truncated dialogue must be the last dialogue cue"
+                        )
+                    if cue.end_frame != self.total_frames:
+                        raise ValueError(
+                            "truncated dialogue must end at total_frames"
                         )
 
         for left, right in zip(self.shots, self.shots[1:]):
             left_cue = left.dialogue[-1] if left.dialogue else None
             right_cue = right.dialogue[0] if right.dialogue else None
-            left_truncated = bool(left_cue and left_cue.truncated)
+            left_continuation = bool(left_cue and left_cue.continuation)
             right_continuation = bool(right_cue and right_cue.continuation)
-            if left_truncated != right_continuation:
+            if left_continuation != right_continuation:
                 raise ValueError(
                     "cross-shot continuation must be paired at adjacent shot ends"
                 )
-            if left_truncated and left_cue.speaker_id != right_cue.speaker_id:
+            if left_continuation and left_cue.speaker_id != right_cue.speaker_id:
                 raise ValueError(
                     "cross-shot continuation must keep the same speaker_id"
                 )
+
+        for index, shot in enumerate(self.shots):
+            for cue_index, cue in enumerate(shot.dialogue):
+                if not cue.continuation:
+                    continue
+                incoming = (
+                    index > 0
+                    and cue_index == 0
+                    and bool(self.shots[index - 1].dialogue)
+                    and self.shots[index - 1].dialogue[-1].continuation
+                )
+                outgoing = (
+                    index < last_shot_index
+                    and cue_index == len(shot.dialogue) - 1
+                    and bool(self.shots[index + 1].dialogue)
+                    and self.shots[index + 1].dialogue[0].continuation
+                )
+                if not incoming and not outgoing:
+                    raise ValueError(
+                        "cross-shot continuation must be paired at adjacent shot ends"
+                    )
 
 
 __all__ = [
