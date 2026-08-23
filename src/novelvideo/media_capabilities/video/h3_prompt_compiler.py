@@ -47,36 +47,63 @@ def _frame_alignment(plan: H3DirectorPlan) -> str:
 
 
 def _compile_description(plan: H3DirectorPlan) -> str:
-    lines = [
-        f"Visual style: {plan.visual_style}.",
-        f"Continuity locks: {'; '.join(plan.continuity_locks)}.",
-    ]
-    if plan.mode is H3Mode.FL2VA:
-        lines.append("Frame differences (Picture 1 to Picture 2):")
-        lines.extend(_compile_difference(item, plan.fps) for item in plan.frame_differences)
-    for shot in plan.shots:
-        lines.extend(_compile_shot(shot, plan.fps))
+    lines: list[str] = []
+    for index, shot in enumerate(plan.shots):
+        lines.append(_compile_shot_heading(plan, shot, first=index == 0))
+        if index == 0 and plan.mode is H3Mode.FL2VA:
+            lines.append("Picture 1 to Picture 2 differences:")
+        lines.extend(_compile_shot_events(plan, shot))
     return "\n".join(lines)
 
 
 def _compile_difference(difference: H3FrameDifference, fps: int) -> str:
     return (
-        f"Converge by frame {difference.convergence_frame} "
-        f"({_seconds(difference.convergence_frame, fps)}): {difference.description}"
+        f"At {_timestamp(difference.convergence_frame, fps)}, "
+        f"converge toward Picture 2: {difference.description}"
     )
 
 
-def _compile_shot(shot: H3ShotPlan, fps: int) -> list[str]:
+def _compile_shot_heading(
+    plan: H3DirectorPlan, shot: H3ShotPlan, *, first: bool
+) -> str:
     shot_label = _shot_label(shot.shot_id)
-    lines = [
-        f"[{shot_label}] Frames {shot.start_frame}-{shot.end_frame} "
-        f"({_range_seconds(shot.start_frame, shot.end_frame, fps)}). "
+    setup = (
         f"{shot.framing}; {shot.angle}; focus on {shot.focus}; "
         f"composition: {shot.composition}. Camera: {_camera_text(shot.camera)}."
-    ]
-    lines.extend(_compile_action(action, fps) for action in shot.actions)
-    lines.extend(_compile_dialogue(cue, fps) for cue in shot.dialogue)
-    return lines
+    )
+    if first:
+        locks = "; ".join(plan.continuity_locks)
+        return (
+            f"[{shot_label}] {plan.visual_style} visual style; "
+            f"continuity locks: {locks}. {setup}"
+        )
+    return (
+        f"At {_timestamp(shot.start_frame, plan.fps)}, the camera cuts to "
+        f"[{shot_label}]: {setup}"
+    )
+
+
+def _compile_shot_events(plan: H3DirectorPlan, shot: H3ShotPlan) -> list[str]:
+    events: list[tuple[int, int, str]] = []
+    events.extend(
+        (action.start_frame, 0, _compile_action(action, plan.fps))
+        for action in shot.actions
+    )
+    events.extend(
+        (cue.start_frame, 1, _compile_dialogue(cue, plan.fps))
+        for cue in shot.dialogue
+    )
+    if plan.mode is H3Mode.FL2VA:
+        events.extend(
+            (
+                difference.convergence_frame,
+                2,
+                _compile_difference(difference, plan.fps),
+            )
+            for difference in plan.frame_differences
+            if shot.start_frame <= difference.convergence_frame < shot.end_frame
+        )
+    return [rendered for _, _, rendered in sorted(events)]
 
 
 def _shot_label(shot_id: str) -> str:
@@ -87,7 +114,7 @@ def _shot_label(shot_id: str) -> str:
 
 
 def _camera_text(camera: H3CameraPlan) -> str:
-    if camera.type.casefold() in {"fixed", "locked", "none", "static"}:
+    if camera.is_static:
         return f"{camera.type} camera"
     return (
         f"{camera.speed}, {camera.amplitude} {camera.type} "
@@ -97,35 +124,25 @@ def _camera_text(camera: H3CameraPlan) -> str:
 
 def _compile_action(action: H3ActionPlan, fps: int) -> str:
     return (
-        f"Action {action.phase}, frames {action.start_frame}-{action.end_frame} "
-        f"({_range_seconds(action.start_frame, action.end_frame, fps)}): "
+        f"At {_timestamp(action.start_frame, fps)}, {action.phase}: "
         f"{action.description}"
     )
 
 
 def _compile_dialogue(cue: H3DialogueCue, fps: int) -> str:
-    markers = "".join(
-        f" [{marker}]"
-        for marker, enabled in (
-            ("continuation", cue.continuation),
-            ("truncated", cue.truncated),
-        )
-        if enabled
-    )
+    prefix = "<scenetrans>" if cue.continuation else ""
+    suffix = "<cutoff>" if cue.truncated else ""
     return (
-        f"{cue.speaker} ({cue.speaker_id}) says at frames "
-        f"{cue.start_frame}-{cue.end_frame} "
-        f"({_range_seconds(cue.start_frame, cue.end_frame, fps)}): "
-        f"<d>[{cue.language}]{cue.text}</d>{markers}"
+        f"At {_timestamp(cue.start_frame, fps)}, {cue.speaker} ({cue.speaker_id}) says: "
+        f"{prefix}<d>[{cue.language}]{cue.text}</d>{suffix}"
     )
 
 
-def _range_seconds(start_frame: int, end_frame: int, fps: int) -> str:
-    return f"{start_frame / fps:.2f}-{_seconds(end_frame, fps)}"
-
-
-def _seconds(frame: int, fps: int) -> str:
-    return f"{frame / fps:.2f}s"
+def _timestamp(frame: int, fps: int) -> str:
+    total_milliseconds = round(frame * 1000 / fps)
+    minutes, remainder = divmod(total_milliseconds, 60_000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
 
 compile_h3_prompt = compile_h3_director_plan

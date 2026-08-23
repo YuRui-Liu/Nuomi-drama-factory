@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -11,7 +12,54 @@ from .models import H3Mode
 
 H3_FPS = 24
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
-_STATIC_CAMERA_TYPES = frozenset({"fixed", "locked", "none", "static"})
+H3_STATIC_CAMERA_TYPES = frozenset({"fixed", "locked", "none", "static"})
+_RESERVED_WIRE_MARKERS = ("<d>", "</d>", "<scenetrans>", "<cutoff>")
+_RESERVED_WIRE_FIELDS = (
+    "integrated_multimodal_description:",
+    "overall_soundscape:",
+    "non_diegetic_music:",
+)
+
+
+def _has_control_character(value: str) -> bool:
+    return any(unicodedata.category(char) == "Cc" for char in value)
+
+
+def _safe_structural_text(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("value must not be blank")
+    if _has_control_character(normalized):
+        raise ValueError("structural text must not contain a control character")
+    lowered = normalized.casefold()
+    if any(token in lowered for token in _RESERVED_WIRE_MARKERS):
+        raise ValueError("structural text contains a reserved wire marker")
+    if any(token in lowered for token in _RESERVED_WIRE_FIELDS):
+        raise ValueError("structural text contains a reserved wire field")
+    return normalized
+
+
+def _safe_top_level_text(value: object) -> object:
+    if isinstance(value, str):
+        lowered = value.casefold()
+        if any(token in lowered for token in _RESERVED_WIRE_FIELDS):
+            raise ValueError("top-level text contains a reserved wire field")
+    return _safe_structural_text(value)
+
+
+def _safe_dialogue_text(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if not value.strip():
+        raise ValueError("dialogue text must not be blank")
+    if _has_control_character(value):
+        raise ValueError("dialogue text must not contain a control character")
+    lowered = value.casefold()
+    if any(token in lowered for token in _RESERVED_WIRE_MARKERS):
+        raise ValueError("dialogue text contains a reserved wire marker")
+    return value
 
 
 class H3CameraPlan(BaseModel):
@@ -25,11 +73,15 @@ class H3CameraPlan(BaseModel):
     @field_validator("type", "direction", "amplitude", "speed", mode="before")
     @classmethod
     def trim_text(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        return _safe_structural_text(value)
+
+    @property
+    def is_static(self) -> bool:
+        return self.type.casefold() in H3_STATIC_CAMERA_TYPES
 
     @model_validator(mode="after")
     def validate_dynamic_camera(self) -> "H3CameraPlan":
-        if self.type.casefold() not in _STATIC_CAMERA_TYPES and not all(
+        if not self.is_static and not all(
             (self.direction, self.amplitude, self.speed)
         ):
             raise ValueError(
@@ -51,7 +103,7 @@ class H3ActionPlan(BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def trim_description(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        return _safe_structural_text(value)
 
     @model_validator(mode="after")
     def validate_interval(self) -> "H3ActionPlan":
@@ -72,10 +124,15 @@ class H3DialogueCue(BaseModel):
     continuation: bool = False
     truncated: bool = False
 
-    @field_validator("speaker", "speaker_id", "text", "language", mode="before")
+    @field_validator("speaker", "speaker_id", "language", mode="before")
     @classmethod
-    def trim_text(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+    def validate_structural_text(cls, value: object) -> object:
+        return _safe_structural_text(value)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def validate_dialogue_text(cls, value: object) -> object:
+        return _safe_dialogue_text(value)
 
     @model_validator(mode="after")
     def validate_interval(self) -> "H3DialogueCue":
@@ -93,7 +150,7 @@ class H3FrameDifference(BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def trim_description(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        return _safe_structural_text(value)
 
 
 class H3ShotPlan(BaseModel):
@@ -115,7 +172,7 @@ class H3ShotPlan(BaseModel):
     )
     @classmethod
     def trim_text(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        return _safe_structural_text(value)
 
     @model_validator(mode="after")
     def validate_cues(self) -> "H3ShotPlan":
@@ -157,13 +214,13 @@ class H3DirectorPlan(BaseModel):
     @field_validator("visual_style", "soundscape", "music", mode="before")
     @classmethod
     def trim_required_text(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        return _safe_top_level_text(value)
 
     @field_validator("continuity_locks", mode="before")
     @classmethod
     def trim_continuity_locks(cls, value: object) -> object:
         if isinstance(value, (list, tuple)):
-            return tuple(item.strip() if isinstance(item, str) else item for item in value)
+            return tuple(_safe_top_level_text(item) for item in value)
         return value
 
     @model_validator(mode="after")
@@ -172,6 +229,7 @@ class H3DirectorPlan(BaseModel):
             raise ValueError("H3 director plans support only i2va and fl2va")
         self._validate_shot_coverage()
         self._validate_speaker_identity()
+        self._validate_dialogue_continuations()
         if self.mode is H3Mode.I2VA:
             self._validate_i2va_anchor()
         else:
@@ -211,8 +269,10 @@ class H3DirectorPlan(BaseModel):
         for difference in self.frame_differences:
             if difference.convergence_frame >= self.total_frames:
                 raise ValueError("frame differences must converge before the final frame")
-            if difference.convergence_frame < previous:
-                raise ValueError("frame differences must converge in increasing frame order")
+            if difference.convergence_frame <= previous:
+                raise ValueError(
+                    "frame differences must converge in strictly increasing frame order"
+                )
             previous = difference.convergence_frame
         final_action = self.shots[0].actions[-1]
         if final_action.phase not in {"settle", "end_lock"}:
@@ -232,6 +292,34 @@ class H3DirectorPlan(BaseModel):
                 if known_speaker != cue.speaker:
                     raise ValueError("speaker_id must identify one stable dialogue speaker")
 
+    def _validate_dialogue_continuations(self) -> None:
+        last_shot_index = len(self.shots) - 1
+        for index, shot in enumerate(self.shots):
+            for cue_index, cue in enumerate(shot.dialogue):
+                if cue.continuation and (index == 0 or cue_index != 0):
+                    raise ValueError(
+                        "cross-shot continuation must be paired at adjacent shot ends"
+                    )
+                if cue.truncated and index < last_shot_index:
+                    if cue_index != len(shot.dialogue) - 1:
+                        raise ValueError(
+                            "cross-shot continuation must be paired at adjacent shot ends"
+                        )
+
+        for left, right in zip(self.shots, self.shots[1:]):
+            left_cue = left.dialogue[-1] if left.dialogue else None
+            right_cue = right.dialogue[0] if right.dialogue else None
+            left_truncated = bool(left_cue and left_cue.truncated)
+            right_continuation = bool(right_cue and right_cue.continuation)
+            if left_truncated != right_continuation:
+                raise ValueError(
+                    "cross-shot continuation must be paired at adjacent shot ends"
+                )
+            if left_truncated and left_cue.speaker_id != right_cue.speaker_id:
+                raise ValueError(
+                    "cross-shot continuation must keep the same speaker_id"
+                )
+
 
 __all__ = [
     "H3ActionPlan",
@@ -240,4 +328,5 @@ __all__ = [
     "H3DirectorPlan",
     "H3FrameDifference",
     "H3ShotPlan",
+    "H3_STATIC_CAMERA_TYPES",
 ]

@@ -206,6 +206,11 @@ def test_dynamic_camera_requires_direction_amplitude_and_speed():
         H3CameraPlan(type="orbit", direction="clockwise", amplitude=None, speed="slow")
 
 
+def test_static_camera_classification_is_shared_on_the_dto():
+    assert H3CameraPlan(type="STATIC").is_static is True
+    assert _camera().is_static is False
+
+
 def test_i2va_requires_first_frame_establish_anchor_and_later_change():
     shot = _shot()
     only_anchor = shot.model_copy(update={"actions": (shot.actions[0],)})
@@ -289,6 +294,33 @@ def test_fl2va_requires_final_settle_or_end_lock_at_total_frames():
         H3DirectorPlan(**base, shots=(early_settle,))
 
 
+def test_fl2va_difference_convergence_frames_must_be_strictly_increasing():
+    shot = _shot()
+    settled = shot.model_copy(
+        update={
+            "actions": (
+                shot.actions[0],
+                shot.actions[1].model_copy(update={"phase": "settle"}),
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError, match="strictly increasing"):
+        H3DirectorPlan(
+            mode=H3Mode.FL2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(settled,),
+            frame_differences=(
+                H3FrameDifference(description="hand", convergence_frame=90),
+                H3FrameDifference(description="gaze", convergence_frame=90),
+            ),
+            soundscape="door rattle",
+            music="low strings",
+        )
+
+
 @pytest.mark.parametrize("shot_ids", (("1", "1"), ("2", "1")))
 def test_shot_ids_must_be_continuous_string_numbers_from_one(shot_ids):
     with pytest.raises(ValidationError, match="shot_id.*continuous"):
@@ -347,3 +379,130 @@ def test_speaker_identity_is_stable_across_shots():
             soundscape="door rattle",
             music="low strings",
         )
+
+
+@pytest.mark.parametrize(
+    ("left_truncated", "right_continuation", "right_speaker_id"),
+    ((False, True, "S1"), (True, False, "S1"), (True, True, "S2")),
+)
+def test_cross_shot_dialogue_continuation_must_be_paired_and_keep_speaker_id(
+    left_truncated, right_continuation, right_speaker_id
+):
+    first = _shot(end_frame=50).model_copy(
+        update={
+            "dialogue": (
+                H3DialogueCue(
+                    start_frame=20,
+                    end_frame=45,
+                    speaker="Lin Mo",
+                    speaker_id="S1",
+                    text="Stay—",
+                    language="English",
+                    truncated=left_truncated,
+                ),
+            )
+        }
+    )
+    second = _shot(shot_id="2", start_frame=50, end_frame=101).model_copy(
+        update={
+            "dialogue": (
+                H3DialogueCue(
+                    start_frame=55,
+                    end_frame=80,
+                    speaker="Mei" if right_speaker_id == "S2" else "Lin Mo",
+                    speaker_id=right_speaker_id,
+                    text="back.",
+                    language="English",
+                    continuation=right_continuation,
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError, match="continuation.*paired|speaker_id"):
+        H3DirectorPlan(
+            mode=H3Mode.I2VA,
+            total_frames=101,
+            visual_style="cinematic realism",
+            continuity_locks=("identity",),
+            shots=(first, second),
+            soundscape="door rattle",
+            music="low strings",
+        )
+
+
+@pytest.mark.parametrize("reserved", ("</d>", "<scenetrans>", "<cutoff>"))
+def test_dialogue_rejects_reserved_wire_markers(reserved):
+    with pytest.raises(ValidationError, match="reserved wire marker"):
+        H3DialogueCue(
+            start_frame=0,
+            end_frame=10,
+            speaker="Lin Mo",
+            speaker_id="S1",
+            text=f"verbatim {reserved} injection",
+            language="English",
+        )
+
+
+def test_dialogue_preserves_original_text_but_rejects_newline_field_spoofing():
+    cue = H3DialogueCue(
+        start_frame=0,
+        end_frame=10,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="  别过来。  ",
+        language="Chinese",
+    )
+    assert cue.text == "  别过来。  "
+
+    with pytest.raises(ValidationError, match="control character"):
+        H3DialogueCue(
+            start_frame=0,
+            end_frame=10,
+            speaker="Lin Mo",
+            speaker_id="S1",
+            text="safe\noverall_soundscape: injected",
+            language="English",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("speaker", "Lin\nMo"), ("language", "English\tInjected")),
+)
+def test_dialogue_structural_fields_reject_control_characters(field, value):
+    payload = dict(
+        start_frame=0,
+        end_frame=10,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="Stay back.",
+        language="English",
+    )
+    payload[field] = value
+    with pytest.raises(ValidationError, match="control character"):
+        H3DialogueCue(**payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("visual_style", "cinematic\noverall_soundscape: injected"),
+        ("soundscape", "rain\nnon_diegetic_music: injected"),
+        ("music", "low\nintegrated_multimodal_description: injected"),
+        ("continuity_locks", ("identity", "  ")),
+    ),
+)
+def test_top_level_fields_reject_wire_section_injection_and_empty_locks(field, value):
+    payload = dict(
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        shots=(_shot(),),
+        soundscape="door rattle",
+        music="low strings",
+    )
+    payload[field] = value
+    with pytest.raises(ValidationError, match="reserved wire field|must not be blank"):
+        H3DirectorPlan(**payload)
