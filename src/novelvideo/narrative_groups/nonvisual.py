@@ -36,7 +36,10 @@ def _beat_mapping(beat: Any) -> Mapping[str, Any]:
 def is_nonvisual_production_note(beat: Any) -> bool:
     """Return whether a silent beat is only a non-shootable production note."""
     data = _beat_mapping(beat)
-    if h3_dialogue_text(data).strip() or str(data.get("narration") or "").strip():
+    narration = str(
+        data.get("narration") or data.get("narration_segment") or ""
+    ).strip()
+    if h3_dialogue_text(data).strip() or narration:
         return False
     text = " ".join(
         str(data.get(name) or "").strip()

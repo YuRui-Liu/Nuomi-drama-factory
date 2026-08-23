@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from novelvideo.narrative_groups.service import group_beats
@@ -57,3 +59,29 @@ def test_group_beats_keeps_production_notes_with_spoken_content(
     groups = group_beats([beat])
 
     assert [group.beat_ids for group in groups] == [(beat["id"],)]
+
+
+def test_group_beats_keeps_mapping_production_note_with_narration_segment() -> None:
+    groups = group_beats(
+        [
+            {
+                "id": "mapped-narration-segment",
+                "visual_description": "制作说明：时长信息卡片，无可直接拍摄。",
+                "narration_segment": "本段持续一百八十五秒。",
+            }
+        ]
+    )
+
+    assert [group.beat_ids for group in groups] == [("mapped-narration-segment",)]
+
+
+def test_group_beats_keeps_object_production_note_with_narration_segment() -> None:
+    beat = SimpleNamespace(
+        id="object-narration-segment",
+        visual_description="制作说明：时长信息卡片，无可直接拍摄。",
+        narration_segment="本段持续一百八十五秒。",
+    )
+
+    groups = group_beats([beat])
+
+    assert [group.beat_ids for group in groups] == [("object-narration-segment",)]
