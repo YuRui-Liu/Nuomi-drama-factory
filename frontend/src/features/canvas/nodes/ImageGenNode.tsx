@@ -180,6 +180,7 @@ import { hasImageGenPromptOverride } from '@/features/canvas/nodes/imageGenPromp
 import { orderedReferenceUrlsWithOwnFirst } from '@/features/canvas/nodes/referenceOrdering';
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
 import { composeImagePrompt } from '@/features/canvas/extension-styles/composePrompt';
+import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -649,6 +650,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // 收起态浮动面板固定基础尺寸；放大用居中弹窗（见下方 OperationPanelShell）。
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [stylePickerOpen, setStylePickerOpen] = useState(false);
+  const [extensionStyleDrawerOpen, setExtensionStyleDrawerOpen] = useState(false);
   const panelHeight = OPERATIONS_PANEL_HEIGHT;
   const panelWidth = Math.max(resolvedWidth, OPERATIONS_PANEL_MIN_WIDTH);
 
@@ -1754,6 +1756,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               onChange={(nextId) => updateNodeData(id, { styleTemplateId: nextId })}
               onOpenChange={setStylePickerOpen}
             />
+            <ExtensionStyleChip
+              value={extensionStyleId}
+              onChange={(nextId) => updateNodeData(id, { extensionStyleId: nextId })}
+              onOpenChange={setExtensionStyleDrawerOpen}
+            />
             <NodeContextPromptPaletteButton
               nodeId={id}
               onInsert={insertContextPaletteEntry}
@@ -1924,7 +1931,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
           </div>
         </OperationPanelShell>
       )}
-      {selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && hasCompletedHistoryRecords(historyRecords) && (
+      {selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && !extensionStyleDrawerOpen && hasCompletedHistoryRecords(historyRecords) && (
         <div
           className={`nodrag absolute left-1/2 z-[300] -translate-x-1/2 rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS} ${NODE_OPS_PANEL_ENTER_CLASS} px-3 py-2`}
           style={{
