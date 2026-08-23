@@ -4,125 +4,125 @@
     "summary": "清晰线稿与平涂色块构成的高完成度赛璐璐动画视觉，适合强调轮廓、节奏与通透画面。",
     "prompt_fragment": {"medium": ["Japanese cel animation medium"], "rendering": ["crisp inked contours, clean cel shading"], "lighting": ["graphic key light with controlled rim highlights"], "color": ["bright harmonized palette, precise color blocks"], "camera": ["animation-grade composition, clean lens separation"], "constraints": ["high-fidelity finish, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["角色向动画镜头", "明快情绪段落"], "preview_asset": "/images/extension-styles/japanese-cel-animation.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["japanese-cel-animation"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.shojo_manga", "name": "少女漫画", "category": "2d",
     "summary": "以纤细线条、柔润渐变和装饰性高光塑造细腻情绪的漫画视觉，适合浪漫与内心戏表达。",
     "prompt_fragment": {"medium": ["delicate shojo manga illustration"], "rendering": ["fine expressive linework, soft screentone rendering"], "lighting": ["diffused luminous glow, sparkling highlights"], "color": ["airy pastel palette, pearlescent accents"], "camera": ["elegant close framing, shallow graphic depth"], "constraints": ["polished print quality, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["情感特写", "浪漫氛围段落"], "preview_asset": "/images/extension-styles/shojo-manga.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["shojo-manga"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.shonen_manga", "name": "热血少年漫", "category": "2d",
     "summary": "强劲墨线、速度感排线与高反差构图结合的少年漫画视觉，适合高张力叙事和节奏峰值。",
     "prompt_fragment": {"medium": ["high-energy shonen manga artwork"], "rendering": ["bold ink contours, dynamic hatching, sharp cel rendering"], "lighting": ["hard directional light, punchy rim contrast"], "color": ["saturated primary palette, deep graphic shadows"], "camera": ["kinetic perspective, dramatic wide-angle lens feel"], "constraints": ["crisp production detail, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["高张力镜头", "节奏高潮段落"], "preview_asset": "/images/extension-styles/shonen-manga.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["shonen-manga"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.korean_webtoon", "name": "韩式条漫", "category": "2d",
     "summary": "精致数码线稿、柔和体积塑造与清爽配色形成的现代条漫视觉，兼顾移动端阅读清晰度。",
     "prompt_fragment": {"medium": ["premium Korean webtoon illustration"], "rendering": ["clean digital linework, smooth layered shading"], "lighting": ["soft cinematic key light, glossy highlights"], "color": ["refined contemporary palette, balanced saturation"], "camera": ["vertical-canvas composition, cinematic depth cues"], "constraints": ["mobile-readable clarity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["竖屏连续叙事", "都市情感画面"], "preview_asset": "/images/extension-styles/korean-webtoon.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["korean-webtoon"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.western_superhero_comic", "name": "欧美超级英雄漫画", "category": "2d",
     "summary": "厚重勾线、雕塑般明暗和印刷网点融合的欧美漫画视觉，提供强烈体积感与戏剧冲击力。",
     "prompt_fragment": {"medium": ["modern Western superhero comic art"], "rendering": ["heavy ink contours, sculpted anatomy shading, fine halftones"], "lighting": ["heroic high-contrast lighting, powerful rim light"], "color": ["bold comic-book palette, rich shadow colors"], "camera": ["monumental low-angle framing, cinematic lens compression"], "constraints": ["premium print finish, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["史诗感视觉", "强冲突段落"], "preview_asset": "/images/extension-styles/western-superhero-comic.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["western-superhero-comic"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.american_retro_comic", "name": "美式复古漫画", "category": "2d",
     "summary": "粗颗粒网点、有限套色和旧印刷偏移营造怀旧美式漫画质感，适合复古与讽刺语气。",
     "prompt_fragment": {"medium": ["vintage American comic print"], "rendering": ["Ben-Day dots, bold contour inks, subtle registration offset"], "lighting": ["flat graphic lighting, hard-edged shadow shapes"], "color": ["limited four-color print palette, aged ink tones"], "camera": ["classic panel composition, graphic lens flattening"], "constraints": ["authentic print texture, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["怀旧喜剧段落", "平面海报式镜头"], "preview_asset": "/images/extension-styles/american-retro-comic.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["american-retro-comic"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.french_picture_book", "name": "法式绘本", "category": "experimental",
     "summary": "松弛手绘笔触、纸张肌理与克制配色构成富有文学气息的法式绘本视觉。",
     "prompt_fragment": {"medium": ["French editorial picture-book illustration"], "rendering": ["loose hand-drawn contours, tactile gouache texture"], "lighting": ["gentle ambient illumination, understated highlights"], "color": ["muted sophisticated palette, warm paper undertones"], "camera": ["poetic editorial composition, softly layered depth"], "constraints": ["refined handmade finish, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["文学感叙事", "温柔旁白段落"], "preview_asset": "/images/extension-styles/french-picture-book.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["french-picture-book"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.watercolor_storybook", "name": "水彩故事书", "category": "experimental",
     "summary": "透明水彩晕染、自然水痕和留白共同形成轻盈叙事画面，适合温暖、诗意的视觉表达。",
     "prompt_fragment": {"medium": ["transparent watercolor storybook painting"], "rendering": ["wet-on-wet washes, delicate dry-brush detail"], "lighting": ["luminous paper-white glow, soft tonal transitions"], "color": ["transparent layered pigments, gentle color blooms"], "camera": ["open storybook composition, atmospheric depth"], "constraints": ["clean watercolor craft, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["治愈叙事", "梦境与回忆段落"], "preview_asset": "/images/extension-styles/watercolor-storybook.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["watercolor-storybook"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.ink_wash_guoman", "name": "水墨国漫", "category": "chinese",
     "summary": "水墨皴染与现代动画轮廓相结合，在东方留白中保持清晰叙事与层次丰富的国漫视觉。",
     "prompt_fragment": {"medium": ["Chinese ink-wash animation painting"], "rendering": ["expressive brush contours, layered ink diffusion"], "lighting": ["mist-soft illumination, restrained tonal glow"], "color": ["ink-led palette with sparse mineral accents"], "camera": ["expansive negative-space composition, layered atmospheric depth"], "constraints": ["controlled brush clarity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["东方意境段落", "诗性转场"], "preview_asset": "/images/extension-styles/ink-wash-guoman.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["ink-wash-guoman"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "ink-double-exposure-poster", "history-classical-themes"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.gongbi_heavy_color", "name": "工笔重彩", "category": "chinese",
     "summary": "精密线描、层层设色与矿物色泽构成端丽细腻的工笔重彩画面，适合庄重精致的视觉段落。",
     "prompt_fragment": {"medium": ["gongbi heavy-color painting"], "rendering": ["meticulous fine-line drawing, layered mineral-pigment rendering"], "lighting": ["even luminous illumination, subtle gilded highlights"], "color": ["saturated mineral palette, elegant tonal harmony"], "camera": ["balanced scroll-like composition, precise planar depth"], "constraints": ["museum-grade detail, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["华美叙事段落", "高细节定帧"], "preview_asset": "/images/extension-styles/gongbi-heavy-color.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["gongbi-heavy-color"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "history-classical-themes"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.dunhuang_mural", "name": "敦煌壁画国风", "category": "chinese",
     "summary": "矿物颜料、壁面风化肌理与装饰性线条结合，呈现敦煌壁画启发的庄严国风视觉。",
     "prompt_fragment": {"medium": ["Dunhuang-inspired mineral mural painting"], "rendering": ["decorative flowing linework, weathered plaster texture"], "lighting": ["matte ambient light, restrained golden radiance"], "color": ["earthy mineral pigments, oxidized jewel tones"], "camera": ["frieze-like composition, flattened monumental depth"], "constraints": ["archival mural clarity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["庄严幻想段落", "文化意象画面"], "preview_asset": "/images/extension-styles/dunhuang-mural.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["dunhuang-mural"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "history-classical-themes"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.guoman_2d_painterly", "name": "2D 国漫厚涂", "category": "2d",
     "summary": "扎实体积、厚实笔触和电影化光色构成高密度 2D 国漫视觉，兼顾绘画感与商业完成度。",
     "prompt_fragment": {"medium": ["premium 2D guoman painterly illustration"], "rendering": ["rich opaque brushwork, sculpted digital painting"], "lighting": ["cinematic volumetric key light, controlled rim glow"], "color": ["deep harmonized palette, nuanced color grading"], "camera": ["cinematic composition, dimensional lens depth"], "constraints": ["production-ready detail, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["高品质剧情镜头", "氛围概念画面"], "preview_asset": "/images/extension-styles/guoman-2d-painterly.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["guoman-2d-painterly"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.guoman_3d_animation", "name": "3D 国漫动画", "category": "3d",
     "summary": "精细三维材质、流畅造型与电影级灯光构成现代国漫动画质感，适合高规格连续镜头。",
     "prompt_fragment": {"medium": ["premium 3D guoman animation render"], "rendering": ["refined stylized geometry, physically based materials"], "lighting": ["cinematic global illumination, polished rim highlights"], "color": ["rich cinematic grading, balanced material colors"], "camera": ["feature-animation framing, realistic lens depth"], "constraints": ["high-end render fidelity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["三维连续叙事", "高规格奇幻画面"], "preview_asset": "/images/extension-styles/guoman-3d-animation.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["guoman-3d-animation"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["3d-collectible-toy", "character-design-sheet", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.clay_stop_motion", "name": "黏土定格", "category": "3d",
     "summary": "可见手作纹理、微缩景深与逐帧质感形成亲切而独特的黏土定格动画视觉。",
     "prompt_fragment": {"medium": ["handcrafted clay stop-motion animation"], "rendering": ["tactile clay surfaces, subtle handcrafted imperfections"], "lighting": ["miniature studio lighting, soft practical falloff"], "color": ["warm tactile palette, matte material colors"], "camera": ["macro miniature lens feel, stop-motion framing"], "constraints": ["coherent handcrafted detail, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["轻喜剧段落", "童趣幻想画面"], "preview_asset": "/images/extension-styles/clay-stop-motion.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["clay-stop-motion"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["3d-collectible-toy", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.paper_cut_animation", "name": "剪纸动画", "category": "chinese",
     "summary": "镂空轮廓、纸纤维和层叠投影构成鲜明的剪纸动画视觉，适合寓言感和民艺表达。",
     "prompt_fragment": {"medium": ["layered paper-cut animation"], "rendering": ["precise cut-paper silhouettes, visible fiber texture"], "lighting": ["backlit paper glow, crisp layered shadows"], "color": ["bold limited paper palette, strong color contrast"], "camera": ["flat stage composition, layered parallax depth"], "constraints": ["clean cut-edge fidelity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["寓言叙事", "民艺风格转场"], "preview_asset": "/images/extension-styles/paper-cut-animation.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["paper-cut-animation"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "scene-storytelling", "history-classical-themes"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.noir_suspense_manga", "name": "黑白悬疑漫画", "category": "2d",
     "summary": "高反差黑白、密集排线和压迫构图塑造紧张悬疑的漫画视觉，强化信息遮蔽与心理压力。",
     "prompt_fragment": {"medium": ["black-and-white suspense manga"], "rendering": ["dense cross-hatching, sharp ink silhouettes, granular screentones"], "lighting": ["stark chiaroscuro, isolated hard highlights"], "color": ["pure monochrome values, crushed blacks"], "camera": ["claustrophobic framing, tense oblique lens angles"], "constraints": ["precise tonal readability, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["悬疑揭示段落", "心理压迫镜头"], "preview_asset": "/images/extension-styles/noir-suspense-manga.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["noir-suspense-manga"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.cinematic_photorealism", "name": "电影级写实", "category": "realistic",
     "summary": "真实材质、自然皮肤响应与电影灯光共同形成高可信度写实影像，适合沉浸式严肃叙事。",
     "prompt_fragment": {"medium": ["cinematic photorealistic digital capture"], "rendering": ["physically accurate materials, natural micro-detail"], "lighting": ["motivated cinematic lighting, realistic dynamic range"], "color": ["restrained filmic color grade, natural tonal separation"], "camera": ["cinema-lens depth, controlled optical falloff"], "constraints": ["photographic coherence, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["沉浸式剧情镜头", "严肃现实题材"], "preview_asset": "/images/extension-styles/cinematic-photorealism.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["cinematic-photorealism"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["realistic-photography", "scene-storytelling"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   },
   {
     "id": "drama_ext.vintage_film_realism", "name": "复古胶片写实", "category": "realistic",
     "summary": "真实影像基础上融入细腻颗粒、柔和高光与胶片色偏，营造温润而可信的怀旧电影质感。",
     "prompt_fragment": {"medium": ["photorealistic analog film capture"], "rendering": ["fine organic grain, subtle emulsion texture"], "lighting": ["soft highlight halation, natural exposure rolloff"], "color": ["vintage film color response, gently faded blacks"], "camera": ["classic cinema-lens character, subtle optical softness"], "constraints": ["authentic film fidelity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["回忆与往事段落", "温暖怀旧叙事"], "preview_asset": "/images/extension-styles/vintage-film-realism.webp",
-    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["vintage-film-realism"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["realistic-photography"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   }
 ]

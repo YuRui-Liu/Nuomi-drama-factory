@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -333,14 +334,177 @@ def test_load_catalog_rejects_duplicate_ids(tmp_path):
         load_catalog(path)
 
 
-CURATED_STYLE_NAMES = {
-    "日系赛璐璐", "少女漫画", "热血少年漫", "韩式条漫",
-    "欧美超级英雄漫画", "美式复古漫画", "法式绘本", "水彩故事书",
-    "水墨国漫", "工笔重彩", "敦煌壁画国风", "2D 国漫厚涂",
-    "3D 国漫动画", "黏土定格", "剪纸动画", "黑白悬疑漫画",
-    "电影级写实", "复古胶片写实",
+EXPECTED_CATALOG = {
+    "drama_ext.japanese_cel_animation": (
+        "日系赛璐璐",
+        "2d",
+        ("illustration-art-style", "character-design-sheet"),
+        "/images/extension-styles/japanese-cel-animation.webp",
+    ),
+    "drama_ext.shojo_manga": (
+        "少女漫画",
+        "2d",
+        (
+            "illustration-art-style",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/shojo-manga.webp",
+    ),
+    "drama_ext.shonen_manga": (
+        "热血少年漫",
+        "2d",
+        (
+            "illustration-art-style",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/shonen-manga.webp",
+    ),
+    "drama_ext.korean_webtoon": (
+        "韩式条漫",
+        "2d",
+        (
+            "illustration-art-style",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/korean-webtoon.webp",
+    ),
+    "drama_ext.western_superhero_comic": (
+        "欧美超级英雄漫画",
+        "2d",
+        (
+            "illustration-art-style",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/western-superhero-comic.webp",
+    ),
+    "drama_ext.american_retro_comic": (
+        "美式复古漫画",
+        "2d",
+        ("illustration-art-style",),
+        "/images/extension-styles/american-retro-comic.webp",
+    ),
+    "drama_ext.french_picture_book": (
+        "法式绘本",
+        "experimental",
+        ("illustration-art-style", "scene-storytelling"),
+        "/images/extension-styles/french-picture-book.webp",
+    ),
+    "drama_ext.watercolor_storybook": (
+        "水彩故事书",
+        "experimental",
+        ("illustration-art-style", "scene-storytelling"),
+        "/images/extension-styles/watercolor-storybook.webp",
+    ),
+    "drama_ext.ink_wash_guoman": (
+        "水墨国漫",
+        "chinese",
+        (
+            "illustration-art-style",
+            "ink-double-exposure-poster",
+            "history-classical-themes",
+        ),
+        "/images/extension-styles/ink-wash-guoman.webp",
+    ),
+    "drama_ext.gongbi_heavy_color": (
+        "工笔重彩",
+        "chinese",
+        ("illustration-art-style", "history-classical-themes"),
+        "/images/extension-styles/gongbi-heavy-color.webp",
+    ),
+    "drama_ext.dunhuang_mural": (
+        "敦煌壁画国风",
+        "chinese",
+        ("illustration-art-style", "history-classical-themes"),
+        "/images/extension-styles/dunhuang-mural.webp",
+    ),
+    "drama_ext.guoman_2d_painterly": (
+        "2D 国漫厚涂",
+        "2d",
+        (
+            "illustration-art-style",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/guoman-2d-painterly.webp",
+    ),
+    "drama_ext.guoman_3d_animation": (
+        "3D 国漫动画",
+        "3d",
+        (
+            "3d-collectible-toy",
+            "character-design-sheet",
+            "scene-storytelling",
+        ),
+        "/images/extension-styles/guoman-3d-animation.webp",
+    ),
+    "drama_ext.clay_stop_motion": (
+        "黏土定格",
+        "3d",
+        ("3d-collectible-toy", "scene-storytelling"),
+        "/images/extension-styles/clay-stop-motion.webp",
+    ),
+    "drama_ext.paper_cut_animation": (
+        "剪纸动画",
+        "chinese",
+        (
+            "illustration-art-style",
+            "scene-storytelling",
+            "history-classical-themes",
+        ),
+        "/images/extension-styles/paper-cut-animation.webp",
+    ),
+    "drama_ext.noir_suspense_manga": (
+        "黑白悬疑漫画",
+        "2d",
+        ("illustration-art-style", "scene-storytelling"),
+        "/images/extension-styles/noir-suspense-manga.webp",
+    ),
+    "drama_ext.cinematic_photorealism": (
+        "电影级写实",
+        "realistic",
+        ("realistic-photography", "scene-storytelling"),
+        "/images/extension-styles/cinematic-photorealism.webp",
+    ),
+    "drama_ext.vintage_film_realism": (
+        "复古胶片写实",
+        "realistic",
+        ("realistic-photography",),
+        "/images/extension-styles/vintage-film-realism.webp",
+    ),
 }
 CURATED_REVISION = "3a9c63baa03e6bbe2f28c89a2654cf9845466646"
+BUILTIN_PRESET_CANONICAL_SHA256 = {
+    # Baseline captured from DramaClaw commit 652dd48 before this feature.
+    "anime.json": "41dcf96df13b4413f731893d61c6953c6d727da1ed0d5f96fab68723c2abbe88",
+    "chinese_period_drama.json": (
+        "8a2affc2380c1a091c8d53b7f9fc5a10cd8f79cfe09d7e805a6069fe5e00341e"
+    ),
+    "guoman_fantasy.json": (
+        "8c1ec6b64b2fdf2354a74303f2c9e1b497e07cc70289920467f4527cc57d935b"
+    ),
+    "post_apocalyptic.json": (
+        "637bef3e541ae296a9d45cd97ddb2e92593c030564b74948a1f1f7c01e6f362e"
+    ),
+    "realistic.json": (
+        "d793012686f8b7130c67dfc7f2153d055e991976d7ed92455b645740665d0e06"
+    ),
+    "republican_era_drama.json": (
+        "6493b5359ec9b58db569b2e119124a2adfce4234cab9addfa1fde4c83b0dd7f5"
+    ),
+}
+EXPECTED_SOURCE_TEMPLATES = {
+    "ink-double-exposure-poster": "/templates/6",
+    "realistic-photography": "/templates/13",
+    "illustration-art-style": "/templates/15",
+    "character-design-sheet": "/templates/16",
+    "3d-collectible-toy": "/templates/17",
+    "scene-storytelling": "/templates/18",
+    "history-classical-themes": "/templates/19",
+}
 
 
 @pytest.fixture
@@ -354,13 +518,58 @@ def curated_catalog_path():
     )
 
 
+@pytest.fixture
+def source_audit_path(curated_catalog_path):
+    return curated_catalog_path.with_name("source_audit.json")
+
+
 def test_curated_catalog_has_exactly_the_required_styles(curated_catalog_path):
     catalog = load_catalog(curated_catalog_path)
 
     assert len(catalog) == 18
-    assert {style.name for style in catalog} == CURATED_STYLE_NAMES
-    assert len({style.id for style in catalog}) == 18
-    assert all(style.id.startswith("drama_ext.") for style in catalog)
+    actual = {
+        style.id: (
+            style.name,
+            style.category,
+            tuple(style.source["source_ids"]),
+            style.preview_asset,
+        )
+        for style in catalog
+    }
+    assert actual == EXPECTED_CATALOG
+    assert len({style.preview_asset for style in catalog}) == len(catalog)
+
+
+def test_curated_source_ids_resolve_to_locked_upstream_manifest(
+    curated_catalog_path,
+    source_audit_path,
+):
+    catalog = load_catalog(curated_catalog_path)
+    audit = json.loads(source_audit_path.read_text(encoding="utf-8"))
+
+    assert audit["repository"] == "freestylefly/awesome-gpt-image-2"
+    assert audit["revision"] == CURATED_REVISION
+    assert audit["source_file"] == "data/style-library.json"
+    assert audit["immutable_url"] == (
+        "https://raw.githubusercontent.com/freestylefly/awesome-gpt-image-2/"
+        f"{CURATED_REVISION}/data/style-library.json"
+    )
+    assert audit["license"]["spdx"] == "MIT"
+    assert audit["license"]["review"] == "approved"
+    assert audit["license"]["immutable_url"] == (
+        "https://github.com/freestylefly/awesome-gpt-image-2/blob/"
+        f"{CURATED_REVISION}/LICENSE"
+    )
+    assert audit["derivation"]
+    audited_templates = {
+        template["id"]: template["json_pointer"] for template in audit["templates"]
+    }
+    assert audited_templates == EXPECTED_SOURCE_TEMPLATES
+    audited_ids = set(audited_templates)
+    for style in catalog:
+        assert style.source["repository"] == audit["repository"]
+        assert style.source["imported_revision"] == audit["revision"]
+        assert set(style.source["source_ids"]) <= audited_ids
 
 
 def test_curated_catalog_entries_have_complete_provenance_and_fragments(
@@ -387,14 +596,19 @@ def test_curated_catalog_entries_have_complete_provenance_and_fragments(
         )
 
 
-def test_existing_builtin_style_preset_json_set_is_unchanged():
+def test_existing_builtin_style_preset_semantics_are_unchanged():
     preset_dir = Path(__file__).parents[1] / "src" / "novelvideo" / "styles" / "presets"
 
-    assert {path.stem for path in preset_dir.glob("*.json")} == {
-        "anime",
-        "chinese_period_drama",
-        "guoman_fantasy",
-        "post_apocalyptic",
-        "realistic",
-        "republican_era_drama",
+    actual = {
+        path.name: hashlib.sha256(
+            json.dumps(
+                json.loads(path.read_text(encoding="utf-8")),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        for path in preset_dir.glob("*.json")
     }
+
+    assert actual == BUILTIN_PRESET_CANONICAL_SHA256
