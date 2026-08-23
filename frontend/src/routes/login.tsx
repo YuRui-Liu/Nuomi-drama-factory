@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { LoginCinematicPage } from "@/components/login/cinematic/LoginCinematicPage";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureAuthenticatedForAppRoute } from "@/lib/auth-mode";
 import { clusterConfig } from "@/lib/cluster-config";
@@ -25,5 +24,4 @@ export const Route = createFileRoute("/login")({
 
     throw redirect({ to: "/", replace: true });
   },
-  component: LoginCinematicPage,
 });
