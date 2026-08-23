@@ -47,6 +47,7 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowScene,
     build_video_workflow_registry,
 )
+from novelvideo.narrative_groups.nonvisual import is_nonvisual_production_note
 from novelvideo.narrative_groups.service import record_stage_result, stage_payload
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -228,17 +229,7 @@ def _narrative(beat: Mapping[str, Any]) -> str:
     return _raw_prompt(beat)
 
 
-def _is_nonvisual_production_note(beat: Mapping[str, Any]) -> bool:
-    if h3_dialogue_text(beat).strip() or str(beat.get("narration") or "").strip():
-        return False
-    text = " ".join(
-        str(beat.get(name) or "").strip()
-        for name in ("visual_description", "shot_description", "description", "content")
-    )
-    return any(
-        marker in text
-        for marker in ("制作说明", "无可直接拍摄", "无可拍摄", "时长信息卡")
-    )
+_is_nonvisual_production_note = is_nonvisual_production_note
 
 
 def _director_context(project_dir: Path, episode: int, beat_number: int) -> str:

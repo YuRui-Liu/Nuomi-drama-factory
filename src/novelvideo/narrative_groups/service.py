@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 import portalocker
 
+from .nonvisual import is_nonvisual_production_note
 from .models import (
     CellMapping,
     GridLayout,
@@ -193,7 +194,7 @@ def _has_valid_video_plan(group: NarrativeGroup) -> bool:
 
 
 def group_beats(beats: Iterable[Any]) -> list[NarrativeGroup]:
-    source = list(beats)
+    source = [beat for beat in beats if not is_nonvisual_production_note(beat)]
     chunks: list[list[str]] = []
     current: list[str] = []
     current_key: tuple[str, str] | None = None
