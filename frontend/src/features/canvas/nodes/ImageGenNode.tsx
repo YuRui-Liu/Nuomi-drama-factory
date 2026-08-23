@@ -253,6 +253,18 @@ function resolveOutputUrl(result: Record<string, unknown> | null | undefined): s
   return null;
 }
 
+export function buildImageGenerationRequestPayloads<T extends { prompt: string }>(
+  basePayload: T,
+  extensionStyleId: string | null | undefined,
+  count: number,
+): T[] {
+  const composedPrompt = composeImagePrompt(basePayload.prompt, extensionStyleId);
+  return Array.from({ length: count }, () => ({
+    ...basePayload,
+    prompt: composedPrompt,
+  }));
+}
+
 export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGenNodeProps) => {
   const { t } = useTranslation();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -882,9 +894,8 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       : [upstreamTextJoined, ownPrompt]
         .filter((s) => s.length > 0)
         .join('\n\n');
-    const composedPrompt = composeImagePrompt(effectivePrompt, extensionStyleId);
-    const genPayload = {
-      prompt: composedPrompt,
+    const baseGenPayload = {
+      prompt: effectivePrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
       // 非标准值（如 "43:24"）或 "auto"，提交前吸附到最接近的合法比例（auto→1:1）。
       aspectRatio: snapToAllowedAspectRatio(
@@ -914,6 +925,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // generationBatch（叠卡画册）：第 1 张完成的设为主图（imageUrl），其余
     // 逐张追加进画册，收拢态渲染成叠起的卡片。
     const total = Math.min(Math.max(effectiveCount, 1), 4);
+    const genPayloads = buildImageGenerationRequestPayloads(
+      baseGenPayload,
+      extensionStyleId,
+      total,
+    );
     // Clear any prior failure / album on resubmit — the on-node error banner
     // should only reflect the most recent attempt.
     updateNodeData(id, {
@@ -934,7 +950,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       let taskKey: string | null = null;
       try {
         const ref = await submitFreezoneGen(projectId, {
-          ...genPayload,
+          ...genPayloads[runIndex],
           canvasId,
           nodeId: id,
         });
