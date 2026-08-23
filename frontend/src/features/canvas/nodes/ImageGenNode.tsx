@@ -85,6 +85,7 @@ import {
   fetchFreezoneTextTranslateResult,
   submitFreezoneGen,
   submitFreezoneTextTranslate,
+  type FreezoneGenPayload,
   uploadFreezoneImage,
 } from '@/api/ops';
 import {
@@ -263,6 +264,26 @@ export function buildImageGenerationRequestPayloads<T extends { prompt: string }
     ...basePayload,
     prompt: composedPrompt,
   }));
+}
+
+export async function submitImageGenerationPayloadAtIndex<TResult>(
+  projectId: string,
+  payloads: readonly FreezoneGenPayload[],
+  runIndex: number,
+  context: { canvasId: string; nodeId: string },
+  submitter: (
+    projectId: string,
+    payload: FreezoneGenPayload,
+  ) => Promise<TResult>,
+): Promise<TResult> {
+  const payload = payloads[runIndex];
+  if (!payload) {
+    throw new RangeError(`Missing image generation payload at index ${runIndex}`);
+  }
+  return submitter(projectId, {
+    ...payload,
+    ...context,
+  });
 }
 
 export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGenNodeProps) => {
@@ -949,11 +970,13 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     const runOne = async (runIndex: number) => {
       let taskKey: string | null = null;
       try {
-        const ref = await submitFreezoneGen(projectId, {
-          ...genPayloads[runIndex],
-          canvasId,
-          nodeId: id,
-        });
+        const ref = await submitImageGenerationPayloadAtIndex(
+          projectId,
+          genPayloads,
+          runIndex,
+          { canvasId, nodeId: id },
+          submitFreezoneGen,
+        );
         taskKey = ref.task_key;
         // Persist the task handle so a page refresh can resume polling this
         // job. With N concurrent runs on one node only one handle can persist —
