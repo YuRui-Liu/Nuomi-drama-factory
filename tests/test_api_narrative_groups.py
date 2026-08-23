@@ -17,6 +17,7 @@ from novelvideo.narrative_groups.references import (
     GroupReferencePreview,
     GroupStyleReference,
 )
+from novelvideo.narrative_groups import service as narrative_group_service
 from novelvideo.narrative_groups.service import advance_revision, record_stage_result, sidecar_path
 
 
@@ -1058,3 +1059,123 @@ def test_get_video_prompts_reports_corrupt_manifest_without_path_leak(monkeypatc
 
     assert response.status_code == 409
     assert str(manifest).lower() not in response.text.lower()
+
+
+def test_get_video_prompts_rejects_manifest_over_hard_byte_limit(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(
+        narrative_group_service, "VIDEO_PROMPT_MANIFEST_MAX_BYTES", 128,
+        raising=False,
+    )
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{"segment": {
+            "segment_id": "beat-1", "beat_number": 1,
+            "prompt": "x" * 512, "duration_seconds": 5,
+        }}],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 409
+    assert str(tmp_path).lower() not in response.text.lower()
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit", "payload"),
+    [
+        (
+            "VIDEO_PROMPT_MANIFEST_MAX_ENTRIES", 1,
+            {"entries": [
+                {"segment": {"segment_id": "beat-1", "prompt": "p"}},
+                {"segment": {"segment_id": "beat-2", "prompt": "p"}},
+            ]},
+        ),
+        (
+            "VIDEO_PROMPT_MANIFEST_MAX_DEPTH", 4,
+            {"entries": [{"segment": {"segment_id": "beat-1", "prompt": "p"},
+                          "extra": {"a": {"b": {"c": {"d": "deep-secret"}}}}}]},
+        ),
+        (
+            "VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS", 3,
+            {"entries": [{"segment": {"segment_id": "beat-1", "prompt": "p"},
+                          "extra": [1, 2, 3, 4]}]},
+        ),
+        (
+            "VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH", 32,
+            {"entries": [{"segment": {
+                "segment_id": "beat-1", "prompt": "long-secret" * 8,
+            }}]},
+        ),
+    ],
+)
+def test_get_video_prompts_rejects_structural_manifest_limits(
+    monkeypatch, tmp_path, limit_name, limit, payload,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(narrative_group_service, limit_name, limit, raising=False)
+    _seed_prompt_review_manifest(tmp_path, payload)
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 409
+    assert "secret" not in response.text.lower()
+    assert str(tmp_path).lower() not in response.text.lower()
+
+
+def test_get_video_prompts_rejects_non_scalar_dto_fields_and_unsafe_frame_paths(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": {"secret": "workflow-secret"},
+        "provider_task_id": {"secret": "task-secret"},
+        "entries": [{
+            "segment": {
+                "segment_id": {"secret": "segment-secret"},
+                "beat_number": {"secret": "beat-secret"},
+                "prompt": {"secret": "prompt-secret"},
+                "duration_seconds": {"secret": "duration-secret"},
+                "first_frame": "file:///C:/private/frame.png",
+                "last_frame": r"\\server\share\frame.png",
+            },
+            "workflow_id": {"secret": "entry-workflow-secret"},
+            "provider_task_id": {"secret": "entry-task-secret"},
+            "model": {"secret": "model-secret"},
+            "actual_duration_seconds": {"secret": "actual-duration-secret"},
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    unit = response.json()["data"]["units"][0]
+    assert unit["beat_ids"] == []
+    assert unit["label"] == ""
+    assert unit["mode"] == "fl2va"
+    assert unit["duration_seconds"] == 0
+    assert unit["final_prompt"] == ""
+    assert unit["first_frame_url"] == ""
+    assert unit["last_frame_url"] == ""
+    assert unit["workflow"] == ""
+    assert unit["provider_task_id"] == ""
+    assert all(isinstance(unit[field], str) for field in (
+        "label", "mode", "final_prompt", "first_frame_url", "last_frame_url",
+        "workflow", "model", "provider", "provider_task_id",
+    ))
+    serialized = response.text.lower()
+    for forbidden in (
+        "workflow-secret", "task-secret", "segment-secret", "beat-secret",
+        "prompt-secret", "duration-secret", "entry-workflow-secret",
+        "entry-task-secret", "model-secret", "actual-duration-secret",
+        "file://", "c:/private", "server\\share",
+    ):
+        assert forbidden not in serialized

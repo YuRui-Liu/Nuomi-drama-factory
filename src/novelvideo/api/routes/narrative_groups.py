@@ -7,7 +7,9 @@ grid.
 
 from __future__ import annotations
 
-from pathlib import Path
+import math
+import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
@@ -263,78 +265,86 @@ def _serialize_reference_preview(
 
 
 _REJECTED_REVIEW_VALUE = object()
-_SAFE_SCALAR = object()
+_SAFE_TEXT = object()
+_SAFE_INT = object()
+_SAFE_NUMBER = object()
+_SAFE_BOOL = object()
+_MAX_REVIEW_ID_LENGTH = 256
+_MAX_REVIEW_TEXT_LENGTH = 16 * 1024
+_MAX_REVIEW_PROMPT_LENGTH = 256 * 1024
+_MAX_REVIEW_BEAT_IDS = 32
+_URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _CAMERA_PLAN_SCHEMA = {
-    "type": _SAFE_SCALAR,
-    "direction": _SAFE_SCALAR,
-    "amplitude": _SAFE_SCALAR,
-    "speed": _SAFE_SCALAR,
+    "type": _SAFE_TEXT,
+    "direction": _SAFE_TEXT,
+    "amplitude": _SAFE_TEXT,
+    "speed": _SAFE_TEXT,
 }
 _ACTION_PLAN_SCHEMA = {
-    "phase": _SAFE_SCALAR,
-    "start_frame": _SAFE_SCALAR,
-    "end_frame": _SAFE_SCALAR,
-    "description": _SAFE_SCALAR,
+    "phase": _SAFE_TEXT,
+    "start_frame": _SAFE_INT,
+    "end_frame": _SAFE_INT,
+    "description": _SAFE_TEXT,
 }
 _DIALOGUE_CUE_SCHEMA = {
-    "start_frame": _SAFE_SCALAR,
-    "end_frame": _SAFE_SCALAR,
-    "speaker": _SAFE_SCALAR,
-    "speaker_id": _SAFE_SCALAR,
-    "text": _SAFE_SCALAR,
-    "language": _SAFE_SCALAR,
-    "continuation": _SAFE_SCALAR,
-    "truncated": _SAFE_SCALAR,
+    "start_frame": _SAFE_INT,
+    "end_frame": _SAFE_INT,
+    "speaker": _SAFE_TEXT,
+    "speaker_id": _SAFE_TEXT,
+    "text": _SAFE_TEXT,
+    "language": _SAFE_TEXT,
+    "continuation": _SAFE_BOOL,
+    "truncated": _SAFE_BOOL,
 }
 _SHOT_PLAN_SCHEMA = {
-    "shot_id": _SAFE_SCALAR,
-    "start_frame": _SAFE_SCALAR,
-    "end_frame": _SAFE_SCALAR,
-    "framing": _SAFE_SCALAR,
-    "angle": _SAFE_SCALAR,
-    "focus": _SAFE_SCALAR,
-    "composition": _SAFE_SCALAR,
+    "shot_id": _SAFE_TEXT,
+    "start_frame": _SAFE_INT,
+    "end_frame": _SAFE_INT,
+    "framing": _SAFE_TEXT,
+    "angle": _SAFE_TEXT,
+    "focus": _SAFE_TEXT,
+    "composition": _SAFE_TEXT,
     "camera": _CAMERA_PLAN_SCHEMA,
     "actions": [_ACTION_PLAN_SCHEMA],
     "dialogue": [_DIALOGUE_CUE_SCHEMA],
 }
 _DIRECTOR_PLAN_SCHEMA = {
-    "mode": _SAFE_SCALAR,
-    "fps": _SAFE_SCALAR,
-    "total_frames": _SAFE_SCALAR,
-    "visual_style": _SAFE_SCALAR,
-    "continuity_locks": [_SAFE_SCALAR],
+    "mode": _SAFE_TEXT,
+    "fps": _SAFE_INT,
+    "total_frames": _SAFE_INT,
+    "visual_style": _SAFE_TEXT,
+    "continuity_locks": [_SAFE_TEXT],
     "shots": [_SHOT_PLAN_SCHEMA],
     "frame_differences": [{
-        "description": _SAFE_SCALAR,
-        "convergence_frame": _SAFE_SCALAR,
+        "description": _SAFE_TEXT,
+        "convergence_frame": _SAFE_INT,
     }],
-    "soundscape": _SAFE_SCALAR,
-    "music": _SAFE_SCALAR,
+    "soundscape": _SAFE_TEXT,
+    "music": _SAFE_TEXT,
 }
 _PROMPT_PROFILE_SCHEMA = {
-    "id": _SAFE_SCALAR,
-    "version": _SAFE_SCALAR,
-    "compiler_version": _SAFE_SCALAR,
+    "id": _SAFE_TEXT,
+    "version": _SAFE_INT,
+    "compiler_version": _SAFE_INT,
 }
 _QUALITY_REPORT_SCHEMA = {
-    "passed": _SAFE_SCALAR,
+    "passed": _SAFE_BOOL,
     "issues": [{
-        "code": _SAFE_SCALAR,
-        "message": _SAFE_SCALAR,
-        "severity": _SAFE_SCALAR,
-        "location": _SAFE_SCALAR,
+        "code": _SAFE_TEXT,
+        "message": _SAFE_TEXT,
+        "severity": _SAFE_TEXT,
+        "location": _SAFE_TEXT,
     }],
-    "version": _SAFE_SCALAR,
+    "version": _SAFE_INT,
 }
 _INPUT_SUMMARY_SCHEMA = {
-    "beat_ids": [_SAFE_SCALAR],
-    "mode": _SAFE_SCALAR,
-    "duration_seconds": _SAFE_SCALAR,
-    "aspect_ratio": _SAFE_SCALAR,
-    "resolution": _SAFE_SCALAR,
-    "first_frame_sha256": _SAFE_SCALAR,
-    "last_frame_sha256": _SAFE_SCALAR,
+    "beat_ids": [_SAFE_TEXT],
+    "mode": _SAFE_TEXT,
+    "duration_seconds": _SAFE_NUMBER,
+    "aspect_ratio": _SAFE_TEXT,
+    "resolution": _SAFE_TEXT,
+    "first_frame_sha256": _SAFE_TEXT,
+    "last_frame_sha256": _SAFE_TEXT,
 }
 
 
@@ -346,10 +356,28 @@ def _manifest_mapping(value: Any) -> dict[str, Any]:
 
 
 def _project_review_value(value: Any, schema: Any) -> Any:
-    if schema is _SAFE_SCALAR:
-        if value is None or isinstance(value, (bool, int, float)):
+    if schema is _SAFE_TEXT:
+        if (
+            isinstance(value, str)
+            and len(value) <= _MAX_REVIEW_TEXT_LENGTH
+            and not _is_path_or_uri(value)
+        ):
             return value
-        if isinstance(value, str) and not Path(value).is_absolute():
+        return _REJECTED_REVIEW_VALUE
+    if schema is _SAFE_INT:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return _REJECTED_REVIEW_VALUE
+    if schema is _SAFE_NUMBER:
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ):
+            return value
+        return _REJECTED_REVIEW_VALUE
+    if schema is _SAFE_BOOL:
+        if isinstance(value, bool):
             return value
         return _REJECTED_REVIEW_VALUE
     if isinstance(schema, dict):
@@ -374,23 +402,78 @@ def _project_review_value(value: Any, schema: Any) -> Any:
     return _REJECTED_REVIEW_VALUE
 
 
-def _safe_review_string(value: Any) -> str:
-    projected = _project_review_value(value, _SAFE_SCALAR)
-    return projected if isinstance(projected, str) else ""
+def _is_path_or_uri(value: str) -> bool:
+    stripped = value.strip()
+    return bool(
+        _URI_RE.match(stripped)
+        or stripped.casefold().startswith("file://")
+        or stripped.startswith(("\\\\", "//"))
+        or PureWindowsPath(stripped).drive
+        or PureWindowsPath(stripped).is_absolute()
+        or PurePosixPath(stripped).is_absolute()
+    )
+
+
+def _safe_review_string(value: Any, *, max_length: int = _MAX_REVIEW_ID_LENGTH) -> str:
+    if (
+        isinstance(value, str)
+        and len(value) <= max_length
+        and not _is_path_or_uri(value)
+    ):
+        return value
+    return ""
+
+
+def _first_safe_review_string(*values: Any) -> str:
+    for value in values:
+        safe = _safe_review_string(value)
+        if safe:
+            return safe
+    return ""
+
+
+def _safe_prompt(value: Any) -> str:
+    return value if isinstance(value, str) and len(value) <= _MAX_REVIEW_PROMPT_LENGTH else ""
+
+
+def _safe_duration(*values: Any) -> float | int:
+    for value in values:
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and 0 <= value <= 3600
+        ):
+            return value
+    return 0
+
+
+def _safe_frame_reference(value: Any) -> str:
+    if not isinstance(value, str) or len(value) > 2048 or _URI_RE.match(value.strip()):
+        return ""
+    return value
 
 
 def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> list[str]:
     summary = _project_review_value(
         entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
     )
-    beat_ids = [str(value) for value in summary.get("beat_ids") or () if str(value)]
+    beat_ids = [
+        safe
+        for value in (summary.get("beat_ids") or ())[:_MAX_REVIEW_BEAT_IDS]
+        if (safe := _safe_review_string(value))
+    ]
     if beat_ids:
         return beat_ids
-    segment_id = str(segment.get("segment_id") or "").strip()
+    segment_id = _safe_review_string(segment.get("segment_id"))
     if segment_id:
         return [part for part in segment_id.split("--") if part]
     beat_number = segment.get("beat_number")
-    return [f"beat-{beat_number}"] if beat_number is not None else []
+    return (
+        [f"beat-{beat_number}"]
+        if isinstance(beat_number, int) and not isinstance(beat_number, bool)
+        else []
+    )
 
 
 def _review_label(beat_ids: list[str]) -> str:
@@ -418,19 +501,22 @@ def _serialize_prompt_review(
             entry.get("director_plan"), _DIRECTOR_PLAN_SCHEMA
         )
         beat_ids = _review_beat_ids(entry, segment)
-        first_frame = str(segment.get("first_frame") or "")
-        last_frame = str(segment.get("last_frame") or "")
-        mode = str(
-            summary.get("mode")
-            or plan.get("mode")
-            or getattr(stage, "actual_mode", "")
-            or ("fl2va" if last_frame else "i2va")
+        first_frame = _safe_frame_reference(segment.get("first_frame"))
+        last_frame = _safe_frame_reference(segment.get("last_frame"))
+        mode = next(
+            (
+                value for value in (
+                    summary.get("mode"), plan.get("mode"),
+                    getattr(stage, "actual_mode", ""),
+                )
+                if isinstance(value, str) and value in {"auto", "i2va", "fl2va"}
+            ),
+            "fl2va" if last_frame else "i2va",
         )
-        duration = (
-            summary.get("duration_seconds")
-            or entry.get("actual_duration_seconds")
-            or segment.get("duration_seconds")
-            or 0
+        duration = _safe_duration(
+            summary.get("duration_seconds"),
+            entry.get("actual_duration_seconds"),
+            segment.get("duration_seconds"),
         )
         units.append({
             "beat_ids": beat_ids,
@@ -442,7 +528,7 @@ def _serialize_prompt_review(
             "director_plan": (
                 plan if entry.get("director_plan") is not None else None
             ),
-            "final_prompt": str(segment.get("prompt") or ""),
+            "final_prompt": _safe_prompt(segment.get("prompt")),
             "prompt_profile": (
                 _project_review_value(
                     entry.get("prompt_profile"), _PROMPT_PROFILE_SCHEMA
@@ -456,18 +542,18 @@ def _serialize_prompt_review(
                 if entry.get("quality_report") is not None else None
             ),
             "input_summary": summary,
-            "workflow": _safe_review_string(
-                entry.get("workflow_id") or manifest.get("workflow_id") or ""
+            "workflow": _first_safe_review_string(
+                entry.get("workflow_id"), manifest.get("workflow_id")
             ),
-            "model": _safe_review_string(
-                entry.get("model") or manifest.get("model")
-                or getattr(stage, "actual_model", "")
+            "model": _first_safe_review_string(
+                entry.get("model"), manifest.get("model"),
+                getattr(stage, "actual_model", ""),
             ),
             "provider": _safe_review_string(
                 getattr(stage, "actual_provider", "") or ""
             ),
-            "provider_task_id": _safe_review_string(
-                entry.get("provider_task_id") or manifest.get("provider_task_id") or ""
+            "provider_task_id": _first_safe_review_string(
+                entry.get("provider_task_id"), manifest.get("provider_task_id")
             ),
         })
     return {"units": units}

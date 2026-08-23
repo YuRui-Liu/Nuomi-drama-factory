@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import math
 import os
 import threading
 import uuid
@@ -26,6 +27,11 @@ from .models import (
 )
 
 SIDECAR_VERSION = 1
+VIDEO_PROMPT_MANIFEST_MAX_BYTES = 12 * 1024 * 1024
+VIDEO_PROMPT_MANIFEST_MAX_ENTRIES = 512
+VIDEO_PROMPT_MANIFEST_MAX_DEPTH = 32
+VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS = 4096
+VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH = 512 * 1024
 _SIDECAR_LOCKS: dict[str, threading.RLock] = {}
 _SIDECAR_LOCKS_GUARD = threading.Lock()
 _SIDECAR_LOCK_STATE = threading.local()
@@ -824,9 +830,40 @@ def load_group_video_prompt_manifest(
     resolved = candidate.resolve()
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise FileNotFoundError("narrative group video manifest is unavailable")
-    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if resolved.stat().st_size > VIDEO_PROMPT_MANIFEST_MAX_BYTES:
+        raise ValueError("narrative group video manifest exceeds size limit")
+    raw = resolved.read_bytes()
+    if len(raw) > VIDEO_PROMPT_MANIFEST_MAX_BYTES:
+        raise ValueError("narrative group video manifest exceeds size limit")
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("narrative group video manifest is invalid") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
         raise ValueError("narrative group video manifest is invalid")
+    if len(payload["entries"]) > VIDEO_PROMPT_MANIFEST_MAX_ENTRIES:
+        raise ValueError("narrative group video manifest has too many entries")
+    stack: list[tuple[Any, int]] = [(payload, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > VIDEO_PROMPT_MANIFEST_MAX_DEPTH:
+            raise ValueError("narrative group video manifest is too deeply nested")
+        if isinstance(value, dict):
+            if len(value) > VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS:
+                raise ValueError("narrative group video manifest collection is too large")
+            for key, child in value.items():
+                if len(key) > VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH:
+                    raise ValueError("narrative group video manifest string is too long")
+                stack.append((child, depth + 1))
+        elif isinstance(value, list):
+            if len(value) > VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS:
+                raise ValueError("narrative group video manifest collection is too large")
+            stack.extend((child, depth + 1) for child in value)
+        elif isinstance(value, str):
+            if len(value) > VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH:
+                raise ValueError("narrative group video manifest string is too long")
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("narrative group video manifest number is invalid")
     return payload, stage
 
 
