@@ -1,7 +1,12 @@
 from types import SimpleNamespace
+import json
 
+import httpx
 import pytest
+from pydantic_ai import PromptedOutput
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
+import novelvideo.media_capabilities.video.h3_prompt_optimizer as h3_prompt_optimizer
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     H3PromptOptimizationError,
@@ -9,8 +14,17 @@ from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptOptimizer,
     H3PromptStructuredOutput,
 )
+from novelvideo.media_capabilities.video.h3_director_plan import (
+    H3ActionPlan,
+    H3CameraPlan,
+    H3DialogueCue,
+    H3DirectorPlan,
+    H3FrameDifference,
+    H3ShotPlan,
+)
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.media_capabilities.video.models import H3Mode
+from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityError
 
 
 def _segment() -> H3DirectorSegment:
@@ -49,44 +63,50 @@ class FakeAgent:
         return SimpleNamespace(output=self.output)
 
 
+def test_production_optimizer_uses_prompted_output_without_tool_choice(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class CapturingAgent:
+        def __init__(self, model, **kwargs):
+            captured["model"] = model
+            captured.update(kwargs)
+
+    monkeypatch.setattr(h3_prompt_optimizer, "Agent", CapturingAgent)
+    model = object()
+
+    h3_prompt_optimizer.create_h3_prompt_optimizer(
+        cache_dir=tmp_path,
+        director_model_factory=lambda: model,
+        model_settings={"openai_reasoning_effort": "low"},
+    )
+
+    assert isinstance(captured["output_type"], PromptedOutput)
+    assert captured["output_type"].outputs is H3DirectorPlan
+    assert captured["model"] is model
+
+
 @pytest.mark.asyncio
 async def test_optimizer_renders_typed_content_with_fixed_fl2va_structure(tmp_path):
-    agent = FakeAgent(
-        H3PromptStructuredOutput(
-            integrated_multimodal_description="镜头缓慢推近，男人转身看向门口。",
-            overall_soundscape="脚步声停止，门锁轻响。",
-            non_diegetic_music="低沉弦乐逐渐增强。",
-        )
-    )
+    agent = FakeAgent(_director_plan(H3Mode.FL2VA))
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
         _segment(), _context(), H3Mode.FL2VA
     )
 
     assert isinstance(result, H3PromptOptimizationResult)
     assert result.cache_hit is False
-    assert result.format_version == 2
-    assert result.prompt == (
-        "How the reference pictures align with the target video — Picture 1 (from Shot 1) "
-        "aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) "
-        "aligns with the 5.00-second mark of the target video.\n\n"
-        "integrated_multimodal_description: 镜头缓慢推近，男人转身看向门口。\n"
-        "林默 (S1) says with 压低声音、急促 delivery: <d>[Chinese]别过来</d>\n\n"
-        "overall_soundscape: 脚步声停止，门锁轻响。\n\n"
-        "non_diegetic_music: 低沉弦乐逐渐增强。"
-    )
-    assert "English" in agent.calls[0]
-    assert "不得改写" in agent.calls[0]
+    assert result.format_version == 4
+    assert result.plan.mode is H3Mode.FL2VA
+    assert result.quality_report.passed is True
+    assert "Picture 2 (from Shot 1) aligns with the 5.00-second mark" in result.prompt
+    assert "<d>[Chinese]别过来</d>" in result.prompt
+    assert "without rewriting" in agent.calls[0]
 
 
 @pytest.mark.asyncio
 async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
-    agent = FakeAgent(
-        H3PromptStructuredOutput(
-            integrated_multimodal_description="镜头前推。",
-            overall_soundscape="风声。",
-            non_diegetic_music="无。",
-        )
-    )
+    agent = FakeAgent(_director_plan())
     optimizer = H3PromptOptimizer(agent, tmp_path)
 
     first = await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
@@ -96,6 +116,29 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.prompt == first.prompt
     assert second.input_hash == first.input_hash
     assert second.cache_hit is True
+    snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert snapshot["prompt_profile_id"] == "minimax-h3-director"
+    assert snapshot["prompt_profile_version"] == 4
+    assert snapshot["compiler_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_optimizer_quality_failure_raises_before_writing_cache(tmp_path):
+    plan = _director_plan()
+    vague = plan.shots[0].actions[1].model_copy(
+        update={"description": "The person moves naturally."}
+    )
+    shot = plan.shots[0].model_copy(
+        update={"actions": (plan.shots[0].actions[0], vague, plan.shots[0].actions[2])}
+    )
+    agent = FakeAgent(plan.model_copy(update={"shots": (shot,)}))
+
+    with pytest.raises(H3PromptQualityError, match="vague_action"):
+        await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+            _segment(), _context(), H3Mode.I2VA
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -112,8 +155,93 @@ async def test_optimizer_failure_raises_and_never_returns_or_caches_draft(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_optimizer_retries_transient_connection_error_then_succeeds(tmp_path):
+    output = _director_plan()
+
+    class FlakyAgent:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, task):
+            self.calls += 1
+            if self.calls < 3:
+                transport_error = httpx.ConnectError("relay disconnected")
+                raise ModelAPIError("deepseek-v4-flash", "Connection error.") from transport_error
+            return SimpleNamespace(output=output)
+
+    agent = FlakyAgent()
+    optimizer = H3PromptOptimizer(
+        agent,
+        tmp_path,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+    )
+
+    result = await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+    assert result.prompt
+    assert agent.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_optimizer_does_not_retry_non_transient_http_400(tmp_path):
+    class InvalidRequestAgent:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, task):
+            self.calls += 1
+            raise ModelHTTPError(
+                status_code=400,
+                model_name="deepseek-v4-flash",
+                body={"message": "invalid request"},
+            )
+
+    agent = InvalidRequestAgent()
+    optimizer = H3PromptOptimizer(
+        agent,
+        tmp_path,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+    )
+
+    with pytest.raises(H3PromptOptimizationError, match="status_code: 400"):
+        await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+    assert agent.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_optimizer_reports_attempts_after_connection_retries_exhausted(tmp_path):
+    class OfflineAgent:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, task):
+            self.calls += 1
+            transport_error = httpx.ConnectTimeout("relay timeout")
+            raise ModelAPIError("deepseek-v4-flash", "Connection error.") from transport_error
+
+    agent = OfflineAgent()
+    optimizer = H3PromptOptimizer(
+        agent,
+        tmp_path,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+    )
+
+    with pytest.raises(
+        H3PromptOptimizationError,
+        match=r"Connection error.*3 attempts.*ModelAPIError",
+    ):
+        await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+    assert agent.calls == 3
+
+
+@pytest.mark.asyncio
 async def test_i2va_alignment_uses_official_image_one_zero_timestamp(tmp_path):
-    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    agent = FakeAgent(_director_plan())
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
         _segment().model_copy(update={"last_frame": None}), _context(), H3Mode.I2VA
     )
@@ -123,7 +251,7 @@ async def test_i2va_alignment_uses_official_image_one_zero_timestamp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fl2va_alignment_uses_actual_fractional_end_timestamp(tmp_path):
-    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    agent = FakeAgent(_director_plan(H3Mode.FL2VA, total_frames=102))
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
         _segment().model_copy(update={"duration_seconds": 4.25}), _context(), H3Mode.FL2VA
     )
@@ -132,11 +260,7 @@ async def test_fl2va_alignment_uses_actual_fractional_end_timestamp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dialogue_tone_is_optional(tmp_path):
-    agent = FakeAgent(H3PromptStructuredOutput(
-        integrated_multimodal_description="[Shot 1] The man braces the door.",
-        overall_soundscape="The door rattles.",
-        non_diegetic_music="N/A",
-    ))
+    agent = FakeAgent(_director_plan())
     segment = _segment().model_copy(update={"tone": ""})
 
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
@@ -149,7 +273,7 @@ async def test_dialogue_tone_is_optional(tmp_path):
 @pytest.mark.asyncio
 async def test_typed_output_validation_is_wrapped_and_not_cached(tmp_path):
     agent = FakeAgent({"integrated_multimodal_description": "缺少音频字段"})
-    with pytest.raises(H3PromptOptimizationError, match="typed output"):
+    with pytest.raises(H3PromptOptimizationError, match="typed director plan"):
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(_segment(), _context(), H3Mode.I2VA)
     assert list(tmp_path.iterdir()) == []
 
@@ -157,7 +281,7 @@ async def test_typed_output_validation_is_wrapped_and_not_cached(tmp_path):
 @pytest.mark.asyncio
 async def test_dialogue_intent_without_dialogue_fails_closed_before_agent_call(tmp_path):
     segment = _segment().model_copy(update={"dialogue": ""})
-    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    agent = FakeAgent(_director_plan())
     with pytest.raises(H3PromptOptimizationError, match="dialogue"):
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, _context(), H3Mode.I2VA)
     assert agent.calls == []
@@ -168,7 +292,7 @@ async def test_dialogue_intent_without_dialogue_fails_closed_before_agent_call(t
 async def test_explicit_dialogue_required_with_all_cue_fields_empty_fails_closed(tmp_path):
     segment = _segment().model_copy(update={"dialogue": "", "speaker": "", "tone": ""})
     context = _context().model_copy(update={"dialogue_required": True})
-    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    agent = FakeAgent(_director_plan(dialogue="", speaker=""))
 
     with pytest.raises(H3PromptOptimizationError, match="dialogue is required"):
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, context, H3Mode.I2VA)
@@ -181,7 +305,7 @@ async def test_explicit_dialogue_required_with_all_cue_fields_empty_fails_closed
 async def test_explicit_silent_segment_with_all_cue_fields_empty_is_valid(tmp_path):
     segment = _segment().model_copy(update={"dialogue": "", "speaker": "", "tone": ""})
     context = _context().model_copy(update={"dialogue_required": False})
-    agent = FakeAgent(H3PromptStructuredOutput(integrated_multimodal_description="镜头前推。", overall_soundscape="风声。", non_diegetic_music="无。"))
+    agent = FakeAgent(_director_plan(dialogue="", speaker=""))
 
     result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, context, H3Mode.I2VA)
 
@@ -191,11 +315,7 @@ async def test_explicit_silent_segment_with_all_cue_fields_empty_is_valid(tmp_pa
 
 @pytest.mark.asyncio
 async def test_optimizer_hashes_unsafe_segment_id_for_cache_path(tmp_path):
-    agent = FakeAgent(H3PromptStructuredOutput(
-        integrated_multimodal_description="镜头前推。",
-        overall_soundscape="风声。",
-        non_diegetic_music="无。",
-    ))
+    agent = FakeAgent(_director_plan())
     optimizer = H3PromptOptimizer(agent, tmp_path / "cache")
     segment = _segment().model_copy(update={"segment_id": "../../escape"})
 
@@ -206,3 +326,131 @@ async def test_optimizer_hashes_unsafe_segment_id_for_cache_path(tmp_path):
     assert len(cache_files) == 1
     assert ".." not in cache_files[0].name
     assert cache_files[0].parent == tmp_path / "cache"
+
+
+def test_h3_task_contains_versioned_director_rules_and_context():
+    context = _context().model_copy(
+        update={"director_context": '{"camera":{"azim":12},"actors":[{"name":"林默"}]}' }
+    )
+
+    task = h3_prompt_optimizer._build_task(_segment(), context, H3Mode.FL2VA)
+
+    assert "H3_DIRECTOR_PROFILE" in task
+    assert "Actions must cover every frame" in task
+    assert "camera" in task and "amplitude" in task and "speed" in task
+    assert "teleport" in task and "Picture 2" in task
+    assert "invent visible text, UI" in task
+    assert "林默" in task
+
+
+def _director_plan(
+    mode: H3Mode = H3Mode.I2VA,
+    *,
+    dialogue: str = "别过来",
+    speaker: str = "林默",
+    total_frames: int = 120,
+) -> H3DirectorPlan:
+    dialogue_cues = (
+        H3DialogueCue(
+            start_frame=48,
+            end_frame=min(84, total_frames),
+            speaker=speaker,
+            speaker_id="S1",
+            text=dialogue,
+            language="Chinese",
+        ),
+    ) if dialogue else ()
+    settle_start = total_frames - 24
+    return H3DirectorPlan(
+        mode=mode,
+        total_frames=total_frames,
+        visual_style="cinematic realism",
+        continuity_locks=("preserve identity and corridor geography",),
+        shots=(
+            H3ShotPlan(
+                shot_id="1",
+                start_frame=0,
+                end_frame=total_frames,
+                framing="medium shot",
+                angle="eye level",
+                focus="Lin Mo",
+                composition="Lin Mo remains left of the doorway",
+                camera=H3CameraPlan(
+                    type="push in",
+                    direction="forward",
+                    amplitude="subtle",
+                    speed="slow and steady",
+                ),
+                actions=(
+                    H3ActionPlan(
+                        phase="establish",
+                        start_frame=0,
+                        end_frame=24,
+                        description="Hold the exact Picture 1 pose and corridor layout.",
+                    ),
+                    H3ActionPlan(
+                        phase="execute",
+                        start_frame=24,
+                        end_frame=settle_start,
+                        description="Lin Mo turns his head toward the doorway and braces his shoulder.",
+                    ),
+                    H3ActionPlan(
+                        phase="settle",
+                        start_frame=settle_start,
+                        end_frame=total_frames,
+                        description="His gaze locks on the handle as the camera settles.",
+                    ),
+                ),
+                dialogue=dialogue_cues,
+            ),
+        ),
+        frame_differences=(
+            (
+                H3FrameDifference(
+                    description="Lin Mo reaches the exact Picture 2 head angle.",
+                    convergence_frame=settle_start,
+                ),
+            )
+            if mode is H3Mode.FL2VA
+            else ()
+        ),
+        soundscape="Footsteps stop and the lock clicks.",
+        music="Low strings tighten without masking dialogue.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_planner_returns_typed_plan_then_quality_gates_and_compiles(tmp_path):
+    agent = FakeAgent(_director_plan())
+
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+        _segment().model_copy(update={"last_frame": None}),
+        _context().model_copy(update={"last_frame_sha256": None}),
+        H3Mode.I2VA,
+    )
+
+    assert result.plan.shots[0].camera.type == "push in"
+    assert result.quality_report.passed is True
+    assert result.prompt.startswith("For the target video, at 0.00 seconds")
+    assert "<d>[Chinese]别过来</d>" in result.prompt
+
+
+def test_production_optimizer_accepts_generic_director_model_factory(monkeypatch, tmp_path):
+    captured = {}
+
+    class CapturingAgent:
+        def __init__(self, model, **kwargs):
+            captured["model"] = model
+            captured.update(kwargs)
+
+    model = object()
+    monkeypatch.setattr(h3_prompt_optimizer, "Agent", CapturingAgent)
+
+    h3_prompt_optimizer.create_h3_prompt_optimizer(
+        cache_dir=tmp_path,
+        director_model_factory=lambda: model,
+        model_settings={},
+    )
+
+    assert captured["model"] is model
+    assert captured["output_type"].outputs is H3DirectorPlan
