@@ -52,7 +52,7 @@ def _compile_description(plan: H3DirectorPlan) -> str:
         lines.append(_compile_shot_heading(plan, shot, first=index == 0))
         if index == 0 and plan.mode is H3Mode.FL2VA:
             lines.append("Picture 1 to Picture 2 differences:")
-        lines.extend(_compile_shot_events(plan, shot))
+        lines.extend(_compile_shot_events(plan, shot, shot_index=index))
     return "\n".join(lines)
 
 
@@ -83,15 +83,27 @@ def _compile_shot_heading(
     )
 
 
-def _compile_shot_events(plan: H3DirectorPlan, shot: H3ShotPlan) -> list[str]:
+def _compile_shot_events(
+    plan: H3DirectorPlan, shot: H3ShotPlan, *, shot_index: int
+) -> list[str]:
     events: list[tuple[int, int, str]] = []
     events.extend(
         (action.start_frame, 0, _compile_action(action, plan.fps))
         for action in shot.actions
     )
     events.extend(
-        (cue.start_frame, 1, _compile_dialogue(cue, plan.fps))
-        for cue in shot.dialogue
+        (
+            cue.start_frame,
+            1,
+            _compile_dialogue(
+                cue,
+                plan.fps,
+                continuation_role=_continuation_role(
+                    plan, shot, shot_index=shot_index, cue_index=cue_index
+                ),
+            ),
+        )
+        for cue_index, cue in enumerate(shot.dialogue)
     )
     if plan.mode is H3Mode.FL2VA:
         events.extend(
@@ -129,11 +141,36 @@ def _compile_action(action: H3ActionPlan, fps: int) -> str:
     )
 
 
-def _compile_dialogue(cue: H3DialogueCue, fps: int) -> str:
+def _continuation_role(
+    plan: H3DirectorPlan,
+    shot: H3ShotPlan,
+    *,
+    shot_index: int,
+    cue_index: int,
+) -> str | None:
+    cue = shot.dialogue[cue_index]
+    if not cue.continuation:
+        return None
+    incoming = shot_index > 0 and cue_index == 0
+    outgoing = shot_index < len(plan.shots) - 1 and cue_index == len(shot.dialogue) - 1
+    if incoming and outgoing:
+        return "carries over from the previous shot and continues seamlessly across the cut"
+    if outgoing:
+        return "continues seamlessly across the cut"
+    if incoming:
+        return "carries over from the previous shot"
+    raise ValueError("validated continuation cue has no adjacent shot role")
+
+
+def _compile_dialogue(
+    cue: H3DialogueCue, fps: int, *, continuation_role: str | None
+) -> str:
     prefix = "<scenetrans>" if cue.continuation else ""
     suffix = "<cutoff>" if cue.truncated else ""
+    delivery = continuation_role or "says"
     return (
-        f"At {_timestamp(cue.start_frame, fps)}, {cue.speaker} ({cue.speaker_id}) says: "
+        f"At {_timestamp(cue.start_frame, fps)}, {cue.speaker} "
+        f"({cue.speaker_id}) {delivery}: "
         f"{prefix}<d>[{cue.language}]{cue.text}</d>{suffix}"
     )
 
