@@ -4,6 +4,7 @@ import {
   availableVideoModels,
   effectiveVideoMode,
   resolveVideoModel,
+  resolveVideoMode,
   videoModelRequest,
   type VideoModelCatalogItem,
 } from "@/lib/queries/media-models";
@@ -36,6 +37,27 @@ describe("video media model contract", () => {
     ];
 
     expect(resolveVideoModel("runninghub:minimax-h3", catalog)?.id).toBe("runninghub:future");
+  });
+
+  it("falls back unsupported saved modes to the workflow default and preserves supported modes", () => {
+    const future: VideoModelCatalogItem = {
+      id: "runninghub:future",
+      label: "Future Workflow",
+      provider: "runninghub",
+      available: true,
+      supported_modes: ["i2va"],
+      default_mode: "i2va",
+    };
+    const h3: VideoModelCatalogItem = {
+      ...future,
+      id: "runninghub:minimax-h3",
+      supported_modes: ["auto", "i2va", "fl2va"],
+      default_mode: "auto",
+    };
+
+    expect(resolveVideoMode("auto", future)).toBe("i2va");
+    expect(resolveVideoMode("i2va", future)).toBe("i2va");
+    expect(resolveVideoMode("auto", h3)).toBe("auto");
   });
 
   it("serializes only stable model identifiers and mode", () => {

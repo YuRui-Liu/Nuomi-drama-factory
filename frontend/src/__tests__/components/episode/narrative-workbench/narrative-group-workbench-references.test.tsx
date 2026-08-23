@@ -38,12 +38,13 @@ vi.mock("@/lib/queries/media-models",()=>({
  useUpdateMediaDefaults:()=>({isPending:false,mutateAsync:m.updateDefaults}),
  availableVideoModels:(catalog:any[])=>catalog.filter((item)=>item.available),
  resolveVideoModel:(saved:string|undefined,catalog:any[])=>catalog.find((item)=>item.available&&item.id===saved)??catalog.find((item)=>item.available),
+ resolveVideoMode:(saved:string,item:any)=>item.supported_modes.includes(saved)?saved:item.default_mode,
 }));
 vi.mock("@/lib/queries/projects",()=>({useUpdateProject:()=>({isPending:false,mutateAsync:m.updateProject})}));
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
 vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit({useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[]})}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
- GroupVideoStage:({onGenerate,modelId}:any)=><><span>stage-model:{modelId}</span><button onClick={()=>onGenerate({video_model:modelId,h3_mode:"i2va"})}>生成组合视频</button></>,
+ GroupVideoStage:({onGenerate,modelId,mode}:any)=><><span>stage-model:{modelId}</span><span>stage-mode:{mode}</span><button onClick={()=>onGenerate({video_model:modelId,h3_mode:mode==="auto"?"i2va":mode})}>生成组合视频</button></>,
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
 }));
 vi.mock("@/components/episode/narrative-workbench/narrative-group-list",()=>({NarrativeGroupList:()=>null}));
@@ -138,14 +139,15 @@ describe("NarrativeGroupWorkbench references",()=>{
   const user=userEvent.setup();
   m.videoModels=[
    {id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"},
-   {id:"runninghub:future",label:"RunningHub Future",provider:"runninghub",available:true,supported_modes:["auto","i2va"],default_mode:"auto"},
+   {id:"runninghub:future",label:"RunningHub Future",provider:"runninghub",available:true,supported_modes:["i2va"],default_mode:"i2va"},
   ];
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
 
   await user.click(screen.getByRole("combobox",{name:"视频模型"}));
   await user.click(await screen.findByRole("option",{name:"RunningHub Future"}));
 
-  await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({videoModel:"runninghub:future"})));
+  await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({videoModel:"runninghub:future",videoMode:"i2va"})));
+  expect(screen.getByText("stage-mode:i2va")).toBeInTheDocument();
   fireEvent.click(screen.getByText("生成组合视频"));
   await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({model:"runninghub:future"})));
  });

@@ -50,6 +50,13 @@ export function resolveVideoModel(
   return available.find((item) => item.id === savedModel) ?? available[0];
 }
 
+export function resolveVideoMode(
+  savedMode: VideoModelMode,
+  model: VideoModelCatalogItem,
+): VideoModelMode {
+  return model.supported_modes.includes(savedMode) ? savedMode : model.default_mode;
+}
+
 // Kept for the single-Beat editor until that separate legacy workflow is migrated.
 export function mergeVideoModelCatalog(
   capabilityModels: VideoModelCatalogItem[], legacyBackends: VideoBackendOption[],
