@@ -68,6 +68,15 @@ describe("navigation resource loading", () => {
     );
   });
 
+  it("shows an accessible local status while the Piko chunk is loading", () => {
+    const appRoute = readSource("src/routes/_app.tsx");
+
+    expect(appRoute).not.toContain("<Suspense fallback={null}>");
+    expect(appRoute).toMatch(
+      /<Suspense[\s\S]*?fallback=\{[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?\}[\s\S]*?>/,
+    );
+  });
+
   it("keeps the companion and version checks eager", () => {
     const appRoute = readSource("src/routes/_app.tsx");
 
