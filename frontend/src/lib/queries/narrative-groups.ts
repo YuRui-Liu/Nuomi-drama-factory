@@ -82,7 +82,7 @@ export interface NarrativeStageState {
 }
 
 export interface NarrativeGroupVideoUnit {
-  id: string;
+  id?: string;
   beat_ids: [string] | [string, string];
   mode: "i2va" | "fl2va";
   duration_seconds: number;
@@ -106,6 +106,11 @@ export interface NarrativeGroupVideoPromptUnit {
   prompt_profile?: unknown | null;
   quality_report?: unknown | null;
   input_summary?: unknown | null;
+  first_frame_url?: string | null;
+  last_frame_url?: string | null;
+  workflow?: string | null;
+  model?: string | null;
+  provider?: string | null;
   provider_task_id?: string | null;
   [key: string]: unknown;
 }
@@ -113,6 +118,18 @@ export interface NarrativeGroupVideoPromptUnit {
 export interface NarrativeGroupVideoPromptManifest {
   units: NarrativeGroupVideoPromptUnit[];
   [key: string]: unknown;
+}
+
+export function narrativeGroupVideoPromptUnitKey(
+  unit: NarrativeGroupVideoPromptUnit,
+  index: number,
+) {
+  return [
+    unit.beat_ids.join("--"),
+    unit.label ?? "",
+    unit.provider_task_id ?? "",
+    index,
+  ].join("::");
 }
 
 export interface NarrativeGroup {

@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GroupVideoPromptDrawer } from "@/components/episode/narrative-workbench/group-video-prompt-drawer";
-import { useNarrativeGroupVideoPrompts } from "@/lib/queries/narrative-groups";
+import {
+  narrativeGroupVideoPromptUnitKey,
+  useNarrativeGroupVideoPrompts,
+  type NarrativeGroupVideoPromptUnit,
+} from "@/lib/queries/narrative-groups";
 
 vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/queries/narrative-groups")>();
@@ -13,6 +17,21 @@ vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
 const mockedQuery = vi.mocked(useNarrativeGroupVideoPrompts);
 
 describe("GroupVideoPromptDrawer", () => {
+  it("accepts the Task 8 response without id and derives a safe stable key", () => {
+    const unit = {
+      beat_ids: ["beat-1", "beat-2"], label: "Beat 1 → Beat 2", mode: "fl2va",
+      duration_seconds: 8.5, first_frame_url: "/api/v1/projects/demo/media/frames/beat-1.png",
+      last_frame_url: "/api/v1/projects/demo/media/frames/beat-2.png", director_plan: null,
+      final_prompt: "the exact submitted prompt", prompt_profile: null, quality_report: null,
+      input_summary: { beat_ids: ["beat-1", "beat-2"] }, workflow: "workflow-136",
+      model: "runninghub:minimax-h3", provider: "runninghub", provider_task_id: "task-42",
+    } satisfies NarrativeGroupVideoPromptUnit;
+
+    expect(narrativeGroupVideoPromptUnitKey(unit, 3)).toBe(
+      "beat-1--beat-2::Beat 1 → Beat 2::task-42::3",
+    );
+  });
+
   beforeEach(() => {
     mockedQuery.mockReturnValue({
       data: { data: { units: [{

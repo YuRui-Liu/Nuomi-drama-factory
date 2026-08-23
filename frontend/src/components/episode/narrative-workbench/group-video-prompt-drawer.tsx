@@ -4,6 +4,7 @@ import { Download, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
+  narrativeGroupVideoPromptUnitKey,
   useNarrativeGroupVideoPrompts,
   type NarrativeGroupVideoPromptManifest,
 } from "@/lib/queries/narrative-groups";
@@ -38,7 +39,7 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
       {!query.isLoading && !query.isError && units.length === 0 ? <p className="text-sm text-muted-foreground">暂无可复盘的生成提示词。</p> : null}
       {units.length > 0 ? <div className="space-y-4">{units.map((unit, index) => {
         const label = unit.label || `Beat ${unit.beat_ids.join(" → ")}`;
-        return <article key={`${unit.beat_ids.join("-")}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-4">
+        return <article key={narrativeGroupVideoPromptUnitKey(unit, index)} className="rounded-lg border border-white/10 bg-black/20 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="font-medium">{label}</h3>
             <span className="text-xs text-muted-foreground">{unit.mode} · {unit.duration_seconds} 秒</span>
