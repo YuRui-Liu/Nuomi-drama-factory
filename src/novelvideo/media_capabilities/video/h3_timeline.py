@@ -70,6 +70,15 @@ class H3TimelineEntry(BaseModel):
     prompt_profile: dict[str, Any] | None = None
     quality_report: dict[str, Any] | None = None
     input_summary: dict[str, Any] | None = None
+    status: Literal[
+        "planned",
+        "submitted",
+        "generated",
+        "completed",
+        "quality_rejected",
+        "transport_failed",
+        "postprocess_failed",
+    ] = "completed"
 
     @model_validator(mode="after")
     def derive_metadata(self) -> "H3TimelineEntry":
@@ -124,7 +133,7 @@ H3Timeline = H3CompiledTimeline
 
 class H3DirectorOutputManifest(BaseModel):
     model_config = _MODEL_CONFIG
-    physical_video: str = Field(min_length=1)
+    physical_video: str | None = Field(default=None, min_length=1)
     entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
     fps: Literal[24] = H3_FPS
     total_frames: int = Field(default=0, ge=0)
@@ -138,6 +147,15 @@ class H3DirectorOutputManifest(BaseModel):
     ambience_stem_path: str | None = None
     ambience_stem_status: str = "not_requested"
     actual_duration_seconds: float | None = None
+    status: Literal[
+        "planned",
+        "submitted",
+        "generated",
+        "completed",
+        "quality_rejected",
+        "transport_failed",
+        "postprocess_failed",
+    ] = "completed"
 
     @field_validator(
         "physical_video", "workflow_id", "provider_task_id",

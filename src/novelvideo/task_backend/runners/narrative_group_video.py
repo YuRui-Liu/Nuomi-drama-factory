@@ -17,6 +17,14 @@ from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     create_h3_prompt_optimizer,
 )
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_PROMPT_PROFILE_ID,
+    H3_PROMPT_PROFILE_VERSION,
+)
+from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+    H3_PROMPT_COMPILER_VERSION,
+)
+from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityError
 from novelvideo.media_capabilities.video.h3_beat_adapter import (
     h3_dialogue_required,
     h3_dialogue_text,
@@ -27,6 +35,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     DialogueSource,
     H3DirectorOutputManifest,
     H3DirectorSegment,
+    H3TimelineEntry,
     build_h3_timeline_data,
     save_h3_director_manifest,
 )
@@ -339,7 +348,21 @@ async def _optimize_missing_prompts(
     async def optimize(segment: H3DirectorSegment, context: H3PromptContext) -> H3DirectorSegment:
         async with semaphore:
             mode = _mode_for(segment)
-            result = await optimizer.optimize_segment(segment, context, mode)
+            try:
+                result = await optimizer.optimize_segment(segment, context, mode)
+            except H3PromptQualityError as exc:
+                if evidence_by_segment is not None:
+                    evidence_by_segment[segment.segment_id] = {
+                        "prompt_profile": {
+                            "id": H3_PROMPT_PROFILE_ID,
+                            "version": H3_PROMPT_PROFILE_VERSION,
+                            "compiler_version": H3_PROMPT_COMPILER_VERSION,
+                        },
+                        "quality_report": exc.report.model_dump(mode="json"),
+                        "input_summary": _input_summary(segment, context, mode),
+                        "_status": "quality_rejected",
+                    }
+                raise
             if evidence_by_segment is not None:
                 evidence_by_segment[segment.segment_id] = {
                     "director_plan": result.plan.model_dump(mode="json"),
@@ -349,18 +372,78 @@ async def _optimize_missing_prompts(
                         "compiler_version": result.compiler_version,
                     },
                     "quality_report": result.quality_report.model_dump(mode="json"),
-                    "input_summary": {
-                        "beat_ids": segment.segment_id.split("--"),
-                        "mode": mode.value,
-                        "duration_seconds": segment.duration_seconds,
-                        "first_frame_sha256": context.first_frame_sha256,
-                        "last_frame_sha256": context.last_frame_sha256,
-                    },
+                    "input_summary": _input_summary(segment, context, mode),
+                    "_final_prompt": result.prompt,
                 }
             return segment.model_copy(update={"prompt": result.prompt})
 
     # gather preserves source order even though the work is concurrent.
     return list(await asyncio.gather(*(optimize(segment, context) for segment, context in zip(segments, contexts, strict=True))))
+
+
+def _input_summary(
+    segment: H3DirectorSegment,
+    context: H3PromptContext,
+    mode: H3Mode,
+) -> dict[str, Any]:
+    return {
+        "beat_ids": segment.segment_id.split("--"),
+        "mode": mode.value,
+        "duration_seconds": segment.duration_seconds,
+        "first_frame_sha256": context.first_frame_sha256,
+        "last_frame_sha256": context.last_frame_sha256,
+    }
+
+
+def _entries_with_evidence(
+    entries: tuple[H3TimelineEntry, ...],
+    evidence_by_segment: Mapping[str, Mapping[str, Any]],
+    *,
+    default_status: str,
+) -> tuple[H3TimelineEntry, ...]:
+    evidenced = []
+    for entry in entries:
+        evidence = dict(evidence_by_segment.get(entry.segment.segment_id) or {})
+        final_prompt = evidence.pop("_final_prompt", None)
+        status = str(evidence.pop("_status", default_status))
+        segment = (
+            entry.segment.model_copy(update={"prompt": final_prompt})
+            if final_prompt
+            else entry.segment
+        )
+        evidenced.append(entry.model_copy(update={
+            "segment": segment,
+            "status": status,
+            **evidence,
+        }))
+    return tuple(evidenced)
+
+
+def _manifest_with_status(
+    manifest: H3DirectorOutputManifest,
+    status: str,
+    *,
+    physical_video: str | None = None,
+    provider_task_id: str | None = None,
+    **updates: Any,
+) -> H3DirectorOutputManifest:
+    payload = manifest.model_dump(mode="python")
+    payload.update({
+        "status": status,
+        "physical_video": physical_video,
+        "provider_task_id": provider_task_id,
+        **updates,
+    })
+    payload["entries"] = [
+        {
+            **entry.model_dump(mode="python"),
+            "status": status,
+            "physical_video": physical_video,
+            "provider_task_id": provider_task_id,
+        }
+        for entry in manifest.entries
+    ]
+    return H3DirectorOutputManifest.model_validate(payload)
 
 
 def _build_segments(
@@ -526,6 +609,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
     record_stage_result(project_dir, episode, group_id, "video", expected_revision=revision, status="running", error="")
+    manifest_path: Path | None = None
     try:
         workflow = _workflow_definition_for_payload(payload)
         adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
@@ -549,67 +633,158 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 "group_id": group_id, "revision": revision,
             }
         segment_beats = _canonical_beats_for_segments(raw_segments, beats)
-        evidence_by_segment: dict[str, dict[str, Any]] = {}
-        segments = await _optimize_missing_prompts(
-            raw_segments, segment_beats, ctx=ctx,
-            project_dir=project_dir, episode=episode,
-            evidence_by_segment=evidence_by_segment,
-        )
-        timeline = build_h3_timeline_data(segments, strict_first_frame=True)
-        evidenced_entries = tuple(
-            entry.model_copy(update=evidence_by_segment[entry.segment.segment_id])
-            for entry in timeline.entries
-        )
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         output = video_dir / f"{group_id}_r{revision}.mp4"
+        manifest_path = output.with_suffix(".manifest.json")
+        evidence_by_segment: dict[str, dict[str, Any]] = {}
+        try:
+            segments = await _optimize_missing_prompts(
+                raw_segments, segment_beats, ctx=ctx,
+                project_dir=project_dir, episode=episode,
+                evidence_by_segment=evidence_by_segment,
+            )
+        except H3PromptQualityError as exc:
+            report = exc.report.model_dump(mode="json")
+            for segment in raw_segments:
+                evidence_by_segment.setdefault(segment.segment_id, {
+                    "prompt_profile": {
+                        "id": H3_PROMPT_PROFILE_ID,
+                        "version": H3_PROMPT_PROFILE_VERSION,
+                        "compiler_version": H3_PROMPT_COMPILER_VERSION,
+                    },
+                    "quality_report": report,
+                    "input_summary": {
+                        "beat_ids": segment.segment_id.split("--"),
+                        "mode": _mode_for(segment).value,
+                        "duration_seconds": segment.duration_seconds,
+                        "first_frame_sha256": _frame_sha256(str(segment.first_frame)),
+                        "last_frame_sha256": (
+                            _frame_sha256(str(segment.last_frame))
+                            if segment.last_frame else None
+                        ),
+                    },
+                    "_status": "quality_rejected",
+                })
+            rejected_timeline = build_h3_timeline_data(
+                raw_segments, strict_first_frame=True
+            )
+            rejected_manifest = H3DirectorOutputManifest(
+                physical_video=None,
+                entries=_entries_with_evidence(
+                    rejected_timeline.entries,
+                    evidence_by_segment,
+                    default_status="quality_rejected",
+                ),
+                workflow_id=workflow.id,
+                status="quality_rejected",
+            )
+            save_h3_director_manifest(manifest_path, rejected_manifest)
+            error_payload = {
+                "error_code": "H3_PROMPT_QUALITY_REJECTED",
+                "transport_called": False,
+                "quality_report": report,
+            }
+            exc.args = (json.dumps(error_payload, ensure_ascii=False, separators=(",", ":")),)
+            record_stage_result(
+                project_dir, episode, group_id, "video",
+                expected_revision=revision,
+                status="failed",
+                error=str(exc),
+                manifest_asset=str(manifest_path),
+            )
+            raise
+        timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+        evidenced_entries = _entries_with_evidence(
+            timeline.entries, evidence_by_segment, default_status="submitted"
+        )
+        manifest = H3DirectorOutputManifest(
+            physical_video=None,
+            entries=evidenced_entries,
+            workflow_id=workflow.id,
+            status="submitted",
+        )
+        save_h3_director_manifest(manifest_path, manifest)
+        record_stage_result(
+            project_dir, episode, group_id, "video",
+            expected_revision=revision,
+            status="running",
+            error="",
+            manifest_asset=str(manifest_path),
+        )
         from novelvideo.media_capabilities.video.adapters import (
             NarrativeGroupVideoRequest,
         )
 
-        generated = await adapter.generate_narrative_group(
-            ctx,
-            NarrativeGroupVideoRequest(
-                segments=tuple(segments),
-                output_path=str(output),
-                aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
-                resolution=payload.get("resolution"),
-            ),
+        try:
+            generated = await adapter.generate_narrative_group(
+                ctx,
+                NarrativeGroupVideoRequest(
+                    segments=tuple(segments),
+                    output_path=str(output),
+                    aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
+                    resolution=payload.get("resolution"),
+                ),
+            )
+        except Exception:
+            manifest = _manifest_with_status(manifest, "transport_failed")
+            save_h3_director_manifest(manifest_path, manifest)
+            raise
+
+        manifest = _manifest_with_status(
+            manifest,
+            "generated",
+            physical_video=str(generated.output_path),
+            provider_task_id=generated.provider_task_id,
         )
-        if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
-            try:
-                stems = await _separate_stems(
-                    Path(generated.output_path), video_dir / "stems"
-                )
-            except StemSeparationUnavailable:
-                # Demucs is an optional post-process. Preserve the successfully
-                # generated H3 video and expose stem availability separately so
-                # later external-TTS composition can request/install it.
-                stems = {
-                    "original_audio_path": str(generated.output_path),
-                    "dialogue_stem_status": "unavailable",
-                    "ambience_stem_status": "unavailable",
-                }
-            if (
-                stems.get("ambience_stem_status") != "succeeded"
-                and stems.get("ambience_stem_status") != "unavailable"
-            ):
-                raise RuntimeError(
-                    "external_tts requires successful H3 ambience stem separation"
-                )
-        else:
-            stems = {}
-        manifest = H3DirectorOutputManifest(
-            physical_video=str(generated.output_path), entries=evidenced_entries,
-            workflow_id=str(payload.get("workflow_id") or "" ) or None,
+        save_h3_director_manifest(manifest_path, manifest)
+
+        try:
+            if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
+                try:
+                    stems = await _separate_stems(
+                        Path(generated.output_path), video_dir / "stems"
+                    )
+                except StemSeparationUnavailable:
+                    # Demucs is optional. Keep generated evidence and expose
+                    # availability for later external-TTS composition.
+                    stems = {
+                        "original_audio_path": str(generated.output_path),
+                        "dialogue_stem_status": "unavailable",
+                        "ambience_stem_status": "unavailable",
+                    }
+                if (
+                    stems.get("ambience_stem_status") != "succeeded"
+                    and stems.get("ambience_stem_status") != "unavailable"
+                ):
+                    raise RuntimeError(
+                        "external_tts requires successful H3 ambience stem separation"
+                    )
+            else:
+                stems = {}
+        except Exception:
+            manifest = _manifest_with_status(
+                manifest,
+                "postprocess_failed",
+                physical_video=str(generated.output_path),
+                provider_task_id=generated.provider_task_id,
+            )
+            save_h3_director_manifest(manifest_path, manifest)
+            raise
+
+        manifest = _manifest_with_status(
+            manifest,
+            "completed",
+            physical_video=str(generated.output_path),
             provider_task_id=generated.provider_task_id,
             original_audio_path=stems.get("original_audio_path"),
-            original_audio_status="succeeded" if stems.get("original_audio_path") else "unavailable",
+            original_audio_status=(
+                "succeeded" if stems.get("original_audio_path") else "unavailable"
+            ),
             dialogue_stem_path=stems.get("dialogue_stem_path"),
             dialogue_stem_status=stems.get("dialogue_stem_status", "not_requested"),
             ambience_stem_path=stems.get("ambience_stem_path"),
             ambience_stem_status=stems.get("ambience_stem_status", "not_requested"),
         )
-        manifest_path = output.with_suffix(".manifest.json")
         save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
             project_dir, episode, group_id, "video", expected_revision=revision, status="completed",
@@ -621,7 +796,16 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),
                 "provider_task_id": generated.provider_task_id, "logical_shots": len(segments)}
     except Exception as exc:
-        record_stage_result(project_dir, episode, group_id, "video", expected_revision=revision, status="failed", error=str(exc))
+        failure_assets = (
+            {"manifest_asset": str(manifest_path)}
+            if manifest_path is not None and manifest_path.is_file()
+            else {}
+        )
+        record_stage_result(
+            project_dir, episode, group_id, "video",
+            expected_revision=revision, status="failed", error=str(exc),
+            **failure_assets,
+        )
         raise
 
 

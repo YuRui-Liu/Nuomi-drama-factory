@@ -269,6 +269,30 @@ def test_old_manifest_without_prompt_evidence_remains_loadable(tmp_path: Path) -
     assert restored.entries[0].prompt_profile is None
     assert restored.entries[0].quality_report is None
     assert restored.entries[0].input_summary is None
+    assert restored.status == "completed"
+    assert restored.entries[0].status == "completed"
+
+
+def test_submission_manifest_allows_no_video_and_preserves_lifecycle_status(
+    tmp_path: Path,
+) -> None:
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1)])
+    submitted_entry = timeline.entries[0].model_copy(update={"status": "submitted"})
+    manifest = H3DirectorOutputManifest(
+        physical_video=None,
+        entries=(submitted_entry,),
+        status="submitted",
+        workflow_id="workflow-136",
+    )
+    target = tmp_path / "submission.json"
+
+    save_director_manifest(target, manifest)
+    restored = load_h3_director_manifest(target)
+
+    assert restored.physical_video is None
+    assert restored.status == "submitted"
+    assert restored.entries[0].status == "submitted"
+    assert restored.entries[0].physical_video is None
 
 
 def test_load_rejects_manifest_with_a_timeline_gap(tmp_path: Path) -> None:

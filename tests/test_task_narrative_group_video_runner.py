@@ -262,11 +262,132 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
 
     import pytest
 
-    with pytest.raises(H3PromptQualityError, match="vague_action"):
+    with pytest.raises(H3PromptQualityError) as caught:
         narrative_group_video.run_narrative_group_video(
             {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
         )
     assert transport_calls == []
+    error_payload = __import__("json").loads(str(caught.value))
+    assert error_payload["error_code"] == "H3_PROMPT_QUALITY_REJECTED"
+    assert error_payload["transport_called"] is False
+    assert error_payload["quality_report"]["issues"] == [{
+        "code": "vague_action",
+        "message": "bad plan",
+        "severity": "error",
+        "location": "shots.0",
+    }]
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.narrative_groups.service import load_groups
+
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    manifest = load_h3_director_manifest(stage.manifest_asset)
+    assert manifest.status == "quality_rejected"
+    assert manifest.physical_video is None
+    assert manifest.entries[0].status == "quality_rejected"
+    assert manifest.entries[0].quality_report["issues"][0]["location"] == "shots.0"
+
+
+def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    observed = []
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
+
+    async def generate(_ctx, *, segments, output_path, **_kwargs):
+        manifest_path = Path(output_path).with_suffix(".manifest.json")
+        submission = load_h3_director_manifest(manifest_path)
+        observed.append(submission)
+        assert submission.status == "submitted"
+        assert all(entry.status == "submitted" for entry in submission.entries)
+        assert [entry.segment.prompt for entry in submission.entries] == [
+            "final:beat-1", "final:beat-2"
+        ]
+        raise RuntimeError("transport exploded")
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="transport exploded"):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        )
+
+    assert len(observed) == 1
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    persisted = load_h3_director_manifest(stage.manifest_asset)
+    assert persisted.status == "transport_failed"
+    assert persisted.physical_video is None
+    assert persisted.entries[0].director_plan is not None
+    assert persisted.entries[0].provider_task_id is None
+
+
+def test_group_video_updates_generated_evidence_before_postprocess(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path, provider_task_id="provider-42", actual_mode="i2va"
+        )
+
+    async def fail_postprocess(*_args):
+        raise RuntimeError("postprocess exploded")
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", fail_postprocess)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="postprocess exploded"):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        )
+
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    persisted = load_h3_director_manifest(stage.manifest_asset)
+    assert persisted.status == "postprocess_failed"
+    assert persisted.physical_video.endswith("ng-01_r1.mp4")
+    assert persisted.provider_task_id == "provider-42"
+    assert all(entry.provider_task_id == "provider-42" for entry in persisted.entries)
+    assert all(entry.status == "postprocess_failed" for entry in persisted.entries)
 
 
 def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
