@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ImageOff, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -201,6 +201,9 @@ export function ExtensionStyleDrawer({
   const [category, setCategory] = useState<CategoryFilter>("all");
   const [pendingStyleId, setPendingStyleId] = useState<string | null>(appliedStyle?.id ?? null);
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
+  const mobileDetailsTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileDetailsCloseRef = useRef<HTMLButtonElement>(null);
+  const hadMobileDetailsOpenRef = useRef(false);
 
   useEffect(() => {
     if (open) setPendingStyleId(appliedStyle?.id ?? null);
@@ -228,11 +231,24 @@ export function ExtensionStyleDrawer({
     setMobileDetailsOpen(false);
   }, [category, normalizedQuery, open, pendingStyle?.id]);
 
+  useEffect(() => {
+    if (mobileDetailsOpen) {
+      hadMobileDetailsOpenRef.current = true;
+      mobileDetailsCloseRef.current?.focus();
+      return;
+    }
+    if (hadMobileDetailsOpenRef.current) {
+      hadMobileDetailsOpenRef.current = false;
+      mobileDetailsTriggerRef.current?.focus();
+    }
+  }, [mobileDetailsOpen]);
+
   return (
     <Sheet open={open} onOpenChange={(nextOpen) => onOpenChange(nextOpen)}>
       <SheetContent
         side="right"
-        className="z-[70] flex w-full gap-0 p-0 sm:!max-w-[760px]"
+        showCloseButton={!mobileDetailsOpen}
+        className="z-[70] flex w-full gap-0 p-0 sm:!max-w-[560px]"
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
@@ -255,104 +271,112 @@ export function ExtensionStyleDrawer({
           <SheetDescription>选择一个扩展风格，仅在生成请求中追加风格片段。</SheetDescription>
         </SheetHeader>
 
-        <div className="shrink-0 space-y-3 border-b border-border p-4">
-          <label className="relative block">
-            <span className="sr-only">搜索扩展风格</span>
-            <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              aria-label="搜索扩展风格"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索名称、描述或适用场景"
-              className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
-            />
-          </label>
-          <div role="group" aria-label="扩展风格分类" className="flex flex-wrap gap-2">
-            {CATEGORY_FILTERS.map((filter) => (
-              <Button
-                key={filter.value}
-                type="button"
-                variant={category === filter.value ? "secondary" : "outline"}
-                size="sm"
-                aria-label={`筛选分类：${filter.label}`}
-                aria-pressed={category === filter.value}
-                onClick={() => setCategory(filter.value)}
-              >
-                {filter.label}
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="md:grid md:grid-cols-[minmax(0,3fr)_minmax(280px,2fr)]">
-            <div>
-              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-                {visibleStyles.map((style) => (
-                  <StyleCard
-                    key={style.id}
-                    style={style}
-                    selected={pendingStyle?.id === style.id}
-                    applied={appliedStyle?.id === style.id}
-                    onSelect={() => setPendingStyleId(style.id)}
-                  />
-                ))}
-              </div>
-              {visibleStyles.length === 0 ? (
-                <p className="px-4 py-12 text-center text-sm text-muted-foreground">
-                  没有找到匹配的扩展风格
-                </p>
-              ) : null}
+        <div
+          data-testid="extension-style-drawer-background"
+          className="contents"
+          inert={mobileDetailsOpen || undefined}
+          aria-hidden={mobileDetailsOpen || undefined}
+        >
+          <div className="shrink-0 space-y-3 border-b border-border p-4">
+            <label className="relative block">
+              <span className="sr-only">搜索扩展风格</span>
+              <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                aria-label="搜索扩展风格"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索名称、描述或适用场景"
+                className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
+              />
+            </label>
+            <div role="group" aria-label="扩展风格分类" className="flex flex-wrap gap-2">
+              {CATEGORY_FILTERS.map((filter) => (
+                <Button
+                  key={filter.value}
+                  type="button"
+                  variant={category === filter.value ? "secondary" : "outline"}
+                  size="sm"
+                  aria-label={`筛选分类：${filter.label}`}
+                  aria-pressed={category === filter.value}
+                  onClick={() => setCategory(filter.value)}
+                >
+                  {filter.label}
+                </Button>
+              ))}
             </div>
-
-            <aside
-              data-testid="extension-style-desktop-details"
-              className="sticky top-0 hidden max-h-[calc(100dvh-188px)] self-start overflow-y-auto border-l border-border bg-popover md:block"
-            >
-              {pendingStyle ? (
-                <StyleDetails
-                  key={pendingStyle.id}
-                  detailId="extension-style-desktop-detail-title"
-                  style={pendingStyle}
-                  applied={appliedStyle?.id === pendingStyle.id}
-                  onApply={() => onChange(pendingStyle.id)}
-                />
-              ) : (
-                <p className="p-6 text-sm text-muted-foreground">选择一个可见风格查看详情</p>
-              )}
-            </aside>
           </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="md:grid md:grid-cols-[minmax(0,1fr)_240px]">
+              <div>
+                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
+                  {visibleStyles.map((style) => (
+                    <StyleCard
+                      key={style.id}
+                      style={style}
+                      selected={pendingStyle?.id === style.id}
+                      applied={appliedStyle?.id === style.id}
+                      onSelect={() => setPendingStyleId(style.id)}
+                    />
+                  ))}
+                </div>
+                {visibleStyles.length === 0 ? (
+                  <p className="px-4 py-12 text-center text-sm text-muted-foreground">
+                    没有找到匹配的扩展风格
+                  </p>
+                ) : null}
+              </div>
+
+              <aside
+                data-testid="extension-style-desktop-details"
+                className="sticky top-0 hidden max-h-[calc(100dvh-188px)] self-start overflow-y-auto border-l border-border bg-popover md:block"
+              >
+                {pendingStyle ? (
+                  <StyleDetails
+                    key={pendingStyle.id}
+                    detailId="extension-style-desktop-detail-title"
+                    style={pendingStyle}
+                    applied={appliedStyle?.id === pendingStyle.id}
+                    onApply={() => onChange(pendingStyle.id)}
+                  />
+                ) : (
+                  <p className="p-6 text-sm text-muted-foreground">选择一个可见风格查看详情</p>
+                )}
+              </aside>
+            </div>
+          </div>
+
+          {pendingStyle ? (
+            <div
+              data-testid="extension-style-mobile-actions"
+              className="sticky bottom-0 z-10 flex shrink-0 items-center gap-2 border-t border-border bg-popover/95 p-3 shadow-[0_-8px_24px_rgba(0,0,0,0.18)] backdrop-blur md:hidden"
+            >
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                {pendingStyle.name}
+              </span>
+              <Button
+                ref={mobileDetailsTriggerRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-expanded={mobileDetailsOpen}
+                onClick={() => setMobileDetailsOpen(true)}
+              >
+                查看详情
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                aria-label={appliedStyle?.id === pendingStyle.id ? "移动端已应用" : "立即应用风格"}
+                disabled={appliedStyle?.id === pendingStyle.id}
+                onClick={() => onChange(pendingStyle.id)}
+              >
+                {appliedStyle?.id === pendingStyle.id ? "已应用" : "应用风格"}
+              </Button>
+            </div>
+          ) : null}
         </div>
-
-        {pendingStyle ? (
-          <div
-            data-testid="extension-style-mobile-actions"
-            className="sticky bottom-0 z-10 flex shrink-0 items-center gap-2 border-t border-border bg-popover/95 p-3 shadow-[0_-8px_24px_rgba(0,0,0,0.18)] backdrop-blur md:hidden"
-          >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-              {pendingStyle.name}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-expanded={mobileDetailsOpen}
-              onClick={() => setMobileDetailsOpen(true)}
-            >
-              查看详情
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              aria-label={appliedStyle?.id === pendingStyle.id ? "移动端已应用" : "立即应用风格"}
-              disabled={appliedStyle?.id === pendingStyle.id}
-              onClick={() => onChange(pendingStyle.id)}
-            >
-              {appliedStyle?.id === pendingStyle.id ? "已应用" : "应用风格"}
-            </Button>
-          </div>
-        ) : null}
 
         {mobileDetailsOpen && pendingStyle ? (
           <div
@@ -362,7 +386,13 @@ export function ExtensionStyleDrawer({
           >
             <div className="flex items-center justify-between border-b border-border p-3">
               <span className="text-sm font-medium text-foreground">风格详情</span>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setMobileDetailsOpen(false)}>
+              <Button
+                ref={mobileDetailsCloseRef}
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setMobileDetailsOpen(false)}
+              >
                 关闭详情
               </Button>
             </div>

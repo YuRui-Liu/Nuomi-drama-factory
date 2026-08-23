@@ -64,7 +64,9 @@ describe("ExtensionStyleDrawer", () => {
       />,
     );
 
-    expect(screen.getByRole("dialog", { name: "漫剧提示词库" })).toHaveClass("z-[70]");
+    const dialog = screen.getByRole("dialog", { name: "漫剧提示词库" });
+    expect(dialog).toHaveClass("z-[70]", "sm:!max-w-[560px]");
+    expect(dialog).not.toHaveClass("sm:!max-w-[760px]");
     const backdrop = screen.getByTestId("extension-style-drawer-backdrop");
     expect(backdrop).toHaveClass("fixed", "inset-0", "-z-10");
     fireEvent.pointerDown(backdrop);
@@ -164,6 +166,36 @@ describe("ExtensionStyleDrawer", () => {
     const mobileDetails = screen.getByTestId("extension-style-mobile-details");
     expect(within(mobileDetails).getByRole("heading", { name: REALISTIC_STYLE.name })).toBeVisible();
     expect(within(mobileDetails).getByRole("button", { name: "关闭详情" })).toBeVisible();
+  });
+
+  it("makes mobile details modal to the drawer content and restores trigger focus", async () => {
+    const user = userEvent.setup();
+    render(
+      <ExtensionStyleDrawer open value={null} onChange={vi.fn()} onOpenChange={vi.fn()} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: `查看风格：${CEL_STYLE.name}` }));
+    const detailsTrigger = within(
+      screen.getByTestId("extension-style-mobile-actions"),
+    ).getByRole("button", { name: "查看详情" });
+    await user.click(detailsTrigger);
+
+    const background = screen.getByTestId("extension-style-drawer-background");
+    expect(background).toHaveAttribute("inert");
+    expect(background).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("searchbox", { name: "搜索扩展风格" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `查看风格：${CEL_STYLE.name}，已选中` }),
+    ).not.toBeInTheDocument();
+
+    const closeDetails = within(
+      screen.getByTestId("extension-style-mobile-details"),
+    ).getByRole("button", { name: "关闭详情" });
+    expect(closeDetails).toHaveFocus();
+    await user.click(closeDetails);
+
+    expect(screen.getByRole("searchbox", { name: "搜索扩展风格" })).toBeVisible();
+    expect(detailsTrigger).toHaveFocus();
   });
 
   it("shows card and detail preview fallbacks and resets detail fallback on switching", async () => {
