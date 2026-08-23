@@ -80,6 +80,41 @@ export interface NarrativeStageState {
     dialogue_source: "external_tts" | "h3_native";
   }>;
 }
+
+export interface NarrativeGroupVideoUnit {
+  id: string;
+  beat_ids: [string] | [string, string];
+  mode: "i2va" | "fl2va";
+  duration_seconds: number;
+  reason: string;
+}
+
+export interface NarrativeGroupVideoPlan {
+  revision: number;
+  source: "recommended" | "manual";
+  units: NarrativeGroupVideoUnit[];
+  total_duration_seconds: number;
+}
+
+export interface NarrativeGroupVideoPromptUnit {
+  beat_ids: string[];
+  label?: string | null;
+  mode: string;
+  duration_seconds: number;
+  director_plan?: unknown | null;
+  final_prompt: string;
+  prompt_profile?: unknown | null;
+  quality_report?: unknown | null;
+  input_summary?: unknown | null;
+  provider_task_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface NarrativeGroupVideoPromptManifest {
+  units: NarrativeGroupVideoPromptUnit[];
+  [key: string]: unknown;
+}
+
 export interface NarrativeGroup {
   id: string;
   ordinal: number;
@@ -97,6 +132,7 @@ export interface NarrativeGroup {
     actual_model?: string | null;
     actual_mode?: string | null;
   }>;
+  video_plan?: NarrativeGroupVideoPlan;
 }
 
 export interface NarrativeGroupRevision {
@@ -123,6 +159,14 @@ export function narrativeGroupVideoPath(project: string, episode: number, groupI
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/generate`;
 }
 
+export function narrativeGroupVideoPlanPath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/plan`;
+}
+
+export function narrativeGroupVideoPromptsPath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/prompts`;
+}
+
 /** Exact backend task scope for one narrative-group stage revision. */
 export function narrativeGroupTaskScope(
   groupId: string,
@@ -146,6 +190,7 @@ export function narrativeGroupVideoPayload(input: {
   model: string;
   mode: "auto" | "i2va" | "fl2va";
   revision: number;
+  planRevision?: number;
   aspectRatio: "9:16" | "16:9";
   resolution?: string;
 }) {
@@ -153,9 +198,30 @@ export function narrativeGroupVideoPayload(input: {
     model: input.model,
     mode: input.mode,
     revision: input.revision,
+    ...(input.planRevision !== undefined ? { plan_revision: input.planRevision } : {}),
     aspect_ratio: input.aspectRatio,
     ...(input.resolution ? { resolution: input.resolution } : {}),
   };
+}
+
+export function narrativeGroupVideoPlanPayload(input: {
+  expectedRevision: number;
+  units: Array<{ beatIds: string[] }>;
+}) {
+  return {
+    expected_revision: input.expectedRevision,
+    units: input.units.map((unit) => ({ beat_ids: unit.beatIds })),
+  };
+}
+
+export function updateNarrativeGroupVideoPlan(project: string, episode: number, input: {
+  groupId: string;
+  expectedRevision: number;
+  units: Array<{ beatIds: string[] }>;
+}) {
+  return api.put(narrativeGroupVideoPlanPath(project, episode, input.groupId), {
+    json: narrativeGroupVideoPlanPayload(input),
+  }).json<ApiResponse<NarrativeGroup>>();
 }
 
 export function narrativeGroupVideoDialogueSourcePayload(input: {
@@ -257,16 +323,32 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision, aspectRatio, resolution }: {
+    mutationFn: ({ groupId, model, mode, revision, planRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
       revision: number;
+      planRevision?: number;
       aspectRatio: "9:16" | "16:9";
       resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({ model, mode, revision, aspectRatio, resolution }),
+      json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, aspectRatio, resolution }),
     }).json<TaskResponse>(),
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+    ]),
+  });
+}
+
+export function useUpdateNarrativeGroupVideoPlan(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      groupId: string;
+      expectedRevision: number;
+      units: Array<{ beatIds: string[] }>;
+    }) => updateNarrativeGroupVideoPlan(project, episode, input),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
@@ -301,6 +383,21 @@ export function useNarrativeGroupReferences(
     queryFn: ({ signal }) => api.get(
       narrativeGroupReferencePath(project, episode, groupId, stage), { signal },
     ).json<ApiResponse<NarrativeGroupReferencePreview>>(),
+    enabled: enabled && !!project && episode > 0 && !!groupId,
+  });
+}
+
+export function useNarrativeGroupVideoPrompts(
+  project: string,
+  episode: number,
+  groupId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...queryKeys.narrativeGroups(project, episode), groupId, "video", "prompts"],
+    queryFn: ({ signal }) => api.get(
+      narrativeGroupVideoPromptsPath(project, episode, groupId), { signal },
+    ).json<ApiResponse<NarrativeGroupVideoPromptManifest>>(),
     enabled: enabled && !!project && episode > 0 && !!groupId,
   });
 }

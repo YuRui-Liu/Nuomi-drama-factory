@@ -1,7 +1,18 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { GroupVideoResult } from "@/components/episode/narrative-workbench/group-video-result";
+
+vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/queries/narrative-groups")>();
+  return {
+    ...actual,
+    useNarrativeGroupVideoPrompts: vi.fn(() => ({
+      data: { data: { units: [] } }, isLoading: false, isError: false,
+    })),
+  };
+});
 
 describe("GroupVideoResult", () => {
   it("shows one physical video, stem state, and its logical VideoSpan dialogue sources", () => {
@@ -30,5 +41,18 @@ describe("GroupVideoResult", () => {
     ] }} onDialogueSourceChange={onDialogueSourceChange} />);
     screen.getByRole("button", { name: "改用 H3 原声" }).click();
     expect(onDialogueSourceChange).toHaveBeenCalledWith({ spanIndex: 0, dialogueSource: "h3_native" });
+  });
+
+  it("opens submitted prompt details for a completed manifest", async () => {
+    const user = userEvent.setup();
+    render(<GroupVideoResult
+      project="project-1"
+      episode={1}
+      groupId="group-1"
+      stage={{ status: "completed", manifest_asset: "/media/group.manifest.json" }}
+    />);
+
+    await user.click(screen.getByRole("button", { name: "生成提示词" }));
+    expect(screen.getByRole("dialog", { name: "视频生成提示词" })).toBeInTheDocument();
   });
 });
