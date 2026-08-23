@@ -302,7 +302,6 @@ def _prompt_context(
     *,
     director_context: str = "",
 ) -> H3PromptContext:
-    from novelvideo.config import get_newapi_text_model_name
     from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
 
     return H3PromptContext(
@@ -312,8 +311,9 @@ def _prompt_context(
         next_summary=_narrative(following) if following else "",
         first_frame_sha256=_frame_sha256(str(segment.first_frame)),
         last_frame_sha256=_frame_sha256(str(segment.last_frame)) if segment.last_frame else None,
-        model_id=get_newapi_text_model_name(
-            "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+        model_id=(
+            os.getenv("H3_PROMPT_OPTIMIZER_MODEL", "").strip()
+            or DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
         ),
         dialogue_required=_dialogue_required(beat, segment),
         director_context=director_context,
