@@ -1,5 +1,9 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import type { FreezoneStyleTemplate } from "@/api/ops";
 import {
   EXTENSION_STYLES,
   EXTENSION_STYLES_BY_ID,
@@ -7,6 +11,23 @@ import {
   getExtensionStyle,
   parseExtensionStyleCatalog,
 } from "@/features/canvas/extension-styles/catalog";
+import { describeStyleSelection } from "@/features/canvas/nodes/StylePickerPopover";
+
+const EXTENSION_STYLE_MODULE_DIR = resolve(
+  process.cwd(),
+  "src/features/canvas/extension-styles",
+);
+
+function extensionStyleModuleSources(
+  directory = EXTENSION_STYLE_MODULE_DIR,
+): Array<[string, string]> {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) return extensionStyleModuleSources(path);
+    if (!entry.isFile() || !/\.(?:json|ts|tsx)$/.test(entry.name)) return [];
+    return [[path, readFileSync(path, "utf8")]];
+  });
+}
 
 describe("extension style catalog", () => {
   it("exposes exactly 18 namespaced styles in the backend fragment order", () => {
@@ -37,6 +58,40 @@ describe("extension style catalog", () => {
     expect(getExtensionStyle(id)).toBe(EXTENSION_STYLES_BY_ID[id]);
     expect(getExtensionStyle(id)?.name).toBe("日系赛璐璐");
     expect(getExtensionStyle("drama_ext.missing")).toBeUndefined();
+  });
+
+  it("keeps the catalog bundle offline-only at runtime", () => {
+    const forbiddenRuntimeDependencies = [
+      ["fetch", /\bfetch\s*\(/i],
+      ["absolute HTTP URL", /https?:\/\//i],
+      ["GitHub URL", /(?:www\.)?github\.com/i],
+      ["runtime API import", /\bfrom\s+["']@\/api(?:\/|["'])/i],
+      ["dynamic runtime API import", /\bimport\s*\(\s*["']@\/api(?:\/|["'])/i],
+      ["runtime API call", /\b(?:apiCall|listFreezoneStyleTemplates)\s*\(/],
+      ["HTTP client", /\b(?:XMLHttpRequest|axios|ky)\b/],
+    ] as const;
+
+    for (const [fileName, source] of extensionStyleModuleSources()) {
+      for (const [dependencyName, pattern] of forbiddenRuntimeDependencies) {
+        expect(source, `${fileName} must not contain ${dependencyName}`).not.toMatch(pattern);
+      }
+    }
+  });
+
+  it("preserves the existing style-template interface and display name", () => {
+    const existingStyle: FreezoneStyleTemplate = {
+      id: "existing.ink-cinema",
+      label: "水墨电影感",
+      style_prompt: "cinematic ink wash",
+      author: "DramaClaw",
+      category: "现有风格",
+    };
+
+    const selected = describeStyleSelection(existingStyle.id, [existingStyle]);
+
+    expect(selected).toBe(existingStyle);
+    expect(selected?.label).toBe("水墨电影感");
+    expect(selected?.style_prompt).toBe("cinematic ink wash");
   });
 
   it("publishes a deeply frozen catalog view", () => {
