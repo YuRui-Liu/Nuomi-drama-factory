@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
-from typing import Any, Protocol
+from collections.abc import Awaitable, Iterable
+from dataclasses import dataclass
+from typing import Protocol
 
+from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.runtime import H3GenerationResult
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowUnavailable,
 )
 from novelvideo.project_context import ProjectContext
+
+
+@dataclass(frozen=True, slots=True)
+class NarrativeGroupVideoRequest:
+    segments: tuple[H3DirectorSegment, ...]
+    output_path: str
+    aspect_ratio: str
+    resolution: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NarrativeGroupVideoResult:
+    output_path: str
+    provider_task_id: str | None
+    actual_mode: str
 
 
 class VideoWorkflowAdapter(Protocol):
@@ -19,12 +37,20 @@ class VideoWorkflowAdapter(Protocol):
     async def generate_narrative_group(
         self,
         ctx: ProjectContext,
+        request: NarrativeGroupVideoRequest,
+    ) -> NarrativeGroupVideoResult: ...
+
+
+class H3DirectorGenerator(Protocol):
+    def __call__(
+        self,
+        ctx: ProjectContext,
         *,
-        segments: tuple[Any, ...],
+        segments: tuple[H3DirectorSegment, ...],
         output_path: str,
         aspect_ratio: str,
         resolution: str | None,
-    ) -> Any: ...
+    ) -> Awaitable[H3GenerationResult]: ...
 
 
 class VideoWorkflowAdapters:
@@ -54,7 +80,7 @@ class H3WorkflowAdapter:
 
     def __init__(
         self,
-        generator: Callable[..., Awaitable[Any]] | None = None,
+        generator: H3DirectorGenerator | None = None,
     ) -> None:
         if generator is None:
             from novelvideo.media_capabilities.video.runtime import (
@@ -67,23 +93,30 @@ class H3WorkflowAdapter:
     async def generate_narrative_group(
         self,
         ctx: ProjectContext,
-        *,
-        segments: tuple[Any, ...],
-        output_path: str,
-        aspect_ratio: str,
-        resolution: str | None,
-    ) -> Any:
-        return await self._generator(
+        request: NarrativeGroupVideoRequest,
+    ) -> NarrativeGroupVideoResult:
+        generated = await self._generator(
             ctx,
-            segments=segments,
-            output_path=output_path,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
+            segments=request.segments,
+            output_path=request.output_path,
+            aspect_ratio=request.aspect_ratio,
+            resolution=request.resolution,
+        )
+        return NarrativeGroupVideoResult(
+            output_path=str(generated.output_path),
+            provider_task_id=(
+                str(generated.provider_task_id)
+                if generated.provider_task_id is not None
+                else None
+            ),
+            actual_mode=str(generated.actual_mode),
         )
 
 
 __all__ = [
     "H3WorkflowAdapter",
+    "NarrativeGroupVideoRequest",
+    "NarrativeGroupVideoResult",
     "VideoWorkflowAdapter",
     "VideoWorkflowAdapters",
 ]

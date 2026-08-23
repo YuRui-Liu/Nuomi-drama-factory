@@ -22,39 +22,75 @@ def test_default_adapters_resolve_h3_and_reject_unknown_key():
 
 
 def test_h3_adapter_delegates_to_injected_director_generator():
-    from novelvideo.media_capabilities.video.adapters import H3WorkflowAdapter
+    from novelvideo.media_capabilities.video.adapters import (
+        H3WorkflowAdapter,
+        NarrativeGroupVideoRequest,
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 
     calls = []
 
     async def generate(ctx, **kwargs):
         calls.append((ctx, kwargs))
-        return SimpleNamespace(output_path="result.mp4")
+        return SimpleNamespace(
+            output_path="result.mp4",
+            provider_task_id="provider-1",
+            actual_mode="fl2va",
+        )
 
     adapter = H3WorkflowAdapter(generator=generate)
     ctx = object()
 
-    result = __import__("asyncio").run(
-        adapter.generate_narrative_group(
-            ctx,
-            segments=("segment",),
+    segment = H3DirectorSegment(
+        segment_id="segment-1",
+        beat_number=1,
+        prompt="人物转身",
+        duration_seconds=5,
+        first_frame="first.png",
+    )
+    request = NarrativeGroupVideoRequest(
+            segments=(segment,),
             output_path="result.mp4",
             aspect_ratio="9:16",
             resolution="1080p",
-        )
     )
 
-    assert result.output_path == "result.mp4"
+    result = asyncio.run(
+        adapter.generate_narrative_group(ctx, request)
+    )
+
+    assert result == NarrativeGroupVideoResult(
+        output_path="result.mp4",
+        provider_task_id="provider-1",
+        actual_mode="fl2va",
+    )
     assert calls == [
         (
             ctx,
             {
-                "segments": ("segment",),
+                "segments": (segment,),
                 "output_path": "result.mp4",
                 "aspect_ratio": "9:16",
                 "resolution": "1080p",
             },
         )
     ]
+
+
+def test_adapter_protocol_exposes_typed_request_and_result_contract():
+    from typing import get_type_hints
+
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoRequest,
+        NarrativeGroupVideoResult,
+        VideoWorkflowAdapter,
+    )
+
+    hints = get_type_hints(VideoWorkflowAdapter.generate_narrative_group)
+
+    assert hints["request"] is NarrativeGroupVideoRequest
+    assert hints["return"] == NarrativeGroupVideoResult
 
 
 def test_adapter_registry_rejects_duplicate_keys():
@@ -90,10 +126,14 @@ def test_runner_explicit_model_selects_future_workflow_adapter(tmp_path, monkeyp
         return segments
 
     class FutureAdapter:
-        async def generate_narrative_group(self, _ctx, **kwargs):
-            generated.append(kwargs)
-            return SimpleNamespace(
-                output_path=kwargs["output_path"],
+        async def generate_narrative_group(self, _ctx, request):
+            generated.append(request)
+            from novelvideo.media_capabilities.video.adapters import (
+                NarrativeGroupVideoResult,
+            )
+
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
                 provider_task_id="future-1",
                 actual_mode="i2va",
             )
@@ -107,12 +147,14 @@ def test_runner_explicit_model_selects_future_workflow_adapter(tmp_path, monkeyp
     monkeypatch.setattr(runner, "record_stage_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_load_canonical_beats", load_beats)
     monkeypatch.setattr(runner, "_optimize_missing_prompts", optimize)
+    class WorkflowRegistry:
+        def resolve(self, model, _scene):
+            return SimpleNamespace(
+                id=model, provider="runninghub", adapter_key="future-adapter"
+            )
+
     monkeypatch.setattr(
-        runner,
-        "_resolve_workflow_definition",
-        lambda model: SimpleNamespace(
-            id=model, provider="runninghub", adapter_key="future-adapter"
-        ),
+        runner, "_video_workflow_registry", lambda: WorkflowRegistry()
     )
     monkeypatch.setattr(runner, "_video_workflow_adapters", lambda: Adapters())
     monkeypatch.setattr(runner, "save_h3_director_manifest", lambda *_args: None)
@@ -137,6 +179,53 @@ def test_runner_explicit_model_selects_future_workflow_adapter(tmp_path, monkeyp
     assert result["provider_task_id"] == "future-1"
 
 
+def test_legacy_payload_uses_registry_default_then_resolves_it(monkeypatch):
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    definition = SimpleNamespace(id="runninghub:minimax-h3")
+    calls = []
+
+    class Registry:
+        def default(self, scene):
+            calls.append(("default", scene))
+            return definition
+
+        def resolve(self, model, scene):
+            calls.append(("resolve", model, scene))
+            return definition
+
+    monkeypatch.setattr(runner, "_video_workflow_registry", lambda: Registry())
+
+    resolved = runner._workflow_definition_for_payload({})
+
+    assert resolved is definition
+    assert calls == [
+        ("default", "narrative_group"),
+        ("resolve", "runninghub:minimax-h3", "narrative_group"),
+    ]
+
+
+def test_legacy_payload_unavailable_default_fails_before_adapter(monkeypatch):
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    class Registry:
+        def default(self, _scene):
+            raise VideoWorkflowUnavailable("no available workflow")
+
+        def resolve(self, *_args):
+            raise AssertionError("unavailable default must not be resolved")
+
+    monkeypatch.setattr(runner, "_video_workflow_registry", lambda: Registry())
+    monkeypatch.setattr(
+        runner,
+        "_video_workflow_adapters",
+        lambda: (_ for _ in ()).throw(AssertionError("adapter not entered")),
+    )
+
+    with pytest.raises(VideoWorkflowUnavailable, match="no available workflow"):
+        runner._workflow_definition_for_payload({})
+
+
 def test_runner_unavailable_model_never_enters_adapter_or_transport(
     tmp_path, monkeypatch
 ):
@@ -148,12 +237,12 @@ def test_runner_unavailable_model_never_enters_adapter_or_transport(
         lambda *_args: {"revision": 1},
     )
     monkeypatch.setattr(runner, "record_stage_result", lambda *_args, **_kwargs: None)
+    class WorkflowRegistry:
+        def resolve(self, _model, _scene):
+            raise VideoWorkflowUnavailable("workflow is unavailable")
+
     monkeypatch.setattr(
-        runner,
-        "_resolve_workflow_definition",
-        lambda _model: (_ for _ in ()).throw(
-            VideoWorkflowUnavailable("workflow is unavailable")
-        ),
+        runner, "_video_workflow_registry", lambda: WorkflowRegistry()
     )
     monkeypatch.setattr(
         runner,

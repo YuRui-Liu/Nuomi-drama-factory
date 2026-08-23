@@ -29,8 +29,8 @@ from novelvideo.media_capabilities.video.h3_timeline import (
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.workflow_registry import (
-    H3_WORKFLOW_ID,
     VideoWorkflowDefinition,
+    VideoWorkflowRegistry,
     VideoWorkflowScene,
     build_video_workflow_registry,
 )
@@ -43,7 +43,7 @@ def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
     return Path(str(payload.get("project_dir") or ctx.output_dir))
 
 
-def _resolve_workflow_definition(model: str) -> VideoWorkflowDefinition:
+def _video_workflow_registry() -> VideoWorkflowRegistry:
     from novelvideo.api.deps import (
         get_media_capability_store,
         get_media_credential_resolver,
@@ -51,26 +51,17 @@ def _resolve_workflow_definition(model: str) -> VideoWorkflowDefinition:
 
     return build_video_workflow_registry(
         get_media_capability_store(), get_media_credential_resolver()
-    ).resolve(model, VideoWorkflowScene.NARRATIVE_GROUP)
-
-
-def _legacy_h3_workflow_definition() -> VideoWorkflowDefinition:
-    """Keep already-queued pre-registry jobs executable during migration."""
-    return VideoWorkflowDefinition(
-        id=H3_WORKFLOW_ID,
-        label="RunningHub MiniMax H3",
-        provider="runninghub",
-        adapter_key="minimax-h3",
-        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-        supported_modes=("auto", "i2va", "fl2va"),
     )
 
 
 def _workflow_definition_for_payload(
     payload: Mapping[str, Any],
 ) -> VideoWorkflowDefinition:
+    registry = _video_workflow_registry()
     model = str(payload.get("model") or "").strip()
-    return _resolve_workflow_definition(model) if model else _legacy_h3_workflow_definition()
+    if not model:
+        model = registry.default(VideoWorkflowScene.NARRATIVE_GROUP).id
+    return registry.resolve(model, VideoWorkflowScene.NARRATIVE_GROUP)
 
 
 def _video_workflow_adapters():
@@ -275,9 +266,18 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         output = video_dir / f"{group_id}_r{revision}.mp4"
+        from novelvideo.media_capabilities.video.adapters import (
+            NarrativeGroupVideoRequest,
+        )
+
         generated = await adapter.generate_narrative_group(
-            ctx, segments=tuple(segments), output_path=str(output),
-            aspect_ratio=str(payload.get("aspect_ratio") or "9:16"), resolution=payload.get("resolution"),
+            ctx,
+            NarrativeGroupVideoRequest(
+                segments=tuple(segments),
+                output_path=str(output),
+                aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
+                resolution=payload.get("resolution"),
+            ),
         )
         if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
             stems = await _separate_stems(Path(generated.output_path), video_dir / "stems")
