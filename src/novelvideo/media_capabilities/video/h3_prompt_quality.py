@@ -24,6 +24,25 @@ _VAGUE_ACTION_PATTERNS = (
     re.compile(r"\breacts? naturally\b", re.IGNORECASE),
     re.compile(r"\bsome movement\b", re.IGNORECASE),
 )
+_ACTION_PACING_OR_EFFORT_PATTERNS = (
+    re.compile(
+        r"\b(?:slowly|quickly|rapidly|steadily|abruptly|cautiously|deliberately|"
+        r"gently|sharply|forcefully|firmly)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:at a measured pace|in one swift motion|with controlled force)\b", re.IGNORECASE),
+    re.compile(r"\b(?:brace|braces|braced|grip|grips|gripped|clench|clenches|slam|slams)\b", re.IGNORECASE),
+)
+_VISIBLE_END_STATE_PATTERNS = (
+    re.compile(
+        r"\b(?:stop|stops|stopping|settle|settles|hold|holds|remain|remains|"
+        r"brace|braces|braced|grip|grips|gripped|open|opens|close|closes|"
+        r"lock|locks|plant|plants|press|presses)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:ending|ends) with\b", re.IGNORECASE),
+    re.compile(r"\b(?:flat against|wrapped around|fixed on)\b", re.IGNORECASE),
+)
 _PHASE_ORDER = {
     "establish": 0,
     "prepare": 1,
@@ -92,6 +111,15 @@ def inspect_h3_plan(
             previous_phase = phase_order
             if any(pattern.search(action.description) for pattern in _VAGUE_ACTION_PATTERNS):
                 _add(issues, "vague_action", "action must state concrete motion and a visible result", location)
+            if action.phase != "establish" and not _has_complete_action_detail(
+                action.description, phase=action.phase
+            ):
+                _add(
+                    issues,
+                    "incomplete_action_detail",
+                    "action must include pacing or physical effort and a visible end state",
+                    location,
+                )
         if expected_frame != shot.end_frame:
             _add(issues, "action_timeline_gap", "actions must reach the end of the shot", f"shots.{shot_index}.actions")
 
@@ -119,6 +147,18 @@ def _add(issues: list[H3PromptQualityIssue], code: str, message: str, location: 
     issue = H3PromptQualityIssue(code=code, message=message, location=location)
     if issue not in issues:
         issues.append(issue)
+
+
+def _has_complete_action_detail(description: str, *, phase: str) -> bool:
+    has_pacing_or_effort = any(
+        pattern.search(description) for pattern in _ACTION_PACING_OR_EFFORT_PATTERNS
+    )
+    has_visible_end_state = any(
+        pattern.search(description) for pattern in _VISIBLE_END_STATE_PATTERNS
+    )
+    if phase in {"settle", "end_lock"}:
+        return has_visible_end_state
+    return has_pacing_or_effort and has_visible_end_state
 
 
 __all__ = [

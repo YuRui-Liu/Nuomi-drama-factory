@@ -338,6 +338,8 @@ def test_h3_task_contains_versioned_director_rules_and_context():
     assert "H3_DIRECTOR_PROFILE" in task
     assert "Actions must cover every frame" in task
     assert "camera" in task and "amplitude" in task and "speed" in task
+    assert "action pacing or physical effort" in task
+    assert "visible end state" in task
     assert "teleport" in task and "Picture 2" in task
     assert "invent visible text, UI" in task
     assert "林默" in task

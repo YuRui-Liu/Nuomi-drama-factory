@@ -90,3 +90,48 @@ def test_quality_gate_passes_specific_full_duration_action_plan():
 
     assert report.passed is True
     assert report.codes == ()
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "He walks forward.",
+        "She advances toward the doorway.",
+        "He slowly walks toward the door.",
+        "She runs quickly.",
+        "He walks forward until he reaches the doorway.",
+    ],
+)
+def test_quality_gate_rejects_actions_missing_pacing_or_visible_result(description):
+    report = inspect_h3_plan(_plan(description=description))
+
+    assert report.passed is False
+    assert "incomplete_action_detail" in report.codes
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "He walks forward at a measured pace, stopping with his palm flat on the door.",
+        "She abruptly pivots clockwise and grips the rattling latch with both hands.",
+        "Lin Mo turns his head toward the doorway and braces his shoulder against the frame.",
+    ],
+)
+def test_quality_gate_accepts_actions_with_pacing_effort_and_visible_result(description):
+    report = inspect_h3_plan(_plan(description=description))
+
+    assert report.passed is True
+    assert "incomplete_action_detail" not in report.codes
+
+
+def test_quality_gate_does_not_require_motion_fields_for_static_camera():
+    plan = _plan(
+        description="The actor slowly raises his hand and holds it flat against the door."
+    )
+    shot = plan.shots[0].model_copy(
+        update={"camera": H3CameraPlan(type="static")}
+    )
+
+    report = inspect_h3_plan(plan.model_copy(update={"shots": (shot,)}))
+
+    assert report.passed is True

@@ -282,7 +282,8 @@ Return one H3DirectorPlan object in English for {mode.value}; mode={mode.value},
 Picture 1 is the exact frame-0 truth. Preserve identity, clothing, props, lighting, geography, and screen direction.
 Every dynamic camera requires type, direction, amplitude, and speed. Static cameras must explicitly use a static type.
 Actions must cover every frame without gaps and progress through establish/prepare/execute/react/settle/end_lock as appropriate.
-Use concrete subject motion, direction, amplitude, speed, and visible result; never write 'moves naturally' or 'camera slowly moves'.
+For every non-establish action, state action pacing or physical effort and a visible end state, not merely a subject plus direction.
+Use concrete subject motion and visible results; never write 'moves naturally', 'camera slowly moves', or bare actions such as 'He walks forward.'
 {terminal_rule}
 Do not cut, teleport, morph, reset space, or invent visible text, UI, logos, particles, people, props, or locations.
 Dialogue cues must concatenate to the exact source dialogue without rewriting, translating, normalizing punctuation, or changing whitespace.
