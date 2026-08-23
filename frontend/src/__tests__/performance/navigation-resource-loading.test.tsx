@@ -48,4 +48,34 @@ describe("navigation resource loading", () => {
 
     expect(main).toContain("defaultPreloadStaleTime: 30_000");
   });
+
+  it("keeps the Piko station out of the eager app route bundle", () => {
+    const appRoute = readSource("src/routes/_app.tsx");
+
+    expect(appRoute).not.toMatch(
+      /^\s*import(?!\s*\()(?!\s+type\b)[^\r\n]*["']@\/features\/piko-mini-game\/PikoInspirationStation["']/m,
+    );
+    expect(appRoute).toMatch(
+      /lazy\(\(\)\s*=>\s*import\("@\/features\/piko-mini-game\/PikoInspirationStation"\)/,
+    );
+  });
+
+  it("mounts the lazy Piko station only while it is open", () => {
+    const appRoute = readSource("src/routes/_app.tsx");
+
+    expect(appRoute).toMatch(
+      /\{pikoStationOpen\s*&&\s*\([\s\S]*?<Suspense[\s\S]*?<PikoInspirationStation/,
+    );
+  });
+
+  it("keeps the companion and version checks eager", () => {
+    const appRoute = readSource("src/routes/_app.tsx");
+
+    expect(appRoute).toMatch(
+      /^\s*import\s+\{\s*MyBuddyCompanion\s*\}\s+from\s+["']@\/features\/companion\/MyBuddyCompanion["']/m,
+    );
+    expect(appRoute).toMatch(
+      /^\s*import\s+\{\s*VersionUpdateDialog\s*\}\s+from\s+["']@\/features\/version-update\/VersionUpdateDialog["']/m,
+    );
+  });
 });
