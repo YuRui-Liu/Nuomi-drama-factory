@@ -37,7 +37,7 @@ def list_video_models(
             label=definition.label,
             provider=definition.provider,
             available=definition.available,
-            supported_modes=definition.modes,
+            supported_modes=definition.supported_modes,
             default_mode=definition.default_mode,
             unavailable_reason=definition.unavailable_reason,
         )

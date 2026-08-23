@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from novelvideo.media_capabilities.models import (
     ProviderAccount,
@@ -58,10 +59,37 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
         provider="runninghub",
         adapter_key="minimax-h3",
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-        modes=("auto", "i2va", "fl2va"),
+        supported_modes=("auto", "i2va", "fl2va"),
         default_mode="auto",
         available=True,
     )
+
+
+def test_workflow_definition_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        VideoWorkflowDefinition(
+            id="workflow",
+            label="Workflow",
+            provider="provider",
+            adapter_key="adapter",
+            scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+            supported_modes=("auto",),
+            unexpected=True,  # type: ignore[call-arg]
+        )
+
+
+def test_workflow_definition_is_frozen(tmp_path) -> None:
+    definition = _configured_registry(tmp_path).list()[0]
+
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        definition.label = "changed"  # type: ignore[misc]
+
+
+def test_workflow_definition_exposes_supported_modes(tmp_path) -> None:
+    definition = _configured_registry(tmp_path).list()[0]
+
+    assert definition.supported_modes == ("auto", "i2va", "fl2va")
+    assert "modes" not in VideoWorkflowDefinition.model_fields
 
 
 def test_registry_rejects_unknown_wrong_scene_and_unavailable_workflows(

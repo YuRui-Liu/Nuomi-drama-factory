@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict
 
 from novelvideo.media_capabilities.models import MediaCapability
 from novelvideo.media_capabilities.runtime.configuration import (
@@ -24,14 +25,15 @@ class VideoWorkflowScene(StrEnum):
     FREEZONE = "freezone"
 
 
-@dataclass(frozen=True, slots=True)
-class VideoWorkflowDefinition:
+class VideoWorkflowDefinition(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     id: str
     label: str
     provider: str
     adapter_key: str
     scenes: frozenset[VideoWorkflowScene]
-    modes: tuple[str, ...]
+    supported_modes: tuple[str, ...]
     default_mode: str = "auto"
     available: bool = True
     unavailable_reason: str | None = None
@@ -125,7 +127,7 @@ def build_video_workflow_registry(
                 provider="runninghub",
                 adapter_key="minimax-h3",
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                modes=("auto", "i2va", "fl2va"),
+                supported_modes=("auto", "i2va", "fl2va"),
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),

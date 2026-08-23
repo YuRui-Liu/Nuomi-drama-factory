@@ -57,7 +57,7 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
         "label": definition.label,
         "provider": definition.provider,
         "available": definition.available,
-        "supported_modes": definition.modes,
+        "supported_modes": definition.supported_modes,
         "default_mode": definition.default_mode,
         "unavailable_reason": definition.unavailable_reason,
     }
