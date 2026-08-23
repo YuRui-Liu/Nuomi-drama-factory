@@ -33,9 +33,14 @@ describe("navigation resource loading", () => {
 
   it("renders the login visual experience from a lazy route module", () => {
     const loginLazy = readSource("src/routes/login.lazy.tsx");
+    const routeTree = readSource("src/routeTree.gen.ts");
 
     expect(loginLazy).toContain('createLazyFileRoute("/login")');
     expect(loginLazy).toContain("component: LoginCinematicPage");
+    expect(routeTree).toContain("import('./routes/login.lazy')");
+    expect(routeTree).toMatch(
+      /const LoginRoute = LoginRouteImport\.update\([\s\S]*?\)\.lazy\(\(\) =>/,
+    );
   });
 
   it("reuses intent preloads for thirty seconds", () => {
