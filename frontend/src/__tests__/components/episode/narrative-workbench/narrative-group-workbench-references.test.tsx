@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
  success: vi.fn(),
  error: vi.fn(),
  generateVideo: vi.fn(),
+ promptsQuery: vi.fn(),
  updateDefaults: vi.fn(),
  updateProject: vi.fn(),
  setOrientation: vi.fn(),
@@ -26,9 +27,11 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
+ useNarrativeGroupVideoPrompts:(...args:any[])=>m.promptsQuery(...args),
  useUpdateNarrativeGroupVideoDialogueSource:()=>({mutateAsync:vi.fn()}),
  narrativeGroupTaskScope:()=>"grid-scope",
  narrativeGroupVideoTaskScope:()=>"video-scope",
+ narrativeGroupVideoPromptUnitKey:(_:any,index:number)=>String(index),
 }));
 vi.mock("@/hooks/use-task-controller",()=>({useTaskController:()=>({start:m.start})}));
 vi.mock("sonner",()=>({toast:{success:m.success,error:m.error}}));
@@ -58,9 +61,19 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.orientation="landscape";
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
+  m.promptsQuery.mockReturnValue({data:{ok:true,data:{units:[]}},isLoading:false,isError:false});
   m.updateDefaults.mockResolvedValue({ok:true});
   m.updateProject.mockResolvedValue({ok:true});
   m.setOrientation.mockImplementation((next: "portrait" | "landscape")=>{m.orientation=next;});
+ });
+ it("passes the real route identifiers to prompt review only after opening",async()=>{
+  const user=userEvent.setup();
+  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:1,manifest_asset:"/media/group.manifest.json"}}}];
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(m.promptsQuery).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button",{name:"生成提示词"}));
+  expect(m.promptsQuery).toHaveBeenCalledWith("p",1,"g1",true);
+  expect(screen.getByRole("dialog",{name:"视频生成提示词"})).toBeInTheDocument();
  });
  it.each(["生成","重生成"])("confirms references before %s",async(label)=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText(label));

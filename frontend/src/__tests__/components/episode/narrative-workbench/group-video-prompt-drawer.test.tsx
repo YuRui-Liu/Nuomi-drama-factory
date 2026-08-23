@@ -67,7 +67,27 @@ describe("GroupVideoPromptDrawer", () => {
 
     await user.click(screen.getByRole("button", { name: "复制最终提示词" }));
     expect(writeText).toHaveBeenCalledWith("[Shot 1] The hero turns quickly.");
+    expect(screen.getByRole("status")).toHaveTextContent("提示词已复制");
     expect(screen.getByRole("link", { name: "下载 manifest" })).toBeInTheDocument();
+  });
+
+  it("reports an accessible error when Clipboard API is unavailable", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+    await user.click(screen.getByRole("button", { name: "复制最终提示词" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("复制失败");
+  });
+
+  it("handles a rejected Clipboard promise without an unhandled rejection", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+    await user.click(screen.getByRole("button", { name: "复制最终提示词" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("复制失败");
   });
 
   it("keeps legacy final prompts visible without a director plan", () => {
