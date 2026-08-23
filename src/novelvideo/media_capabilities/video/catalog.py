@@ -6,10 +6,13 @@ from pydantic import BaseModel, ConfigDict
 
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
-from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
+from novelvideo.media_capabilities.video.workflow_registry import (
+    H3_WORKFLOW_ID,
+    build_video_workflow_registry,
+)
 
 
-H3_MODEL_ID = "runninghub:minimax-h3"
+H3_MODEL_ID = H3_WORKFLOW_ID
 
 
 class VideoModelCatalogItem(BaseModel):
@@ -28,32 +31,17 @@ def list_video_models(
     store: MediaCapabilityStore,
     resolver: CredentialResolver,
 ) -> tuple[VideoModelCatalogItem, ...]:
-    reason: str | None = None
-    account = store.get_provider("runninghub-main")
-    if account is None or account.provider_type != "runninghub" or not account.enabled:
-        reason = "provider_not_configured"
-    else:
-        try:
-            resolver.resolve(account.credential_ref)
-        except Exception:
-            reason = "credential_unavailable"
-
-    if not str(store.get_runninghub_workflows().video_minimax_h3).strip():
-        reason = "workflow_not_configured"
-    try:
-        load_h3_workflow_profile()
-    except Exception:
-        reason = "profile_invalid"
-
-    return (
+    return tuple(
         VideoModelCatalogItem(
-            id=H3_MODEL_ID,
-            label="MiniMax H3",
-            provider="runninghub",
-            available=reason is None,
-            supported_modes=("auto", "i2va", "fl2va"),
-            unavailable_reason=reason,
-        ),
+            id=definition.id,
+            label=definition.label,
+            provider=definition.provider,
+            available=definition.available,
+            supported_modes=definition.modes,
+            default_mode=definition.default_mode,
+            unavailable_reason=definition.unavailable_reason,
+        )
+        for definition in build_video_workflow_registry(store, resolver).list()
     )
 
 

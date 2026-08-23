@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from novelvideo.media_capabilities.models import ProviderAccount, RunningHubWorkflowSettings
+from novelvideo.media_capabilities.models import (
+    ProviderAccount,
+    RunningHubWorkflowSettings,
+)
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.media_capabilities.video.catalog import list_video_models
+from novelvideo.media_capabilities.video.workflow_registry import (
+    build_video_workflow_registry,
+)
 
 
 def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
@@ -37,3 +43,22 @@ def test_h3_is_available_only_with_enabled_account_key_workflow_and_profile(
     unavailable = list_video_models(store, resolver)[0]
     assert unavailable.available is False
     assert unavailable.unavailable_reason == "workflow_not_configured"
+
+
+def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    resolver = CredentialResolver(env={})
+
+    definition = build_video_workflow_registry(store, resolver).list()[0]
+    item = list_video_models(store, resolver)[0]
+
+    assert item.model_dump() == {
+        "id": definition.id,
+        "label": definition.label,
+        "provider": definition.provider,
+        "available": definition.available,
+        "supported_modes": definition.modes,
+        "default_mode": definition.default_mode,
+        "unavailable_reason": definition.unavailable_reason,
+    }
+    assert "credential" not in item.model_dump_json().lower()
