@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .h3_timeline import H3DirectorSegment
 
 
-H3_PROMPT_QUALITY_VERSION = 1
+H3_PROMPT_QUALITY_VERSION = 3
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 _VAGUE_ACTION_PATTERNS = (
     re.compile(r"\bmoves? naturally\b", re.IGNORECASE),
@@ -143,6 +143,34 @@ def inspect_h3_plan(
     return H3PromptQualityReport(passed=not issues, issues=tuple(issues))
 
 
+def normalize_h3_action_timeline(plan: H3DirectorPlan) -> H3DirectorPlan:
+    """Close mechanical action gaps while preserving semantic action order."""
+    normalized_shots = []
+    for shot in plan.shots:
+        expected_frame = shot.start_frame
+        normalized_actions = []
+        last_index = len(shot.actions) - 1
+        for action_index, action in enumerate(shot.actions):
+            end_frame = (
+                shot.end_frame if action_index == last_index else action.end_frame
+            )
+            if end_frame <= expected_frame or end_frame > shot.end_frame:
+                return plan
+            normalized_actions.append(
+                action.model_copy(
+                    update={
+                        "start_frame": expected_frame,
+                        "end_frame": end_frame,
+                    }
+                )
+            )
+            expected_frame = end_frame
+        normalized_shots.append(
+            shot.model_copy(update={"actions": tuple(normalized_actions)})
+        )
+    return plan.model_copy(update={"shots": tuple(normalized_shots)})
+
+
 def _add(issues: list[H3PromptQualityIssue], code: str, message: str, location: str) -> None:
     issue = H3PromptQualityIssue(code=code, message=message, location=location)
     if issue not in issues:
@@ -156,9 +184,36 @@ def _has_complete_action_detail(description: str, *, phase: str) -> bool:
     has_visible_end_state = any(
         pattern.search(description) for pattern in _VISIBLE_END_STATE_PATTERNS
     )
+    has_detailed_multistep_blocking = _has_detailed_multistep_blocking(description)
     if phase in {"settle", "end_lock"}:
-        return has_visible_end_state
-    return has_pacing_or_effort and has_visible_end_state
+        return has_visible_end_state or has_detailed_multistep_blocking
+    return (
+        has_pacing_or_effort and has_visible_end_state
+    ) or has_detailed_multistep_blocking
+
+
+def _has_detailed_multistep_blocking(description: str) -> bool:
+    """Accept concrete director blocking without requiring magic vocabulary.
+
+    H3 plans commonly express effort, pacing, and the resulting pose as a
+    sequence of clauses instead of using the small canonical word lists above.
+    A sufficiently detailed multi-clause action is therefore valid while short
+    one-step instructions such as ``He walks forward`` remain rejected.
+    """
+    latin_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", description)
+    cjk_characters = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", description)
+    if len(latin_words) + len(cjk_characters) < 14:
+        return False
+    clause_boundaries = sum(description.count(mark) for mark in (",", ";", "，", "；"))
+    clause_boundaries += len(
+        re.findall(
+            r"\b(?:after|before|then|while|until|as|with)\b|"
+            r"(?:随后|然后|同时|直到|随着|最终)",
+            description,
+            re.IGNORECASE,
+        )
+    )
+    return clause_boundaries >= 2
 
 
 __all__ = [
@@ -167,4 +222,5 @@ __all__ = [
     "H3PromptQualityIssue",
     "H3PromptQualityReport",
     "inspect_h3_plan",
+    "normalize_h3_action_timeline",
 ]

@@ -85,6 +85,7 @@ def test_production_optimizer_uses_prompted_output_without_tool_choice(
     assert isinstance(captured["output_type"], PromptedOutput)
     assert captured["output_type"].outputs is H3DirectorPlan
     assert captured["model"] is model
+    assert captured["retries"] == {"tools": 1, "output": 3}
 
 
 @pytest.mark.asyncio
@@ -138,6 +139,64 @@ async def test_optimizer_quality_failure_raises_before_writing_cache(tmp_path):
             _segment(), _context(), H3Mode.I2VA
         )
 
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_optimizer_feeds_quality_report_back_to_director_then_succeeds(tmp_path):
+    valid_plan = _director_plan()
+    vague = valid_plan.shots[0].actions[1].model_copy(
+        update={"description": "The person moves naturally."}
+    )
+    vague_shot = valid_plan.shots[0].model_copy(
+        update={
+            "actions": (
+                valid_plan.shots[0].actions[0],
+                vague,
+                valid_plan.shots[0].actions[2],
+            )
+        }
+    )
+    invalid_plan = valid_plan.model_copy(update={"shots": (vague_shot,)})
+
+    class RevisingAgent:
+        def __init__(self):
+            self.outputs = [invalid_plan, valid_plan]
+            self.tasks = []
+
+        async def run(self, task):
+            self.tasks.append(task)
+            return SimpleNamespace(output=self.outputs.pop(0))
+
+    agent = RevisingAgent()
+    result = await H3PromptOptimizer(
+        agent, tmp_path, quality_revisions=2
+    ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+    assert result.quality_report.passed is True
+    assert len(agent.tasks) == 2
+    assert "vague_action" in agent.tasks[1]
+    assert "shots.0.actions.1" in agent.tasks[1]
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_optimizer_rejects_after_quality_revision_budget_is_exhausted(tmp_path):
+    plan = _director_plan()
+    vague = plan.shots[0].actions[1].model_copy(
+        update={"description": "The person moves naturally."}
+    )
+    shot = plan.shots[0].model_copy(
+        update={"actions": (plan.shots[0].actions[0], vague, plan.shots[0].actions[2])}
+    )
+
+    agent = FakeAgent(plan.model_copy(update={"shots": (shot,)}))
+    with pytest.raises(H3PromptQualityError, match="vague_action"):
+        await H3PromptOptimizer(
+            agent, tmp_path, quality_revisions=2
+        ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+    assert len(agent.calls) == 3
     assert list(tmp_path.iterdir()) == []
 
 
@@ -458,19 +517,25 @@ def test_production_optimizer_accepts_generic_director_model_factory(monkeypatch
     assert captured["output_type"].outputs is H3DirectorPlan
 
 
-def test_default_director_model_uses_configured_text_runtime_model(monkeypatch):
+def test_default_director_model_uses_h3_text_runtime_factory(monkeypatch):
     import novelvideo.config as config
 
     calls = []
     configured_model = object()
 
-    def get_pydantic_model(*args, **kwargs):
+    def get_newapi_text_pydantic_model(*args, **kwargs):
         calls.append((args, kwargs))
         return configured_model
 
-    monkeypatch.setattr(config, "get_pydantic_model", get_pydantic_model)
+    monkeypatch.setattr(
+        config,
+        "get_newapi_text_pydantic_model",
+        get_newapi_text_pydantic_model,
+    )
 
     result = h3_prompt_optimizer._default_director_model_factory()
 
     assert result is configured_model
-    assert calls == [((), {})]
+    assert calls == [
+        (("H3_PROMPT_OPTIMIZER_MODEL", "DC-h3-prompt-optimizer-LLM"), {})
+    ]

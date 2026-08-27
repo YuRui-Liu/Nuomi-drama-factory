@@ -29,6 +29,7 @@ from .h3_prompt_quality import (
     H3PromptQualityError,
     H3PromptQualityReport,
     inspect_h3_plan,
+    normalize_h3_action_timeline,
 )
 from .h3_timeline import H3DirectorSegment
 from .models import H3Mode
@@ -83,11 +84,13 @@ class H3PromptOptimizer:
         cache_dir: Path | str,
         *,
         max_attempts: int = 3,
+        quality_revisions: int = 2,
         retry_base_delay_seconds: float = 0.5,
     ):
         self._agent = agent
         self._cache_dir = Path(cache_dir)
         self._max_attempts = max(1, max_attempts)
+        self._quality_revisions = max(0, quality_revisions)
         self._retry_base_delay_seconds = max(0.0, retry_base_delay_seconds)
 
     async def optimize_segment(
@@ -110,25 +113,33 @@ class H3PromptOptimizer:
             if cached is not None:
                 return cached.model_copy(update={"cache_hit": True})
 
-            response = await self._run_agent(_build_task(segment, context, mode))
-            try:
-                plan = H3DirectorPlan.model_validate(response.output)
-            except Exception as exc:
-                raise ValueError(f"invalid typed director plan: {exc}") from exc
-            if plan.mode is not mode:
-                raise ValueError(
-                    f"director plan mode {plan.mode.value!r} does not match {mode.value!r}"
-                )
-            report = inspect_h3_plan(plan, segment=segment, context=context)
-            report.raise_for_failure()
-            result = H3PromptOptimizationResult(
-                prompt=compile_h3_director_plan(plan),
-                plan=plan,
-                quality_report=report,
-                input_hash=input_hash,
-            )
-            _save_cache(cache_path, result)
-            return result
+            base_task = _build_task(segment, context, mode)
+            task = base_task
+            for revision in range(self._quality_revisions + 1):
+                response = await self._run_agent(task)
+                try:
+                    plan = H3DirectorPlan.model_validate(response.output)
+                except Exception as exc:
+                    raise ValueError(f"invalid typed director plan: {exc}") from exc
+                if plan.mode is not mode:
+                    raise ValueError(
+                        f"director plan mode {plan.mode.value!r} does not match {mode.value!r}"
+                    )
+                plan = normalize_h3_action_timeline(plan)
+                report = inspect_h3_plan(plan, segment=segment, context=context)
+                if report.passed:
+                    result = H3PromptOptimizationResult(
+                        prompt=compile_h3_director_plan(plan),
+                        plan=plan,
+                        quality_report=report,
+                        input_hash=input_hash,
+                    )
+                    _save_cache(cache_path, result)
+                    return result
+                if revision >= self._quality_revisions:
+                    report.raise_for_failure()
+                task = _build_quality_revision_task(base_task, plan, report)
+            raise AssertionError("unreachable")
         except H3PromptQualityError:
             raise
         except H3PromptOptimizationError:
@@ -175,12 +186,21 @@ def create_h3_prompt_optimizer(
         # typed validation contract without asking the provider to call a tool.
         output_type=PromptedOutput(H3DirectorPlan),
         name="MiniMax H3 Director Planner",
+        retries={
+            "tools": 1,
+            "output": _positive_int_env(
+                "DRAMACLAW_H3_PROMPT_OUTPUT_RETRIES", 3
+            ),
+        },
         **kwargs,
     )
     return H3PromptOptimizer(
         agent,
         cache_dir,
         max_attempts=_positive_int_env("DRAMACLAW_H3_PROMPT_MAX_ATTEMPTS", 3),
+        quality_revisions=_non_negative_int_env(
+            "DRAMACLAW_H3_PROMPT_QUALITY_REVISIONS", 2
+        ),
         retry_base_delay_seconds=_non_negative_float_env(
             "DRAMACLAW_H3_PROMPT_RETRY_BASE_DELAY_SECONDS", 0.5
         ),
@@ -188,9 +208,13 @@ def create_h3_prompt_optimizer(
 
 
 def _default_director_model_factory() -> Any:
-    from novelvideo.config import get_pydantic_model
+    from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
 
-    return get_pydantic_model()
+    return get_newapi_text_pydantic_model(
+        "H3_PROMPT_OPTIMIZER_MODEL",
+        DEFAULT_H3_PROMPT_OPTIMIZER_MODEL,
+    )
 
 
 def _default_model_settings() -> dict[str, Any] | None:
@@ -232,6 +256,13 @@ def _positive_int_env(name: str, default: int) -> int:
 def _non_negative_float_env(name: str, default: float) -> float:
     try:
         return max(0.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _non_negative_int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
     except ValueError:
         return default
 
@@ -301,6 +332,21 @@ Next context: {context.next_summary}
 Picture 1 SHA-256: {context.first_frame_sha256}
 Picture 2 SHA-256: {context.last_frame_sha256 or 'not supplied'}
 Director-stage constraints: {context.director_context or 'none supplied; use only source and frame facts'}
+"""
+
+
+def _build_quality_revision_task(
+    base_task: str,
+    plan: H3DirectorPlan,
+    report: H3PromptQualityReport,
+) -> str:
+    return f"""{base_task}
+
+QUALITY_REVISION_REQUIRED
+The previous candidate failed the deterministic pre-transport quality gate.
+Return a complete corrected H3DirectorPlan, changing only what is necessary to resolve every issue.
+Quality report: {report.model_dump_json()}
+Previous candidate: {plan.model_dump_json()}
 """
 
 
