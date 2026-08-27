@@ -200,6 +200,37 @@ def test_get_media_defaults_preserves_supported_mode(monkeypatch, tmp_path):
     assert response.json()["data"]["h3_mode"] == "fl2va"
 
 
+def test_put_media_defaults_preserves_unspecified_image_bindings(monkeypatch, tmp_path):
+    original = {
+        "video_backend": "newapi_seedance-1.0-pro-fast",
+        "h3_mode": "auto",
+        "narrative_sketch_provider": "grsai-main",
+        "narrative_sketch_model": "gpt-image-2",
+        "narrative_render_provider": "grsai-main",
+        "narrative_render_model": "gpt-image-2",
+    }
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={"video_model": "runninghub:minimax-h3", "h3_mode": "auto"},
+    )
+
+    assert response.status_code == 200
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["video_backend"] == "runninghub:minimax-h3"
+    for field in (
+        "narrative_sketch_provider",
+        "narrative_sketch_model",
+        "narrative_render_provider",
+        "narrative_render_model",
+    ):
+        assert persisted[field] == original[field]
+    assert response.json()["data"]["narrative_sketch_model"] == "gpt-image-2"
+
+
 def test_put_media_defaults_rejects_unknown_without_persisting(monkeypatch, tmp_path):
     original = {
         "video_backend": "runninghub:minimax-h3",

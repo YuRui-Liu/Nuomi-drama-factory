@@ -675,18 +675,29 @@ async def put_project_media_defaults(
         )
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     require_project_home_node(ctx, operation="update project media defaults")
-    save_project_config_in_state_dir(
+    updates = {
+        "video_backend": body.video_model,
+        "h3_mode": body.h3_mode,
+    }
+    optional_bindings = {
+        "narrative_sketch_provider": "narrative_sketch_provider",
+        "narrative_sketch_model": "narrative_sketch_model",
+        "narrative_render_provider": "narrative_render_provider",
+        "narrative_render_model": "narrative_render_model",
+    }
+    for request_field, config_field in optional_bindings.items():
+        if request_field in body.model_fields_set:
+            updates[config_field] = getattr(body, request_field)
+    save_project_config_in_state_dir(ctx.state_dir, config=updates)
+    config = load_project_config_from_state_dir(
         ctx.state_dir,
-        config={
-            "video_backend": body.video_model,
-            "h3_mode": body.h3_mode,
-            "narrative_sketch_provider": body.narrative_sketch_provider,
-            "narrative_sketch_model": body.narrative_sketch_model,
-            "narrative_render_provider": body.narrative_render_provider,
-            "narrative_render_model": body.narrative_render_model,
-        },
+        username=ctx.owner_username,
+        project=ctx.project_name,
     )
-    return {"ok": True, "data": body.model_dump()}
+    return {
+        "ok": True,
+        "data": _media_defaults_payload(config, registry=registry),
+    }
 
 
 @router.get("/projects/{project}/narrator-voice")
