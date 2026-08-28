@@ -19,7 +19,7 @@ import {
   type AssetSortKey,
 } from "@/components/assets/asset-search-box";
 import {
-  useAssetReferenceIndex,
+  useAssetReferences,
   type BeatReference,
 } from "@/lib/queries/asset-references";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
@@ -250,7 +250,7 @@ function PropAssetCardController({
   project: string;
   prop: PropAsset;
   imageSourceSelection: string;
-  referenceCount: number;
+  referenceCount?: number;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -336,7 +336,16 @@ export function PropsPanel({
   const [editing, setEditing] = useState<PropAsset | null>(null);
   const updateProp = useUpdateProp(project, editing?.name ?? "");
   const deleteProp = useDeleteProp(project);
-  const refIndex = useAssetReferenceIndex(project);
+  const allItems = props.data?.data ?? [];
+  const propRefs = useMemo(
+    () => allItems.map((prop) => ({ type: "prop" as const, id: prop.name })),
+    [allItems],
+  );
+  const refIndex = useAssetReferences(
+    project,
+    propRefs,
+    { enabled: allItems.length > 0 },
+  );
   const referenceCost = useGenerationCreditCost("fixed_image", "prop_reference");
   const batchGenerate = useBatchGeneratePropReferences(project);
   const imageSourceQuery = useAssetImageSourceSelection(project, "prop");
@@ -345,7 +354,6 @@ export function PropsPanel({
     key: { taskType: "batch_prop_ref", project, episode: 0 },
     invalidateKeys: [queryKeys.props(project)],
   });
-  const allItems = props.data?.data ?? [];
   const missingReferenceCount = useMemo(
     () => allItems.filter((prop) => !prop.reference_url && !prop.reference_path).length,
     [allItems],
@@ -368,9 +376,9 @@ export function PropsPanel({
     ]);
     return sortAssets(
       filtered,
-      sortKey,
+      sortKey === "usage" && refIndex.isError ? "name" : sortKey,
       (prop) => prop.name,
-      (prop) => refIndex.countFor("prop", prop.name),
+      (prop) => refIndex.referencesFor("prop", prop.name).length,
     );
   }, [allItems, searchQuery, sortKey, refIndex]);
   const gridRef = useAssetFocus(focusId, !props.isLoading && items.length > 0);
@@ -474,6 +482,11 @@ export function PropsPanel({
           </Tooltip>
         </TooltipProvider>
       </AssetHeaderActions>
+      {refIndex.isError ? (
+        <p role="alert" className="px-6 pt-3 text-xs text-destructive">
+          {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-6">
         {showBatchTask && (
           <div className="mb-4 overflow-hidden rounded-lg border border-border/70">
@@ -550,7 +563,7 @@ export function PropsPanel({
                   project={project}
                   prop={prop}
                   imageSourceSelection={imageSourceSelection}
-                  referenceCount={refIndex.countFor("prop", prop.name)}
+                  referenceCount={refIndex.isError ? undefined : refIndex.referencesFor("prop", prop.name).length}
                   onEdit={() => {
                     setEditing(prop);
                     setDialogOpen(true);

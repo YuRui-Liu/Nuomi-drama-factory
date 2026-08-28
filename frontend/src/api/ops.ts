@@ -2219,7 +2219,7 @@ export async function uploadFreezoneImage(
     {
       method: "POST",
       body: fd,
-      timeout: options?.timeoutMs ?? undefined,
+      timeout: options?.timeoutMs ?? false,
     },
   ).json<{ ok: boolean; data?: FreezoneUploadResult; error?: string }>();
   if (!resp.ok || !resp.data) {

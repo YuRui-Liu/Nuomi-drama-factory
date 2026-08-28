@@ -84,7 +84,7 @@ import { UsageCountBadge } from "@/components/assets/usage-count-badge";
 import { CopyAssetLinkButton } from "@/components/assets/copy-asset-link-button";
 import { AssetBeatReferences } from "@/components/assets/asset-beat-references";
 import {
-  useAssetReferenceIndex,
+  useAssetReferences,
   type AssetRefType,
   type BeatReference,
 } from "@/lib/queries/asset-references";
@@ -2323,10 +2323,16 @@ function IdentitiesGridSection({
     project,
     character.name,
   );
-  const refIndex = useAssetReferenceIndex(project);
   const deepLink = useAssetsDeepLink();
   const createIdentity = useCreateIdentity(project, character.name);
   const identities = identitiesRes?.data ?? [];
+  const identityRefs = useMemo(
+    () => identities.map((identity) => ({ type: "identity" as const, id: identity.identity_id })),
+    [identities],
+  );
+  const refDetail = useAssetReferences(project, identityRefs, {
+    enabled: identities.length > 0,
+  });
   const gridRef = useAssetFocus(
     deepLink.type === "identity" ? deepLink.id : null,
     identities.length > 0,
@@ -2399,6 +2405,12 @@ function IdentitiesGridSection({
         )}
       </div>
 
+      {refDetail.isError ? (
+        <p role="alert" className="mb-3 text-xs text-destructive">
+          {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}
+        </p>
+      ) : null}
+
       {identities.length === 0 ? (
         <button
           type="button"
@@ -2422,8 +2434,8 @@ function IdentitiesGridSection({
                 imageModel={imageModel}
                 ageLabel={ageLabel}
                 roleLabel={roleLabel}
-                referenceCount={refIndex.countFor("identity", id.identity_id)}
-                references={refIndex.referencesFor("identity", id.identity_id)}
+                referenceCount={refDetail.isError ? undefined : refDetail.referencesFor("identity", id.identity_id).length}
+                references={refDetail.isError ? [] : refDetail.referencesFor("identity", id.identity_id)}
                 onAttempt={onAttempt}
               />
             </div>

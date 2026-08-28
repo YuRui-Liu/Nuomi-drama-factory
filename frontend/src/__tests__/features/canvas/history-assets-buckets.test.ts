@@ -147,6 +147,44 @@ describe("recordsToAssetBuckets — world history", () => {
     expect(buckets.model[0]?.label).toBe("记录里的提示词");
     expect(buckets.model[0]?.previewUrl).toContain("record-src.png");
   });
+
+  it.each(["pending", "missing"])(
+    "does not fall back to source/output media while thumbnail is %s",
+    (thumbnailStatus) => {
+      const buckets = recordsToAssetBuckets([
+        record({
+          id: `image-${thumbnailStatus}`,
+          media_type: "image",
+          result: {
+            output_url: "/static/p/full-output.png",
+            source_url: "/static/p/full-source.png",
+            thumbnail_url: "/static/p/not-ready.webp",
+            thumbnail_status: thumbnailStatus,
+          },
+        }),
+      ]);
+
+      expect(buckets.image[0]?.url).toContain("full-output.png");
+      expect(buckets.image[0]?.previewUrl).toBeNull();
+    },
+  );
+
+  it("uses thumbnail_url only when the thumbnail is ready", () => {
+    const buckets = recordsToAssetBuckets([
+      record({
+        id: "image-ready",
+        media_type: "image",
+        result: {
+          output_url: "/static/p/full-output.png",
+          source_url: "/static/p/full-source.png",
+          thumbnail_url: "/static/p/ready.webp",
+          thumbnail_status: "ready",
+        },
+      }),
+    ]);
+
+    expect(buckets.image[0]?.previewUrl).toContain("ready.webp");
+  });
 });
 
 describe("recordsToAssetBuckets — model/genMode 记忆", () => {

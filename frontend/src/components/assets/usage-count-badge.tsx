@@ -9,8 +9,8 @@ import { ASSET_CARD_META_BADGE_CLASS } from "@/components/assets/asset-card-styl
 /**
  * Compact "used in N beats" indicator for asset cards. Renders nothing when the
  * asset isn't referenced anywhere (keeps grids quiet). Count is supplied by the
- * caller via `useAssetReferenceIndex` so the heavy beat scan happens once per
- * panel, not once per card.
+ * caller from its list-scoped aggregate reference query, rather than fetched
+ * independently by each card.
  */
 export function UsageCountBadge({
   count,

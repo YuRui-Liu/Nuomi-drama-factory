@@ -272,6 +272,7 @@ from novelvideo.utils.path_resolver import (
     canonical_scene_reverse_master_path,
 )
 from novelvideo.utils.static_urls import project_static_url
+from novelvideo.utils import thumbnails
 
 
 async def _resolve_freezone_project(
@@ -11327,9 +11328,181 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
     }
 
 
+def _asset_thumbnail_fields(
+    asset: dict,
+    *,
+    project_id: str,
+    project_dir: Path,
+    prewarm: bool = True,
+) -> dict[str, str | None]:
+    if asset.get("media_type") != "image":
+        return {"thumbnail_url": None, "thumbnail_status": "unavailable"}
+    rel_path = str(asset.get("rel_path") or "").strip()
+    if not asset.get("exists") or not rel_path:
+        return {"thumbnail_url": None, "thumbnail_status": "missing"}
+
+    source = project_dir / rel_path
+    destination = thumbnails.thumbnail_path(
+        project_dir, source, thumbnails.DEFAULT_SIZE
+    )
+    if destination is None:
+        return {"thumbnail_url": None, "thumbnail_status": "unavailable"}
+    if destination.is_file():
+        thumbnail_rel = destination.relative_to(project_dir).as_posix()
+        return {
+            "thumbnail_url": project_static_url(
+                project_id, thumbnail_rel, local_path=destination
+            ),
+            "thumbnail_status": "ready",
+        }
+
+    if not prewarm:
+        return {"thumbnail_url": None, "thumbnail_status": "missing"}
+    scheduled = thumbnails.prewarm(project_dir, source, thumbnails.DEFAULT_SIZE)
+    return {
+        "thumbnail_url": None,
+        "thumbnail_status": "pending" if scheduled is not None else "deferred",
+    }
+
+
+def _asset_index_projection(
+    assets: list[dict],
+    *,
+    project_id: str,
+    project_dir: Path,
+) -> list[dict]:
+    projected: list[dict] = []
+    for asset in assets:
+        thumbnail = _asset_thumbnail_fields(
+            asset, project_id=project_id, project_dir=project_dir
+        )
+        projected.append(
+            {
+                "id": str(asset.get("id") or ""),
+                "name": str(asset.get("label") or ""),
+                "tab": str(asset.get("tab") or ""),
+                "kind": str(asset.get("kind") or ""),
+                "role": str(asset.get("role") or ""),
+                "media_type": str(asset.get("media_type") or "unknown"),
+                **thumbnail,
+            }
+        )
+    return projected
+
+
+def _lightweight_asset_index_entry(
+    *,
+    project_id: str,
+    project_dir: Path,
+    tab: str,
+    kind: str,
+    role: str,
+    name: str,
+    path: Path,
+) -> dict:
+    rel_path = path.relative_to(project_dir).as_posix()
+    suffix = path.suffix.lower()
+    media_type = (
+        "image"
+        if suffix in {".png", ".jpg", ".jpeg", ".webp"}
+        else "video"
+        if suffix in {".mp4", ".mov", ".webm"}
+        else "audio"
+        if suffix in {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg"}
+        else "file"
+    )
+    thumbnail = _asset_thumbnail_fields(
+        {
+            "media_type": media_type,
+            "rel_path": rel_path,
+            "exists": path.exists(),
+        },
+        project_id=project_id,
+        project_dir=project_dir,
+        prewarm=False,
+    )
+    return {
+        "id": f"{kind}:{role}:{rel_path}",
+        "name": name,
+        "tab": tab,
+        "kind": kind,
+        "role": role,
+        "media_type": media_type,
+        **thumbnail,
+    }
+
+
+async def _list_freezone_asset_index(
+    *,
+    store,
+    project_id: str,
+    project_dir: Path,
+) -> list[dict]:
+    assets: list[dict] = []
+
+    def append(tab: str, kind: str, role: str, name: str, path: Path) -> None:
+        assets.append(
+            _lightweight_asset_index_entry(
+                project_id=project_id,
+                project_dir=project_dir,
+                tab=tab,
+                kind=kind,
+                role=role,
+                name=name,
+                path=path,
+            )
+        )
+
+    for character in store.get_all_characters():
+        append(
+            "characters",
+            "portrait",
+            "character_portrait",
+            f"{character.name} / portrait",
+            canonical_portrait_path(project_dir, character.name),
+        )
+        for identity in character.identities or []:
+            identity_name = (
+                getattr(identity, "identity_name", "")
+                or getattr(identity, "identity_id", "")
+                or "identity"
+            )
+            for kind, role, label, path in (
+                (
+                    "identity",
+                    "character_identity",
+                    f"{character.name} / {identity_name}",
+                    canonical_identity_path(project_dir, character.name, identity_name),
+                ),
+                (
+                    "identity_costume",
+                    "identity_costume",
+                    f"{character.name} / {identity_name} costume",
+                    canonical_identity_costume_path(project_dir, character.name, identity_name),
+                ),
+                (
+                    "identity_portrait",
+                    "identity_portrait",
+                    f"{character.name} / {identity_name} portrait",
+                    canonical_identity_portrait_path(project_dir, character.name, identity_name),
+                ),
+            ):
+                append("characters", kind, role, label, path)
+
+    for scene in await store.list_scenes():
+        append("scenes", "scene", "scene_master", f"{scene.name} / master", canonical_scene_master_path(project_dir, scene.name))
+        append("scenes", "scene", "scene_reverse_master", f"{scene.name} / reverse master", canonical_scene_reverse_master_path(project_dir, scene.name))
+
+    for prop in await store.list_props():
+        append("props", "prop", "prop_reference", f"{prop.name} / reference", canonical_prop_reference_path(project_dir, prop.name))
+
+    return assets
+
+
 @router.get("/projects/{project}/freezone/assets", tags=[TAG_FREEZONE_ASSETS])
 async def list_freezone_assets(
     project: str,
+    view: Literal["index"] | None = Query(default=None),
     user: dict = Depends(get_api_user),
 ):
     """列出当前项目作用域下可供 Freezone 使用的 canonical assets。
@@ -11346,6 +11519,15 @@ async def list_freezone_assets(
     assets: list[dict] = []
 
     try:
+        if view == "index":
+            return {
+                "ok": True,
+                "data": await _list_freezone_asset_index(
+                    store=store,
+                    project_id=project,
+                    project_dir=project_dir,
+                ),
+            }
         for character in store.get_all_characters():
             portrait_path = canonical_portrait_path(project_dir, character.name)
             assets.append(
@@ -11638,6 +11820,18 @@ async def list_freezone_assets(
         close = getattr(store, "close", None)
         if close:
             await close()
+
+    for asset in assets:
+        if asset.get("media_type") != "image":
+            continue
+        asset.update(
+            _asset_thumbnail_fields(
+                asset,
+                project_id=project,
+                project_dir=project_dir,
+                prewarm=True,
+            )
+        )
 
     return {"ok": True, "data": assets}
 

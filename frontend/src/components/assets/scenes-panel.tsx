@@ -28,7 +28,7 @@ import {
   type AssetSortKey,
 } from "@/components/assets/asset-search-box";
 import {
-  useAssetReferenceIndex,
+  useAssetReferences,
   type BeatReference,
   type SceneCoOccurrence,
 } from "@/lib/queries/asset-references";
@@ -576,7 +576,7 @@ function SceneAssetCardController({
   project: string;
   scene: SceneAsset;
   imageSourceSelection: string;
-  referenceCount: number;
+  referenceCount?: number;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -1050,7 +1050,7 @@ function SceneGroupListItem({
 }: {
   group: SceneGroup;
   selected: boolean;
-  referenceCount: number;
+  referenceCount?: number;
   onSelect: () => void;
 }) {
   const { t } = useTranslation();
@@ -1139,9 +1139,17 @@ export function ScenesPanel({
     (buildScenesCost.error instanceof BillingRuleNotConfiguredError
       ? t("common.billingRuleNotConfiguredShort")
       : null);
-  const refIndex = useAssetReferenceIndex(project);
-
   const allItems = scenes.data?.data ?? [];
+  const sceneRefs = useMemo(
+    () => allItems.map((scene) => ({ type: "scene" as const, id: scene.name })),
+    [allItems],
+  );
+  const refIndex = useAssetReferences(
+    project,
+    sceneRefs,
+    { enabled: allItems.length > 0 },
+  );
+
   const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<AssetSortKey>("name");
   const allSceneGroups = useMemo<SceneGroup[]>(() => {
@@ -1183,11 +1191,11 @@ export function ScenesPanel({
     ]);
     return sortAssets(
       filtered,
-      sortKey,
+      sortKey === "usage" && refIndex.isError ? "name" : sortKey,
       (group) => group.baseName,
       (group) =>
         group.scenes.reduce(
-          (sum, scene) => sum + refIndex.countFor("scene", scene.name),
+          (sum, scene) => sum + refIndex.referencesFor("scene", scene.name).length,
           0,
         ),
     );
@@ -1322,6 +1330,11 @@ export function ScenesPanel({
           />
         </Button>
       </AssetHeaderActions>
+      {refIndex.isError ? (
+        <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+          {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}
+        </p>
+      ) : null}
       {scenes.isLoading ? (
         <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
           <Loader2 className="mr-2 size-4 animate-spin" />
@@ -1383,8 +1396,8 @@ export function ScenesPanel({
                       key={group.baseName}
                       group={group}
                       selected={selectedBaseName === group.baseName}
-                      referenceCount={group.scenes.reduce(
-                        (sum, scene) => sum + refIndex.countFor("scene", scene.name),
+                      referenceCount={refIndex.isError ? undefined : group.scenes.reduce(
+                        (sum, scene) => sum + refIndex.referencesFor("scene", scene.name).length,
                         0,
                       )}
                       onSelect={() => rememberSelectedBaseName(group.baseName)}
@@ -1465,7 +1478,7 @@ export function ScenesPanel({
                         project={project}
                         scene={scene}
                         imageSourceSelection={imageSourceSelection}
-                        referenceCount={refIndex.countFor("scene", scene.name)}
+                        referenceCount={refIndex.isError ? undefined : refIndex.referencesFor("scene", scene.name).length}
                         onEdit={() => {
                           setEditing(scene);
                           setDraftSeed(null);

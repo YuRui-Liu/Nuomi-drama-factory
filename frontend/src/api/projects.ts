@@ -224,6 +224,8 @@ export interface FreezoneProjectAsset {
   director_control_bundle?: Record<string, unknown> | null;
   /** 后端是否认为该资产可推送回主流程。 */
   pushable?: boolean;
+  thumbnail_url?: string | null;
+  thumbnail_status?: "ready" | "pending" | "missing" | "unavailable" | string;
   /**
    * 后端直接给出的 canonical 提交目标(免去前端按 kind/role 猜)。
    * 用 `PushTarget | null`;业务层用 `isSlotTarget` 校验后再用。
@@ -237,6 +239,27 @@ export async function listFreezoneProjectAssets(
 ): Promise<FreezoneProjectAsset[]> {
   return await apiCall<FreezoneProjectAsset[]>(
     `projects/${encodeURIComponent(projectId)}/freezone/assets`,
+    options?.signal ? { signal: options.signal } : undefined,
+  );
+}
+
+export interface FreezoneProjectAssetIndexEntry {
+  id: string;
+  name: string;
+  tab: string;
+  kind: string;
+  role: string;
+  media_type: string;
+  thumbnail_url: string | null;
+  thumbnail_status: "ready" | "pending" | "missing" | "unavailable" | string;
+}
+
+export async function listFreezoneProjectAssetIndex(
+  projectId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FreezoneProjectAssetIndexEntry[]> {
+  return await apiCall<FreezoneProjectAssetIndexEntry[]>(
+    `projects/${encodeURIComponent(projectId)}/freezone/assets?view=index`,
     options?.signal ? { signal: options.signal } : undefined,
   );
 }

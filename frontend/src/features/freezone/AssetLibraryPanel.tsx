@@ -19,16 +19,19 @@ import {
   ImageOff,
   Video,
 } from "lucide-react";
+import { ViewportLazyImage } from "@/components/viewport-lazy-image";
 import { CanvasesTab } from "./CanvasesTab";
 import { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 import {
   type FreezoneBeatContextBeat,
   type FreezoneBeatContextResponse,
   type FreezoneProjectAsset,
+  type FreezoneProjectAssetIndexEntry,
 } from "@/api/projects";
 import {
   useFreezoneBeatContext,
   useFreezoneProjectAssets,
+  useFreezoneProjectAssetIndex,
 } from "@/lib/queries/freezone";
 import { DEFAULT_NODE_WIDTH } from "@/features/canvas/domain/canvasNodes";
 import { withImageCacheBust } from "@/features/canvas/application/imageData";
@@ -138,6 +141,8 @@ interface LibraryAsset {
   source: Record<string, unknown>;
   mainlineContext?: MainlineContext[];
   beatContext?: MainlineContext & { episode: number; beat: number };
+  thumbnailUrl?: string;
+  hydrating?: boolean;
   /** 缩略图。3GS 包本身没法直接渲染，借用同 scene_id 的 scene 图当封面。 */
   coverUrl?: string;
 }
@@ -192,7 +197,7 @@ function MiniThumb({
   const isAudio = asset.mediaType === "audio";
   const isVideo = asset.mediaType === "video";
   const [imageFailed, setImageFailed] = useState(false);
-  const thumbUrl = isThreeD || isVideo ? asset.coverUrl : asset.url;
+  const thumbUrl = isThreeD || isVideo ? asset.coverUrl : asset.thumbnailUrl;
   const displayThumbUrl = thumbUrl ? withImageCacheBust(thumbUrl, cacheToken) : null;
   const showImage =
     !imageFailed &&
@@ -200,7 +205,9 @@ function MiniThumb({
     Boolean(thumbUrl) &&
     (!isThreeD || Boolean(asset.coverUrl)) &&
     (!isVideo || Boolean(asset.coverUrl));
-  const disabled = !isThreeD && (asset.mediaType === "text" || asset.mediaType === "file");
+  const disabled =
+    asset.hydrating === true ||
+    !asset.url || (!isThreeD && (asset.mediaType === "text" || asset.mediaType === "file"));
   const dragPayload = disabled ? null : assetToDragPayload(asset);
 
   useEffect(() => {
@@ -220,15 +227,16 @@ function MiniThumb({
 
   return (
     <div
+      aria-busy={asset.hydrating || undefined}
       draggable={Boolean(dragPayload)}
       onDragStart={handleDragStart}
       onContextMenu={handleContextMenu}
-      onClick={onAdd}
+      onClick={disabled ? undefined : onAdd}
       className="group relative aspect-[4/3] cursor-pointer overflow-hidden rounded bg-black/40 border border-white/[0.06] hover:border-white/[0.15] hover:bg-white/[0.04] hover:scale-[1.02] transition-all duration-350"
       title={asset.label}
     >
       {showImage ? (
-        <img
+        <ViewportLazyImage
           src={displayThumbUrl ?? ""}
           alt={asset.label}
           className="h-full w-full rounded object-contain"
@@ -510,16 +518,19 @@ export function AssetLibraryPanel({
     }
   };
 
-  const projectAssetsQuery = useFreezoneProjectAssets(project);
-  const projectAssets = projectAssetsQuery.data ?? [];
+  const projectAssetIndexQuery = useFreezoneProjectAssetIndex(project);
+  const projectAssetsQuery = useFreezoneProjectAssets(project, projectAssetIndexQuery.isSuccess);
+  const projectAssetIndex = projectAssetIndexQuery.data ?? [];
+  const projectAssets = projectAssetsQuery.data;
   const projectAssetsReloadKey = `${internalReloadToken}:${reloadToken ?? 0}`;
   const previousProjectAssetsReloadKeyRef = useRef(projectAssetsReloadKey);
 
   useEffect(() => {
     if (previousProjectAssetsReloadKeyRef.current === projectAssetsReloadKey) return;
     previousProjectAssetsReloadKeyRef.current = projectAssetsReloadKey;
+    void projectAssetIndexQuery.refetch();
     void projectAssetsQuery.refetch();
-  }, [projectAssetsQuery, projectAssetsReloadKey]);
+  }, [projectAssetIndexQuery, projectAssetsQuery, projectAssetsReloadKey]);
 
   const currentEpisode = useMemo(
     () => resolveCurrentEpisode(metadata),
@@ -553,11 +564,12 @@ export function AssetLibraryPanel({
     void beatContextQuery.refetch();
   }, [beatContextEnabled, beatContextQuery, beatContextReloadKey]);
 
+  const projectAssetsQueryError = projectAssetIndexQuery.error ?? projectAssetsQuery.error;
   const projectAssetsError =
-    projectAssetsQuery.error instanceof Error
-      ? projectAssetsQuery.error.message
-      : projectAssetsQuery.error
-        ? String(projectAssetsQuery.error)
+    projectAssetsQueryError instanceof Error
+      ? projectAssetsQueryError.message
+      : projectAssetsQueryError
+        ? String(projectAssetsQueryError)
         : null;
   const beatContextError =
     beatContextQuery.error instanceof Error
@@ -568,8 +580,10 @@ export function AssetLibraryPanel({
   const error = projectAssetsError ?? beatContextError;
 
   const assets = useMemo(
-    () => buildLibraryAssets({ project, metadata, projectAssets, beatContext, canvasKind }),
-    [project, metadata, projectAssets, beatContext, canvasKind],
+    () => buildLibraryAssets({
+      project, metadata, projectAssetIndex, projectAssets, beatContext, canvasKind,
+    }),
+    [project, metadata, projectAssetIndex, projectAssets, beatContext, canvasKind],
   );
   const assetPreviewCacheToken = `${internalReloadToken}:${reloadToken ?? 0}`;
   const assetImageCacheToken = assetPreviewCacheToken;
@@ -937,14 +951,16 @@ function AssetCard({
   const isThreeD = isThreeDAsset(asset);
   const isAudio = asset.mediaType === "audio";
   const isVideo = asset.mediaType === "video";
-  const thumbUrl = isThreeD || isVideo ? asset.coverUrl : asset.url;
+  const thumbUrl = isThreeD || isVideo ? asset.coverUrl : asset.thumbnailUrl;
   const displayThumbUrl = thumbUrl ? withImageCacheBust(thumbUrl, cacheToken) : null;
   const showImage =
     !isAudio &&
     Boolean(thumbUrl) &&
     (!isThreeD || Boolean(asset.coverUrl)) &&
     (!isVideo || Boolean(asset.coverUrl));
-  const disabled = !isThreeD && (asset.mediaType === "text" || asset.mediaType === "file");
+  const disabled =
+    asset.hydrating === true ||
+    !asset.url || (!isThreeD && (asset.mediaType === "text" || asset.mediaType === "file"));
   const dropMediaType = assetDropMediaType(asset);
   const activeDrag = useAssetDropStore((s) => s.activeDrag);
   const target = assetToPushTarget(asset.source);
@@ -974,6 +990,7 @@ function AssetCard({
 
   return (
     <div
+      aria-busy={asset.hydrating || undefined}
       data-asset-id={replaceable ? asset.id : undefined}
       data-asset-media-type={replaceable ? dropMediaType ?? undefined : undefined}
       draggable={Boolean(dragPayload)}
@@ -981,14 +998,14 @@ function AssetCard({
       className={`group relative flex items-center gap-3 rounded-[8px] border border-transparent px-1.5 py-2 cursor-pointer transition-all duration-200 hover:border-white/[0.08] hover:bg-white/[0.04] ${
         dragPayload ? "active:cursor-grabbing" : ""
       } ${isDropHover ? "opacity-70" : ""}`}
-      onClick={onAdd}
+      onClick={disabled ? undefined : onAdd}
     >
       <div
         data-drag-thumb
         className="relative h-[80px] w-[60px] shrink-0 overflow-hidden rounded-[6px] bg-black/30 border border-white/[0.06] flex items-center justify-center transition-colors duration-200 group-hover:border-white/[0.14]"
       >
         {showImage ? (
-          <img
+          <ViewportLazyImage
             src={displayThumbUrl ?? ""}
             alt={asset.label}
             className="h-full w-full object-cover"
@@ -1038,10 +1055,10 @@ function AssetCard({
         type="button"
         className="tap-button h-6 px-2 text-[11px] opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100 hover:border-white/20 hover:text-white/90 disabled:opacity-40 text-white/50 border border-white/10 rounded"
         onClick={(e) => { e.stopPropagation(); onAdd(); }}
-        title="加入画布"
+        title={asset.hydrating ? "正在加载完整资产" : "加入画布"}
         disabled={disabled}
       >
-        加入
+        {asset.hydrating ? "加载中" : "加入"}
       </button>
       {isConfirming && (
         <div className="absolute inset-0 z-10 flex flex-col justify-center gap-1.5 rounded-lg bg-[#0c0c0e]/95 px-2.5 backdrop-blur-sm">
@@ -1138,13 +1155,15 @@ function createAssetDragImage(source: HTMLElement, asset: LibraryAsset): HTMLEle
 function buildLibraryAssets({
   project,
   metadata,
+  projectAssetIndex,
   projectAssets,
   beatContext,
   canvasKind,
 }: {
   project: string;
   metadata: Record<string, unknown> | null;
-  projectAssets: FreezoneProjectAsset[];
+  projectAssetIndex: FreezoneProjectAssetIndexEntry[];
+  projectAssets: FreezoneProjectAsset[] | undefined;
   beatContext: FreezoneBeatContextResponse | null;
   canvasKind: CanvasKind;
 }): LibraryAsset[] {
@@ -1188,9 +1207,36 @@ function buildLibraryAssets({
     }
   }
 
-  for (const asset of projectAssets) {
-    if (!isUsableAsset(asset)) continue;
-    addUnique(out, seen, fromFreezoneAsset(asset, { fromBeatContext: false, projectId: project }));
+  const fullById = new Map((projectAssets ?? []).map((asset) => [asset.id, asset]));
+  for (const indexAsset of projectAssetIndex) {
+    const fullAsset = fullById.get(indexAsset.id);
+    if (fullAsset) {
+      fullById.delete(indexAsset.id);
+      if (isUsableAsset(fullAsset)) {
+        const hydrated = fromFreezoneAsset(
+          fullAsset,
+          { fromBeatContext: false, projectId: project },
+        );
+        if (
+          indexAsset.thumbnail_status === "ready" &&
+          indexAsset.thumbnail_url &&
+          (fullAsset.thumbnail_status !== "ready" || !fullAsset.thumbnail_url)
+        ) {
+          hydrated.thumbnailUrl = indexAsset.thumbnail_url;
+        }
+        addUnique(out, seen, hydrated);
+      }
+      continue;
+    }
+    addUnique(out, seen, fromFreezoneAssetIndex(indexAsset, project));
+  }
+  for (const fullAsset of fullById.values()) {
+    if (!isUsableAsset(fullAsset)) continue;
+    addUnique(
+      out,
+      seen,
+      fromFreezoneAsset(fullAsset, { fromBeatContext: false, projectId: project }),
+    );
   }
   attachThreeDCovers(out);
   return coalesceSceneDirectorWorldAssets(out);
@@ -1204,7 +1250,7 @@ function attachThreeDCovers(assets: LibraryAsset[]): void {
   };
   const bySceneId = new Map<string, { url: string; priority: number }>();
   for (const asset of assets) {
-    if (asset.mediaType !== "image") continue;
+    if (asset.mediaType !== "image" || !asset.thumbnailUrl) continue;
     const sceneId =
       typeof asset.source.meta === "object" && asset.source.meta !== null
         ? ((asset.source.meta as Record<string, unknown>).scene_id as string | undefined)
@@ -1213,7 +1259,7 @@ function attachThreeDCovers(assets: LibraryAsset[]): void {
     const priority = SCENE_ROLE_PRIORITY[asset.role] ?? 99;
     const existing = bySceneId.get(sceneId);
     if (!existing || priority < existing.priority) {
-      bySceneId.set(sceneId, { url: asset.url, priority });
+      bySceneId.set(sceneId, { url: asset.thumbnailUrl, priority });
     }
   }
   for (const asset of assets) {
@@ -1563,6 +1609,36 @@ function isMainlinePresetReference(ref: PresetReference): boolean {
   );
 }
 
+function fromFreezoneAssetIndex(
+  asset: FreezoneProjectAssetIndexEntry,
+  projectId: string,
+): LibraryAsset {
+  const tab = asset.tab === "characters" || asset.tab === "scenes" || asset.tab === "props"
+    ? asset.tab
+    : "beat";
+  return {
+    id: asset.id,
+    tab,
+    kind: asset.kind,
+    role: asset.role,
+    label: normalizeMainlineAssetLabel(asset.name, asset.role),
+    sublabel: asset.role,
+    url: "",
+    aspectRatio: "1:1",
+    mediaType: normalizeMediaType(asset.media_type, asset.kind),
+    hydrating: true,
+    thumbnailUrl: asset.thumbnail_status === "ready"
+      ? asset.thumbnail_url ?? undefined
+      : undefined,
+    source: {
+      kind: asset.kind,
+      role: asset.role,
+      projectId,
+      pushable: false,
+    },
+  };
+}
+
 function tabForFreezoneAsset(asset: FreezoneProjectAsset): AssetTab {
   if (isBeatOutputRole(asset.role)) return "beat";
   if (asset.kind === "director" || asset.tab === "director") {
@@ -1602,6 +1678,7 @@ function fromFreezoneAsset(
     mediaType: normalizeMediaType(asset.media_type, asset.kind),
     mainlineContext: asset.mainline_context,
     beatContext: flags.beatContext,
+    thumbnailUrl: asset.thumbnail_url ?? undefined,
     source: {
       kind: asset.kind,
       role: asset.role,

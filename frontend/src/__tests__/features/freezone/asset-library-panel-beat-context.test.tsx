@@ -7,11 +7,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listFreezoneBeatContext = vi.fn();
 const listFreezoneProjectAssets = vi.fn();
+const listFreezoneProjectAssetIndex = vi.fn();
 
 vi.mock("@/api/projects", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/projects")>()),
   listFreezoneBeatContext: (...args: unknown[]) => listFreezoneBeatContext(...args),
   listFreezoneProjectAssets: (...args: unknown[]) => listFreezoneProjectAssets(...args),
+  listFreezoneProjectAssetIndex: (...args: unknown[]) => listFreezoneProjectAssetIndex(...args),
 }));
 
 vi.mock("@/features/freezone/CanvasesTab", () => ({
@@ -30,6 +32,115 @@ function makeWrapper() {
 describe("AssetLibraryPanel beat context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listFreezoneProjectAssetIndex.mockResolvedValue([]);
+  });
+
+  it("renders index entries first, then restores canonical actions and full-only assets", async () => {
+    let resolveFullAssets!: (assets: unknown[]) => void;
+    listFreezoneProjectAssetIndex.mockResolvedValue([
+      {
+        id: "portrait:character_portrait:assets/characters/lin/portrait.png",
+        name: "林昭 / portrait",
+        tab: "characters",
+        kind: "portrait",
+        role: "character_portrait",
+        media_type: "image",
+        thumbnail_url: "/static/thumb.webp?v=1",
+        thumbnail_status: "ready",
+      },
+    ]);
+    listFreezoneProjectAssets.mockReturnValue(
+      new Promise<unknown[]>((resolve) => {
+        resolveFullAssets = resolve;
+      }),
+    );
+    listFreezoneBeatContext.mockResolvedValue({
+      scope: { episode: null, beat: null },
+      episodes: [],
+      assets: [],
+    });
+
+    render(
+      <AssetLibraryPanel
+        project="demo"
+        metadata={{ kind: "default" }}
+        currentCanvasId="user_admin_demo"
+        collapsed={false}
+      />,
+      { wrapper: makeWrapper() },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "主线资产" }));
+    fireEvent.click(screen.getByRole("button", { name: /人物/ }));
+    expect(await screen.findByText("林昭 / portrait")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "加载中" })).toBeDisabled();
+
+    await act(async () => {
+      resolveFullAssets([
+        {
+          id: "portrait:character_portrait:assets/characters/lin/portrait.png",
+          tab: "characters",
+          kind: "portrait",
+          role: "character_portrait",
+          label: "林昭 / portrait",
+          sublabel: "林昭",
+          url: "/static/assets/characters/lin/portrait.png",
+          rel_path: "assets/characters/lin/portrait.png",
+          media_type: "image",
+          exists: true,
+          meta: { character: "林昭" },
+        },
+        {
+          id: "audio:character_voice:assets/characters/lin/voice.wav",
+          tab: "characters",
+          kind: "audio",
+          role: "character_voice",
+          label: "林昭 / 默认声线",
+          url: "/static/assets/characters/lin/voice.wav",
+          rel_path: "assets/characters/lin/voice.wav",
+          media_type: "audio",
+          exists: true,
+          meta: { character: "林昭" },
+        },
+        {
+          id: "scene:scene_director_pano_360:director_worlds/kitchen/v1/pano.png",
+          tab: "scenes",
+          kind: "scene",
+          role: "scene_director_pano_360",
+          label: "厨房 / director pano 360",
+          url: "/static/director_worlds/kitchen/v1/pano.png",
+          rel_path: "director_worlds/kitchen/v1/pano.png",
+          media_type: "image",
+          exists: true,
+          meta: { scene_id: "厨房" },
+        },
+        {
+          id: "scene:scene_3gs_master_ply:assets/scenes/kitchen/master.sog",
+          tab: "scenes",
+          kind: "scene",
+          role: "scene_3gs_master_ply",
+          label: "厨房 / 3D 世界（正面）",
+          url: "/static/assets/scenes/kitchen/master.sog",
+          rel_path: "assets/scenes/kitchen/master.sog",
+          media_type: "file",
+          exists: true,
+          meta: { scene_id: "厨房" },
+        },
+      ]);
+    });
+
+    await vi.waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "加入" })[0]).toBeEnabled();
+    });
+    expect(screen.getByText("林昭 / 默认声线")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "林昭 / portrait" })).toHaveAttribute(
+      "src",
+      expect.stringContaining("/static/thumb.webp"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /场景/ }));
+    expect(await screen.findByText("厨房 / 导演世界")).toBeInTheDocument();
+    expect(screen.getByText("包含 2 个导演源")).toBeInTheDocument();
   });
 
   it("shares one project asset request across matching panels", async () => {
@@ -59,6 +170,57 @@ describe("AssetLibraryPanel beat context", () => {
     await vi.waitFor(() => expect(listFreezoneProjectAssets).toHaveBeenCalledTimes(1));
   });
 
+  it("refetches index and full assets together so deleted index ghosts disappear", async () => {
+    listFreezoneProjectAssetIndex
+      .mockResolvedValueOnce([
+        {
+          id: "portrait:character_portrait:assets/characters/deleted/portrait.png",
+          name: "Deleted / portrait",
+          tab: "characters",
+          kind: "portrait",
+          role: "character_portrait",
+          media_type: "image",
+          thumbnail_url: null,
+          thumbnail_status: "missing",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    listFreezoneProjectAssets.mockResolvedValue([]);
+    listFreezoneBeatContext.mockResolvedValue({
+      scope: { episode: null, beat: null },
+      episodes: [],
+      assets: [],
+    });
+
+    const { rerender } = render(
+      <AssetLibraryPanel
+        project="demo"
+        metadata={{ kind: "default" }}
+        currentCanvasId="user_admin_demo"
+        reloadToken={0}
+        collapsed={false}
+      />,
+      { wrapper: makeWrapper() },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "主线资产" }));
+    fireEvent.click(screen.getByRole("button", { name: /人物/ }));
+    expect(await screen.findByText("Deleted / portrait")).toBeInTheDocument();
+
+    rerender(
+      <AssetLibraryPanel
+        project="demo"
+        metadata={{ kind: "default" }}
+        currentCanvasId="user_admin_demo"
+        reloadToken={1}
+        collapsed={false}
+      />,
+    );
+
+    await vi.waitFor(() => expect(listFreezoneProjectAssetIndex).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(listFreezoneProjectAssets).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(screen.queryByText("Deleted / portrait")).toBeNull());
+  });
   it("refetches shared beat context when the asset reload token changes", async () => {
     listFreezoneProjectAssets.mockResolvedValue([]);
     listFreezoneBeatContext.mockResolvedValue({

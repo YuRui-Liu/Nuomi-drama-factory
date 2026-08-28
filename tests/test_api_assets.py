@@ -1858,6 +1858,107 @@ async def test_asset_references_match_beat_asset_ids(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_project_asset_references_aggregates_requested_ids_in_one_scan(
+    monkeypatch, tmp_path
+):
+    from novelvideo.api.routes import assets
+
+    class Store:
+        list_calls = 0
+
+        async def list_visual_beats(self):
+            self.list_calls += 1
+            return [
+                NovelVisualBeat(
+                    episode_number=1,
+                    beat_number=12,
+                    narration="n",
+                    visual_description="桌上放着[[青瓷碗]]",
+                    detected_identities_json='["苏清晏_少女"]',
+                    detected_props_json='["油泼辣子"]',
+                    scene_ref_json='{"scene_id": "兰州拉面馆"}',
+                ),
+                NovelVisualBeat(
+                    episode_number=3,
+                    beat_number=4,
+                    narration="n",
+                    visual_description="v",
+                    detected_identities_json='["路人_青年"]',
+                    detected_props_json='["木凳"]',
+                    scene_ref_json='{"scene_id": "兰州拉面馆"}',
+                ),
+            ]
+
+    store = Store()
+    ctx = SimpleNamespace(project_id="proj_demo")
+
+    async def fake_resolve_project_scope(project, user, *, required_role="viewer"):
+        assert project == "proj_demo"
+        assert required_role == "viewer"
+        return SimpleNamespace(ctx=ctx)
+
+    async def fake_make_sqlite_store_for_context(ctx_arg):
+        assert ctx_arg is ctx
+        return store
+
+    monkeypatch.setattr(assets, "resolve_project_scope", fake_resolve_project_scope)
+    monkeypatch.setattr(
+        assets, "make_sqlite_store_for_context", fake_make_sqlite_store_for_context
+    )
+
+    res = await assets.get_project_asset_references(
+        project="proj_demo",
+        ids=[
+            "scene:兰州拉面馆",
+            "identity:苏清晏_少女",
+            "prop:青瓷碗",
+        ],
+        user={"username": "admin"},
+    )
+
+    assert store.list_calls == 1
+    assert res["data"]["usages"] == {
+        "identity:苏清晏_少女": [{"episode": 1, "beat_number": 12}],
+        "prop:青瓷碗": [{"episode": 1, "beat_number": 12}],
+        "scene:兰州拉面馆": [
+            {"episode": 1, "beat_number": 12},
+            {"episode": 3, "beat_number": 4},
+        ],
+    }
+    assert res["data"]["scene_co_occurrence"] == {
+        "兰州拉面馆": {
+            "identities": ["苏清晏_少女", "路人_青年"],
+            "props": ["木凳", "油泼辣子", "青瓷碗"],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_asset_references_empty_ids_skip_store_scan(monkeypatch):
+    from novelvideo.api.routes import assets
+
+    async def fail_make_store(*_args, **_kwargs):
+        raise AssertionError("empty ids must not open the beat store")
+
+    async def fake_resolve_project_scope(project, user, *, required_role="viewer"):
+        return SimpleNamespace(ctx=SimpleNamespace(project_id=project))
+
+    monkeypatch.setattr(assets, "resolve_project_scope", fake_resolve_project_scope)
+    monkeypatch.setattr(
+        assets, "make_sqlite_store_for_context", fail_make_store
+    )
+
+    res = await assets.get_project_asset_references(
+        project="proj_demo", ids=[], user={"username": "admin"}
+    )
+
+    assert res == {
+        "ok": True,
+        "data": {"usages": {}, "scene_co_occurrence": {}},
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_prop_renames_record_and_asset_directory(tmp_path, monkeypatch):
     from novelvideo.api.routes import props
 

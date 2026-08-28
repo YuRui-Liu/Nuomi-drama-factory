@@ -116,9 +116,10 @@ vi.mock("@/lib/queries/generation-credit-cost", () => ({
 }));
 
 vi.mock("@/lib/queries/asset-references", () => ({
-  useAssetReferenceIndex: () => ({
-    countFor: () => 0,
+  useAssetReferences: () => ({
     referencesFor: () => [],
+    coOccurrenceForScene: () => ({ identities: [], props: [] }),
+    isLoading: false,
   }),
 }));
 

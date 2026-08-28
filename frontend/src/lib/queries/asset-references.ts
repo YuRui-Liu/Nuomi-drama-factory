@@ -37,6 +37,11 @@ import type { Beat, Episode } from "@/types/episode";
 
 export type AssetRefType = "identity" | "scene" | "prop";
 
+export interface AssetRef {
+  type: AssetRefType;
+  id: string;
+}
+
 export interface BeatReference {
   episode: number;
   beatNumber: number;
@@ -46,6 +51,22 @@ export interface BeatReference {
 export interface SceneCoOccurrence {
   identities: string[];
   props: string[];
+}
+
+export interface AssetReferences {
+  referencesFor: (type: AssetRefType, id: string) => BeatReference[];
+  coOccurrenceForScene: (sceneId: string) => SceneCoOccurrence;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+}
+
+interface AssetReferencesPayload {
+  usages: Record<string, { episode: number; beat_number: number }[]>;
+  scene_co_occurrence: Record<
+    string,
+    { identities: string[]; props: string[] }
+  >;
 }
 
 export interface AssetReferenceIndex {
@@ -74,6 +95,78 @@ function extractMarkedProps(visualDescription: string): string[] {
     if (id) out.push(id);
   }
   return out;
+}
+
+/** Fetch usage details only for the asset surfaces that are currently open. */
+export function useAssetReferences(
+  project: string,
+  refs: AssetRef[],
+  options: { enabled?: boolean } = {},
+): AssetReferences {
+  const signature = JSON.stringify(
+    [
+      ...new Set(
+        refs
+          .filter((ref) => ref.id)
+          .map((ref) => refKey(ref.type, ref.id)),
+      ),
+    ].sort(),
+  );
+  const keys = useMemo(() => JSON.parse(signature) as string[], [signature]);
+  const enabled = options.enabled !== false && !!project && keys.length > 0;
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["projects", project, "asset-references", signature],
+    queryFn: ({ signal }) => {
+      const searchParams = new URLSearchParams();
+      for (const key of keys) searchParams.append("ids", key);
+      return api
+        .get(p`api/v1/projects/${project}/assets/references`, {
+          signal,
+          searchParams,
+        })
+        .json<OkResponse<AssetReferencesPayload>>();
+    },
+    enabled,
+  });
+
+  const { map, sceneCo } = useMemo(() => {
+    const acc = new Map<string, BeatReference[]>();
+    const co = new Map<string, SceneCoOccurrence>();
+    for (const [key, list] of Object.entries(data?.data?.usages ?? {})) {
+      acc.set(
+        key,
+        list.map((ref) => ({
+          episode: ref.episode,
+          beatNumber: ref.beat_number,
+        })),
+      );
+    }
+    for (const [sceneId, bucket] of Object.entries(
+      data?.data?.scene_co_occurrence ?? {},
+    )) {
+      co.set(sceneId, {
+        identities: bucket.identities ?? [],
+        props: bucket.props ?? [],
+      });
+    }
+    return { map: acc, sceneCo: co };
+  }, [data]);
+
+  return useMemo(
+    () => ({
+      referencesFor: (type, id) => map.get(refKey(type, id)) ?? EMPTY,
+      coOccurrenceForScene: (sceneId) => sceneCo.get(sceneId) ?? EMPTY_CO,
+      isLoading: enabled && isLoading,
+      isError: enabled && isError,
+      error: enabled && isError
+        ? error instanceof Error
+          ? error
+          : new Error(String(error))
+        : null,
+    }),
+    [enabled, error, isError, isLoading, map, sceneCo],
+  );
 }
 
 export function useAssetReferenceIndex(project: string): AssetReferenceIndex {

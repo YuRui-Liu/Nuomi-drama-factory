@@ -6,7 +6,11 @@ from novelvideo.media_capabilities.models import (
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
-from novelvideo.media_capabilities.video.catalog import list_video_models
+from novelvideo.media_capabilities.video.catalog import (
+    H3_MODEL_ID,
+    list_video_models,
+    resolve_video_model_route,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     build_video_workflow_registry,
 )
@@ -62,3 +66,30 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
         "unavailable_reason": definition.unavailable_reason,
     }
     assert "credential" not in item.model_dump_json().lower()
+
+
+def test_video_route_priority_keeps_explicit_runninghub_ahead_of_generic_models() -> None:
+    route = resolve_video_model_route(
+        project_runninghub=H3_MODEL_ID,
+        local_custom=("local:wan",),
+        official_catalog=("newapi:seedance", H3_MODEL_ID),
+        system_default="newapi:default",
+        available={H3_MODEL_ID, "local:wan", "newapi:seedance", "newapi:default"},
+    )
+    assert route == (
+        H3_MODEL_ID,
+        "local:wan",
+        "newapi:seedance",
+        "newapi:default",
+    )
+
+
+def test_video_route_priority_skips_unavailable_layers_without_reordering() -> None:
+    route = resolve_video_model_route(
+        project_runninghub=H3_MODEL_ID,
+        local_custom=("local:missing", "local:ready"),
+        official_catalog=("official:ready",),
+        system_default="system:ready",
+        available={"local:ready", "official:ready", "system:ready"},
+    )
+    assert route == ("local:ready", "official:ready", "system:ready")

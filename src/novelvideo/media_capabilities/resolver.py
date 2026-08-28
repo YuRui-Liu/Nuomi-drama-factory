@@ -43,6 +43,53 @@ def merge_parameters(
     return merged
 
 
+def resolve_priority_route(
+    capability: MediaCapability,
+    priority_layers: Sequence[Sequence[str]],
+    available: AvailableImplementations,
+) -> tuple[str, ...]:
+    """Resolve ordered source layers without allowing lower layers to jump ahead.
+
+    Empty layers are allowed. Duplicate identifiers are kept at their highest
+    priority occurrence so a catalog cannot demote a project selection.
+    """
+    if isinstance(priority_layers, (str, bytes)):
+        raise ConfigurationError("priority layers must not be str or bytes")
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for layer in priority_layers:
+        if isinstance(layer, (str, bytes)):
+            raise ConfigurationError("priority layer must not be str or bytes")
+        layer_seen: set[str] = set()
+        for implementation_id in layer:
+            if not isinstance(implementation_id, str):
+                raise ConfigurationError("implementation ID must be a string")
+            if not implementation_id.strip():
+                raise ConfigurationError("implementation ID must not be empty")
+            if implementation_id != implementation_id.strip():
+                raise ConfigurationError(
+                    "implementation ID must not have surrounding whitespace"
+                )
+            if implementation_id in layer_seen:
+                raise ConfigurationError(
+                    "priority layer must not contain duplicates"
+                )
+            layer_seen.add(implementation_id)
+            if implementation_id not in seen:
+                seen.add(implementation_id)
+                ordered.append(implementation_id)
+
+    if not ordered:
+        raise ConfigurationError("priority route must contain an implementation")
+    return resolve_route(
+        capability,
+        default_implementation=ordered[0],
+        fallback_chain=ordered[1:],
+        available=available,
+    )
+
+
 def resolve_route(
     capability: MediaCapability,
     default_implementation: str,
@@ -55,6 +102,9 @@ def resolve_route(
     implementation's capability from either a ``MediaCapability`` value or a
     ``CapabilityImplementation`` value.
     """
+    if not isinstance(default_implementation, str):
+        raise ConfigurationError("default implementation must be a string")
+
     if not default_implementation.strip():
         raise ConfigurationError("default implementation must not be empty")
     if default_implementation != default_implementation.strip():
@@ -67,6 +117,8 @@ def resolve_route(
 
     fallbacks = tuple(fallback_chain)
     for fallback in fallbacks:
+        if not isinstance(fallback, str):
+            raise ConfigurationError("fallback ID must be a string")
         if not fallback.strip():
             raise ConfigurationError("fallback ID must not be empty")
         if fallback != fallback.strip():
@@ -84,11 +136,15 @@ def resolve_route(
             continue
         if isinstance(available, Mapping):
             implementation = available[implementation_id]
-            implementation_capability = (
-                implementation.capability
-                if isinstance(implementation, CapabilityImplementation)
-                else implementation
-            )
+            if isinstance(implementation, CapabilityImplementation):
+                implementation_capability = implementation.capability
+            elif isinstance(implementation, MediaCapability):
+                implementation_capability = implementation
+            else:
+                raise ConfigurationError(
+                    "available mapping values must be MediaCapability or "
+                    "CapabilityImplementation instances"
+                )
             if implementation_capability != capability:
                 continue
         candidates.append(implementation_id)

@@ -134,4 +134,55 @@ describe("navigation resource loading", () => {
     expect(assetLibrary).not.toContain('preload="metadata"');
     expect(assetLibrary.match(/aria-label=\{`视频：\$\{asset\.label\}`\}/g)).toHaveLength(2);
   });
+
+  it("hydrates the lightweight freezone index from the existing full-assets query", () => {
+    const assetLibrary = readSource("src/features/freezone/AssetLibraryPanel.tsx");
+
+    expect(assetLibrary).toContain("useFreezoneProjectAssetIndex");
+    expect(assetLibrary).toContain("useFreezoneProjectAssets");
+    expect(assetLibrary).toMatch(/useFreezoneProjectAssets\(project,\s*projectAssetIndexQuery\.isSuccess\)/);
+  });
+
+  it("requests each visible asset list through one aggregate reference query", () => {
+    const entrypoints = [
+      "src/routes/_app/projects.$project/characters.lazy.tsx",
+      "src/components/assets/scenes-panel.tsx",
+      "src/components/assets/props-panel.tsx",
+    ];
+
+    for (const entrypoint of entrypoints) {
+      const source = readSource(entrypoint);
+      expect(source, entrypoint).toContain("useAssetReferences");
+      expect(source, entrypoint).not.toContain("useAssetReferenceIndex");
+    }
+
+    const characters = readSource("src/routes/_app/projects.$project/characters.lazy.tsx");
+    const scenes = readSource("src/components/assets/scenes-panel.tsx");
+    const props = readSource("src/components/assets/props-panel.tsx");
+    expect(characters).toMatch(/identities\.map\([\s\S]*type:\s*"identity"/);
+    expect(scenes).toMatch(/allItems\.map\([\s\S]*type:\s*"scene"/);
+    expect(props).toMatch(/allItems\.map\([\s\S]*type:\s*"prop"/);
+    expect(characters).toMatch(/enabled:\s*identities\.length\s*>\s*0/);
+    expect(scenes).toMatch(/enabled:\s*allItems\.length\s*>\s*0/);
+    expect(props).toMatch(/enabled:\s*allItems\.length\s*>\s*0/);
+  });
+  it("keeps failed aggregate reference counts unknown in all three consumers", () => {
+    const entrypoints = [
+      "src/routes/_app/projects.$project/characters.lazy.tsx",
+      "src/components/assets/scenes-panel.tsx",
+      "src/components/assets/props-panel.tsx",
+    ];
+
+    for (const entrypoint of entrypoints) {
+      const source = readSource(entrypoint);
+      expect(source, entrypoint).toContain(".isError");
+      expect(source, entrypoint).toContain("referenceLoadFailed");
+    }
+    expect(readSource("src/components/assets/scenes-panel.tsx")).toContain(
+      'sortKey === "usage" && refIndex.isError ? "name" : sortKey',
+    );
+    expect(readSource("src/components/assets/props-panel.tsx")).toContain(
+      'sortKey === "usage" && refIndex.isError ? "name" : sortKey',
+    );
+  });
 });

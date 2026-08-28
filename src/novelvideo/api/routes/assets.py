@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
-from novelvideo.models import beat_scene_id, real_detected_identities, real_detected_props
+from novelvideo.models import (
+    beat_scene_id,
+    extract_prop_ids_from_markers,
+    real_detected_identities,
+    real_detected_props,
+)
 
 router = APIRouter()
 
@@ -28,6 +33,94 @@ def _json_list(value: object) -> list[str]:
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = []
     return [str(item or "").strip() for item in raw if str(item or "").strip()]
+
+
+def _beat_asset_refs(beat) -> tuple[list[str], list[str], str]:
+    identities = real_detected_identities(
+        _json_list(getattr(beat, "detected_identities_json", "[]"))
+    )
+    props = real_detected_props(
+        _json_list(getattr(beat, "detected_props_json", "[]"))
+    )
+    for prop_id in extract_prop_ids_from_markers(
+        str(getattr(beat, "visual_description", "") or "")
+    ):
+        if prop_id not in props:
+            props.append(prop_id)
+    return identities, props, beat_scene_id(beat)
+
+
+async def _load_beat_asset_refs(ctx):
+    store = await make_sqlite_store_for_context(ctx)
+    try:
+        return await store.list_visual_beats()
+    finally:
+        close = getattr(store, "close", None)
+        if close:
+            await close()
+
+
+@router.get("/projects/{project}/assets/references")
+async def get_project_asset_references(
+    project: str,
+    ids: list[str] = Query(default=[]),
+    user: dict = Depends(get_api_user),
+):
+    """Return one reverse-index payload for the requested asset ids."""
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    wanted = {
+        key
+        for key in (str(item or "").strip() for item in ids)
+        if ":" in key and key.split(":", 1)[0] in VALID_REFERENCE_TYPES
+    }
+    if not wanted:
+        return {"ok": True, "data": {"usages": {}, "scene_co_occurrence": {}}}
+
+    beats = await _load_beat_asset_refs(resolved.ctx)
+    wanted_scenes = {
+        key.split(":", 1)[1] for key in wanted if key.startswith("scene:")
+    }
+    usages: dict[str, list[dict[str, int]]] = {}
+    scene_co: dict[str, dict[str, set[str]]] = {}
+
+    def _record(key: str, ref: dict[str, int]) -> None:
+        if key in wanted:
+            usages.setdefault(key, []).append(ref)
+
+    for beat in beats:
+        ref = {
+            "episode": int(getattr(beat, "episode_number", 0) or 0),
+            "beat_number": int(getattr(beat, "beat_number", 0) or 0),
+        }
+        identities, props, scene_id = _beat_asset_refs(beat)
+        for identity_id in identities:
+            _record(f"identity:{identity_id}", ref)
+        for prop_id in props:
+            _record(f"prop:{prop_id}", ref)
+        if not scene_id:
+            continue
+        _record(f"scene:{scene_id}", ref)
+        if scene_id not in wanted_scenes:
+            continue
+        bucket = scene_co.setdefault(
+            scene_id, {"identities": set(), "props": set()}
+        )
+        bucket["identities"].update(identities)
+        bucket["props"].update(props)
+
+    return {
+        "ok": True,
+        "data": {
+            "usages": usages,
+            "scene_co_occurrence": {
+                scene_id: {
+                    "identities": sorted(bucket["identities"]),
+                    "props": sorted(bucket["props"]),
+                }
+                for scene_id, bucket in scene_co.items()
+            },
+        },
+    }
 
 
 @router.get("/projects/{project}/assets/{asset_type}/{asset_id}/references")
@@ -52,13 +145,7 @@ async def get_asset_references(
     if not target_id:
         return {"ok": False, "error": "Asset id is required"}
 
-    store = await make_sqlite_store_for_context(resolved.ctx)
-    try:
-        beats = await store.list_visual_beats()
-    finally:
-        close = getattr(store, "close", None)
-        if close:
-            await close()
+    beats = await _load_beat_asset_refs(resolved.ctx)
     references: list[dict[str, int]] = []
     co_identities: set[str] = set()
     co_props: set[str] = set()
@@ -66,13 +153,7 @@ async def get_asset_references(
     for beat in beats:
         episode = int(getattr(beat, "episode_number", 0) or 0)
         beat_number = int(getattr(beat, "beat_number", 0) or 0)
-        scene_id = beat_scene_id(beat)
-        detected_identities = real_detected_identities(
-            _json_list(getattr(beat, "detected_identities_json", "[]"))
-        )
-        detected_props = real_detected_props(
-            _json_list(getattr(beat, "detected_props_json", "[]"))
-        )
+        detected_identities, detected_props, scene_id = _beat_asset_refs(beat)
 
         matched = False
         if normalized_type == "identity":

@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Iterator
-from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
 
+from novelvideo.media_capabilities.diagnostics import sanitize_diagnostics
+from novelvideo.media_capabilities.diagnostic_safety import (
+    contains_sensitive_value,
+    is_sensitive_key,
+)
 from novelvideo.media_capabilities.models import MediaCapability, MediaTaskStatus
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
@@ -123,35 +126,6 @@ _MAIN_NEXT = {
     MediaTaskStatus.DOWNLOADING: MediaTaskStatus.VALIDATING,
     MediaTaskStatus.VALIDATING: MediaTaskStatus.SUCCEEDED,
 }
-_SECRET_SEGMENTS = {
-    "auth",
-    "authorization",
-    "credential",
-    "credentials",
-    "password",
-    "passwd",
-    "token",
-    "secret",
-    "signature",
-}
-_SIGNED_QUERY_KEYS = {
-    "awsaccesskeyid",
-    "googleaccessid",
-    "policy",
-    "sig",
-    "signature",
-}
-_COMPACT_SECRET_KEYS = {
-    "apikey",
-    "accesstoken",
-    "clientsecret",
-    "refreshtoken",
-    "privatekey",
-    "bearertoken",
-    "secretkey",
-    "apisecret",
-    "authkey",
-}
 
 
 def _now() -> datetime:
@@ -171,70 +145,22 @@ def _bad_json(value: str) -> None:
     raise ValueError(f"invalid JSON constant: {value}")
 
 
-def _key_segments(key: str) -> list[str]:
-    key = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", key)
-    key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-    return re.findall(r"[a-z0-9]+", key.casefold())
-
-
-def _is_secret_key(key: str) -> bool:
-    compact = re.sub(r"[^a-z0-9]", "", key.casefold())
-    if compact in _COMPACT_SECRET_KEYS:
-        return True
-    segments = _key_segments(key)
-    if _SECRET_SEGMENTS.intersection(segments):
-        return True
-    return any(
-        left in {"api", "private"} and right == "key"
-        for left, right in zip(segments, segments[1:])
-    )
-
-
 def _reject_sensitive_keys(value: JsonValue) -> None:
     stack = [value]
     while stack:
         current = stack.pop()
         if isinstance(current, dict):
-            if any(_is_secret_key(key) for key in current):
+            if any(
+                is_sensitive_key(key)
+                or contains_sensitive_value(str(key), inspect_urls=False)
+                for key in current
+            ):
                 raise TaskStoreConflictError("task_store.prohibited_field")
             stack.extend(current.values())
         elif isinstance(current, list):
             stack.extend(current)
-        elif isinstance(current, str) and _contains_sensitive_value(current):
+        elif isinstance(current, str) and contains_sensitive_value(current):
             raise TaskStoreConflictError("task_store.prohibited_value")
-
-
-def _contains_sensitive_value(value: str) -> bool:
-    if re.search(r"(?i)\b(?:api[_-]?key|token)\s*=", value):
-        return True
-    if re.search(r"(?i)\bauthorization\s*:\s*(?:bearer|basic)\s+\S+", value):
-        return True
-    if re.search(r"(?i)\bbearer\s+\S+", value):
-        return True
-    if re.search(r"(?im)^\s*(?:set-cookie|cookie)\s*:\s*\S+", value):
-        return True
-    if re.search(
-        r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
-        r"[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])",
-        value,
-    ):
-        return True
-    urls = re.findall(r"https?://[^\s<>'\"]+", value)
-    for url in urls:
-        try:
-            query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
-        except ValueError:
-            return True
-        for key, _ in query:
-            lowered = key.casefold()
-            compact = re.sub(r"[^a-z0-9]", "", lowered)
-            if (
-                _is_secret_key(key)
-                or compact in _SIGNED_QUERY_KEYS
-                or lowered.startswith(("x-amz-", "x-goog-"))
-            ):
-                return True
-    return False
 
 
 def _validated_text(value: str, field: str, max_length: int = 512) -> str:
@@ -1127,6 +1053,12 @@ class TaskStore:
             return [self._task_from_row(row) for row in rows]
         finally:
             connection.close()
+
+    def get_public_diagnostics(self, attempt_id: str) -> dict[str, JsonValue]:
+        """Return the attempt's diagnostics projected onto the public contract."""
+        attempt = self.get_attempt(attempt_id)
+        raw = attempt.diagnostics if isinstance(attempt.diagnostics, dict) else {}
+        return sanitize_diagnostics(raw)
 
     def record_provider_status(
         self,

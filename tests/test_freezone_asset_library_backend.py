@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from novelvideo.api.routes.freezone import (
     _asset_record_from_path,
+    _asset_index_projection,
+    _asset_thumbnail_fields,
     _beat_context_asset_from_ref,
     _default_push_target_for_preset,
     _is_freezone_scene_library_role,
@@ -67,6 +70,230 @@ def test_preset_file_refs_include_media_type_for_beat_video_and_audio(tmp_path: 
     assert payload[1]["aspect_ratio"] == "1:1"
     assert payload[1]["mainline_context"][0]["kind"] == "audio"
     assert payload[1]["mainline_context"][0]["audioRole"] == "beat_audio"
+
+
+def test_asset_index_projection_is_lightweight_and_prefers_ready_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.utils import thumbnails
+
+    source = tmp_path / "assets" / "characters" / "林昭" / "portrait.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"full resolution source")
+    thumb = tmp_path / "freezone" / "_thumbnails" / "320x320" / "portrait.webp"
+    thumb.parent.mkdir(parents=True)
+    thumb.write_bytes(b"small thumbnail")
+    monkeypatch.setattr(thumbnails, "thumbnail_path", lambda *_args, **_kwargs: thumb)
+
+    projected = _asset_index_projection(
+        [
+            {
+                "id": "portrait:character_portrait:assets/characters/林昭/portrait.png",
+                "tab": "characters",
+                "kind": "portrait",
+                "role": "character_portrait",
+                "label": "林昭 / portrait",
+                "rel_path": "assets/characters/林昭/portrait.png",
+                "url": "/static/projects/proj_demo/assets/characters/林昭/portrait.png",
+                "exists": True,
+                "media_type": "image",
+                "meta": {"character": "林昭", "large": "must be omitted"},
+            }
+        ],
+        project_id="proj_demo",
+        project_dir=tmp_path,
+    )
+
+    thumbnail_url = projected[0]["thumbnail_url"]
+    assert isinstance(thumbnail_url, str)
+    parsed_thumbnail_url = urlsplit(thumbnail_url)
+    assert parsed_thumbnail_url.path == (
+        "/static/projects/proj_demo/freezone/_thumbnails/320x320/portrait.webp"
+    )
+    assert parse_qs(parsed_thumbnail_url.query).get("v", [""])[0].isdigit()
+
+    assert [{**projected[0], "thumbnail_url": parsed_thumbnail_url.path}] == [
+        {
+            "id": "portrait:character_portrait:assets/characters/林昭/portrait.png",
+            "name": "林昭 / portrait",
+            "tab": "characters",
+            "kind": "portrait",
+            "role": "character_portrait",
+            "media_type": "image",
+            "thumbnail_url": parsed_thumbnail_url.path,
+            "thumbnail_status": "ready",
+        }
+    ]
+    assert "url" not in projected[0]
+    assert "rel_path" not in projected[0]
+    assert "meta" not in projected[0]
+
+
+
+def test_asset_thumbnail_fields_marks_unwarmed_cache_miss_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.utils import thumbnails
+
+    source = tmp_path / "assets" / "characters" / "lin" / "portrait.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    destination = tmp_path / "freezone" / "_thumbnails" / "portrait.webp"
+    prewarm_calls: list[Path] = []
+    monkeypatch.setattr(thumbnails, "thumbnail_path", lambda *_args, **_kwargs: destination)
+    monkeypatch.setattr(
+        thumbnails,
+        "prewarm",
+        lambda _project_dir, path, _size: prewarm_calls.append(path),
+    )
+
+    fields = _asset_thumbnail_fields(
+        {
+            "media_type": "image",
+            "rel_path": "assets/characters/lin/portrait.png",
+            "exists": True,
+        },
+        project_id="proj_demo",
+        project_dir=tmp_path,
+        prewarm=False,
+    )
+
+    assert fields == {"thumbnail_url": None, "thumbnail_status": "missing"}
+    assert prewarm_calls == []
+
+
+def test_asset_thumbnail_fields_marks_rejected_prewarm_deferred(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.utils import thumbnails
+
+    source = tmp_path / "assets" / "characters" / "lin" / "portrait.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    destination = tmp_path / "freezone" / "_thumbnails" / "portrait.webp"
+    monkeypatch.setattr(thumbnails, "thumbnail_path", lambda *_args, **_kwargs: destination)
+    monkeypatch.setattr(thumbnails, "prewarm", lambda *_args, **_kwargs: None)
+
+    fields = _asset_thumbnail_fields(
+        {
+            "media_type": "image",
+            "rel_path": "assets/characters/lin/portrait.png",
+            "exists": True,
+        },
+        project_id="proj_demo",
+        project_dir=tmp_path,
+        prewarm=True,
+    )
+
+    assert fields == {"thumbnail_url": None, "thumbnail_status": "deferred"}
+
+@pytest.mark.asyncio
+async def test_full_asset_route_attaches_thumbnail_fields_and_prewarms(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    class Store:
+        def get_all_characters(self):
+            return [SimpleNamespace(name="林昭", identities=[])]
+
+        async def list_scenes(self):
+            return []
+
+        async def list_props(self):
+            return []
+
+        async def close(self):
+            return None
+
+    async def fake_resolve(project, user, *, required_role="viewer"):
+        return SimpleNamespace(project_id=project), "admin", "demo", tmp_path, str(tmp_path)
+
+    async def fake_store(_ctx):
+        return Store()
+
+    def fake_record(**_kwargs):
+        return {
+            "id": "portrait:character_portrait:assets/characters/林昭/portrait.png",
+            "media_type": "image",
+            "rel_path": "assets/characters/林昭/portrait.png",
+            "exists": True,
+        }
+
+    thumbnail_calls: list[tuple[str, bool]] = []
+
+    def fake_thumbnail_fields(asset, *, project_id, project_dir, prewarm=True):
+        thumbnail_calls.append((asset["id"], prewarm))
+        return {"thumbnail_url": None, "thumbnail_status": "pending"}
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", fake_resolve)
+    monkeypatch.setattr(freezone, "make_sqlite_store_for_context", fake_store)
+    monkeypatch.setattr(freezone, "_asset_record_from_path", fake_record)
+    monkeypatch.setattr(freezone, "_asset_thumbnail_fields", fake_thumbnail_fields)
+
+    response = await freezone.list_freezone_assets(
+        project="proj_demo", view=None, user={"username": "admin"}
+    )
+
+    assert thumbnail_calls == [
+        ("portrait:character_portrait:assets/characters/林昭/portrait.png", True)
+    ]
+    assert response["data"][0]["thumbnail_status"] == "pending"
+    assert "thumbnail_url" in response["data"][0]
+@pytest.mark.asyncio
+async def test_asset_index_view_skips_full_asset_record_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    class Store:
+        def get_all_characters(self):
+            return [SimpleNamespace(name="林昭", identities=[])]
+
+        async def list_scenes(self):
+            return []
+
+        async def list_props(self):
+            return []
+
+        async def close(self):
+            return None
+
+    async def fake_resolve(project, user, *, required_role="viewer"):
+        return (
+            SimpleNamespace(project_id="proj_demo"),
+            "admin",
+            "demo",
+            tmp_path,
+            str(tmp_path),
+        )
+
+    async def fake_store(_ctx):
+        return Store()
+
+    async def fake_lightweight_index(**_kwargs):
+        return [{"id": "lightweight-only"}]
+
+    def fail_full_record(**_kwargs):
+        raise AssertionError("index view must not build full asset records")
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", fake_resolve)
+    monkeypatch.setattr(freezone, "make_sqlite_store_for_context", fake_store)
+    monkeypatch.setattr(
+        freezone, "_list_freezone_asset_index", fake_lightweight_index, raising=False
+    )
+    monkeypatch.setattr(freezone, "_asset_record_from_path", fail_full_record)
+
+    response = await freezone.list_freezone_assets(
+        project="proj_demo", view="index", user={"username": "admin"}
+    )
+
+    assert response == {"ok": True, "data": [{"id": "lightweight-only"}]}
 
 
 def test_beat_context_asset_excludes_freezone_runtime_outputs() -> None:

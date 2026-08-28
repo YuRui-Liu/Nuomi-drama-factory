@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { ViewportLazyImage } from '@/components/viewport-lazy-image';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { downloadUrlAsFile } from '@/lib/browserDownload';
 import {
@@ -85,6 +86,24 @@ export interface HistoryNodeMeta {
   name: string | null;
 }
 
+function historyRecordThumbnailUrl(
+  record: FreezoneGenerationHistoryRecord,
+  nodeCover: string | null,
+): string | null {
+  const result = record.result && typeof record.result === 'object'
+    ? record.result as Record<string, unknown>
+    : {};
+  const status = typeof result.thumbnail_status === 'string'
+    ? result.thumbnail_status
+    : null;
+  if (status !== null) {
+    return status === 'ready' && typeof result.thumbnail_url === 'string'
+      ? resolveMediaUrl(result.thumbnail_url)
+      : null;
+  }
+  return resolveMediaUrl(historyRecordPreviewImageUrl(record) ?? nodeCover);
+}
+
 export function recordsToAssetBuckets(
   records: FreezoneGenerationHistoryRecord[],
   resolveNodeMeta?: (nodeId: string) => HistoryNodeMeta,
@@ -137,9 +156,7 @@ export function recordsToAssetBuckets(
       id: record.id,
       kind,
       url,
-      previewUrl: resolveMediaUrl(
-        historyRecordPreviewImageUrl(record) ?? nodeMeta?.cover ?? null,
-      ),
+      previewUrl: historyRecordThumbnailUrl(record, nodeMeta?.cover ?? null),
       nodeId: record.node_id,
       label,
       // 用「使用」建节点时把这条记录原始提示词灌进新节点的提示词框；label 对世界
@@ -723,42 +740,16 @@ function AssetCard({
             }}
           />
         </div>
-      ) : asset.kind === 'model' ? (
-        // 世界模型（3GS / 360 全景）：产物本身不是图片，用封面缩略图；没有封面则
-        // 画一个 3D 盒子占位，避免把 .sog 当 <img> 渲染导致裂图。
-        asset.previewUrl ? (
-          <img
-            src={asset.previewUrl}
-            alt={asset.label ?? ''}
-            loading="lazy"
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-cyan-500/15 to-purple-500/15">
-            <BoxIcon className="h-7 w-7 text-cyan-200/35" />
-          </div>
-        )
-      ) : asset.kind === 'video' && !asset.previewUrl ? (
-        // 视频节点大多没有存封面帧（previewImageUrl 为空），过去只画一个空的播放
-        // 占位图标。这里直接用 <video> 渲染视频本身的首帧当封面：`#t=0.1` 让浏览器
-        // seek 到 0.1s 并绘制该帧（t=0 在部分浏览器是黑帧/不绘制），preload=metadata
-        // 保证只拉首帧元数据、不下载整段。静音 + 无 controls，纯静态封面，点击交给
-        // 卡片的 hover 蒙层。
-        <video
-          src={asset.url.includes('#') ? asset.url : `${asset.url}#t=0.1`}
+      ) : asset.previewUrl ? (
+        <ViewportLazyImage
+          src={asset.previewUrl}
+          alt={asset.label ?? ''}
           className="h-full w-full object-cover"
-          muted
-          playsInline
-          preload="metadata"
-          tabIndex={-1}
         />
       ) : (
-        <img
-          src={asset.previewUrl ?? asset.url}
-          alt={asset.label ?? ''}
-          loading="lazy"
-          className="h-full w-full object-cover"
-        />
+        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-cyan-500/15 to-purple-500/15">
+          <BoxIcon className="h-7 w-7 text-cyan-200/35" />
+        </div>
       )}
 
       {selectionMode ? (

@@ -77,9 +77,10 @@ vi.mock("@/lib/queries/props", () => ({
 }));
 
 vi.mock("@/lib/queries/asset-references", () => ({
-  useAssetReferenceIndex: () => ({
-    countFor: () => 0,
+  useAssetReferences: () => ({
     referencesFor: () => [],
+    coOccurrenceForScene: () => ({ identities: [], props: [] }),
+    isLoading: false,
   }),
 }));
 

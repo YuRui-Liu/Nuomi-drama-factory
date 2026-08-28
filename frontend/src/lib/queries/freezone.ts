@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { listFreezoneCanvases } from "@/api/canvas";
 import {
   listFreezoneBeatContext,
+  listFreezoneProjectAssetIndex,
   listFreezoneProjectAssets,
 } from "@/api/projects";
 import { api } from "@/lib/api";
@@ -100,6 +101,25 @@ export function useFreezoneProjectAssets(
         throw new Error("project is required");
       }
       return listFreezoneProjectAssets(project, { signal });
+    },
+    enabled: enabled && Boolean(project),
+    staleTime: 15_000,
+  });
+}
+
+export function useFreezoneProjectAssetIndex(
+  project: string | null | undefined,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: project
+      ? [...queryKeys.freezoneProjectAssets(project), "index"]
+      : ["projects", "__missing__", "freezone", "assets", "index"],
+    queryFn: ({ signal }) => {
+      if (!project) {
+        throw new Error("project is required");
+      }
+      return listFreezoneProjectAssetIndex(project, { signal });
     },
     enabled: enabled && Boolean(project),
     staleTime: 15_000,
