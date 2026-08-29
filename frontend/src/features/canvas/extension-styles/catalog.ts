@@ -62,9 +62,14 @@ function parseFragments(value: unknown, index: number): ExtensionStylePromptFrag
   if (keys.length !== FRAGMENT_KEYS.length || keys.some((key) => !FRAGMENT_KEYS.includes(key as never))) {
     fail(`entry ${index} prompt_fragment must contain exactly the six fragment keys`);
   }
-  return Object.fromEntries(
-    FRAGMENT_KEYS.map((key) => [key, requireStringArray(value[key], `entry ${index} prompt_fragment.${key}`)]),
-  ) as ExtensionStylePromptFragment;
+  return {
+    medium: requireStringArray(value.medium, `entry ${index} prompt_fragment.medium`),
+    rendering: requireStringArray(value.rendering, `entry ${index} prompt_fragment.rendering`),
+    lighting: requireStringArray(value.lighting, `entry ${index} prompt_fragment.lighting`),
+    color: requireStringArray(value.color, `entry ${index} prompt_fragment.color`),
+    camera: requireStringArray(value.camera, `entry ${index} prompt_fragment.camera`),
+    constraints: requireStringArray(value.constraints, `entry ${index} prompt_fragment.constraints`),
+  };
 }
 
 function parseSource(value: unknown, index: number): ExtensionStyleSource {

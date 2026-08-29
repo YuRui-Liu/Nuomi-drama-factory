@@ -9,7 +9,7 @@ vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
   return {
     ...actual,
     useNarrativeGroupVideoPrompts: vi.fn(() => ({
-      data: { data: { units: [] } }, isLoading: false, isError: false,
+      data: { ok: true, data: { units: [] } }, isLoading: false, isError: false,
     })),
   };
 });
@@ -50,7 +50,7 @@ describe("GroupVideoResult", () => {
   it("shows one physical video, stem state, and its logical VideoSpan dialogue sources", () => {
     render(<GroupVideoResult
       stage={{
-        status: "completed", video_asset: "/media/group.mp4", manifest_asset: "/media/group.manifest.json",
+        status: "completed", revision: 6, video_asset: "/media/group.mp4", manifest_asset: "/media/group.manifest.json",
         dialogue_stem_status: "succeeded", ambience_stem_status: "succeeded",
         video_spans: [
           { beat_numbers: [1, 2], start_seconds: 0, end_seconds: 8, dialogue_source: "external_tts" },
@@ -68,7 +68,7 @@ describe("GroupVideoResult", () => {
 
   it("leaves source switching as recomposition-only contract", () => {
     const onDialogueSourceChange = vi.fn();
-    render(<GroupVideoResult stage={{ status: "completed", video_spans: [
+    render(<GroupVideoResult stage={{ status: "completed", revision: 6, video_spans: [
       { beat_numbers: [1], start_seconds: 0, end_seconds: 5, dialogue_source: "external_tts" },
     ] }} onDialogueSourceChange={onDialogueSourceChange} />);
     screen.getByRole("button", { name: "改用 H3 原声" }).click();
@@ -81,7 +81,7 @@ describe("GroupVideoResult", () => {
       project="project-1"
       episode={1}
       groupId="group-1"
-      stage={{ status: "completed", manifest_asset: "/media/group.manifest.json" }}
+      stage={{ status: "completed", revision: 6, manifest_asset: "/media/group.manifest.json" }}
     />);
 
     await user.click(screen.getByRole("button", { name: "生成提示词" }));

@@ -20,7 +20,7 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
 }) {
   const [copyFeedback, setCopyFeedback] = useState<"success" | "error" | null>(null);
   const query = useNarrativeGroupVideoPrompts(project, episode, groupId, open);
-  const manifest = query.data?.data;
+  const manifest = query.data?.ok ? query.data.data : undefined;
   const units = manifest?.units ?? [];
   const manifestHref = manifest
     ? `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(manifest, null, 2))}`

@@ -34,7 +34,7 @@ describe("GroupVideoPromptDrawer", () => {
 
   beforeEach(() => {
     mockedQuery.mockReturnValue({
-      data: { data: { units: [{
+      data: { ok: true, data: { units: [{
         beat_ids: ["8", "9"], label: "Beat 8 → Beat 9", mode: "fl2va", duration_seconds: 10,
         input_summary: { first_frame: "Beat 8", last_frame: "Beat 9" },
         director_plan: { shots: [{ action: "turns quickly" }] },
@@ -92,7 +92,7 @@ describe("GroupVideoPromptDrawer", () => {
 
   it("keeps legacy final prompts visible without a director plan", () => {
     mockedQuery.mockReturnValue({
-      data: { data: { units: [{ beat_ids: ["2"], mode: "i2va", duration_seconds: 5, director_plan: null, final_prompt: "legacy prompt" }] } },
+      data: { ok: true, data: { units: [{ beat_ids: ["2"], mode: "i2va", duration_seconds: 5, director_plan: null, final_prompt: "legacy prompt" }] } },
       isLoading: false, isError: false,
     } as ReturnType<typeof useNarrativeGroupVideoPrompts>);
     render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);

@@ -29,7 +29,7 @@ vi.mock("react-i18next", () => ({
       const statuses: Record<string, [string, string]> = {
         new: ["新增", "New"], conflict: ["冲突", "Conflict"], needs_episode_number: ["待补充", "Number required"], invalid: ["解析失败", "Could not parse"],
       };
-      if (key.startsWith("ingest.episodeImport.status.")) return statuses[key.split(".").at(-1)!][language.value === "zh" ? 0 : 1];
+      if (key.startsWith("ingest.episodeImport.status.")) return statuses[key.split(".").pop()!][language.value === "zh" ? 0 : 1];
       return copy[key]?.[language.value === "zh" ? 0 : 1] ?? key;
     },
   }),

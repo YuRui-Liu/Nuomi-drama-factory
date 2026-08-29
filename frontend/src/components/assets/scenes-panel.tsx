@@ -1045,7 +1045,7 @@ function sceneGroupPreviewUrl(group: SceneGroup): string {
 function SceneGroupListItem({
   group,
   selected,
-  referenceCount,
+  referenceCount = 0,
   onSelect,
 }: {
   group: SceneGroup;
