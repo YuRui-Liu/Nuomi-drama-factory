@@ -102,6 +102,12 @@ export interface NarrativeGroupVideoPlan {
   total_duration_seconds: number;
 }
 
+export interface NarrativeGroupVideoSettings {
+  revision: number;
+  workflow_id: string;
+  overrides: Record<string, string>;
+}
+
 export interface NarrativeGroupVideoPromptUnit {
   beat_ids: string[];
   label?: string | null;
@@ -156,6 +162,7 @@ export interface NarrativeGroup {
     actual_mode?: string | null;
   }>;
   video_plan?: NarrativeGroupVideoPlan;
+  video_settings?: NarrativeGroupVideoSettings;
 }
 
 export interface NarrativeGroupRevision {
@@ -186,6 +193,10 @@ export function narrativeGroupVideoPlanPath(project: string, episode: number, gr
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/plan`;
 }
 
+export function narrativeGroupVideoSettingsPath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/settings`;
+}
+
 export function narrativeGroupVideoPromptsPath(project: string, episode: number, groupId: string) {
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/prompts`;
 }
@@ -214,6 +225,7 @@ export function narrativeGroupVideoPayload(input: {
   mode: "auto" | "i2va" | "fl2va";
   revision: number;
   planRevision?: number;
+  settingsRevision?: number;
   aspectRatio: "9:16" | "16:9";
   resolution?: string;
 }) {
@@ -222,9 +234,33 @@ export function narrativeGroupVideoPayload(input: {
     mode: input.mode,
     revision: input.revision,
     ...(input.planRevision !== undefined ? { plan_revision: input.planRevision } : {}),
+    ...(input.settingsRevision !== undefined ? { settings_revision: input.settingsRevision } : {}),
     aspect_ratio: input.aspectRatio,
     ...(input.resolution ? { resolution: input.resolution } : {}),
   };
+}
+
+export function narrativeGroupVideoSettingsPayload(input: {
+  expectedRevision: number;
+  workflowId: string;
+  overrides: Record<string, string>;
+}) {
+  return {
+    expected_revision: input.expectedRevision,
+    workflow_id: input.workflowId,
+    overrides: input.overrides,
+  };
+}
+
+export function updateNarrativeGroupVideoSettings(project: string, episode: number, input: {
+  groupId: string;
+  expectedRevision: number;
+  workflowId: string;
+  overrides: Record<string, string>;
+}) {
+  return api.put(narrativeGroupVideoSettingsPath(project, episode, input.groupId), {
+    json: narrativeGroupVideoSettingsPayload(input),
+  }).json<ApiResponse<NarrativeGroup>>();
 }
 
 export function narrativeGroupVideoPlanPayload(input: {
@@ -348,21 +384,37 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision, planRevision, aspectRatio, resolution }: {
+    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
       revision: number;
       planRevision?: number;
+      settingsRevision?: number;
       aspectRatio: "9:16" | "16:9";
       resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, aspectRatio, resolution }),
+      json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }),
     }).json<TaskResponse>(),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
     ]),
+  });
+}
+
+export function useUpdateNarrativeGroupVideoSettings(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      groupId: string;
+      expectedRevision: number;
+      workflowId: string;
+      overrides: Record<string, string>;
+    }) => updateNarrativeGroupVideoSettings(project, episode, input),
+    onSuccess: () => qc.invalidateQueries({
+      queryKey: queryKeys.narrativeGroups(project, episode),
+    }),
   });
 }
 
