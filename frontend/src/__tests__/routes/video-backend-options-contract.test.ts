@@ -33,10 +33,14 @@ describe("video backend options alignment", () => {
 
   it("defaults to RunningHub MiniMax H3 instead of legacy comfyui", () => {
     const beatsRoute = read("src/routes/_app/projects.$project/episodes.$episode/beats.lazy.tsx");
+    const workbenchStore = read("src/stores/episode-workbench-store.ts");
     const videoQueries = read("src/lib/queries/video.ts");
 
-    expect(beatsRoute).toContain("DEFAULT_VIDEO_BACKEND");
+    expect(beatsRoute).toContain("useState(DEFAULT_VIDEO_MODEL)");
+    expect(beatsRoute).toContain("video_backend || DEFAULT_VIDEO_MODEL");
+    expect(workbenchStore).toContain('DEFAULT_VIDEO_MODEL = "runninghub:minimax-h3"');
     expect(videoQueries).toContain('DEFAULT_VIDEO_BACKEND = "runninghub_minimax_h3"');
+    expect(beatsRoute).not.toContain('"comfyui"');
     expect(videoQueries).not.toContain('videoBackend ?? "comfyui"');
   });
 });
