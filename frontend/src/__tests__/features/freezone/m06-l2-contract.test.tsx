@@ -346,7 +346,17 @@ describe("M06 frontend L2 contract", () => {
 
     expect(vi.mocked(apiCall).mock.calls).toEqual([
       ["projects/demo/freezone/canvases", undefined],
-      ["projects/demo/freezone/canvases/default", undefined],
+      [
+        "projects/demo/freezone/canvases/default",
+        {
+          timeout: 8_000,
+          totalTimeout: 18_000,
+          retry: {
+            limit: 1,
+            retryOnTimeout: true,
+          },
+        },
+      ],
       [
         "projects/demo/freezone/canvases/default",
         {
