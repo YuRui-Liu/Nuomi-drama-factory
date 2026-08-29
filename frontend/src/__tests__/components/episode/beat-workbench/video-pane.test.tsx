@@ -911,14 +911,18 @@ describe("VideoPane Seedance2 inspector", () => {
       target: { value: "8" },
     });
     await user.click(screen.getAllByRole("button", { name: "重新生成" })[0]);
-    await user.click(screen.getByRole("button", { name: "确认" }));
+    const savesBeforeConfirm = updateBeatMock.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
-    await waitFor(() => expect(updateBeatMock).toHaveBeenCalledTimes(1));
+    const saveCallIndex = savesBeforeConfirm;
+    await waitFor(() =>
+      expect(updateBeatMock).toHaveBeenCalledTimes(savesBeforeConfirm + 1),
+    );
     await waitFor(() => expect(regenerateMock).toHaveBeenCalledTimes(1));
-    expect(updateBeatMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(updateBeatMock.mock.invocationCallOrder[saveCallIndex]).toBeLessThan(
       regenerateMock.mock.invocationCallOrder[0],
     );
-    const payload = updateBeatMock.mock.calls[0][0];
+    const payload = updateBeatMock.mock.calls[saveCallIndex][0];
     const config = JSON.parse(payload.data.seedance2_config_json);
     expect(config).toMatchObject({
       final_prompt: "draft prompt used for generation",
@@ -938,10 +942,18 @@ describe("VideoPane Seedance2 inspector", () => {
       target: { value: "3" },
     });
     await user.click(screen.getAllByRole("button", { name: "重新生成" })[0]);
-    await user.click(screen.getByRole("button", { name: "确认" }));
+    const savesBeforeConfirm = updateBeatMock.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
-    await waitFor(() => expect(updateBeatMock).toHaveBeenCalledTimes(1));
-    const payload = updateBeatMock.mock.calls[0][0];
+    const saveCallIndex = savesBeforeConfirm;
+    await waitFor(() =>
+      expect(updateBeatMock).toHaveBeenCalledTimes(savesBeforeConfirm + 1),
+    );
+    await waitFor(() => expect(regenerateMock).toHaveBeenCalledTimes(1));
+    expect(updateBeatMock.mock.invocationCallOrder[saveCallIndex]).toBeLessThan(
+      regenerateMock.mock.invocationCallOrder[0],
+    );
+    const payload = updateBeatMock.mock.calls[saveCallIndex][0];
     const config = JSON.parse(payload.data.seedance2_config_json);
     expect(config.duration).toBe(4);
   });
