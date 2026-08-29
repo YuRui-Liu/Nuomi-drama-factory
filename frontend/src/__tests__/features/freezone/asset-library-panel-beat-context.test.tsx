@@ -8,12 +8,53 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const listFreezoneBeatContext = vi.fn();
 const listFreezoneProjectAssets = vi.fn();
 const listFreezoneProjectAssetIndex = vi.fn();
+const assetOrganizationMocks = vi.hoisted(() => ({
+  createFolder: vi.fn(),
+  deleteFolder: vi.fn(),
+  organizeAsset: vi.fn(),
+  refetchFolders: vi.fn(),
+  refetchOrganization: vi.fn(),
+  renameFolder: vi.fn(),
+}));
 
 vi.mock("@/api/projects", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/projects")>()),
   listFreezoneBeatContext: (...args: unknown[]) => listFreezoneBeatContext(...args),
   listFreezoneProjectAssets: (...args: unknown[]) => listFreezoneProjectAssets(...args),
   listFreezoneProjectAssetIndex: (...args: unknown[]) => listFreezoneProjectAssetIndex(...args),
+}));
+
+vi.mock("@/lib/queries/asset-organization", () => ({
+  useAssetFolders: () => ({
+    data: { ok: true, data: { folders: [] } },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: assetOrganizationMocks.refetchFolders,
+  }),
+  useAssetOrganization: () => ({
+    data: { ok: true, data: { placements: [] } },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: assetOrganizationMocks.refetchOrganization,
+  }),
+  useCreateAssetFolder: () => ({
+    mutateAsync: assetOrganizationMocks.createFolder,
+    isPending: false,
+  }),
+  useRenameAssetFolder: () => ({
+    mutateAsync: assetOrganizationMocks.renameFolder,
+    isPending: false,
+  }),
+  useDeleteAssetFolder: () => ({
+    mutateAsync: assetOrganizationMocks.deleteFolder,
+    isPending: false,
+  }),
+  useOrganizeAsset: () => ({
+    mutateAsync: assetOrganizationMocks.organizeAsset,
+    isPending: false,
+  }),
 }));
 
 vi.mock("@/features/freezone/CanvasesTab", () => ({
@@ -33,6 +74,9 @@ describe("AssetLibraryPanel beat context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listFreezoneProjectAssetIndex.mockResolvedValue([]);
+    for (const mock of Object.values(assetOrganizationMocks)) {
+      mock.mockResolvedValue({ ok: true });
+    }
   });
 
   it("renders index entries first, then restores canonical actions and full-only assets", async () => {
