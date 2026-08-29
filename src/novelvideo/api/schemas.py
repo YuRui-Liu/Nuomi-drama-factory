@@ -106,6 +106,7 @@ class ProjectUpdate(BaseModel):
 class MediaDefaultsRequest(BaseModel):
     video_model: str
     h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    video_workflow_parameters: dict[str, dict[str, str]] | None = None
     narrative_sketch_provider: str = "grsai-main"
     narrative_sketch_model: str = "nano-banana-2"
     narrative_render_provider: str = "grsai-main"

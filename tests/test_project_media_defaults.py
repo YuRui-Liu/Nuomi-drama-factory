@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,26 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowRegistry,
     VideoWorkflowScene,
 )
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterDefinition,
+    VideoWorkflowParameterOption,
+)
+
+
+def _enum_parameter(
+    key: str,
+    default: str,
+    *values: str,
+) -> VideoWorkflowParameterDefinition:
+    return VideoWorkflowParameterDefinition(
+        key=key,
+        label=key,
+        default=default,
+        options=tuple(
+            VideoWorkflowParameterOption(value=value, label=value)
+            for value in values
+        ),
+    )
 
 
 def _workflow(
@@ -19,7 +40,14 @@ def _workflow(
     *,
     supported_modes: tuple[str, ...] = ("auto", "i2va", "fl2va"),
     default_mode: str = "auto",
+    parameters: tuple[VideoWorkflowParameterDefinition, ...] | None = None,
 ) -> VideoWorkflowDefinition:
+    if parameters is None:
+        parameters = (
+            (_enum_parameter("resolution", "720p", "720p", "1080p"),)
+            if model == "runninghub:minimax-h3"
+            else ()
+        )
     return VideoWorkflowDefinition(
         id=model,
         label=model,
@@ -28,6 +56,7 @@ def _workflow(
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         supported_modes=supported_modes,
         default_mode=default_mode,
+        parameters=parameters,
     )
 
 
@@ -73,6 +102,9 @@ def test_media_defaults_use_real_stage_specific_image_models():
         "narrative_render_provider": "grsai-main",
         "narrative_render_model": "gpt-image-2",
         "narrative_render_image_size": "1K",
+        "video_workflow_parameters": {
+            "runninghub:minimax-h3": {"resolution": "720p"},
+        },
     }
 
 
@@ -87,6 +119,23 @@ def test_media_defaults_request_preserves_independent_image_bindings():
 
     assert request.narrative_sketch_model == "nano-banana-2-4k-cl"
     assert request.narrative_render_model == "gpt-image-2-vip"
+
+
+def test_media_defaults_request_tracks_optional_workflow_parameters():
+    omitted = MediaDefaultsRequest(video_model="runninghub:minimax-h3")
+    provided = MediaDefaultsRequest(
+        video_model="runninghub:minimax-h3",
+        video_workflow_parameters={
+            "runninghub:minimax-h3": {"resolution": "1080p"}
+        },
+    )
+
+    assert omitted.video_workflow_parameters is None
+    assert "video_workflow_parameters" not in omitted.model_fields_set
+    assert provided.video_workflow_parameters == {
+        "runninghub:minimax-h3": {"resolution": "1080p"}
+    }
+    assert "video_workflow_parameters" in provided.model_fields_set
 
 
 def test_media_defaults_use_vip_2k_default_and_preserve_explicit_size():
@@ -112,6 +161,17 @@ def test_get_media_defaults_falls_back_from_legacy_newapi_model(monkeypatch, tmp
 
     assert response.status_code == 200
     assert response.json()["data"]["video_model"] == "runninghub:minimax-h3"
+
+
+def test_get_media_defaults_fills_known_workflow_schema_defaults(monkeypatch, tmp_path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": "720p"}
+    }
 
 
 def test_get_media_defaults_preserves_future_registered_model(monkeypatch, tmp_path):
@@ -292,3 +352,178 @@ def test_put_media_defaults_rejects_unsupported_mode_without_persisting(
 
     assert response.status_code == 422
     assert json.loads(config_path.read_text(encoding="utf-8")) == original
+
+
+def test_put_media_defaults_saves_resolved_workflow_parameters(monkeypatch, tmp_path):
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={
+            "video_model": "runninghub:minimax-h3",
+            "video_workflow_parameters": {
+                "runninghub:minimax-h3": {"resolution": "1080p"}
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": "1080p"}
+    }
+    assert response.json()["data"]["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": "1080p"}
+    }
+
+
+def test_put_media_defaults_without_workflow_parameters_preserves_existing(
+    monkeypatch, tmp_path
+):
+    original_parameters = {
+        "runninghub:minimax-h3": {"resolution": "1080p"},
+    }
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text(
+        json.dumps({"video_workflow_parameters": original_parameters}),
+        encoding="utf-8",
+    )
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={"video_model": "runninghub:minimax-h3"},
+    )
+
+    assert response.status_code == 200
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["video_workflow_parameters"] == original_parameters
+
+
+def test_put_media_defaults_updates_only_requested_namespace_with_full_values(
+    monkeypatch, tmp_path
+):
+    future = "future:director-v2"
+    registry = VideoWorkflowRegistry(
+        (
+            _workflow("runninghub:minimax-h3"),
+            _workflow(
+                future,
+                parameters=(
+                    _enum_parameter("quality", "standard", "standard", "high"),
+                    _enum_parameter("speed", "normal", "normal", "fast"),
+                ),
+            ),
+        )
+    )
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "video_workflow_parameters": {
+                    "runninghub:minimax-h3": {"resolution": "720p"},
+                    future: {"quality": "high", "speed": "fast"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _make_client(monkeypatch, tmp_path, registry=registry)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={
+            "video_model": "runninghub:minimax-h3",
+            "video_workflow_parameters": {future: {"quality": "standard"}},
+        },
+    )
+
+    assert response.status_code == 200
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": "720p"},
+        future: {"quality": "standard", "speed": "normal"},
+    }
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"unknown:workflow": {"resolution": "1080p"}},
+        {"runninghub:minimax-h3": {"unknown": "1080p"}},
+        {"runninghub:minimax-h3": {"resolution": "4K"}},
+    ],
+    ids=("unknown-workflow", "unknown-key", "unknown-value"),
+)
+def test_put_media_defaults_rejects_invalid_workflow_parameters_without_writing(
+    monkeypatch, tmp_path, parameters
+):
+    original = {
+        "video_backend": "runninghub:minimax-h3",
+        "video_workflow_parameters": {
+            "runninghub:minimax-h3": {"resolution": "720p"}
+        },
+    }
+    config_path = tmp_path / "project_config.json"
+    original_text = json.dumps(original)
+    config_path.write_text(original_text, encoding="utf-8")
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={
+            "video_model": "runninghub:minimax-h3",
+            "video_workflow_parameters": parameters,
+        },
+    )
+
+    assert response.status_code == 422
+    assert config_path.read_text(encoding="utf-8") == original_text
+
+
+@pytest.mark.parametrize(
+    ("legacy_resolution", "expected"),
+    [("720p", "720p"), ("1080p", "1080p"), ("4K", "720p")],
+)
+def test_get_media_defaults_reads_legacy_h3_resolution_without_writing(
+    monkeypatch, tmp_path, legacy_resolution, expected
+):
+    config_path = tmp_path / "project_config.json"
+    original_text = json.dumps(
+        {"video_resolution": legacy_resolution, "project_uuid": "stable-project-id"}
+    )
+    config_path.write_text(original_text, encoding="utf-8")
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": expected}
+    }
+    assert config_path.read_text(encoding="utf-8") == original_text
+
+
+def test_get_media_defaults_does_not_apply_legacy_resolution_when_h3_namespace_exists(
+    monkeypatch, tmp_path
+):
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "video_resolution": "1080p",
+                "video_workflow_parameters": {"runninghub:minimax-h3": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _make_client(monkeypatch, tmp_path)
+
+    response = client.get("/api/v1/projects/demo/media-defaults")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["video_workflow_parameters"] == {
+        "runninghub:minimax-h3": {"resolution": "720p"}
+    }

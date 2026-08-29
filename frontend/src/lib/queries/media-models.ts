@@ -10,6 +10,25 @@ import type { VideoBackendOption } from "@/lib/queries/video";
 import { coerceNarrativeImageSize, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 
 export type VideoModelMode = "auto" | "i2va" | "fl2va";
+export interface VideoWorkflowParameterOption {
+  value: string;
+  label: string;
+  description: string;
+  relative_cost: "standard" | "higher";
+}
+
+export interface VideoWorkflowParameterDefinition {
+  key: string;
+  type: "enum";
+  label: string;
+  description: string;
+  default: string;
+  scope: "narrative_group";
+  options: VideoWorkflowParameterOption[];
+}
+
+export type VideoWorkflowParameterValues = Record<string, Record<string, string>>;
+
 export interface VideoModelCatalogItem {
   id: string;
   label: string;
@@ -18,6 +37,7 @@ export interface VideoModelCatalogItem {
   unavailable_reason?: string | null;
   supported_modes: VideoModelMode[];
   default_mode: VideoModelMode;
+  parameters: VideoWorkflowParameterDefinition[];
 }
 
 export function effectiveVideoMode(mode: VideoModelMode, hasFirst: boolean, hasLast: boolean) {
@@ -38,6 +58,7 @@ export interface MediaDefaults {
   narrative_render_provider: string;
   narrative_render_model: string;
   narrative_render_image_size: NarrativeImageSize;
+  video_workflow_parameters: VideoWorkflowParameterValues;
 }
 
 export function normalizeMediaDefaults(defaults: Omit<MediaDefaults, "narrative_render_image_size"> & {
@@ -85,6 +106,7 @@ export function mergeVideoModelCatalog(
       available: true,
       supported_modes: ["auto"] as VideoModelMode[],
       default_mode: "auto" as VideoModelMode,
+      parameters: [],
     })),
   ];
 }
@@ -112,9 +134,10 @@ export function useVideoModels() {
 export function useUpdateMediaDefaults(project: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ videoModel, videoMode = "auto", ...imageDefaults }: {
+    mutationFn: ({ videoModel, videoMode = "auto", videoWorkflowParameters, ...imageDefaults }: {
       videoModel: string;
       videoMode?: VideoModelMode;
+      videoWorkflowParameters?: VideoWorkflowParameterValues;
       narrativeSketchProvider?: string;
       narrativeSketchModel?: string;
       narrativeRenderProvider?: string;
@@ -124,6 +147,9 @@ export function useUpdateMediaDefaults(project: string) {
       api.put(p`api/v1/projects/${project}/media-defaults`, {
         json: {
           ...videoModelRequest(videoModel, videoMode),
+          ...(videoWorkflowParameters === undefined
+            ? {}
+            : { video_workflow_parameters: videoWorkflowParameters }),
           narrative_sketch_provider: imageDefaults.narrativeSketchProvider ?? "grsai-main",
           narrative_sketch_model: imageDefaults.narrativeSketchModel ?? "nano-banana-2",
           narrative_render_provider: imageDefaults.narrativeRenderProvider ?? "grsai-main",

@@ -4,6 +4,7 @@ import logging
 import shutil
 import sqlite3
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -25,10 +26,15 @@ from novelvideo.api.deps import (
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.media_capabilities.video.workflow_registry import (
+    H3_WORKFLOW_ID,
     VideoWorkflowRegistry,
     VideoWorkflowScene,
     VideoWorkflowUnavailable,
     build_video_workflow_registry,
+)
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterError,
+    resolve_workflow_parameters,
 )
 from novelvideo.api.routes._project_audit import emit_project_audit
 from novelvideo.api.schemas import (
@@ -695,7 +701,7 @@ def _media_defaults_payload(
     config: dict,
     *,
     registry: VideoWorkflowRegistry | None = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     video_model = str(config.get("video_backend") or "runninghub:minimax-h3")
     h3_mode = str(config.get("h3_mode") or "auto")
     if registry is not None:
@@ -719,6 +725,10 @@ def _media_defaults_payload(
 
     if render_image_size not in supported_grid_image_sizes(render_model):
         render_image_size = "2K" if render_model == "gpt-image-2-vip" else "1K"
+    workflow_parameters = _normalized_video_workflow_parameters(
+        config,
+        registry=registry,
+    )
     return {
         "video_model": video_model,
         "h3_mode": h3_mode,
@@ -733,7 +743,52 @@ def _media_defaults_payload(
         ),
         "narrative_render_model": render_model,
         "narrative_render_image_size": render_image_size,
+        "video_workflow_parameters": workflow_parameters,
     }
+
+
+def _normalized_video_workflow_parameters(
+    config: dict,
+    *,
+    registry: VideoWorkflowRegistry | None,
+) -> dict[str, dict[str, str]]:
+    stored = config.get("video_workflow_parameters")
+    stored_namespaces = stored if isinstance(stored, Mapping) else {}
+    h3_namespace_missing = H3_WORKFLOW_ID not in stored_namespaces
+    legacy_resolution = config.get("video_resolution")
+
+    if registry is None:
+        h3_values = stored_namespaces.get(H3_WORKFLOW_ID)
+        resolution = (
+            h3_values.get("resolution")
+            if isinstance(h3_values, Mapping)
+            else None
+        )
+        if h3_namespace_missing:
+            resolution = legacy_resolution
+        if resolution not in {"720p", "1080p"}:
+            resolution = "720p"
+        return {H3_WORKFLOW_ID: {"resolution": resolution}}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for workflow in registry.list(VideoWorkflowScene.NARRATIVE_GROUP):
+        raw_values = stored_namespaces.get(workflow.id)
+        if not isinstance(raw_values, Mapping):
+            raw_values = {}
+        public_overrides: dict[str, str] = {}
+        for parameter in workflow.parameters:
+            value = raw_values.get(parameter.key)
+            allowed_values = {option.value for option in parameter.options}
+            if isinstance(value, str) and value in allowed_values:
+                public_overrides[parameter.key] = value
+        if workflow.id == H3_WORKFLOW_ID and h3_namespace_missing:
+            if legacy_resolution in {"720p", "1080p"}:
+                public_overrides["resolution"] = legacy_resolution
+        normalized[workflow.id] = resolve_workflow_parameters(
+            workflow,
+            public_overrides,
+        )
+    return normalized
 
 
 @router.put("/projects/{project}/media-defaults")
@@ -759,6 +814,20 @@ async def put_project_media_defaults(
             status_code=422,
             detail="Video mode is unsupported by the selected workflow",
         )
+    resolved_parameter_updates: dict[str, dict[str, str]] | None = None
+    if body.video_workflow_parameters is not None:
+        resolved_parameter_updates = {}
+        try:
+            for workflow_id, overrides in body.video_workflow_parameters.items():
+                parameter_workflow = registry.resolve(
+                    workflow_id,
+                    VideoWorkflowScene.NARRATIVE_GROUP,
+                )
+                resolved_parameter_updates[workflow_id] = (
+                    resolve_workflow_parameters(parameter_workflow, overrides)
+                )
+        except (VideoWorkflowUnavailable, VideoWorkflowParameterError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     from novelvideo.narrative_groups.image_resolution import (
         supported_grid_image_sizes,
     )
@@ -789,6 +858,14 @@ async def put_project_media_defaults(
     for request_field, config_field in optional_bindings.items():
         if request_field in body.model_fields_set:
             updates[config_field] = getattr(body, request_field)
+    if resolved_parameter_updates is not None:
+        current_config = load_project_config_file_from_state_dir(ctx.state_dir)
+        current_parameters = current_config.get("video_workflow_parameters")
+        merged_parameters = (
+            dict(current_parameters) if isinstance(current_parameters, Mapping) else {}
+        )
+        merged_parameters.update(resolved_parameter_updates)
+        updates["video_workflow_parameters"] = merged_parameters
     save_project_config_in_state_dir(ctx.state_dir, config=updates)
     config = load_project_config_from_state_dir(
         ctx.state_dir,
