@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18next from "i18next";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActionPanel } from "@/components/episode/beat-workbench/action-panel";
+import { queryKeys } from "@/lib/query-keys";
 import { useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import type { BeatStates } from "@/types/beat-state";
 import type { Beat } from "@/types/episode";
 
 const i18n = i18next.createInstance();
+let queryClient: QueryClient;
 
 beforeAll(async () => {
   await i18n.use(initReactI18next).init({
@@ -47,6 +51,10 @@ beforeAll(async () => {
 beforeEach(() => {
   localStorage.clear();
   useEpisodeWorkbenchStore.getState().reset();
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  queryClient.setQueryData(queryKeys.videoModels(), { ok: true, data: [] });
 });
 
 vi.mock("@/lib/queries/sketches", () => ({
@@ -107,6 +115,14 @@ vi.mock("@/components/episode/beat-workbench/video-pane", () => ({
   VideoPane: () => <div>VideoPane</div>,
 }));
 
+function TestProviders({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <I18nextProvider i18n={i18n}>{children}</I18nextProvider>
+    </QueryClientProvider>
+  );
+}
+
 function makeBeat(beatNumber: number): Beat {
   return {
     beat_number: beatNumber,
@@ -135,7 +151,7 @@ describe("ActionPanel", () => {
     };
 
     render(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel
           selection={{ mode: "single", beatNum: 1 }}
           beats={[makeBeat(1)]}
@@ -145,7 +161,7 @@ describe("ActionPanel", () => {
           defaultBackend="huimeng_seedance-2.0-fast"
           onDefaultBackendChange={vi.fn()}
         />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     // 文案默认展开，用户无需点击即可看到文案内容；其它区块仍折叠。
@@ -173,9 +189,9 @@ describe("ActionPanel", () => {
     };
 
     const { unmount } = render(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel {...props} />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     // 用一个非默认展开的区块（草图）验证展开状态跨 remount 持久化。
@@ -188,9 +204,9 @@ describe("ActionPanel", () => {
     unmount();
 
     render(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel {...props} />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     expect(screen.getByText("SketchSection")).toBeInTheDocument();
@@ -213,7 +229,7 @@ describe("ActionPanel", () => {
     };
 
     const { rerender } = render(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel
           selection={{ mode: "single", beatNum: 1 }}
           beats={[makeBeat(1), makeBeat(2)]}
@@ -223,7 +239,7 @@ describe("ActionPanel", () => {
           defaultBackend="huimeng_seedance-2.0-fast"
           onDefaultBackendChange={vi.fn()}
         />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     // 用一个非默认展开的区块（草图）验证切换 beat 时展开状态保留。
@@ -231,7 +247,7 @@ describe("ActionPanel", () => {
     expect(screen.getByText("SketchSection")).toBeInTheDocument();
 
     rerender(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel
           selection={{ mode: "single", beatNum: 2 }}
           beats={[makeBeat(1), makeBeat(2)]}
@@ -241,7 +257,7 @@ describe("ActionPanel", () => {
           defaultBackend="huimeng_seedance-2.0-fast"
           onDefaultBackendChange={vi.fn()}
         />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     expect(screen.getByText("SketchSection")).toBeInTheDocument();
@@ -258,7 +274,7 @@ describe("ActionPanel", () => {
     };
 
     render(
-      <I18nextProvider i18n={i18n}>
+      <TestProviders>
         <ActionPanel
           selection={{ mode: "single", beatNum: 1 }}
           beats={[makeBeat(1)]}
@@ -269,7 +285,7 @@ describe("ActionPanel", () => {
           onDefaultBackendChange={vi.fn()}
           targetSection="sketch"
         />
-      </I18nextProvider>,
+      </TestProviders>,
     );
 
     expect(screen.getByText("SketchSection")).toBeInTheDocument();
