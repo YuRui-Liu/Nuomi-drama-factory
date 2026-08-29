@@ -180,6 +180,7 @@ def _director_timeline_payload(
     *,
     aspect_ratio: str,
     resolution: str | None,
+    output_settings: dict[str, object] | None = None,
 ) -> str:
     shots = []
     segments = []
@@ -220,7 +221,11 @@ def _director_timeline_payload(
             "taskType": "",
             "refs": [],
         })
-    output = _director_output_settings(aspect_ratio, resolution)
+    output = (
+        output_settings
+        if output_settings is not None
+        else _director_output_settings(aspect_ratio, resolution)
+    )
     task_type = (
         "fl2v — 首尾帧生视频(First-Last Frame)"
         if any(item["endImage"] for item in segments)
@@ -332,7 +337,7 @@ async def generate_h3_director_video(
         runtime.account.capability_limits,
         runtime.account.queue_limit,
     )
-    size_setting = resolve_h3_size_setting(resolution or "720p", aspect_ratio)
+    output_settings = _director_output_settings(aspect_ratio, resolution)
     client = runtime.create_client()
 
     async def upload(source: str) -> UploadedReference:
@@ -387,13 +392,14 @@ async def generate_h3_director_video(
                 None,
             ),
             aspect_ratio=aspect_ratio,
-            resolution=f"{size_setting.width}x{size_setting.height}",
+            resolution=f"{output_settings['width']}x{output_settings['height']}",
         )
         timeline_data = _director_timeline_payload(
             timeline,
             uploaded_frame_payloads,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
+            output_settings=output_settings,
         )
         candidate = await pipeline.generate_timeline(
             request,

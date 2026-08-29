@@ -177,6 +177,91 @@ async def test_mixed_timeline_request_uses_last_nonempty_segment_tail(
 
 
 @pytest.mark.asyncio
+async def test_director_runtime_resolves_size_once_for_request_and_timeline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image
+    from novelvideo.media_capabilities.video import pipeline as pipeline_module
+    from novelvideo.media_capabilities.video import runtime as runtime_module
+    from novelvideo.media_capabilities.video.h3_size_settings import (
+        resolve_h3_size_setting as real_resolve_h3_size_setting,
+    )
+
+    first = tmp_path / "first.png"
+    Image.new("RGB", (16, 16)).save(first)
+    runtime_dir = tmp_path / "runtime"
+    artifact = runtime_dir / "media_h3" / "artifacts" / "generated.mp4"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"video")
+    captured = {}
+    calls = []
+    settings = (
+        real_resolve_h3_size_setting("720p", "9:16"),
+        real_resolve_h3_size_setting("1080p", "9:16"),
+    )
+
+    def resolve_with_drift(resolution, aspect_ratio):
+        calls.append((resolution, aspect_ratio))
+        return settings[min(len(calls) - 1, 1)]
+
+    class Client:
+        async def upload(self, _path):
+            return "uploaded://first.png"
+
+        async def close(self):
+            return None
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, request, **kwargs):
+            captured["request"] = request
+            captured["timeline"] = __import__("json").loads(kwargs["timeline_data"])
+            return SimpleNamespace(
+                status=runtime_module.MediaTaskStatus.SUCCEEDED,
+                quality_issues=(),
+                artifact=SimpleNamespace(local_path="generated.mp4"),
+                provider_task_id="provider-1",
+            )
+
+    account = SimpleNamespace(
+        id="single-size-resolution", max_concurrency=5,
+        capability_limits={}, queue_limit=10,
+    )
+    configured = SimpleNamespace(
+        account=account, workflow_id=lambda _capability: None, create_client=Client,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_runninghub_runtime_configuration",
+        lambda *_args: configured,
+    )
+    monkeypatch.setattr(runtime_module, "resolve_h3_size_setting", resolve_with_drift)
+    monkeypatch.setattr(pipeline_module, "H3VideoPipeline", Pipeline)
+
+    await generate_h3_director_video(
+        SimpleNamespace(runtime_dir=runtime_dir),
+        segments=(H3DirectorSegment(
+            segment_id="one", beat_number=1, prompt="move", duration_seconds=3,
+            first_frame=str(first),
+        ),),
+        output_path=str(tmp_path / "out.mp4"),
+        aspect_ratio="9:16",
+        resolution="720p",
+    )
+
+    output = captured["timeline"]["output"]
+    assert (
+        calls,
+        captured["request"].resolution,
+        f"{output['width']}x{output['height']}",
+    ) == ([('720p', '9:16')], "736x1280", "736x1280")
+
+
+@pytest.mark.asyncio
 async def test_director_runtime_forwards_provider_submission_callback(
     tmp_path: Path, monkeypatch,
 ) -> None:
