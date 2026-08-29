@@ -110,6 +110,7 @@ class MediaDefaultsRequest(BaseModel):
     narrative_sketch_model: str = "nano-banana-2"
     narrative_render_provider: str = "grsai-main"
     narrative_render_model: str = "gpt-image-2"
+    narrative_render_image_size: Literal["1K", "2K", "4K"] | None = None
 
 
 class RenderSettingsUpdate(BaseModel):

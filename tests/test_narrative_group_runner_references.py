@@ -234,10 +234,132 @@ async def test_generate_grid_passes_selected_paths_and_reports_reference_metadat
 
     assert submitted[0].references == [ref.path for ref in preview.image_references]
     assert submitted[0].model == "gpt-image-2-vip"
-    assert submitted[0].aspect_ratio == "1:1"
+    assert submitted[0].aspect_ratio == "9:8"
+    assert submitted[0].image_size == result["requested_pixel_size"]
+    assert result["requested_image_size"] == "1K"
     assert result["reference_count"] == 2
     assert result["reference_warnings"] == []
     assert all(str(tmp_path) not in warning for warning in result["reference_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_generate_grid_retries_policy_violation_with_non_graphic_prompt(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.image.grsai import GrsaiPolicyViolation
+
+    preview = _preview(tmp_path)
+    monkeypatch.setattr(
+        narrative_group,
+        "resolve_group_reference_preview",
+        lambda *args, **kwargs: preview,
+    )
+    submitted = []
+
+    class Client:
+        http = SimpleNamespace(aclose=lambda: _done())
+
+        async def submit(self, request, *, api_key):
+            submitted.append(request)
+            if len(submitted) == 1:
+                raise GrsaiPolicyViolation("provider rejected prompt")
+            return "provider-task-safe"
+
+        async def query(self, task_id, *, api_key):
+            return SimpleNamespace(status="succeeded", results=[{"url": "https://result"}])
+
+        async def download(self, url):
+            return b"png"
+
+    async def _done():
+        return None
+
+    client = Client()
+    runtime = SimpleNamespace(
+        model="gpt-image-2", api_key="secret", create_client=lambda: client
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *args, **kwargs: runtime,
+    )
+    payload = _payload(
+        tmp_path,
+        output_dir=str(tmp_path / "output"),
+        episode=1,
+        group_id="ng-06",
+        revision=2,
+        beats=[
+            {
+                "beat_number": 38,
+                "visual_description": "一只沾满血迹的手掌从门缝伸入，聚焦沾血手掌。",
+            }
+        ],
+    )
+
+    result = await narrative_group._generate_grid(
+        payload, SimpleNamespace(output_dir=tmp_path / "output")
+    )
+
+    assert len(submitted) == 2
+    assert "沾满血迹" in submitted[0].prompt
+    assert "沾满血迹" not in submitted[1].prompt
+    assert "沾血" not in submitted[1].prompt
+    assert "PG-rated suspense illustration" in submitted[1].prompt
+    assert result["provider_task_id"] == "provider-task-safe"
+
+
+@pytest.mark.asyncio
+async def test_generate_grid_retries_policy_violation_reported_while_polling(
+    tmp_path, monkeypatch
+):
+    preview = _preview(tmp_path)
+    monkeypatch.setattr(
+        narrative_group,
+        "resolve_group_reference_preview",
+        lambda *args, **kwargs: preview,
+    )
+    submitted = []
+
+    class Client:
+        http = SimpleNamespace(aclose=lambda: _done())
+
+        async def submit(self, request, *, api_key):
+            submitted.append(request)
+            return f"provider-task-{len(submitted)}"
+
+        async def query(self, task_id, *, api_key):
+            if task_id == "provider-task-1":
+                return SimpleNamespace(status="violation", results=[])
+            return SimpleNamespace(status="succeeded", results=[{"url": "https://result"}])
+
+        async def download(self, url):
+            return b"png"
+
+    async def _done():
+        return None
+
+    runtime = SimpleNamespace(
+        model="gpt-image-2", api_key="secret", create_client=Client
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *args, **kwargs: runtime,
+    )
+
+    result = await narrative_group._generate_grid(
+        _payload(
+            tmp_path,
+            output_dir=str(tmp_path / "output"),
+            episode=1,
+            group_id="ng-06",
+            revision=2,
+        ),
+        SimpleNamespace(output_dir=tmp_path / "output"),
+    )
+
+    assert len(submitted) == 2
+    assert result["policy_retry"] is True
+    assert result["provider_task_id"] == "provider-task-2"
 
 
 @pytest.mark.parametrize(
@@ -258,6 +380,36 @@ def test_grid_aspect_uses_nearest_canvas_supported_by_model(
     )
 
     assert narrative_group._provider_grid_aspect_ratio(payload, model) == expected
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected_grid_ratio", "expected_provider_ratio"),
+    [
+        ({"rows": 1, "columns": 1}, "9:16", "2:3"),
+        ({"rows": 1, "columns": 2}, "9:8", "1:1"),
+    ],
+)
+def test_one_and_two_beat_groups_keep_vertical_cell_geometry(
+    tmp_path, layout, expected_grid_ratio, expected_provider_ratio
+):
+    payload = _payload(tmp_path, layout=layout, aspect_ratio="9:16")
+
+    assert narrative_group._grid_request_aspect_ratio(payload) == expected_grid_ratio
+    assert narrative_group._provider_grid_aspect_ratio(payload, "gpt-image-2") == expected_provider_ratio
+
+
+def test_single_beat_prompt_requests_exactly_one_panel(tmp_path):
+    prompt = narrative_group._grid_prompt(
+        _payload(
+            tmp_path,
+            layout={"rows": 1, "columns": 1},
+            beats=[{"beat_number": 1, "visual_description": "Hero enters the room"}],
+            aspect_ratio="9:16",
+        )
+    )
+
+    assert "1x1 storyboard grid" in prompt
+    assert prompt.count("Panel ") == 1
 
 
 @pytest.mark.parametrize(
@@ -285,6 +437,10 @@ def test_split_normalizes_each_first_frame_to_requested_video_aspect(
         str(grid), payload, SimpleNamespace(output_dir=tmp_path / "output")
     )
 
+    with Image.open(grid) as normalized_grid:
+        assert normalized_grid.width * int(aspect_ratio.split(":")[1]) == (
+            normalized_grid.height * int(aspect_ratio.split(":")[0])
+        )
     with Image.open(result["cell_assets"][0]["path"]) as cell:
         assert cell.size == expected
         assert cell.width * int(aspect_ratio.split(":")[1]) == (

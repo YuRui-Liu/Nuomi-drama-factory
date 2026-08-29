@@ -197,6 +197,7 @@ def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkey
     payload = backend.calls[0][1]["payload"]
     assert payload["constraint_mode"] == "unconstrained"
     assert payload["model"] == "gpt-image-2"
+    assert payload["image_size"] == "1K"
 
 
 def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatch, tmp_path):
@@ -213,16 +214,39 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatc
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json={"provider_id": "grsai-alt", "model": "gpt-image-2-vip"},
+        json={
+            "provider_id": "grsai-alt",
+            "model": "gpt-image-2-vip",
+            "image_size": "4K",
+        },
     )
 
     assert response.status_code == 202
     payload = backend.calls[0][1]["payload"]
     assert payload["provider_id"] == "grsai-alt"
     assert payload["model"] == "gpt-image-2-vip"
+    assert payload["image_size"] == "4K"
+    assert "image_size" not in payload["reference_selection"]
     assert payload["constraint_mode"] == "strong_sketch"
     assert payload["source_sketch_revision"] == 1
     assert payload["source_sketch_asset"] == str(sketch)
+
+
+def test_render_rejects_resolution_unsupported_by_model(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={
+            "allow_unconstrained": True,
+            "model": "gpt-image-2",
+            "image_size": "2K",
+        },
+    )
+
+    assert response.status_code == 422
+    assert backend.calls == []
 
 
 def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkeypatch, tmp_path):

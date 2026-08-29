@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from math import gcd
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -181,6 +182,27 @@ def _provider_grid_aspect_ratio(payload: Mapping[str, Any], model: str) -> str:
     return min(supported, key=lambda item: abs(item[1] - desired))[0]
 
 
+_NON_GRAPHIC_REPLACEMENTS = (
+    (re.compile(r"沾满血迹|沾着血迹|沾血|血迹"), "带有深色灰尘污渍"),
+    (re.compile(r"鲜血|流血|血液"), "深色污渍"),
+    (re.compile(r"血肉模糊|肢解|断肢|内脏"), "被深色阴影遮挡的区域"),
+    (re.compile(r"尸体|尸骸"), "远处静止的模糊物体"),
+    (re.compile(r"丧尸"), "门外若隐若现的模糊身影"),
+    (re.compile(r"\b(?:blood|bloody|gore|gory|corpse)\b", re.IGNORECASE), "dark dust stain"),
+)
+
+
+def _non_graphic_retry_prompt(prompt: str) -> str:
+    safe = prompt
+    for pattern, replacement in _NON_GRAPHIC_REPLACEMENTS:
+        safe = pattern.sub(replacement, safe)
+    return (
+        "PG-rated suspense illustration with indirect environmental tension. "
+        "Use clean clothing, neutral dust, and deep shadows; keep every person intact and safely framed.\n"
+        f"{safe}"
+    )
+
+
 def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
     from PIL import Image
 
@@ -202,9 +224,35 @@ def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
         image.save(path, format="PNG")
 
 
+def _rebuild_normalized_grid(
+    grid_path: Path, cell_paths: list[str], *, rows: int, columns: int
+) -> None:
+    """Recompose normalized cells so the displayed grid matches its real geometry."""
+    from PIL import Image
+
+    if not cell_paths:
+        return
+    cells = []
+    try:
+        for path in cell_paths:
+            with Image.open(path) as source:
+                cells.append(source.convert("RGB"))
+        cell_width, cell_height = cells[0].size
+        canvas = Image.new("RGB", (cell_width * columns, cell_height * rows), "black")
+        for index, cell in enumerate(cells[: rows * columns]):
+            if cell.size != (cell_width, cell_height):
+                cell = cell.resize((cell_width, cell_height))
+            canvas.paste(cell, ((index % columns) * cell_width, (index // columns) * cell_height))
+        canvas.save(grid_path, format="PNG")
+    finally:
+        for cell in cells:
+            cell.close()
+
+
 async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     """Generate exactly one group grid through the configured GRSAI account."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.image.grsai import GrsaiPolicyViolation
     from novelvideo.media_capabilities.models import ImageGenerationRequest, MediaCapability
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
 
@@ -215,29 +263,78 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
     )
     generation_input = _generation_input(payload)
     model = str(payload.get("model") or runtime.model)
+    requested_tier = str(payload.get("image_size") or "1K")
+    resolution = None
+    if model.startswith("gpt-image"):
+        from novelvideo.narrative_groups.image_resolution import (
+            resolve_grid_image_resolution,
+        )
+
+        layout = payload.get("layout") or {}
+        resolution = resolve_grid_image_resolution(
+            model,
+            requested_tier,
+            str(payload.get("aspect_ratio") or "9:16"),
+            int(layout.get("rows") or 1),
+            int(layout.get("columns") or 1),
+        )
     request = ImageGenerationRequest(
         capability=MediaCapability.IMAGE_STORYBOARD_GRID,
         prompt=generation_input.prompt,
         model=model,
         references=list(generation_input.references),
-        aspect_ratio=_provider_grid_aspect_ratio(payload, model),
-        image_size="2K",
+        aspect_ratio=(
+            resolution.provider_aspect_ratio
+            if resolution is not None
+            else _provider_grid_aspect_ratio(payload, model)
+        ),
+        image_size=(resolution.provider_size if resolution is not None else requested_tier),
     )
     client = runtime.create_client()
+    policy_retry = False
     try:
-        task_id = await client.submit(request, api_key=runtime.api_key)
-        poll_interval = max(0.05, float(os.environ.get("GRSAI_POLL_INTERVAL_SECONDS", "2")))
-        max_polls = max(1, int(os.environ.get("GRSAI_MAX_POLLS", "300")))
-        snapshot = None
-        for _ in range(max_polls):
-            snapshot = await client.query(task_id, api_key=runtime.api_key)
-            if snapshot.status == "succeeded":
-                break
-            if snapshot.status in {"failed", "violation"}:
-                raise RuntimeError(f"GRSAI grid generation failed: {snapshot.status}")
-            await asyncio.sleep(poll_interval)
-        if snapshot is None or snapshot.status != "succeeded" or not snapshot.results:
-            raise TimeoutError(f"GRSAI grid generation timed out: {task_id}")
+        async def submit_and_wait(
+            candidate: ImageGenerationRequest,
+        ) -> tuple[str, Any]:
+            provider_task_id = await client.submit(
+                candidate, api_key=runtime.api_key
+            )
+            poll_interval = max(
+                0.05, float(os.environ.get("GRSAI_POLL_INTERVAL_SECONDS", "2"))
+            )
+            max_polls = max(1, int(os.environ.get("GRSAI_MAX_POLLS", "300")))
+            provider_snapshot = None
+            for _ in range(max_polls):
+                provider_snapshot = await client.query(
+                    provider_task_id, api_key=runtime.api_key
+                )
+                if provider_snapshot.status == "succeeded":
+                    break
+                if provider_snapshot.status == "violation":
+                    raise GrsaiPolicyViolation(
+                        "grsai.policy_violation status=violation"
+                    )
+                if provider_snapshot.status == "failed":
+                    raise RuntimeError("GRSAI grid generation failed: failed")
+                await asyncio.sleep(poll_interval)
+            if (
+                provider_snapshot is None
+                or provider_snapshot.status != "succeeded"
+                or not provider_snapshot.results
+            ):
+                raise TimeoutError(
+                    f"GRSAI grid generation timed out: {provider_task_id}"
+                )
+            return provider_task_id, provider_snapshot
+
+        try:
+            task_id, snapshot = await submit_and_wait(request)
+        except GrsaiPolicyViolation:
+            policy_retry = True
+            request = request.model_copy(
+                update={"prompt": _non_graphic_retry_prompt(request.prompt)}
+            )
+            task_id, snapshot = await submit_and_wait(request)
         url = next(
             (str(snapshot.results[0].get(key) or "") for key in ("url", "fileUrl", "downloadUrl") if snapshot.results[0].get(key)),
             "",
@@ -251,6 +348,17 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(image_bytes)
+        actual_pixel_size = ""
+        try:
+            from io import BytesIO
+            from PIL import Image
+
+            with Image.open(BytesIO(image_bytes)) as generated_image:
+                actual_pixel_size = (
+                    f"{generated_image.width}x{generated_image.height}"
+                )
+        except Exception:
+            actual_pixel_size = ""
         return {
             "grid_asset": str(target),
             "actual_provider": provider_id,
@@ -261,6 +369,15 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             "provider_task_id": task_id,
             "reference_count": len(generation_input.references),
             "reference_warnings": list(generation_input.warnings),
+            "policy_retry": policy_retry,
+            "requested_image_size": requested_tier,
+            "requested_pixel_size": (
+                resolution.provider_size if resolution is not None else request.image_size
+            ),
+            "actual_pixel_size": actual_pixel_size,
+            "resolution_warning": (
+                resolution.reason if resolution is not None else None
+            ),
         }
     finally:
         await client.http.aclose()
@@ -305,19 +422,36 @@ def _split_existing_grid(
     )
     cell_paths = list(result.get("cell_paths") or [])
     target_aspect_ratio = str(payload.get("aspect_ratio") or "9:16")
+    from novelvideo.narrative_groups.grid_cleanup import cleanup_grid_cells
+
+    cleanup_reports, cleaned_cell_size = cleanup_grid_cells(
+        cell_paths, target_aspect_ratio
+    )
     import shutil
 
     for index, path in enumerate(cell_paths):
         cell_path = Path(path)
-        _normalize_image_aspect(cell_path, target_aspect_ratio)
         if index < len(beat_nums):
             shutil.copy2(cell_path, promote_dir / f"beat_{beat_nums[index]:02d}.png")
+    rebuilt_paths = {
+        Path(grid_asset),
+        Path(str(result.get("grid_path") or grid_asset)),
+    }
+    for rebuilt_path in rebuilt_paths:
+        _rebuild_normalized_grid(
+            rebuilt_path,
+            cell_paths,
+            rows=int(layout["rows"]),
+            columns=int(layout["columns"]),
+        )
     return {
         "cell_assets": [
             {"cell": index, "beat_id": mapping[index]["beat_id"], "path": str(path)}
             for index, path in enumerate(cell_paths)
             if index < len(mapping)
         ],
+        "cleanup_reports": cleanup_reports,
+        "cleaned_cell_size": cleaned_cell_size,
         "errors": [],
     }
 
@@ -356,6 +490,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                 for field in (
                     "reference_count", "reference_warnings",
                     "source_sketch_revision", "constraint_mode",
+                    "requested_image_size", "requested_pixel_size",
+                    "actual_pixel_size", "resolution_warning",
                 ):
                     if field in generated:
                         generation_metadata[field] = generated[field]
@@ -381,8 +517,13 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             actual_provider=result.get("actual_provider"),
             actual_model=result.get("actual_model"),
             actual_mode=result.get("actual_mode"),
+            requested_image_size=result.get("requested_image_size"),
+            requested_pixel_size=result.get("requested_pixel_size"),
+            actual_pixel_size=result.get("actual_pixel_size"),
+            resolution_warning=result.get("resolution_warning"),
             source_sketch_revision=result.get("source_sketch_revision"),
             constraint_mode=result.get("constraint_mode"),
+            cleanup_reports=result.get("cleanup_reports"),
         )
         return result
     except Exception as exc:

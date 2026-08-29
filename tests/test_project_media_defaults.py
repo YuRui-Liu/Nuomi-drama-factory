@@ -72,6 +72,7 @@ def test_media_defaults_use_real_stage_specific_image_models():
         "narrative_sketch_model": "nano-banana-2",
         "narrative_render_provider": "grsai-main",
         "narrative_render_model": "gpt-image-2",
+        "narrative_render_image_size": "1K",
     }
 
 
@@ -86,6 +87,18 @@ def test_media_defaults_request_preserves_independent_image_bindings():
 
     assert request.narrative_sketch_model == "nano-banana-2-4k-cl"
     assert request.narrative_render_model == "gpt-image-2-vip"
+
+
+def test_media_defaults_use_vip_2k_default_and_preserve_explicit_size():
+    assert _media_defaults_payload(
+        {"narrative_render_model": "gpt-image-2-vip"}
+    )["narrative_render_image_size"] == "2K"
+    assert _media_defaults_payload(
+        {
+            "narrative_render_model": "gpt-image-2-vip",
+            "narrative_render_image_size": "4K",
+        }
+    )["narrative_render_image_size"] == "4K"
 
 
 def test_get_media_defaults_falls_back_from_legacy_newapi_model(monkeypatch, tmp_path):

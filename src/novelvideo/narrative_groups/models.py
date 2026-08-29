@@ -82,6 +82,11 @@ class GroupStageState:
     actual_provider: str = ""
     actual_model: str = ""
     actual_mode: str = ""
+    requested_image_size: str = ""
+    requested_pixel_size: str = ""
+    actual_pixel_size: str = ""
+    resolution_warning: str = ""
+    cleanup_reports: tuple[dict[str, Any], ...] = ()
     source_sketch_revision: int = 0
     constraint_mode: str = ""
     created_at: str = ""

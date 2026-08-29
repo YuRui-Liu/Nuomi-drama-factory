@@ -610,8 +610,13 @@ def record_stage_result(
     actual_provider: str | None = None,
     actual_model: str | None = None,
     actual_mode: str | None = None,
+    requested_image_size: str | None = None,
+    requested_pixel_size: str | None = None,
+    actual_pixel_size: str | None = None,
+    resolution_warning: str | None = None,
     source_sketch_revision: int | None = None,
     constraint_mode: str | None = None,
+    cleanup_reports: Iterable[Mapping[str, Any]] | None = None,
     video_asset: str | None = None,
     manifest_asset: str | None = None,
     original_audio_path: str | None = None,
@@ -672,6 +677,26 @@ def record_stage_result(
                 actual_mode=(
                     current.actual_mode if actual_mode is None else str(actual_mode)
                 ),
+                requested_image_size=(
+                    current.requested_image_size
+                    if requested_image_size is None
+                    else str(requested_image_size)
+                ),
+                requested_pixel_size=(
+                    current.requested_pixel_size
+                    if requested_pixel_size is None
+                    else str(requested_pixel_size)
+                ),
+                actual_pixel_size=(
+                    current.actual_pixel_size
+                    if actual_pixel_size is None
+                    else str(actual_pixel_size)
+                ),
+                resolution_warning=(
+                    current.resolution_warning
+                    if resolution_warning is None
+                    else str(resolution_warning)
+                ),
                 source_sketch_revision=(
                     current.source_sketch_revision
                     if source_sketch_revision is None
@@ -679,6 +704,11 @@ def record_stage_result(
                 ),
                 constraint_mode=(
                     current.constraint_mode if constraint_mode is None else str(constraint_mode)
+                ),
+                cleanup_reports=(
+                    current.cleanup_reports
+                    if cleanup_reports is None
+                    else tuple(dict(item) for item in cleanup_reports)
                 ),
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
@@ -944,7 +974,7 @@ async def retry_split(
         raise ValueError("grid_asset is required for split retry")
     split_result = await _await_result(splitter(grid_asset, payload))
     errors = list(split_result.get("errors") or [])
-    return {
+    result = {
         "group_id": str(payload["group_id"]),
         "stage": str(payload["stage"]),
         "revision": int(payload["revision"]),
@@ -954,6 +984,10 @@ async def retry_split(
         "errors": errors,
         "status": "partial_failure" if errors else "completed",
     }
+    for field in ("cleanup_reports", "cleaned_cell_size"):
+        if split_result.get(field) is not None:
+            result[field] = split_result[field]
+    return result
 
 
 async def run_group_grid(

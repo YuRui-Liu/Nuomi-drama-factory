@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,10 @@ class GrsaiError(RuntimeError):
     """Raised when GRSAI rejects a generation request."""
 
 
+class GrsaiPolicyViolation(GrsaiError):
+    """Raised only when GRSAI explicitly rejects content under its policy."""
+
+
 class GrsaiSnapshot(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -28,6 +34,9 @@ class GrsaiSnapshot(BaseModel):
 
 
 class GrsaiClient:
+    _SUBMIT_CONNECT_RETRY_DELAYS = (0.5, 1.5)
+    _READ_CONNECT_RETRY_DELAYS = (0.5, 1.5, 3.0, 5.0, 8.0)
+
     def __init__(
         self,
         http: httpx.AsyncClient,
@@ -61,11 +70,30 @@ class GrsaiClient:
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         return f"data:{media_type};base64,{encoded}"
 
+    async def _request_with_connect_retry(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        delays = (
+            self._READ_CONNECT_RETRY_DELAYS
+            if method.upper() == "GET"
+            else self._SUBMIT_CONNECT_RETRY_DELAYS
+        )
+        attempts = len(delays) + 1
+        for attempt in range(attempts):
+            try:
+                return await self.http.request(method, url, **kwargs)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                if attempt >= attempts - 1:
+                    raise GrsaiError(
+                        f"grsai.connect_error operation={method.lower()} attempts={attempts}"
+                    ) from exc
+                await asyncio.sleep(delays[attempt])
+        raise AssertionError("unreachable")
+
     @staticmethod
     def _gpt_image_size(*, aspect_ratio: str | None, image_size: str | None) -> str:
-        supported_sizes = {"1024x1024", "1024x1536", "1536x1024"}
         requested_size = str(image_size or "").strip()
-        if requested_size in supported_sizes:
+        if re.fullmatch(r"[1-9]\d{2,3}x[1-9]\d{2,3}", requested_size):
             return requested_size
         ratio = str(aspect_ratio or "").strip()
         if ratio in {"9:16", "2:3", "3:4", "4:5"}:
@@ -99,13 +127,32 @@ class GrsaiClient:
                 aspect_ratio=request.aspect_ratio,
                 image_size=request.image_size,
             )
-        response = await self.http.post(
+        response = await self._request_with_connect_retry(
+            "POST",
             "/v1/api/generate",
             headers=self._headers(api_key),
             json=payload,
             timeout=300,
         )
         if not response.is_success:
+            response_text = response.text.lower()
+            try:
+                error_payload = response.json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                error_payload = {}
+            response_status = (
+                str(error_payload.get("status") or "").strip().lower()
+                if isinstance(error_payload, dict)
+                else ""
+            )
+            if (
+                response_status == "violation"
+                or "content policies" in response_text
+                or "policy violation" in response_text
+            ):
+                raise GrsaiPolicyViolation(
+                    f"grsai.policy_violation {self._response_detail(response)}"
+                )
             raise GrsaiError(f"grsai.http_error {self._response_detail(response)}")
         try:
             response_payload = response.json()
@@ -124,7 +171,8 @@ class GrsaiClient:
         submitted = self._submitted_snapshots.get(task_id)
         if submitted is not None:
             return submitted
-        response = await self.http.get(
+        response = await self._request_with_connect_retry(
+            "GET",
             "/v1/api/result",
             params={"id": task_id},
             headers=self._headers(api_key),
@@ -132,5 +180,15 @@ class GrsaiClient:
         response.raise_for_status()
         return GrsaiSnapshot.model_validate(response.json())
 
+    async def download(self, url: str) -> bytes:
+        response = await self._request_with_connect_retry("GET", url)
+        response.raise_for_status()
+        return response.content
 
-__all__ = ["GrsaiClient", "GrsaiError", "GrsaiSnapshot"]
+
+__all__ = [
+    "GrsaiClient",
+    "GrsaiError",
+    "GrsaiPolicyViolation",
+    "GrsaiSnapshot",
+]

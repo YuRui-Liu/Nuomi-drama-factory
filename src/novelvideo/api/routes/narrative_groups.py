@@ -63,12 +63,13 @@ class NarrativeGroupGenerationRequest(BaseModel):
     selected_scene_reference_ids: list[str] | None = None
     provider_id: str | None = None
     model: str | None = None
+    image_size: Literal["1K", "2K", "4K"] | None = None
     allow_unconstrained: bool = False
 
 
 def _image_binding(
     ctx, project_dir: Path, stage: StageName, request: NarrativeGroupGenerationRequest
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     from novelvideo.project_config import load_project_config_from_state_dir
 
     config = load_project_config_from_state_dir(
@@ -89,7 +90,23 @@ def _image_binding(
         )
     if model not in GRSAI_IMAGE_MODELS:
         raise HTTPException(status_code=422, detail="Unsupported GRSAI image model")
-    return provider_id, model
+    image_size = "1K"
+    if stage == "render":
+        from novelvideo.narrative_groups.image_resolution import (
+            supported_grid_image_sizes,
+        )
+
+        image_size = str(
+            request.image_size
+            or config.get("narrative_render_image_size")
+            or ("2K" if model == "gpt-image-2-vip" else "1K")
+        ).strip()
+        if image_size not in supported_grid_image_sizes(model):
+            raise HTTPException(
+                status_code=422,
+                detail="Image size is unsupported by the selected narrative render model",
+            )
+    return provider_id, model, image_size
 
 
 class NarrativeGroupVideoRequest(BaseModel):
@@ -730,14 +747,21 @@ async def _enqueue_group_action(
                 detail={"unknown_reference_ids": list(exc.unknown_ids)},
             ) from exc
         reference_selection = request.model_dump(
-            exclude={"aspect_ratio", "provider_id", "model", "allow_unconstrained"}
+            exclude={
+                "aspect_ratio",
+                "provider_id",
+                "model",
+                "image_size",
+                "allow_unconstrained",
+            }
         )
     provider_id = model = ""
+    image_size = "1K"
     constraint_mode = ""
     source_sketch_revision = 0
     source_sketch_asset = ""
     if not split_only:
-        provider_id, model = _image_binding(
+        provider_id, model, image_size = _image_binding(
             resolved.ctx, resolved.project_dir, stage, request
         )
         if stage == "render":
@@ -798,6 +822,7 @@ async def _enqueue_group_action(
             {
                 "provider_id": provider_id,
                 "model": model,
+                "image_size": image_size,
                 "constraint_mode": constraint_mode,
                 "source_sketch_revision": source_sketch_revision,
                 "source_sketch_asset": source_sketch_asset,

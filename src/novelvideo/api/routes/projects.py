@@ -708,6 +708,17 @@ def _media_defaults_payload(
         video_model = workflow.id
         if h3_mode not in workflow.supported_modes:
             h3_mode = workflow.default_mode
+    render_model = str(config.get("narrative_render_model") or "gpt-image-2")
+    render_image_size = str(
+        config.get("narrative_render_image_size")
+        or ("2K" if render_model == "gpt-image-2-vip" else "1K")
+    )
+    from novelvideo.narrative_groups.image_resolution import (
+        supported_grid_image_sizes,
+    )
+
+    if render_image_size not in supported_grid_image_sizes(render_model):
+        render_image_size = "2K" if render_model == "gpt-image-2-vip" else "1K"
     return {
         "video_model": video_model,
         "h3_mode": h3_mode,
@@ -720,9 +731,8 @@ def _media_defaults_payload(
         "narrative_render_provider": str(
             config.get("narrative_render_provider") or "grsai-main"
         ),
-        "narrative_render_model": str(
-            config.get("narrative_render_model") or "gpt-image-2"
-        ),
+        "narrative_render_model": render_model,
+        "narrative_render_image_size": render_image_size,
     }
 
 
@@ -749,6 +759,20 @@ async def put_project_media_defaults(
             status_code=422,
             detail="Video mode is unsupported by the selected workflow",
         )
+    from novelvideo.narrative_groups.image_resolution import (
+        supported_grid_image_sizes,
+    )
+
+    requested_render_size = body.narrative_render_image_size
+    if (
+        requested_render_size is not None
+        and requested_render_size
+        not in supported_grid_image_sizes(body.narrative_render_model)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Image size is unsupported by the selected narrative render model",
+        )
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     require_project_home_node(ctx, operation="update project media defaults")
     updates = {
@@ -760,6 +784,7 @@ async def put_project_media_defaults(
         "narrative_sketch_model": "narrative_sketch_model",
         "narrative_render_provider": "narrative_render_provider",
         "narrative_render_model": "narrative_render_model",
+        "narrative_render_image_size": "narrative_render_image_size",
     }
     for request_field, config_field in optional_bindings.items():
         if request_field in body.model_fields_set:

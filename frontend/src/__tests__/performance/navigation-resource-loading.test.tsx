@@ -24,7 +24,8 @@ const modulePathOf = (node: ts.ImportDeclaration) =>
 
 const isProductionValueImport = (node: ts.ImportDeclaration) => {
   const clause = node.importClause;
-  if (!clause || clause.isTypeOnly) return false;
+  if (!clause) return true;
+  if (clause.isTypeOnly) return false;
   if (clause.name) return true;
   if (!clause.namedBindings) return false;
   if (ts.isNamespaceImport(clause.namedBindings)) return true;
@@ -59,11 +60,116 @@ const hasDynamicImport = (root: ts.Node, modulePath: string) => {
   return found;
 };
 
-const isLazyCall = (node: ts.Node): node is ts.CallExpression =>
-  ts.isCallExpression(node) &&
-  (ts.isIdentifier(node.expression)
-    ? node.expression.text === "lazy"
-    : ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "lazy");
+const namedValueBindings = (
+  sourceFile: ts.SourceFile,
+  modulePath: string,
+  importedName: string,
+) => {
+  const bindings: string[] = [];
+  for (const declaration of productionValueImportsFrom(sourceFile, modulePath)) {
+    const namedBindings = declaration.importClause?.namedBindings;
+    if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
+    for (const element of namedBindings.elements) {
+      const sourceName = element.propertyName?.text ?? element.name.text;
+      if (!element.isTypeOnly && sourceName === importedName) {
+        bindings.push(element.name.text);
+      }
+    }
+  }
+  return bindings;
+};
+
+const moduleObjectBindings = (sourceFile: ts.SourceFile, modulePath: string) => {
+  const bindings: string[] = [];
+  for (const declaration of productionValueImportsFrom(sourceFile, modulePath)) {
+    const clause = declaration.importClause;
+    if (!clause) continue;
+    if (clause.name) bindings.push(clause.name.text);
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      bindings.push(clause.namedBindings.name.text);
+    }
+  }
+  return bindings;
+};
+
+const isReactLazyCall = (
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+): node is ts.CallExpression => {
+  if (!ts.isCallExpression(node)) return false;
+  if (ts.isIdentifier(node.expression)) {
+    return namedValueBindings(sourceFile, "react", "lazy").includes(node.expression.text);
+  }
+  return (
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.name.text === "lazy" &&
+    ts.isIdentifier(node.expression.expression) &&
+    moduleObjectBindings(sourceFile, "react").includes(node.expression.expression.text)
+  );
+};
+
+const unwrapLoaderExpression = (expression: ts.Expression): ts.Expression => {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isAwaitExpression(expression)
+  ) {
+    return unwrapLoaderExpression(expression.expression);
+  }
+  return expression;
+};
+
+const loaderExpressionReturnsImport = (
+  expression: ts.Expression,
+  modulePath: string,
+): boolean => {
+  const unwrapped = unwrapLoaderExpression(expression);
+  if (
+    ts.isCallExpression(unwrapped) &&
+    unwrapped.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    unwrapped.arguments.length === 1 &&
+    ts.isStringLiteralLike(unwrapped.arguments[0]) &&
+    unwrapped.arguments[0].text === modulePath
+  ) {
+    return true;
+  }
+  return (
+    ts.isCallExpression(unwrapped) &&
+    ts.isPropertyAccessExpression(unwrapped.expression) &&
+    unwrapped.expression.name.text === "then" &&
+    loaderExpressionReturnsImport(unwrapped.expression.expression, modulePath)
+  );
+};
+
+const lazyLoaderReturnsImport = (call: ts.CallExpression, modulePath: string) => {
+  const loader = call.arguments[0];
+  if (!loader || (!ts.isArrowFunction(loader) && !ts.isFunctionExpression(loader))) {
+    return false;
+  }
+  if (!ts.isBlock(loader.body)) {
+    return loaderExpressionReturnsImport(loader.body, modulePath);
+  }
+
+  const returnedExpressions: ts.Expression[] = [];
+  const visit = (node: ts.Node) => {
+    if (node !== loader.body && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression) {
+      returnedExpressions.push(node.expression);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(loader.body);
+  return (
+    returnedExpressions.length > 0 &&
+    returnedExpressions.every((expression) =>
+      loaderExpressionReturnsImport(expression, modulePath),
+    )
+  );
+};
 
 const lazyBindingsForModule = (sourceFile: ts.SourceFile, modulePath: string) => {
   const bindings: string[] = [];
@@ -72,8 +178,8 @@ const lazyBindingsForModule = (sourceFile: ts.SourceFile, modulePath: string) =>
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.initializer &&
-      isLazyCall(node.initializer) &&
-      hasDynamicImport(node.initializer, modulePath)
+      isReactLazyCall(node.initializer, sourceFile) &&
+      lazyLoaderReturnsImport(node.initializer, modulePath)
     ) {
       bindings.push(node.name.text);
     }
@@ -134,6 +240,7 @@ const containsAccessibleStatus = (root: ts.Node, sourceFile: ts.SourceFile) => {
     if (found) return;
     if (
       (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      /^[a-z]/.test(jsxTagName(node.tagName, sourceFile)) &&
       literalJsxAttribute(node, "role", sourceFile) === "status" &&
       literalJsxAttribute(node, "aria-live", sourceFile) === "polite"
     ) {
@@ -145,6 +252,70 @@ const containsAccessibleStatus = (root: ts.Node, sourceFile: ts.SourceFile) => {
   visit(root);
   return found;
 };
+
+const localComponentDefinition = (sourceFile: ts.SourceFile, componentName: string) => {
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === componentName) {
+      return statement;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === componentName &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+          ts.isFunctionExpression(declaration.initializer))
+      ) {
+        return declaration.initializer;
+      }
+    }
+  }
+  return null;
+};
+
+const localJsxComponentNames = (root: ts.Node) => {
+  const names: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      ts.isIdentifier(node.tagName) &&
+      /^[A-Z]/.test(node.tagName.text)
+    ) {
+      names.push(node.tagName.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return names;
+};
+
+const localComponentProvidesAccessibleStatus = (
+  sourceFile: ts.SourceFile,
+  componentName: string,
+  visited = new Set<string>(),
+): boolean => {
+  if (visited.has(componentName)) return false;
+  visited.add(componentName);
+  const definition = localComponentDefinition(sourceFile, componentName);
+  if (!definition) return false;
+  if (containsAccessibleStatus(definition, sourceFile)) return true;
+  return localJsxComponentNames(definition).some((nestedName) =>
+    localComponentProvidesAccessibleStatus(sourceFile, nestedName, visited),
+  );
+};
+
+const fallbackProvidesAccessibleStatus = (root: ts.Node, sourceFile: ts.SourceFile) =>
+  containsAccessibleStatus(root, sourceFile) ||
+  localJsxComponentNames(root).some((componentName) =>
+    localComponentProvidesAccessibleStatus(sourceFile, componentName),
+  );
+
+const isReactSuspenseTag = (tagName: string, sourceFile: ts.SourceFile) =>
+  namedValueBindings(sourceFile, "react", "Suspense").includes(tagName) ||
+  moduleObjectBindings(sourceFile, "react").some(
+    (binding) => tagName === `${binding}.Suspense`,
+  );
 
 const hasAccessibleSuspenseBoundary = (
   sourceFile: ts.SourceFile,
@@ -163,10 +334,10 @@ const hasAccessibleSuspenseBoundary = (
         containsJsxComponent(child, componentName, sourceFile),
       );
       if (
-        (suspenseName === "Suspense" || suspenseName.endsWith(".Suspense")) &&
+        isReactSuspenseTag(suspenseName, sourceFile) &&
         fallback?.initializer &&
         rendersComponent &&
-        containsAccessibleStatus(fallback.initializer, sourceFile)
+        fallbackProvidesAccessibleStatus(fallback.initializer, sourceFile)
       ) {
         found = true;
         return;
@@ -185,16 +356,19 @@ const importedValueBindings = (
 ) => {
   const bindings: string[] = [];
   for (const declaration of productionValueImportsFrom(sourceFile, modulePath)) {
-    const namedBindings = declaration.importClause?.namedBindings;
+    const clause = declaration.importClause;
+    if (clause?.name) bindings.push(clause.name.text);
+    const namedBindings = clause?.namedBindings;
     if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
     for (const element of namedBindings.elements) {
       const sourceName = element.propertyName?.text ?? element.name.text;
-      if (!element.isTypeOnly && sourceName === importedName) bindings.push(element.name.text);
+      if (!element.isTypeOnly && sourceName === importedName) {
+        bindings.push(element.name.text);
+      }
     }
   }
   return bindings;
 };
-
 describe("navigation resource loading", () => {
   it("keeps the login visual experience out of the eager route module", () => {
     const loginRoute = readSource("src/routes/login.tsx");
@@ -396,10 +570,11 @@ describe("navigation resource loading", () => {
     }
   });
 
-  it("uses one static canvas node domain import in the freezone shell", () => {
+  it("uses a static canvas node domain import without lazy loading", () => {
     const freezoneShell = readSourceFile("src/features/freezone/FreezoneShell.tsx");
     const canvasNodeModule = "@/features/canvas/domain/canvasNodes";
 
+    // This hot-path domain module must never be split behind import(), awaited or otherwise.
     expect(hasDynamicImport(freezoneShell, canvasNodeModule)).toBe(false);
     const importsBothRuntimeValues = productionValueImportsFrom(
       freezoneShell,
