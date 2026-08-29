@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useMemo, useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
@@ -26,8 +26,13 @@ import { UiButton, UiModal } from '@/components/ui';
 import { UI_DIALOG_TRANSITION_MS } from '@/components/ui/motion';
 import { FormToolEditor } from './tool-editors/FormToolEditor';
 import { CropToolEditor } from './tool-editors/CropToolEditor';
-import { AnnotateToolEditor } from './tool-editors/AnnotateToolEditor';
 import { SplitStoryboardToolEditor } from './tool-editors/SplitStoryboardToolEditor';
+
+const AnnotateToolEditor = lazy(() =>
+  import('./tool-editors/AnnotateToolEditor').then((module) => ({
+    default: module.AnnotateToolEditor,
+  })),
+);
 
 const VISUAL_TOOL_MODAL_CLASS =
   'relative flex flex-col overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#15161b]/96 shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-md';
@@ -342,12 +347,20 @@ export function NodeToolDialog() {
 
     if (activePlugin.editor === 'annotate' && sourceImageUrl) {
       return (
-        <AnnotateToolEditor
-          plugin={activePlugin}
-          sourceImageUrl={sourceImageUrl}
-          options={options}
-          onOptionsChange={setOptions}
-        />
+        <Suspense
+          fallback={(
+            <div role="status" aria-live="polite" className="py-8 text-center text-sm text-text-muted">
+              正在加载标注工具…
+            </div>
+          )}
+        >
+          <AnnotateToolEditor
+            plugin={activePlugin}
+            sourceImageUrl={sourceImageUrl}
+            options={options}
+            onOptionsChange={setOptions}
+          />
+        </Suspense>
       );
     }
 

@@ -108,7 +108,7 @@ import {
 } from './ui/MultiSelectionConnectButton';
 import { NodeSpawnPlusOverlay } from './ui/NodeSpawnPlusOverlay';
 import { CanvasContextMenu } from './ui/CanvasContextMenu';
-import { NodeToolDialog } from './ui/NodeToolDialog';
+import { LazyNodeToolDialog } from './ui/LazyNodeToolDialog';
 import { ImageViewerModal } from './ui/ImageViewerModal';
 import { VideoViewerModal } from './ui/VideoViewerModal';
 import { CanvasZoomControl } from './ui/CanvasZoomControl';
@@ -4796,7 +4796,7 @@ export function Canvas({
         />
       )}
 
-      <NodeToolDialog />
+      <LazyNodeToolDialog />
 
       <ImageViewerModal
         open={imageViewer.isOpen}
