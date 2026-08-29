@@ -981,7 +981,7 @@ function FreezoneChatDock({
 
   useEffect(() => {
     if (!isDesktop) {
-      setShouldRenderPanel(open);
+      if (open) setShouldRenderPanel(true);
       setPanelVisible(open);
       return;
     }
@@ -1009,7 +1009,7 @@ function FreezoneChatDock({
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
             </SheetHeader>
-            {open && (
+            {shouldRenderPanel && (
               <Suspense
                 fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
               >
