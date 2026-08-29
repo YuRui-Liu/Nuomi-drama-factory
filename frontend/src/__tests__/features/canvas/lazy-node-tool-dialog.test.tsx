@@ -23,7 +23,7 @@ describe('LazyNodeToolDialog', () => {
     deferredModule.load.mockClear();
   });
 
-  it('loads on first open and keeps the loaded container mounted', async () => {
+  it('hides the loading overlay when closed and keeps the loaded container mounted', async () => {
     render(<LazyNodeToolDialog />);
     expect(deferredModule.load).not.toHaveBeenCalled();
 
@@ -34,14 +34,16 @@ describe('LazyNodeToolDialog', () => {
     });
     expect(await screen.findByRole('status')).toHaveAttribute('aria-live', 'polite');
 
+    act(() => {
+      useCanvasStore.setState({ activeToolDialog: null });
+    });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
     deferredModule.resolveModule({
       NodeToolDialog: () => <div>node tool loaded</div>,
     });
     expect(await screen.findByText('node tool loaded')).toBeInTheDocument();
 
-    act(() => {
-      useCanvasStore.setState({ activeToolDialog: null });
-    });
     expect(screen.getByText('node tool loaded')).toBeInTheDocument();
   });
 });

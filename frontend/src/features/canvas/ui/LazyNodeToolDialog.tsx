@@ -24,7 +24,7 @@ export function LazyNodeToolDialog() {
 
   return (
     <Suspense
-      fallback={(
+      fallback={active ? (
         <div
           role="status"
           aria-live="polite"
@@ -32,7 +32,7 @@ export function LazyNodeToolDialog() {
         >
           正在加载节点工具…
         </div>
-      )}
+      ) : null}
     >
       <NodeToolDialog />
     </Suspense>
