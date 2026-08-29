@@ -15,7 +15,8 @@ const m = vi.hoisted(() => ({
  updateProject: vi.fn(),
  setOrientation: vi.fn(),
  orientation: "landscape" as "portrait" | "landscape",
- mediaDefaults: {video_model:"newapi_seedance-1.0-pro-fast",h3_mode:"auto",narrative_sketch_provider:"grsai-main",narrative_sketch_model:"nano-banana-2",narrative_render_provider:"grsai-main",narrative_render_model:"gpt-image-2"},
+ dialogSelection: {useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"},
+ mediaDefaults: {video_model:"newapi_seedance-1.0-pro-fast",h3_mode:"auto",narrative_sketch_provider:"grsai-main",narrative_sketch_model:"nano-banana-2",narrative_render_provider:"grsai-main",narrative_render_model:"gpt-image-2",narrative_render_image_size:"1K"},
  videoModels: [{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"}],
  groupsLoading: false,
  groups: [] as any[],
@@ -45,7 +46,7 @@ vi.mock("@/lib/queries/media-models",()=>({
 }));
 vi.mock("@/lib/queries/projects",()=>({useUpdateProject:()=>({isPending:false,mutateAsync:m.updateProject})}));
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
-vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit({useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[]})}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
+vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
  GroupVideoStage:({onGenerate,modelId,mode}:any)=><><span>stage-model:{modelId}</span><span>stage-mode:{mode}</span><button onClick={()=>onGenerate({video_model:modelId,h3_mode:mode==="auto"?"i2va":mode})}>生成组合视频</button></>,
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
@@ -59,6 +60,7 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.groups=[group];
   m.groupsLoading=false;
   m.orientation="landscape";
+  m.dialogSelection={useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"};
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{units:[]}},isLoading:false,isError:false});
@@ -78,10 +80,37 @@ describe("NarrativeGroupWorkbench references",()=>{
  it.each(["生成","重生成"])("confirms references before %s",async(label)=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText(label));
   expect(screen.getByRole("dialog")).toBeInTheDocument(); expect(m.mutate).not.toHaveBeenCalled(); fireEvent.click(screen.getByText("确认"));
-  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",aspectRatio:"16:9",selection:{useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[]}}));
+  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",aspectRatio:"16:9",selection:{useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"}}));
   expect(m.start).toHaveBeenCalledWith({scope:"x"});
   expect(m.success).toHaveBeenCalledWith("任务已进入队列");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+ });
+ it("persists render model and resolution when requested",async()=>{
+  m.dialogSelection={useStyle:true,selectedCharacterReferenceIds:[],selectedSceneReferenceIds:[],providerId:"grsai-main",model:"gpt-image-2-vip",imageSize:"4K",saveAsProjectDefault:true};
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByText("生成"));
+  fireEvent.click(screen.getByText("确认"));
+  await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({
+   narrativeRenderProvider:"grsai-main",
+   narrativeRenderModel:"gpt-image-2-vip",
+   narrativeRenderImageSize:"4K",
+  })));
+ });
+ it("edits the project render model and resolution from the workbench",async()=>{
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByRole("button",{name:"实图设置"}));
+  fireEvent.change(screen.getByRole("combobox",{name:"项目实图模型"}),{target:{value:"gpt-image-2-vip"}});
+  fireEvent.change(screen.getByRole("combobox",{name:"项目实图分辨率"}),{target:{value:"4K"}});
+  fireEvent.click(screen.getByRole("button",{name:"保存实图设置"}));
+  await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({
+   narrativeRenderModel:"gpt-image-2-vip",
+   narrativeRenderImageSize:"4K",
+  })));
+ });
+ it("shows requested and actual render resolution evidence",()=>{
+  m.groups=[{...group,stages:{...group.stages,render:{...group.stages.render,requested_image_size:"4K",requested_pixel_size:"3840x2160",actual_pixel_size:"3840x2160"}}}];
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.getByText("请求 4K / 3840x2160 · 实际 3840x2160")).toBeInTheDocument();
  });
  it("runs split directly and cancel does not submit",async()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText("生成")); fireEvent.click(screen.getByText("取消")); expect(m.mutate).not.toHaveBeenCalled();

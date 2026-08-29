@@ -7,6 +7,7 @@ import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
 import type { ApiResponse } from "@/types/api";
 import type { VideoBackendOption } from "@/lib/queries/video";
+import { coerceNarrativeImageSize, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 
 export type VideoModelMode = "auto" | "i2va" | "fl2va";
 export interface VideoModelCatalogItem {
@@ -36,6 +37,19 @@ export interface MediaDefaults {
   narrative_sketch_model: string;
   narrative_render_provider: string;
   narrative_render_model: string;
+  narrative_render_image_size: NarrativeImageSize;
+}
+
+export function normalizeMediaDefaults(defaults: Omit<MediaDefaults, "narrative_render_image_size"> & {
+  narrative_render_image_size?: string | null;
+}): MediaDefaults {
+  return {
+    ...defaults,
+    narrative_render_image_size: coerceNarrativeImageSize(
+      defaults.narrative_render_model,
+      defaults.narrative_render_image_size,
+    ),
+  };
 }
 
 export function availableVideoModels(catalog: VideoModelCatalogItem[]): VideoModelCatalogItem[] {
@@ -78,8 +92,11 @@ export function mergeVideoModelCatalog(
 export function useMediaDefaults(project: string) {
   return useQuery({
     queryKey: queryKeys.mediaDefaults(project),
-    queryFn: ({ signal }) => api.get(p`api/v1/projects/${project}/media-defaults`, { signal })
-      .json<ApiResponse<MediaDefaults>>(),
+    queryFn: async ({ signal }) => {
+      const response = await api.get(p`api/v1/projects/${project}/media-defaults`, { signal })
+        .json<ApiResponse<MediaDefaults>>();
+      return response.ok ? { ...response, data: normalizeMediaDefaults(response.data) } : response;
+    },
     enabled: !!project,
   });
 }
@@ -102,6 +119,7 @@ export function useUpdateMediaDefaults(project: string) {
       narrativeSketchModel?: string;
       narrativeRenderProvider?: string;
       narrativeRenderModel?: string;
+      narrativeRenderImageSize?: NarrativeImageSize;
     }) =>
       api.put(p`api/v1/projects/${project}/media-defaults`, {
         json: {
@@ -110,6 +128,10 @@ export function useUpdateMediaDefaults(project: string) {
           narrative_sketch_model: imageDefaults.narrativeSketchModel ?? "nano-banana-2",
           narrative_render_provider: imageDefaults.narrativeRenderProvider ?? "grsai-main",
           narrative_render_model: imageDefaults.narrativeRenderModel ?? "gpt-image-2",
+          narrative_render_image_size: coerceNarrativeImageSize(
+            imageDefaults.narrativeRenderModel ?? "gpt-image-2",
+            imageDefaults.narrativeRenderImageSize,
+          ),
         },
       }).json<ApiResponse<MediaDefaults>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.mediaDefaults(project) }),

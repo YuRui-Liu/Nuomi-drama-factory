@@ -9,6 +9,10 @@ from novelvideo.media_capabilities.models import (
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterDefinition,
+    VideoWorkflowParameterOption,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
@@ -48,6 +52,18 @@ def _definition(**updates) -> VideoWorkflowDefinition:
     return VideoWorkflowDefinition(**values)
 
 
+def _resolution_parameter() -> VideoWorkflowParameterDefinition:
+    return VideoWorkflowParameterDefinition(
+        key="resolution",
+        label="分辨率",
+        default="720p",
+        options=(
+            VideoWorkflowParameterOption(value="720p", label="标准"),
+            VideoWorkflowParameterOption(value="1080p", label="高清"),
+        ),
+    )
+
+
 def test_registry_filters_workflows_by_scene(tmp_path) -> None:
     registry = _configured_registry(tmp_path)
 
@@ -74,6 +90,27 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         supported_modes=("auto", "i2va", "fl2va"),
         default_mode="auto",
+        parameters=(
+            VideoWorkflowParameterDefinition(
+                key="resolution",
+                label="分辨率",
+                default="720p",
+                scope="narrative_group",
+                options=(
+                    VideoWorkflowParameterOption(
+                        value="720p",
+                        label="标准",
+                        relative_cost="standard",
+                    ),
+                    VideoWorkflowParameterOption(
+                        value="1080p",
+                        label="高清",
+                        description="画质更高，预计耗时和额度增加。",
+                        relative_cost="higher",
+                    ),
+                ),
+            ),
+        ),
         available=True,
     )
 
@@ -126,6 +163,13 @@ def test_registry_rejects_duplicate_workflow_ids() -> None:
 
     with pytest.raises(ValueError, match="duplicate workflow id: workflow"):
         VideoWorkflowRegistry((definition, definition))
+
+
+def test_workflow_definition_rejects_duplicate_parameter_keys() -> None:
+    parameter = _resolution_parameter()
+
+    with pytest.raises(ValidationError, match="duplicate workflow parameter key: resolution"):
+        _definition(parameters=(parameter, parameter))
 
 
 @pytest.mark.parametrize("method", ["list", "resolve", "default"])

@@ -23,7 +23,8 @@ def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
     assert [item.id for item in models] == ["runninghub:minimax-h3"]
     assert models[0].available is False
     assert models[0].supported_modes == ("auto", "i2va", "fl2va")
-    assert "key" not in models[0].model_dump_json().lower()
+    assert "credential" not in models[0].model_dump_json().lower()
+    assert "api_key" not in models[0].model_dump_json().lower()
 
 
 def test_h3_is_available_only_with_enabled_account_key_workflow_and_profile(
@@ -56,6 +57,7 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
     definition = build_video_workflow_registry(store, resolver).list()[0]
     item = list_video_models(store, resolver)[0]
 
+    assert item.parameters == definition.parameters
     assert item.model_dump() == {
         "id": definition.id,
         "label": definition.label,
@@ -63,9 +65,44 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
         "available": definition.available,
         "supported_modes": definition.supported_modes,
         "default_mode": definition.default_mode,
+        "parameters": definition.model_dump()["parameters"],
         "unavailable_reason": definition.unavailable_reason,
     }
     assert "credential" not in item.model_dump_json().lower()
+
+
+def test_catalog_publishes_only_product_parameter_schema(tmp_path) -> None:
+    item = list_video_models(
+        MediaCapabilityStore(tmp_path / "settings.db"), CredentialResolver(env={})
+    )[0]
+
+    assert item.model_dump(mode="json")["parameters"] == [
+        {
+            "key": "resolution",
+            "type": "enum",
+            "label": "分辨率",
+            "description": "",
+            "default": "720p",
+            "scope": "narrative_group",
+            "options": [
+                {
+                    "value": "720p",
+                    "label": "标准",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "1080p",
+                    "label": "高清",
+                    "description": "画质更高，预计耗时和额度增加。",
+                    "relative_cost": "higher",
+                },
+            ],
+        }
+    ]
+    serialized = item.model_dump_json().lower()
+    for internal_name in ("megapixels", "node_id", "width", "height"):
+        assert internal_name not in serialized
 
 
 def test_video_route_priority_keeps_explicit_runninghub_ahead_of_generic_models() -> None:

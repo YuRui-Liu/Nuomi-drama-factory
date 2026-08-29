@@ -2,6 +2,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GroupReferenceDialog } from "@/components/episode/narrative-workbench/group-reference-dialog";
+import {
+  defaultNarrativeImageSize,
+  supportedNarrativeImageSizes,
+} from "@/lib/narrative-image-resolution";
 import type { NarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
 
 const preview: NarrativeGroupReferencePreview = {
@@ -45,6 +49,40 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof GroupRefere
 }
 
 describe("GroupReferenceDialog", () => {
+  it("exposes model-aware render resolutions and defaults VIP to 2K", () => {
+    expect(supportedNarrativeImageSizes("gpt-image-2")).toEqual(["1K"]);
+    expect(supportedNarrativeImageSizes("gpt-image-2-vip")).toEqual(["1K", "2K", "4K"]);
+    expect(defaultNarrativeImageSize("gpt-image-2-vip")).toBe("2K");
+
+    const { onSubmit } = renderDialog({ stage: "render", defaultModel: "gpt-image-2-vip" });
+    expect(screen.getByRole("combobox", { name: "本次输出分辨率" })).toHaveValue("2K");
+    fireEvent.change(screen.getByRole("combobox", { name: "本次输出分辨率" }), {
+      target: { value: "4K" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      model: "gpt-image-2-vip",
+      imageSize: "4K",
+    }));
+  });
+
+  it("coerces an unsupported resolution when switching away from VIP", () => {
+    const { onSubmit } = renderDialog({
+      stage: "render",
+      defaultModel: "gpt-image-2-vip",
+      defaultImageSize: "4K",
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "本次真实模型" }), {
+      target: { value: "gpt-image-2" },
+    });
+    expect(screen.getByRole("combobox", { name: "本次输出分辨率" })).toHaveValue("1K");
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      model: "gpt-image-2",
+      imageSize: "1K",
+    }));
+  });
+
   it("selects backend defaults and shows fallback, missing-image, beat, and limit details", () => {
     renderDialog();
     expect(screen.getByRole("dialog", { name: "生成前引用确认" })).toBeInTheDocument();
@@ -78,6 +116,7 @@ describe("GroupReferenceDialog", () => {
       selectedSceneReferenceIds: ["scene-1"],
       providerId: "grsai-main",
       model: "gpt-image-2",
+      imageSize: "1K",
       allowUnconstrained: false,
       saveAsProjectDefault: false,
     });
@@ -158,6 +197,7 @@ describe("GroupReferenceDialog", () => {
       selectedSceneReferenceIds: ["scene-2"],
       providerId: "grsai-main",
       model: "gpt-image-2",
+      imageSize: "1K",
       allowUnconstrained: false,
       saveAsProjectDefault: false,
     });

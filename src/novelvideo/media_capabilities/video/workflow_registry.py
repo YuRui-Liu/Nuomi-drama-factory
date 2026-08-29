@@ -14,6 +14,10 @@ from novelvideo.media_capabilities.runtime.configuration import (
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterDefinition,
+    VideoWorkflowParameterOption,
+)
 from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
 
 
@@ -36,6 +40,7 @@ class VideoWorkflowDefinition(BaseModel):
     scenes: frozenset[VideoWorkflowScene]
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
+    parameters: tuple[VideoWorkflowParameterDefinition, ...] = ()
     available: bool = True
     unavailable_reason: str | None = None
 
@@ -47,6 +52,13 @@ class VideoWorkflowDefinition(BaseModel):
             raise ValueError("workflow supported_modes must not be empty")
         if self.default_mode not in self.supported_modes:
             raise ValueError("workflow default_mode must be supported")
+        parameter_keys: set[str] = set()
+        for parameter in self.parameters:
+            if parameter.key in parameter_keys:
+                raise ValueError(
+                    f"duplicate workflow parameter key: {parameter.key}"
+                )
+            parameter_keys.add(parameter.key)
         if self.available and self.unavailable_reason is not None:
             raise ValueError("available workflow must not have an unavailable reason")
         if not self.available and not str(self.unavailable_reason or "").strip():
@@ -153,6 +165,27 @@ def build_video_workflow_registry(
                 adapter_key="minimax-h3",
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                 supported_modes=("auto", "i2va", "fl2va"),
+                parameters=(
+                    VideoWorkflowParameterDefinition(
+                        key="resolution",
+                        label="分辨率",
+                        default="720p",
+                        scope="narrative_group",
+                        options=(
+                            VideoWorkflowParameterOption(
+                                value="720p",
+                                label="标准",
+                                relative_cost="standard",
+                            ),
+                            VideoWorkflowParameterOption(
+                                value="1080p",
+                                label="高清",
+                                description="画质更高，预计耗时和额度增加。",
+                                relative_cost="higher",
+                            ),
+                        ),
+                    ),
+                ),
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),

@@ -14,6 +14,9 @@ from novelvideo.media_capabilities.resolver import (
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterDefinition,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     H3_WORKFLOW_ID,
     build_video_workflow_registry,
@@ -32,6 +35,7 @@ class VideoModelCatalogItem(BaseModel):
     available: bool
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
+    parameters: tuple[VideoWorkflowParameterDefinition, ...] = ()
     unavailable_reason: str | None = None
 
 
@@ -47,6 +51,7 @@ def list_video_models(
             available=definition.available,
             supported_modes=definition.supported_modes,
             default_mode=definition.default_mode,
+            parameters=definition.parameters,
             unavailable_reason=definition.unavailable_reason,
         )
         for definition in build_video_workflow_registry(store, resolver).list()

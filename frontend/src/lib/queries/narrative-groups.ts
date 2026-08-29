@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
 import type { ApiResponse, TaskResponse } from "@/types/api";
+import type { NarrativeImageSize } from "@/lib/narrative-image-resolution";
 
 export type NarrativeStageStatus =
   | "pending" | "queued" | "running" | "review" | "completed"
@@ -51,6 +52,7 @@ export interface NarrativeGroupGenerationSelection {
   selectedSceneReferenceIds: string[];
   providerId?: string;
   model?: string;
+  imageSize?: NarrativeImageSize;
   allowUnconstrained?: boolean;
   saveAsProjectDefault?: boolean;
 }
@@ -62,6 +64,10 @@ export interface NarrativeStageState {
   cell_assets?: Array<{ cell: number; beat_id: string; url?: string | null; error?: string | null }>;
   actual_provider?: string | null;
   actual_model?: string | null;
+  requested_image_size?: NarrativeImageSize | null;
+  requested_pixel_size?: string | null;
+  actual_pixel_size?: string | null;
+  resolution_warning?: string | null;
   actual_mode?: string | null;
   source_sketch_revision?: number | null;
   constraint_mode?: "strong_sketch" | "unconstrained" | "" | null;
@@ -284,6 +290,7 @@ export function narrativeGroupActionPayload(input: {
     selected_scene_reference_ids?: string[];
     provider_id?: string;
     model?: string;
+    image_size?: NarrativeImageSize;
     allow_unconstrained?: boolean;
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
@@ -294,6 +301,7 @@ export function narrativeGroupActionPayload(input: {
     payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
     if (input.selection.providerId) payload.provider_id = input.selection.providerId;
     if (input.selection.model) payload.model = input.selection.model;
+    if (input.selection.imageSize) payload.image_size = input.selection.imageSize;
     if (input.selection.allowUnconstrained !== undefined) {
       payload.allow_unconstrained = input.selection.allowUnconstrained;
     }

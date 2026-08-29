@@ -107,7 +107,40 @@ def test_video_models_endpoint_lists_disabled_h3_without_secrets(
     assert item["available"] is False
     assert item["supported_modes"] == ["auto", "i2va", "fl2va"]
     assert item["default_mode"] == "auto"
-    assert "key" not in response.text.lower()
+    assert item["parameters"] == [
+        {
+            "key": "resolution",
+            "type": "enum",
+            "label": "分辨率",
+            "description": "",
+            "default": "720p",
+            "scope": "narrative_group",
+            "options": [
+                {
+                    "value": "720p",
+                    "label": "标准",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "1080p",
+                    "label": "高清",
+                    "description": "画质更高，预计耗时和额度增加。",
+                    "relative_cost": "higher",
+                },
+            ],
+        }
+    ]
+    serialized = response.text.lower()
+    for private_name in (
+        "credential",
+        "api_key",
+        "megapixels",
+        "node_id",
+        "width",
+        "height",
+    ):
+        assert private_name not in serialized
 
 
 def test_video_models_catalog_is_readable_by_authenticated_editor(
