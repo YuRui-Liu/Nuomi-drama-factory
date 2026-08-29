@@ -5,11 +5,11 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import ky from "ky";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api", () => ({
-  api: ky.create({ baseUrl: "http://localhost:3000/" }),
-  uploadApi: ky.create({ baseUrl: "http://localhost:3000/" }),
+  api: ky.create({ baseUrl: "http://localhost:3000/", retry: 0 }),
+  uploadApi: ky.create({ baseUrl: "http://localhost:3000/", retry: 0 }),
 }));
 
 import {
@@ -18,8 +18,18 @@ import {
 } from "@/lib/queries/asset-references";
 import { server } from "@/__mocks__/msw/server";
 
+const queryClients = new Set<QueryClient>();
+
+afterEach(() => {
+  for (const client of queryClients) client.clear();
+  queryClients.clear();
+});
+
 function makeWrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  queryClients.add(qc);
   return function Wrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
@@ -69,10 +79,17 @@ describe("useAssetReferences", () => {
   });
 
   it("exposes aggregate request failures instead of treating usages as zero", async () => {
+    let requests = 0;
     server.use(
       http.get(
         "http://localhost:3000/api/v1/projects/demo/assets/references",
-        () => HttpResponse.json({ error: "reference backend down" }, { status: 500 }),
+        () => {
+          requests += 1;
+          return HttpResponse.json(
+            { error: "reference backend down" },
+            { status: 500 },
+          );
+        },
       ),
     );
 
@@ -88,6 +105,7 @@ describe("useAssetReferences", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(Error);
+    expect(requests).toBe(1);
   });
   it("does not request references while the detail surface is collapsed", async () => {
     let calls = 0;
