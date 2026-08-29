@@ -25,6 +25,7 @@ from .models import (
     StageName,
     VideoPlan,
     VideoPlanUnit,
+    VideoSettings,
 )
 
 SIDECAR_VERSION = 1
@@ -281,6 +282,12 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
             or sum(unit.duration_seconds for unit in plan_units)
         ),
     )
+    raw_settings = dict(data.get("video_settings") or {})
+    video_settings = VideoSettings(
+        workflow_id=raw_settings.get("workflow_id", "runninghub:minimax-h3"),
+        revision=int(raw_settings.get("revision") or 0),
+        overrides=raw_settings.get("overrides") or {},
+    )
     return NarrativeGroup(
         id=str(data["id"]),
         ordinal=int(data["ordinal"]),
@@ -288,6 +295,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         layout=GridLayout(**layout),
         cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
         video_plan=video_plan,
+        video_settings=video_settings,
         stages=stages or default_stages,
         errors=tuple(data.get("errors") or ()),
     )
@@ -350,6 +358,7 @@ def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) 
                             if old.video_plan.revision > 0 and old.video_plan.units
                             else group.video_plan
                         ),
+                        video_settings=old.video_settings,
                         stages=old.stages,
                         errors=old.errors,
                     )
@@ -359,6 +368,64 @@ def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) 
             )
         save_groups(project_dir, episode, rebuilt)
         return rebuilt
+
+
+def _copy_string_mapping(value: Mapping[str, str], name: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    copied: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise TypeError(f"{name} keys and values must be strings")
+        copied[key] = item
+    return copied
+
+
+def update_video_settings(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    *,
+    expected_revision: int,
+    workflow_id: str,
+    overrides: Mapping[str, str],
+    project_defaults: Mapping[str, str],
+) -> NarrativeGroup:
+    if not isinstance(workflow_id, str):
+        raise TypeError("workflow_id must be a string")
+    requested_overrides = _copy_string_mapping(overrides, "overrides")
+    copied_defaults = _copy_string_mapping(project_defaults, "project_defaults")
+
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        if group.video_settings.revision != int(expected_revision):
+            raise RuntimeError("narrative group video settings revision is stale")
+        video_stage = group.stages.get("video", GroupStageState())
+        if video_stage.status in {"queued", "running"}:
+            raise RuntimeError(
+                f"cannot update video settings while video stage is {video_stage.status}"
+            )
+
+        persisted_overrides = {
+            key: value
+            for key, value in requested_overrides.items()
+            if copied_defaults.get(key) != value
+        }
+        settings = VideoSettings(
+            workflow_id=workflow_id,
+            revision=group.video_settings.revision + 1,
+            overrides=persisted_overrides,
+        )
+        updated_group = replace(group, video_settings=settings)
+        save_groups(
+            project_dir,
+            episode,
+            [updated_group if item.id == group_id else item for item in groups],
+        )
+        return updated_group
 
 
 def update_video_plan(

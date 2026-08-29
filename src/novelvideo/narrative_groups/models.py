@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 StageName = Literal["sketch", "render", "video"]
 StageStatus = Literal[
@@ -65,6 +65,32 @@ class VideoPlan:
 
 
 @dataclass(frozen=True)
+class VideoSettings:
+    workflow_id: str = "runninghub:minimax-h3"
+    revision: int = 0
+    overrides: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workflow_id, str):
+            raise TypeError("workflow_id must be a string")
+        if not isinstance(self.overrides, Mapping):
+            raise TypeError("overrides must be a mapping")
+        copied: dict[str, str] = {}
+        for key, value in self.overrides.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("override keys and values must be strings")
+            copied[key] = value
+        object.__setattr__(self, "overrides", copied)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workflow_id": self.workflow_id,
+            "revision": self.revision,
+            "overrides": dict(self.overrides),
+        }
+
+
+@dataclass(frozen=True)
 class GroupStageState:
     status: StageStatus = "pending"
     revision: int = 0
@@ -109,6 +135,7 @@ class NarrativeGroup:
     layout: GridLayout
     cell_to_beat: tuple[CellMapping, ...]
     video_plan: VideoPlan = field(default_factory=VideoPlan)
+    video_settings: VideoSettings = field(default_factory=VideoSettings)
     stages: dict[StageName, GroupStageState] = field(default_factory=_default_stages)
     errors: tuple[dict, ...] = ()
 
@@ -147,4 +174,5 @@ class NarrativeGroup:
         result = asdict(self)
         result["video_inputs"] = list(self.video_inputs)
         result["video_plan"] = self.video_plan.to_dict()
+        result["video_settings"] = self.video_settings.to_dict()
         return result
