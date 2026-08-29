@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
+import type { NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
 
 const m = vi.hoisted(() => ({
  mutate: vi.fn(),
@@ -15,7 +16,7 @@ const m = vi.hoisted(() => ({
  updateProject: vi.fn(),
  setOrientation: vi.fn(),
  orientation: "landscape" as "portrait" | "landscape",
- dialogSelection: {useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"},
+ dialogSelection: {useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"} as NarrativeGroupGenerationSelection,
  mediaDefaults: {video_model:"newapi_seedance-1.0-pro-fast",h3_mode:"auto",narrative_sketch_provider:"grsai-main",narrative_sketch_model:"nano-banana-2",narrative_render_provider:"grsai-main",narrative_render_model:"gpt-image-2",narrative_render_image_size:"1K"},
  videoModels: [{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"}],
  groupsLoading: false,
