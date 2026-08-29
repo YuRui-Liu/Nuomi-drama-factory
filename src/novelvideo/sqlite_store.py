@@ -231,6 +231,11 @@ CREATE TABLE IF NOT EXISTS episode_source_state (
     project_revision INTEGER NOT NULL,
     migrated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS episode_graph_outbox (
+  target_revision INTEGER PRIMARY KEY,
+  changed_episode_numbers_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS episode_import_previews (
     preview_id TEXT PRIMARY KEY,

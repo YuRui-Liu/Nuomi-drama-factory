@@ -5,8 +5,8 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from types import SimpleNamespace
 from types import ModuleType
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -29,7 +29,6 @@ def test_aliyun_media_relay_sdk_is_packaged() -> None:
     }
 
     assert "oss2" in dependencies
-
 
 _STUB_MODULE_NAMES = (
     "novelvideo.api",

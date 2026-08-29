@@ -323,7 +323,9 @@ async def get_beats(project: str, episode_num: int, user: dict = Depends(get_api
 
     director_by_beat = {
         beat_num: span.video_path
-        for span in resolve_episode_composition_sources(project_dir, episode_num, beats)
+        for span in resolve_episode_composition_sources(
+            project_dir, episode_num, beats, strict_audio=False
+        )
         if span.is_director
         for beat_num in span.beat_numbers
     }

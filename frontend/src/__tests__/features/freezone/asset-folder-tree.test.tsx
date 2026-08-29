@@ -40,7 +40,23 @@ describe("AssetFolderTree", () => {
     expect(mocks.remove).toHaveBeenCalledWith({ folderId: "f1" });
     expect(mocks.organize).toHaveBeenCalledWith({ ...payload, folder_id: "f1" });
   });
-  it("shows query errors and retries instead of presenting an empty folder response", async () => {
+  it("exposes purpose filtering", async () => {
+    const onPurposeChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AssetFolderTree
+        project="demo"
+        selectedFolderId={undefined}
+        selectedPurpose={null}
+        onFolderChange={vi.fn()}
+        onPurposeChange={onPurposeChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "角色用途" }));
+
+    expect(onPurposeChange).toHaveBeenCalledWith("character");
+  });  it("shows query errors and retries instead of presenting an empty folder response", async () => {
     mocks.foldersState.data = undefined; mocks.foldersState.isError = true; mocks.foldersState.error = new Error("Request timed out");
     const user = userEvent.setup(); renderTree();
     expect(screen.getByRole("alert")).toHaveTextContent("目录加载失败：Request timed out");

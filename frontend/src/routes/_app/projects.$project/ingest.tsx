@@ -44,6 +44,7 @@ import { useCancelTask, useTasks } from "@/lib/queries/tasks";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { useTaskController } from "@/hooks/use-task-controller";
+import { TaskControllerProvider } from "@/components/episode/task-controller-provider";
 import { queryKeys } from "@/lib/query-keys";
 import {
   backendErrorToastMessage,
@@ -870,7 +871,11 @@ function ChapterPreviewSkeleton() {
 
 function IngestPage() {
   const { project } = Route.useParams();
-  return <IngestPageContent project={project} />;
+  return (
+    <TaskControllerProvider project={project} episode={0}>
+      <IngestPageContent project={project} />
+    </TaskControllerProvider>
+  );
 }
 
 export function IngestPageContent({ project }: { project: string }) {
@@ -1108,21 +1113,48 @@ export function IngestPageContent({ project }: { project: string }) {
   const { data: stylesRes } = useStyles(project);
   const updateProject = useUpdateProject(project);
   const config = projectRes?.data;
-  const pipelineConfig = config as (ProjectConfig & { knowledge_pipeline?: "structured_v1" | "cognee_legacy"; knowledge_pipeline_status?: string; knowledge_pipeline_error?: string }) | undefined;
-  const hasPersistedStructuredFailure = pipelineConfig?.knowledge_pipeline_status === "structured_failed";
+  const pipelineConfig = config as
+    | (ProjectConfig & {
+        knowledge_pipeline?: "structured_v1" | "cognee_legacy";
+        knowledge_pipeline_status?: string;
+        knowledge_pipeline_error?: string;
+      })
+    | undefined;
+  const hasPersistedStructuredFailure =
+    pipelineConfig?.knowledge_pipeline_status === "structured_failed";
   useEffect(() => {
-    if (pipelineConfig?.knowledge_pipeline) setKnowledgePipeline(pipelineConfig.knowledge_pipeline);
+    if (pipelineConfig?.knowledge_pipeline) {
+      setKnowledgePipeline(pipelineConfig.knowledge_pipeline);
+    }
+
+    // Project config is the durable source for a failed structured import.
+    // Restore it once after the task list is fresh, but never let a stale
+    // failure marker override an ingest_fast task that is actively running.
     if (pipelineFailureReconciledProjectRef.current === project) return;
-    if (!pipelineConfig || !ingestTasksFetchedAfterMount || ingestTasksRes === undefined) return;
-    const running = (ingestTasksRes.data ?? []).some((task) => task.task_type === "ingest_fast" && ACTIVE_INGEST_STATUSES.has(task.status));
+    if (!pipelineConfig) return;
+    if (!ingestTasksFetchedAfterMount || ingestTasksRes === undefined) return;
+    const running = (ingestTasksRes.data ?? []).some(
+      (task) =>
+        task.task_type === "ingest_fast" &&
+        ACTIVE_INGEST_STATUSES.has(task.status),
+    );
     pipelineFailureReconciledProjectRef.current = project;
     if (running || !hasPersistedStructuredFailure) return;
+
     setIngestSubmitted(true);
     setIngestStarted(false);
     setIngestFileStatus("failed");
-    setIngestError(pipelineConfig.knowledge_pipeline_error || "结构化导入失败");
+    setIngestError(
+      pipelineConfig.knowledge_pipeline_error || "结构化导入失败",
+    );
     setHideImportedPreview(false);
-  }, [hasPersistedStructuredFailure, ingestTasksFetchedAfterMount, ingestTasksRes, pipelineConfig, project]);
+  }, [
+    hasPersistedStructuredFailure,
+    ingestTasksFetchedAfterMount,
+    ingestTasksRes,
+    pipelineConfig,
+    project,
+  ]);
   const normalizedDefaults = normalizeLegacyDefaults(config);
   const visualStyleOptions = useMemo(() => {
     const styles = stylesRes?.data ?? [];
@@ -1337,7 +1369,6 @@ export function IngestPageContent({ project }: { project: string }) {
       toast.error(message);
     }
   }, [switchKnowledgePipeline, t]);
-
   const chapters = chaptersData?.chapters ?? [];
   const chapterCount = chapters.length;
   const shouldRestoreImportedPreview =
@@ -1404,7 +1435,9 @@ export function IngestPageContent({ project }: { project: string }) {
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
               {t("ingest.subtitle")}
             </p>
-            <span className="mt-2 inline-flex rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-foreground/70">{knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}</span>
+            <span className="mt-2 inline-flex rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-foreground/70">
+              {knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}
+            </span>
           </div>
         </div>
         {hasImportedContent && (
@@ -1777,7 +1810,13 @@ export function IngestPageContent({ project }: { project: string }) {
                     });
                   }}
                   isIngesting={ingestStarted}
-                  canStart={(!!uploadedFile && (!ingestSubmitted || ingestFileStatus === "failed")) || (!uploadedFile && ingestFileStatus === "failed" && hasPersistedStructuredFailure)}
+                  canStart={
+                    (!!uploadedFile &&
+                      (!ingestSubmitted || ingestFileStatus === "failed")) ||
+                    (!uploadedFile &&
+                      ingestFileStatus === "failed" &&
+                      hasPersistedStructuredFailure)
+                  }
                   isStarting={isStarting}
                   ingestCostDisplay={ingestFeatureCostDisplay}
                   knowledgePipeline={knowledgePipeline}

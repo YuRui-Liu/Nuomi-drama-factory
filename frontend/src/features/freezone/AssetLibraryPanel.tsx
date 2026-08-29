@@ -603,7 +603,6 @@ export function AssetLibraryPanel({
         ? String(beatContextQuery.error)
         : null;
   const error = projectAssetsError ?? beatContextError;
-
   const assets = useMemo(
     () => buildLibraryAssets({
       project, metadata, projectAssetIndex, projectAssets, beatContext, canvasKind,

@@ -29,6 +29,7 @@ from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
 _PROFILE_PATH = Path(__file__).with_name("profiles") / "minimax_h3.json"
+_LEGACY_SINGLE_SHOT_WORKFLOW_IDS = {"2087934731806658562"}
 _H3_COORDINATORS: dict[str, object] = {}
 
 
@@ -50,7 +51,8 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         normalized = str(workflow_id).strip()
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
-        profile = profile.model_copy(update={"workflow_id": normalized})
+        if normalized not in _LEGACY_SINGLE_SHOT_WORKFLOW_IDS:
+            profile = profile.model_copy(update={"workflow_id": normalized})
     required_bindings = {
         "task_type", "global_prompt", "frame_rate", "width", "height",
         "ref_max_size", "total_frames", "timeline_data",
@@ -168,10 +170,14 @@ def _director_output_settings(aspect_ratio: str, resolution: str | None) -> dict
     multiple = 32
     if left >= right:
         width = ((long_edge + multiple - 1) // multiple) * multiple
-        height = ((width * right / left + multiple - 1) // multiple) * multiple
+        height = (
+            (width * right + left * multiple - 1) // (left * multiple)
+        ) * multiple
     else:
         height = ((long_edge + multiple - 1) // multiple) * multiple
-        width = ((height * left / right + multiple - 1) // multiple) * multiple
+        width = (
+            (height * left + right * multiple - 1) // (right * multiple)
+        ) * multiple
     long_edge = max(width, height)
     return {
         "mode": "fixed",
@@ -198,7 +204,7 @@ def _director_timeline_payload(
 ) -> str:
     shots = []
     segments = []
-    for entry in timeline.entries:
+    for index, entry in enumerate(timeline.entries):
         segment = entry.segment
         first = uploaded_frames.get(segment.first_frame or "")
         last = uploaded_frames.get(segment.last_frame or "")
@@ -214,7 +220,7 @@ def _director_timeline_payload(
             "durationSec": nominal_duration,
             "prompt": segment.prompt,
             "negativePrompt": "",
-            "continuityFromPrev": False,
+            "continuityFromPrev": index > 0,
             "startImage": image(first),
             "endImage": image(last),
         }
@@ -227,7 +233,7 @@ def _director_timeline_payload(
             "durationSec": nominal_duration,
             "prompt": segment.prompt,
             "negativePrompt": "",
-            "continuityFromPrev": False,
+            "continuityFromPrev": index > 0,
             "isStartFrame": first is not None,
             "isEndFrame": last is not None,
             "genImage": image(first),
@@ -274,7 +280,7 @@ def _director_timeline_payload(
         "global": {
             "taskType": task_type, "prompt": H3_GLOBAL_CONTINUITY_PROMPT, "refs": [],
             "referenceVideo": {"videoFile": "", "fileName": "", "type": "input", "subfolder": ""},
-            "continuousReference": False, "genImage": {"imageFile": ""},
+            "continuousReference": len(segments) > 1, "genImage": {"imageFile": ""},
             "sourceWidth": output["width"], "sourceHeight": output["height"],
             "refAudios": [], "refVideos": [], "commonEnabled": False, "commonCollapsed": False,
         },
@@ -392,7 +398,14 @@ async def generate_h3_director_video(
             prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
             duration=timeline.duration_seconds,
             first_frame=timeline.entries[0].segment.first_frame,
-            last_frame=timeline.entries[-1].segment.last_frame,
+            last_frame=next(
+                (
+                    entry.segment.last_frame
+                    for entry in reversed(timeline.entries)
+                    if entry.segment.last_frame
+                ),
+                None,
+            ),
             aspect_ratio=aspect_ratio,
             resolution=resolution,
         )
@@ -409,6 +422,10 @@ async def generate_h3_director_video(
             input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
             idempotency_input={
                 "version": 5,
+                # Narrative-group retries reserve a new revision/output target.
+                # Include it so a failed durable provider task from an older
+                # revision can never be reused as the new attempt.
+                "output_target": Path(output_path).as_posix(),
                 "frame_rate": timeline.fps,
                 "total_frames": timeline.total_frames,
                 "segments": [

@@ -14,6 +14,7 @@ import {
   vi,
 } from "vitest";
 import type { ReactNode } from "react";
+import { readFileSync } from "node:fs";
 
 const i18n = i18next.createInstance();
 
@@ -409,6 +410,16 @@ beforeEach(() => {
 });
 
 describe("IngestPage settings save", () => {
+  it("wraps the ingest content with a task controller provider", () => {
+    const routeSource = readFileSync(
+      "src/routes/_app/projects.$project/ingest.tsx",
+      "utf-8",
+    );
+    expect(routeSource).toMatch(
+      /function IngestPage\(\)[\s\S]*<TaskControllerProvider project=\{project\} episode=\{0\}>[\s\S]*<IngestPageContent project=\{project\} \/>[\s\S]*<\/TaskControllerProvider>/,
+    );
+  });
+
   it("advertises text, markdown and docx uploads", () => {
     const { container } = render(
       <Wrapper>
@@ -775,6 +786,42 @@ describe("IngestPage settings save", () => {
     expect(mocks.toastError).toHaveBeenCalledWith("知识图谱构建失败: provider error");
   });
 
+  it("requires an explicit action before switching a failed structured import", async () => {
+    const user = userEvent.setup();
+    mocks.uploadNovel.mockResolvedValue({
+      ok: true,
+      data: { filename: "novel.txt", size: 12 },
+    });
+    mocks.startIngest.mockRejectedValueOnce(new Error("结构化导入失败: schema invalid"));
+    mocks.switchKnowledgePipeline.mockRejectedValue(
+      new Error("已有正式资产，不能切换知识图谱"),
+    );
+
+    const { container } = render(
+      <Wrapper>
+        <IngestPageContent project="demo" />
+      </Wrapper>,
+    );
+
+    expect(screen.getByText("结构化导入")).toBeInTheDocument();
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    await user.upload(
+      fileInput!,
+      new File(["Chapter 1"], "novel.txt", { type: "text/plain" }),
+    );
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    expect(await screen.findByText("结构化导入失败: schema invalid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试导入" })).toBeInTheDocument();
+    const switchButton = screen.getByRole("button", { name: "切换知识图谱" });
+    expect(mocks.switchKnowledgePipeline).not.toHaveBeenCalled();
+
+    await user.click(switchButton);
+    expect(mocks.switchKnowledgePipeline).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "确认切换知识图谱" }));
+    await waitFor(() => expect(mocks.switchKnowledgePipeline).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("已有正式资产，不能切换知识图谱")).toBeInTheDocument();
+  });
   it("restores the import progress view on mount when an ingest_fast task is still running", async () => {
     // Bug: navigating away mid-import and back reset the local flags, so the
     // page fell back to the empty upload zone even though the server task was
@@ -802,6 +849,58 @@ describe("IngestPage settings save", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("restores a persisted structured import failure after remount", async () => {
+    mocks.projectConfig = {
+      ...mocks.projectConfig,
+      knowledge_pipeline: "structured_v1",
+      knowledge_pipeline_status: "structured_failed",
+      knowledge_pipeline_error: "结构化导入失败：章节 schema 无效",
+    };
+    mocks.ingestTasks = [];
+
+    render(
+      <Wrapper>
+        <IngestPageContent project="demo" />
+      </Wrapper>,
+    );
+
+    expect(
+      await screen.findByText("结构化导入失败：章节 schema 无效"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重试导入" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "切换知识图谱" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps an active ingest ahead of a persisted structured failure", async () => {
+    mocks.projectConfig = {
+      ...mocks.projectConfig,
+      knowledge_pipeline: "structured_v1",
+      knowledge_pipeline_status: "structured_failed",
+      knowledge_pipeline_error: "不应覆盖活跃任务",
+    };
+    mocks.ingestTasks = [
+      { task_type: "ingest_fast", episode: 0, status: "running" },
+    ];
+
+    render(
+      <Wrapper>
+        <IngestPageContent project="demo" />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByText("Importing")).toBeInTheDocument();
+    expect(screen.queryByText("不应覆盖活跃任务")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "重试导入" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "切换知识图谱" }),
+    ).not.toBeInTheDocument();
+  });
   it("does not restore the import view when no ingest task is active", () => {
     mocks.ingestTasks = [
       { task_type: "ingest_fast", episode: 0, status: "completed" },
