@@ -144,6 +144,7 @@ class IngestStart(BaseModel):
     filename: str
     rebuild: bool = False
     spine_template: Optional[Literal["drama", "narrated"]] = None
+    knowledge_pipeline: Optional[Literal["structured_v1", "cognee_legacy"]] = None
 
 
 # ── 角色 ──────────────────────────────────────────────────────────────────────

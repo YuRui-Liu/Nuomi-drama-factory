@@ -141,6 +141,7 @@ export function useStartIngest(project: string) {
       filename: string;
       rebuild?: boolean;
       spine_template?: SpineTemplate;
+      knowledge_pipeline?: "structured_v1" | "cognee_legacy";
     }) => {
       const response = await jsonWithBackendError<TaskResponse | ErrorResponse>(
         api.post(p`api/v1/projects/${project}/ingest/start`, {
@@ -152,6 +153,29 @@ export function useStartIngest(project: string) {
         throw new Error(response.error);
       }
       return response;
+    },
+  });
+}
+
+type KnowledgePipelineSwitchResponse = OkResponse<{
+  knowledge_pipeline: "structured_v1" | "cognee_legacy";
+  knowledge_pipeline_status?: string;
+}>;
+
+export function useSwitchKnowledgePipeline(project: string) {
+  return useMutation({
+    mutationFn: async () => {
+      const response = await api.patch(p`api/v1/projects/${project}/knowledge-pipeline`, {
+        json: { knowledge_pipeline: "cognee_legacy" },
+        throwHttpErrors: false,
+      });
+      const body = (await response.json()) as KnowledgePipelineSwitchResponse | ErrorResponse | { detail?: { code?: string; message?: string; formal_asset_count?: number } };
+      if (!response.ok) {
+        const detail = "detail" in body ? body.detail : undefined;
+        const message = detail?.message ?? ("error" in body ? body.error : response.statusText);
+        throw new BackendStatusError(message, response.status, body);
+      }
+      return body as KnowledgePipelineSwitchResponse;
     },
   });
 }

@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { ViewportLazyImage } from "@/components/viewport-lazy-image";
 import { CanvasesTab } from "./CanvasesTab";
+import { ASSET_ORGANIZATION_DRAG_MIME, AssetFolderTree } from "./AssetFolderTree";
+import { type AssetPurpose, useAssetOrganization } from "@/lib/queries/asset-organization";
 import { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 import {
   type FreezoneBeatContextBeat,
@@ -217,6 +219,7 @@ function MiniThumb({
   const handleDragStart = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!dragPayload) return;
     event.dataTransfer.setData(CANVAS_ASSET_DRAG_MIME, JSON.stringify(dragPayload));
+    event.dataTransfer.setData(ASSET_ORGANIZATION_DRAG_MIME, JSON.stringify(assetOrganizationDragPayload(asset)));
     event.dataTransfer.effectAllowed = "copy";
   };
 
@@ -505,6 +508,8 @@ export function AssetLibraryPanel({
   const [panelTab, setPanelTab] = useState<PanelTab>("canvases");
   const [tab, setTab] = useState<AssetTab>("beat");
   const [query, setQuery] = useState("");
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null | undefined>(undefined);
+  const [selectedPurpose, setSelectedPurpose] = useState<AssetPurpose | null>(null);
   const hasPresetLabel = hasLegacyPresetCanvasMetadata(metadata);
   // 替换/提交成功后自增,用于强制重新拉取素材列表。
   const [internalReloadToken, setInternalReloadToken] = useState(0);
@@ -518,6 +523,26 @@ export function AssetLibraryPanel({
     }
   };
 
+  const organizationQuery = useAssetOrganization(project);
+  const lastSuccessfulOrganizationRef = useRef<{
+    hasData: boolean;
+    placements: typeof organizationQuery.data extends undefined
+      ? never[]
+      : NonNullable<typeof organizationQuery.data>["data"]["placements"];
+  }>({ hasData: false, placements: [] });
+  if (organizationQuery.data) {
+    lastSuccessfulOrganizationRef.current = {
+      hasData: true,
+      placements: organizationQuery.data.data.placements,
+    };
+  }
+  const organizationHasUsableData =
+    organizationQuery.data !== undefined || lastSuccessfulOrganizationRef.current.hasData;
+  const placements = organizationQuery.data?.data.placements
+    ?? lastSuccessfulOrganizationRef.current.placements;
+  const organizationError = organizationQuery.isError
+    ? organizationQuery.error instanceof Error ? organizationQuery.error.message : "请求失败"
+    : null;
   const projectAssetIndexQuery = useFreezoneProjectAssetIndex(project);
   const projectAssetsQuery = useFreezoneProjectAssets(project, projectAssetIndexQuery.isSuccess);
   const projectAssetIndex = projectAssetIndexQuery.data ?? [];
@@ -589,8 +614,15 @@ export function AssetLibraryPanel({
   const assetImageCacheToken = assetPreviewCacheToken;
 
   const filtered = useMemo(() => {
+    if (!organizationHasUsableData) return [];
     const q = query.trim().toLowerCase();
+    const placementByAssetKey = new Map(placements.map((placement) => [placement.asset_key ?? `${placement.asset_type}:${placement.asset_id}`, placement]));
     return assets.filter((asset) => {
+      const organizationIdentity = assetOrganizationDragPayload(asset);
+      const placement = placementByAssetKey.get(`${organizationIdentity.assetType}:${organizationIdentity.assetId}`);
+      const folderMatches = selectedFolderId === undefined ? true : selectedFolderId === null ? !placement || placement.folder_id === null : placement?.folder_id === selectedFolderId;
+      const purposeMatches = !selectedPurpose || placement?.purpose === selectedPurpose;
+      if (!folderMatches || !purposeMatches) return false;
       if (tab === "beat") {
         if (!asset.source.from_beat_context) return false;
       } else if (asset.tab !== tab) {
@@ -601,7 +633,7 @@ export function AssetLibraryPanel({
         .toLowerCase()
         .includes(q);
     });
-  }, [assets, query, tab]);
+  }, [assets, organizationHasUsableData, placements, query, selectedFolderId, selectedPurpose, tab]);
 
   // —— 拖拽节点替换素材 ——
   const pendingReplace = useAssetDropStore((s) => s.pendingReplace);
@@ -764,6 +796,12 @@ export function AssetLibraryPanel({
 
           {panelTab === "library" ? (
             <>
+              <AssetFolderTree project={project} selectedFolderId={selectedFolderId} selectedPurpose={selectedPurpose} onFolderChange={setSelectedFolderId} onPurposeChange={setSelectedPurpose} />
+              {organizationQuery.isLoading ? (
+                <div className="mx-3 mt-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/45">素材归类加载中…</div>
+              ) : organizationError ? (
+                <div role="alert" className="mx-3 mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300"><div>素材归类加载失败：{organizationError}</div><button type="button" onClick={() => void organizationQuery.refetch()} className="mt-1 text-white/70 underline hover:text-white">重试归类</button></div>
+              ) : null}
               {/* ── 分类标签 + 搜索（固定头部） ── */}
               <div className="sticky top-0 z-10">
                 <div className="ui-scrollbar-hidden flex items-center gap-1 overflow-x-auto px-3 pt-2.5 pb-2">
@@ -798,7 +836,7 @@ export function AssetLibraryPanel({
               </div>
 
               {/* ─ 列表内容 ── */}
-              {error ? (
+              {!organizationHasUsableData ? null : error ? (
                 <div className="mx-3 mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
                   项目素材加载失败：{error}
                 </div>
@@ -980,6 +1018,7 @@ function AssetCard({
   const handleDragStart = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!dragPayload) return;
     event.dataTransfer.setData(CANVAS_ASSET_DRAG_MIME, JSON.stringify(dragPayload));
+    event.dataTransfer.setData(ASSET_ORGANIZATION_DRAG_MIME, JSON.stringify(assetOrganizationDragPayload(asset)));
     event.dataTransfer.effectAllowed = "copy";
     const preview = createAssetDragImage(event.currentTarget, asset);
     if (preview) {
@@ -2042,6 +2081,11 @@ function viewportCenteredPosition(
     }
   }
   return { x: baseX, y: baseY };
+}
+
+function assetOrganizationDragPayload(asset: LibraryAsset): { assetType: string; assetId: string; purpose: AssetPurpose } {
+  const purpose: AssetPurpose = asset.tab === "characters" ? "character" : asset.tab === "scenes" ? "scene" : asset.tab === "props" ? "prop" : asset.mediaType === "video" ? "video" : asset.mediaType === "audio" ? "audio" : "storyboard";
+  return { assetType: asset.mediaType === "unknown" ? asset.kind : asset.mediaType, assetId: asset.id, purpose };
 }
 
 function assetToDragPayload(asset: LibraryAsset): CanvasAssetDragPayload | null {

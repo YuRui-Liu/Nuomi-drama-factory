@@ -13,9 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Literal
 
+import portalocker
+
 from novelvideo.config import STATE_DIR
 
 _log = logging.getLogger(__name__)
+
+
+class ProjectConfigReadError(RuntimeError):
+    """Raised when a persisted project config exists but cannot be trusted."""
 
 if TYPE_CHECKING:
     from novelvideo.embedding_models import EmbeddingModelSpec
@@ -95,12 +101,6 @@ def default_aspect_ratio_for_spine_template(spine_template: str | None) -> str:
     """Return the project aspect ratio implied by the screenplay spine."""
     return "16:9" if spine_template == "narrated" else DEFAULT_ASPECT_RATIO
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
-
-
 def get_project_config_path(username: str, project: str) -> Path:
     from novelvideo.utils.project_paths import ProjectPaths
 
@@ -138,8 +138,32 @@ def load_project_config_file_from_path(config_path: str | Path) -> dict:
         return {}
 
 
+def load_project_config_file_from_path_strict(config_path: str | Path) -> dict:
+    """Load an existing config without confusing corruption with legacy absence."""
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ProjectConfigReadError(
+            f"Invalid project configuration: {config_path}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ProjectConfigReadError(
+            f"Invalid project configuration object: {config_path}"
+        )
+    return normalize_project_config(payload)
+
+
 def load_project_config_file_from_state_dir(state_dir: str | Path) -> dict:
     return load_project_config_file_from_path(get_project_config_path_from_state_dir(state_dir))
+
+
+def load_project_config_file_from_state_dir_strict(state_dir: str | Path) -> dict:
+    return load_project_config_file_from_path_strict(
+        get_project_config_path_from_state_dir(state_dir)
+    )
 
 
 def _ollama_spec_from_payload(payload: object) -> "EmbeddingModelSpec":
@@ -413,14 +437,10 @@ def _effective_project_config(
 def _project_config_lock(config_path: Path):
     lock_path = config_path.with_suffix(f"{config_path.suffix}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        if fcntl is not None:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with portalocker.Lock(
+        str(lock_path), mode="a+", timeout=60, encoding="utf-8"
+    ):
+        yield
 
 
 def _write_project_config_atomic(config_path: Path, config: dict) -> None:
@@ -456,10 +476,17 @@ def update_project_config_file(
 def update_project_config_file_at_path(
     config_path: str | Path,
     updater: Callable[[dict], None],
+    *,
+    strict: bool = False,
 ) -> dict:
     config_path = Path(config_path)
     with _project_config_lock(config_path):
-        current = load_project_config_file_from_path(config_path)
+        loader = (
+            load_project_config_file_from_path_strict
+            if strict
+            else load_project_config_file_from_path
+        )
+        current = loader(config_path)
         updated = dict(current)
         updater(updated)
         updated = normalize_project_config(updated)
@@ -470,10 +497,13 @@ def update_project_config_file_at_path(
 def update_project_config_file_in_state_dir(
     state_dir: str | Path,
     updater: Callable[[dict], None],
+    *,
+    strict: bool = False,
 ) -> dict:
     return update_project_config_file_at_path(
         get_project_config_path_from_state_dir(state_dir),
         updater,
+        strict=strict,
     )
 
 

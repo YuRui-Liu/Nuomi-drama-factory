@@ -30,6 +30,7 @@ import {
   useEpisodeImports,
   useKnowledgeGraph,
   useStartIngest,
+  useSwitchKnowledgePipeline,
   useUploadNovel,
   type FormatCheck,
   type UploadResult,
@@ -467,7 +468,10 @@ function UploadedFileCard({
   canStart,
   isStarting,
   ingestCostDisplay,
+  knowledgePipeline,
+  switchError,
   onStart,
+  onSwitchKnowledgePipeline,
   onCancel,
   isCancelling,
   onReupload,
@@ -485,7 +489,10 @@ function UploadedFileCard({
   canStart: boolean;
   isStarting: boolean;
   ingestCostDisplay?: string | null;
+  knowledgePipeline: "structured_v1" | "cognee_legacy";
+  switchError: string | null;
   onStart: () => void;
+  onSwitchKnowledgePipeline: () => void;
   onCancel: () => void;
   isCancelling: boolean;
   onReupload: () => void;
@@ -535,16 +542,16 @@ function UploadedFileCard({
               {t(`ingest.status.${status}`)}
             </span>
           </div>
-          {size != null && (
-            <div className="mt-1 text-xs text-muted-foreground">
-              {formatSize(size)}
-            </div>
-          )}
+          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            {size != null && <span>{formatSize(size)}</span>}
+            <span className="rounded border border-white/10 bg-black/20 px-1.5 py-0.5 text-foreground/70">{knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}</span>
+          </div>
           {status === "failed" && error && (
             <p className="mt-2 text-xs leading-5 text-destructive">
               {error}
             </p>
           )}
+          {switchError && <p className="mt-1 text-xs leading-5 text-destructive">{switchError}</p>}
           {showFormatWarning && formatCheck && (
             <FormatCheckWarning
               formatCheck={formatCheck}
@@ -583,9 +590,12 @@ function UploadedFileCard({
                   ) : (
                     <Play className="size-3.5 fill-current" />
                   )}
-                  {isStarting ? t("ingest.processing") : t("ingest.startIngest")}
+                  {isStarting ? t("ingest.processing") : status === "failed" ? "重试导入" : t("ingest.startIngest")}
                   <CreditCostInline display={ingestCostDisplay} />
                 </Button>
+              )}
+              {status === "failed" && knowledgePipeline === "structured_v1" && (
+                <Button variant="outline" size="sm" onClick={onSwitchKnowledgePipeline} className="gap-1.5">切换知识图谱</Button>
               )}
               {/* 导入完成后去掉「重新上传」「删除」：已导入的小说不再允许就地换文件
                   或删除，避免误操作覆盖/清掉已建好的图谱；未导入（uploaded/stopped/
@@ -884,6 +894,9 @@ export function IngestPageContent({ project }: { project: string }) {
   const [ingestFileStatus, setIngestFileStatus] =
     useState<IngestFileStatus>("uploaded");
   const [ingestError, setIngestError] = useState<string | null>(null);
+  const [knowledgePipeline, setKnowledgePipeline] = useState<"structured_v1" | "cognee_legacy">("structured_v1");
+  const [pipelineSwitchError, setPipelineSwitchError] = useState<string | null>(null);
+  const [pipelineSwitchConfirmOpen, setPipelineSwitchConfirmOpen] = useState(false);
   const [ingestLogs, setIngestLogs] = useState<string[]>([]);
   const [formatCheckDetails, setFormatCheckDetails] = useState<{
     formatCheck: FormatCheck;
@@ -893,6 +906,7 @@ export function IngestPageContent({ project }: { project: string }) {
 
   const uploadMutation = useUploadNovel(project);
   const startIngestMutation = useStartIngest(project);
+  const switchKnowledgePipeline = useSwitchKnowledgePipeline(project);
 
   useEffect(() => {
     setHideImportedPreview(readHiddenImportedPreview(project));
@@ -1030,6 +1044,7 @@ export function IngestPageContent({ project }: { project: string }) {
   const { data: ingestTasksRes, isFetchedAfterMount: ingestTasksFetchedAfterMount } =
     useTasks({ project, episode: 0 });
   const ingestReconciledProjectRef = useRef<string | null>(null);
+  const pipelineFailureReconciledProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (ingestReconciledProjectRef.current === project) return;
     if (!ingestTasksFetchedAfterMount) return;
@@ -1093,6 +1108,21 @@ export function IngestPageContent({ project }: { project: string }) {
   const { data: stylesRes } = useStyles(project);
   const updateProject = useUpdateProject(project);
   const config = projectRes?.data;
+  const pipelineConfig = config as (ProjectConfig & { knowledge_pipeline?: "structured_v1" | "cognee_legacy"; knowledge_pipeline_status?: string; knowledge_pipeline_error?: string }) | undefined;
+  const hasPersistedStructuredFailure = pipelineConfig?.knowledge_pipeline_status === "structured_failed";
+  useEffect(() => {
+    if (pipelineConfig?.knowledge_pipeline) setKnowledgePipeline(pipelineConfig.knowledge_pipeline);
+    if (pipelineFailureReconciledProjectRef.current === project) return;
+    if (!pipelineConfig || !ingestTasksFetchedAfterMount || ingestTasksRes === undefined) return;
+    const running = (ingestTasksRes.data ?? []).some((task) => task.task_type === "ingest_fast" && ACTIVE_INGEST_STATUSES.has(task.status));
+    pipelineFailureReconciledProjectRef.current = project;
+    if (running || !hasPersistedStructuredFailure) return;
+    setIngestSubmitted(true);
+    setIngestStarted(false);
+    setIngestFileStatus("failed");
+    setIngestError(pipelineConfig.knowledge_pipeline_error || "结构化导入失败");
+    setHideImportedPreview(false);
+  }, [hasPersistedStructuredFailure, ingestTasksFetchedAfterMount, ingestTasksRes, pipelineConfig, project]);
   const normalizedDefaults = normalizeLegacyDefaults(config);
   const visualStyleOptions = useMemo(() => {
     const styles = stylesRes?.data ?? [];
@@ -1268,6 +1298,7 @@ export function IngestPageContent({ project }: { project: string }) {
         rebuild: true,
         spine_template: resolveIngestSettings(getValues(), normalizeLegacyDefaults(config))
           .spine_template,
+        knowledge_pipeline: knowledgePipeline,
       });
       setIngestSubmitted(true);
       setHideImportedPreview(false);
@@ -1276,6 +1307,7 @@ export function IngestPageContent({ project }: { project: string }) {
       setReimporting(false);
       setIngestFileStatus("importing");
     } catch (error) {
+      setIngestSubmitted(true);
       setIngestFileStatus("failed");
       const message = backendErrorToastMessage(error, t);
       setIngestError(message);
@@ -1289,9 +1321,22 @@ export function IngestPageContent({ project }: { project: string }) {
     startIngestMutation,
     getValues,
     config,
+    knowledgePipeline,
     project,
     t,
   ]);
+
+  const handleSwitchKnowledgePipeline = useCallback(async () => {
+    setPipelineSwitchError(null);
+    try {
+      await switchKnowledgePipeline.mutateAsync();
+      setKnowledgePipeline("cognee_legacy");
+    } catch (error) {
+      const message = backendErrorToastMessage(error, t);
+      setPipelineSwitchError(message);
+      toast.error(message);
+    }
+  }, [switchKnowledgePipeline, t]);
 
   const chapters = chaptersData?.chapters ?? [];
   const chapterCount = chapters.length;
@@ -1359,6 +1404,7 @@ export function IngestPageContent({ project }: { project: string }) {
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
               {t("ingest.subtitle")}
             </p>
+            <span className="mt-2 inline-flex rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-foreground/70">{knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}</span>
           </div>
         </div>
         {hasImportedContent && (
@@ -1731,10 +1777,13 @@ export function IngestPageContent({ project }: { project: string }) {
                     });
                   }}
                   isIngesting={ingestStarted}
-                  canStart={!!uploadedFile && !ingestSubmitted}
+                  canStart={(!!uploadedFile && (!ingestSubmitted || ingestFileStatus === "failed")) || (!uploadedFile && ingestFileStatus === "failed" && hasPersistedStructuredFailure)}
                   isStarting={isStarting}
                   ingestCostDisplay={ingestFeatureCostDisplay}
-                  onStart={handleStartIngest}
+                  knowledgePipeline={knowledgePipeline}
+                  switchError={pipelineSwitchError}
+                  onStart={uploadedFile ? handleStartIngest : handleReupload}
+                  onSwitchKnowledgePipeline={() => setPipelineSwitchConfirmOpen(true)}
                   onCancel={handleCancelIngest}
                   isCancelling={cancelTask.isPending}
                   onReupload={() => setReuploadConfirmOpen(true)}
@@ -1766,6 +1815,19 @@ export function IngestPageContent({ project }: { project: string }) {
                     >
                       {t("ingest.reuploadConfirm.confirm")}
                     </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+
+              <AlertDialog open={pipelineSwitchConfirmOpen} onOpenChange={setPipelineSwitchConfirmOpen}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>切换到知识图谱？</AlertDialogTitle>
+                    <AlertDialogDescription>将改用 legacy/Cognee 知识图谱工作流，并停止使用当前结构化导入流程。仅在项目尚无正式资产时可以切换，请确认这是你的明确选择。</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>取消，保留结构化导入</AlertDialogCancel>
+                    <AlertDialogAction variant="destructive" onClick={() => { setPipelineSwitchConfirmOpen(false); void handleSwitchKnowledgePipeline(); }}>确认切换知识图谱</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>

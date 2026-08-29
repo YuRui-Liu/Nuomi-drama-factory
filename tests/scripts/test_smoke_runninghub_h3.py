@@ -21,7 +21,21 @@ def test_smoke_uses_director_workflow_and_single_timeline_payload() -> None:
     assert WORKFLOW_ID == "2089723723468328961"
     assert payload["version"] == 5
     assert payload["frameRate"] == 24
+    assert payload["output"]["aspectRatio"] == "9:16 (竖版宽屏)"
     assert len(payload["segments"]) == 1
     assert payload["segments"][0]["genImage"]["imageFile"] == "first.png"
     assert payload["segments"][0]["endImage"]["imageFile"] == "last.png"
     assert timeline_summary(payload) == (1, 124)
+
+
+def test_smoke_can_build_landscape_payload() -> None:
+    payload = json.loads(
+        build_smoke_timeline_data(
+            first_frame_url="first.png",
+            last_frame_url=None,
+            prompt="镜头稳定",
+            aspect_ratio="16:9",
+        )
+    )
+
+    assert payload["output"]["aspectRatio"] == "16:9 (宽屏)"

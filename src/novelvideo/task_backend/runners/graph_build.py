@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_pipeline,
+)
 from novelvideo.novel_source import require_imported_novel
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
@@ -30,9 +34,23 @@ def _progress(ctx: ProjectContext, task_type: str, progress: float, task: str) -
 
 
 async def _load_store(ctx: ProjectContext):
-    from novelvideo.cognee import CogneeStore
+    """Open the store selected by the project knowledge pipeline."""
+    if is_structured_pipeline(ctx.state_dir):
+        from novelvideo.sqlite_store import SQLiteStore
 
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(ctx.output_dir))
+        store = SQLiteStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
+    else:
+        from novelvideo.cognee import CogneeStore
+
+        store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
     await store.initialize()
     await store.load_graph_state()
     return store
@@ -46,6 +64,15 @@ async def _run_build_characters(ctx: ProjectContext) -> dict[str, Any]:
     require_imported_novel(ctx.output_dir)
     store = await _load_store(ctx)
     try:
+        if is_structured_pipeline(ctx.state_dir):
+            from novelvideo.structured_builders import build_characters_structured
+
+            added = await build_characters_structured(
+                store,
+                on_progress=lambda progress, task: _progress(ctx, "build_characters", progress, task),
+                on_log=lambda message: _progress(ctx, "build_characters", 0.0, message),
+            )
+            return {"characters": len(added), "added_characters": len(added)}
         characters = await store.build_characters_from_graph(
             on_progress=lambda progress, task: _progress(ctx, "build_characters", progress, task),
             on_log=lambda message: _progress(ctx, "build_characters", 0.0, message),
@@ -63,6 +90,14 @@ async def _run_build_scenes(ctx: ProjectContext) -> dict[str, Any]:
     require_imported_novel(ctx.output_dir)
     store = await _load_store(ctx)
     try:
+        if is_structured_pipeline(ctx.state_dir):
+            from novelvideo.structured_builders import build_scenes_structured
+
+            return await build_scenes_structured(
+                store,
+                on_progress=lambda progress, task: _progress(ctx, "build_scenes", progress, task),
+                on_log=lambda message: _progress(ctx, "build_scenes", 0.0, message),
+            )
         scenes = await store.build_scenes_from_graph(
             on_progress=lambda progress, task: _progress(ctx, "build_scenes", progress, task),
             on_log=lambda message: _progress(ctx, "build_scenes", 0.0, message),
@@ -79,6 +114,14 @@ def run_build_props(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
 async def _run_build_props(ctx: ProjectContext) -> dict[str, Any]:
     store = await _load_store(ctx)
     try:
+        if is_structured_pipeline(ctx.state_dir):
+            from novelvideo.structured_builders import build_props_structured
+
+            return await build_props_structured(
+                store,
+                on_progress=lambda progress, task: _progress(ctx, "build_props", progress, task),
+                on_log=lambda message: _progress(ctx, "build_props", 0.0, message),
+            )
         props = await store.build_props_from_graph(
             on_progress=lambda progress, task: _progress(ctx, "build_props", progress, task),
             on_log=lambda message: _progress(ctx, "build_props", 0.0, message),
@@ -93,7 +136,6 @@ def run_build_episodes(envelope: dict[str, Any], ctx: ProjectContext) -> dict[st
 
 
 async def _run_build_episodes(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
-    from novelvideo.agents.episode_planner import EpisodePlannerAgent
 
     payload = envelope.get("payload") or {}
     config = dict(payload.get("config") or {})
@@ -102,6 +144,10 @@ async def _run_build_episodes(envelope: dict[str, Any], ctx: ProjectContext) -> 
     planning_mode = str(config.get("planning_mode", "ai"))
     generate_metadata = bool(config.get("generate_metadata", False))
     require_imported_novel(ctx.output_dir)
+    if is_structured_pipeline(ctx.state_dir) and planning_mode != "chapters":
+        raise KnowledgePipelineUnsupported(
+            "structured_v1 only supports deterministic chapter/episode mapping"
+        )
     store = await _load_store(ctx)
     try:
         def update(progress: float, task: str) -> None:
@@ -120,6 +166,7 @@ async def _run_build_episodes(envelope: dict[str, Any], ctx: ProjectContext) -> 
                 on_log=lambda message: update(0.0, message),
             )
         elif use_agent:
+            from novelvideo.agents.episode_planner import EpisodePlannerAgent
             try:
                 planner = EpisodePlannerAgent(store)
                 episodes = await planner.plan_episodes(

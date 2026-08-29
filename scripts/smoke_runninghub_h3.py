@@ -17,7 +17,11 @@ WORKFLOW_ID = "2089723723468328961"
 
 
 def build_smoke_timeline_data(
-    *, first_frame_url: str, last_frame_url: str | None, prompt: str
+    *,
+    first_frame_url: str,
+    last_frame_url: str | None,
+    prompt: str,
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Build the one-segment version-5 Director payload used by this smoke test."""
     from novelvideo.media_capabilities.video.runninghub_h3 import _director_timeline_payload
@@ -27,6 +31,7 @@ def build_smoke_timeline_data(
         last_frame_url=last_frame_url,
         prompt=prompt,
         duration=5.0,
+        aspect_ratio=aspect_ratio,
     )
 
 
@@ -62,6 +67,7 @@ async def _run(args: argparse.Namespace) -> None:
                 first_frame_url=remote_image,
                 last_frame_url=remote_last_image,
                 prompt=args.prompt,
+                aspect_ratio=args.aspect_ratio,
             )
             shots, total_frames = timeline_summary(json.loads(timeline_data))
             task_id = await client.submit(
@@ -111,6 +117,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--prompt", default="人物轻轻眨眼并缓慢抬头，镜头稳定")
+    parser.add_argument("--aspect-ratio", choices=("9:16", "16:9"), default="9:16")
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=1200.0)
     args = parser.parse_args()

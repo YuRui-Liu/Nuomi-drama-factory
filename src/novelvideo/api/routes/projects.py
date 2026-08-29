@@ -6,10 +6,12 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
@@ -40,10 +42,14 @@ from novelvideo.api.schemas import (
     ProjectUpdate,
 )
 from novelvideo.config import ensure_project_dirs_at_paths
-from novelvideo.embedding_models import (
-    PROJECT_EMBEDDING_DIMENSION_KEY,
-    PROJECT_EMBEDDING_MODEL_KEY,
-    embedding_model_binding_for_new_project,
+from novelvideo.knowledge_pipeline import (
+    COGNEE_LEGACY,
+    KNOWLEDGE_PIPELINE_STATUS_KEY,
+    KNOWLEDGE_PIPELINE_STRUCTURED,
+    STATUS_STRUCTURED_PENDING,
+    KnowledgePipelineLocked,
+    knowledge_pipeline_state_from_state_dir,
+    switch_to_cognee_legacy,
 )
 from novelvideo.ports import get_project_access, get_project_registry
 from novelvideo.ports.project import ProjectRecord
@@ -83,6 +89,10 @@ router = APIRouter()
 VOICE_SOURCE_ROOTS = ("audio", "seedance2_uploads", "assets", "uploads")
 NARRATOR_VOICE_MODE_EXPLANATION = "第一人称解说使用解说主角声线；第三人称解说使用项目解说声线。"
 SUPPORTED_VOICE_SAMPLE_COPY = "仅支持 mp3 / wav / m4a / aac / ogg"
+
+
+class KnowledgePipelineUpdate(BaseModel):
+    knowledge_pipeline: Literal["cognee_legacy"]
 
 
 def _now_iso() -> str:
@@ -478,13 +488,12 @@ async def create_project(
             state_dir=record.state_dir,
             runtime_dir=record.runtime_dir,
         )
-        embedding_binding = embedding_model_binding_for_new_project()
         save_project_config_in_state_dir(
             record.state_dir,
             config={
                 "user": user["username"],
-                PROJECT_EMBEDDING_MODEL_KEY: embedding_binding.internal_model,
-                PROJECT_EMBEDDING_DIMENSION_KEY: embedding_binding.dimensions,
+                "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
+                KNOWLEDGE_PIPELINE_STATUS_KEY: STATUS_STRUCTURED_PENDING,
             },
         )
     except Exception:
@@ -497,7 +506,16 @@ async def create_project(
         except Exception:
             logger.warning("failed to cleanup uncommitted project directories", exc_info=True)
         raise
-    return {"ok": True, "data": {"id": record.id, "project_id": record.id, "name": body.name}}
+    return {
+        "ok": True,
+        "data": {
+            "id": record.id,
+            "project_id": record.id,
+            "name": body.name,
+            "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
+            "knowledge_pipeline_status": STATUS_STRUCTURED_PENDING,
+        },
+    }
 
 
 @router.get("/projects/{project}")
@@ -511,7 +529,9 @@ async def get_project(project: str, user: dict = Depends(get_api_user)):
         project=ctx.project_name,
     )
     record = await get_project_registry().get_project(ctx.project_id)
+    pipeline_state = knowledge_pipeline_state_from_state_dir(ctx.state_dir)
     data = dict(config)
+    data.update(pipeline_state.as_dict())
     data.update(
         {
             "project_id": ctx.project_id,
@@ -524,6 +544,62 @@ async def get_project(project: str, user: dict = Depends(get_api_user)):
         }
     )
     return {"ok": True, "data": data}
+
+
+@router.patch("/projects/{project}/knowledge-pipeline")
+async def update_knowledge_pipeline(
+    project: str,
+    body: KnowledgePipelineUpdate,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    """Explicitly switch an empty pending/failed structured project to legacy."""
+
+    ctx = await resolve_project_context(
+        user=user,
+        project_id=project,
+        required_role="editor",
+    )
+    require_project_home_node(ctx, operation="update knowledge pipeline")
+    formal_asset_count: int | None = None
+    store = None
+    try:
+        store = await make_sqlite_store_for_context(ctx)
+        formal_asset_count = await store.formal_asset_count()
+    except Exception:
+        logger.warning(
+            "[%s] formal asset count unavailable; pipeline switch locked",
+            project,
+            exc_info=True,
+        )
+    finally:
+        close = getattr(store, "close", None)
+        if close:
+            try:
+                await close()
+            except Exception:
+                formal_asset_count = None
+                logger.warning(
+                    "[%s] store close failed; pipeline switch locked",
+                    project,
+                    exc_info=True,
+                )
+
+    try:
+        state = switch_to_cognee_legacy(
+            ctx.state_dir,
+            formal_asset_count=formal_asset_count,
+        )
+    except KnowledgePipelineLocked as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "KNOWLEDGE_PIPELINE_LOCKED",
+                "message": str(exc),
+                "formal_asset_count": exc.formal_asset_count,
+            },
+        ) from exc
+    assert body.knowledge_pipeline == COGNEE_LEGACY
+    return {"ok": True, "data": state.as_dict()}
 
 
 @router.get("/projects/{project}/static-auth", include_in_schema=False)

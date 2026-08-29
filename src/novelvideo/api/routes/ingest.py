@@ -14,6 +14,7 @@ from novelvideo.api.chapter_preview import (
 from novelvideo.api.deps import resolve_project_scope
 from novelvideo.api.deps import get_cognee_store
 from novelvideo.api.schemas import IngestStart
+from novelvideo.knowledge_pipeline import knowledge_pipeline_from_state_dir
 from novelvideo.project_config import (
     default_aspect_ratio_for_spine_template,
     load_project_config,
@@ -131,6 +132,14 @@ async def start_ingest(
     username = resolved.username
     project_name = resolved.project_name
     project_dir = resolved.project_dir
+    if body.knowledge_pipeline is not None:
+        actual_pipeline = knowledge_pipeline_from_state_dir(resolved.state_dir)
+        if body.knowledge_pipeline != actual_pipeline:
+            return {
+                "ok": False,
+                "code": "KNOWLEDGE_PIPELINE_STALE_SELECTION",
+                "error": "项目知识管线已变更，请刷新后重试",
+            }
     uploads_dir = project_dir / "uploads"
     safe_name = sanitize_upload_filename(body.filename)
     if safe_name != body.filename or not is_safe_upload_target(uploads_dir, safe_name):

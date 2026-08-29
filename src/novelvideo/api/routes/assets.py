@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
+from novelvideo.assets.organization import (
+    AssetFolderConflict,
+    AssetFolderNotFound,
+    AssetOrganizationError,
+)
 from novelvideo.models import (
     beat_scene_id,
     extract_prop_ids_from_markers,
@@ -18,6 +25,38 @@ from novelvideo.models import (
 router = APIRouter()
 
 VALID_REFERENCE_TYPES = {"identity", "scene", "prop"}
+
+
+AssetPurpose = Literal[
+    "character", "scene", "prop", "storyboard", "video", "audio", "other"
+]
+
+
+class AssetFolderCreate(BaseModel):
+    name: str
+
+
+class AssetFolderRename(BaseModel):
+    name: str
+
+
+class AssetOrganizationUpdate(BaseModel):
+    folder_id: str | None = None
+    purpose: AssetPurpose = "other"
+
+
+def _raise_organization_http_error(exc: AssetOrganizationError) -> None:
+    if isinstance(exc, AssetFolderNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, AssetFolderConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _close_store(store) -> None:
+    close = getattr(store, "close", None)
+    if close:
+        await close()
 
 
 def _contains(values: object, target: str) -> bool:
@@ -58,6 +97,116 @@ async def _load_beat_asset_refs(ctx):
         close = getattr(store, "close", None)
         if close:
             await close()
+
+
+@router.get("/projects/{project}/asset-folders")
+async def list_asset_folders(project: str, user: dict = Depends(get_api_user)):
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        folders = await store.list_asset_folders()
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": {"folders": folders}}
+
+
+@router.post("/projects/{project}/asset-folders")
+async def create_asset_folder(
+    project: str,
+    body: AssetFolderCreate,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        try:
+            folder = await store.create_asset_folder(body.name)
+        except AssetOrganizationError as exc:
+            _raise_organization_http_error(exc)
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": folder}
+
+
+@router.patch("/projects/{project}/asset-folders/{folder_id}")
+async def rename_asset_folder(
+    project: str,
+    folder_id: str,
+    body: AssetFolderRename,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        try:
+            folder = await store.rename_asset_folder(folder_id, body.name)
+        except AssetOrganizationError as exc:
+            _raise_organization_http_error(exc)
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": folder}
+
+
+@router.delete("/projects/{project}/asset-folders/{folder_id}")
+async def delete_asset_folder(
+    project: str,
+    folder_id: str,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        try:
+            deleted = await store.delete_asset_folder(folder_id)
+        except AssetOrganizationError as exc:
+            _raise_organization_http_error(exc)
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": deleted}
+
+
+@router.get("/projects/{project}/asset-organization")
+async def list_asset_organization(
+    project: str,
+    folder_id: str | None = Query(default=None),
+    purpose: AssetPurpose | None = Query(default=None),
+    unfiled: bool = Query(default=False),
+    user: dict = Depends(get_api_user),
+):
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        placements = await store.list_asset_organization(
+            folder_id=folder_id, purpose=purpose, unfiled=unfiled
+        )
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": {"placements": placements}}
+
+
+@router.put("/projects/{project}/assets/{asset_type}/{asset_id:path}/organization")
+async def put_asset_organization(
+    project: str,
+    asset_type: str,
+    asset_id: str,
+    body: AssetOrganizationUpdate,
+    user: dict = Depends(require_scope("projects:write")),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        try:
+            placement = await store.put_asset_organization(
+                asset_type,
+                asset_id,
+                folder_id=body.folder_id,
+                purpose=body.purpose,
+            )
+        except AssetOrganizationError as exc:
+            _raise_organization_http_error(exc)
+    finally:
+        await _close_store(store)
+    return {"ok": True, "data": placement}
 
 
 @router.get("/projects/{project}/assets/references")

@@ -14,6 +14,10 @@ from novelvideo.api.deps import (
     resolve_project_scope,
 )
 from novelvideo.api.schemas import EpisodePlanRequest, EpisodeUpdate, InsertManualShotRequest
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_pipeline,
+)
 from novelvideo.novel_source import has_imported_novel, novel_import_required_response
 from novelvideo.ports import get_task_backend, get_usage_meter
 from novelvideo.task_identity import project_task_state_key
@@ -247,6 +251,12 @@ async def plan_episodes(project: str, body: EpisodePlanRequest, user: dict = Dep
     }
 
     if ctx is not None:
+        if is_structured_pipeline(state_dir) and body.planning_mode != "chapters":
+            return {
+                "ok": False,
+                "code": KnowledgePipelineUnsupported.error_code,
+                "error": "该项目只支持按章节/集号的确定性分集",
+            }
         if not has_imported_novel(resolved.project_dir):
             return novel_import_required_response()
         queued = await get_task_backend().enqueue_project_task(

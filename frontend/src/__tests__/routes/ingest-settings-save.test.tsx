@@ -124,10 +124,14 @@ const mocks = vi.hoisted(() => ({
     visual_style: "chinese_period_drama",
     narration_style: "first_person",
     ethnicity: "Chinese",
+    knowledge_pipeline: undefined as "structured_v1" | "cognee_legacy" | undefined,
+    knowledge_pipeline_status: undefined as string | undefined,
+    knowledge_pipeline_error: undefined as string | undefined,
   },
   updateProject: vi.fn(),
   uploadNovel: vi.fn(),
   startIngest: vi.fn(),
+  switchKnowledgePipeline: vi.fn(),
   chaptersData: undefined as
     | {
         ok: true;
@@ -320,6 +324,7 @@ vi.mock("@/lib/queries/ingest", () => ({
     mutateAsync: mocks.startIngest,
     isPending: false,
   }),
+  useSwitchKnowledgePipeline: () => ({ mutateAsync: mocks.switchKnowledgePipeline, isPending: false }),
   useEpisodeImports: () => ({
     data: {
       ok: true,
@@ -380,11 +385,15 @@ beforeEach(() => {
     visual_style: "chinese_period_drama",
     narration_style: "first_person",
     ethnicity: "Chinese",
+    knowledge_pipeline: undefined,
+    knowledge_pipeline_status: undefined,
+    knowledge_pipeline_error: undefined,
   };
   mocks.updateProject.mockReset();
   mocks.updateProject.mockResolvedValue({ ok: true, data: mocks.projectConfig });
   mocks.uploadNovel.mockReset();
   mocks.startIngest.mockReset();
+  mocks.switchKnowledgePipeline.mockReset();
   mocks.chaptersData = undefined;
   mocks.toastSuccess.mockReset();
   mocks.toastError.mockReset();
@@ -684,8 +693,31 @@ describe("IngestPage settings save", () => {
         filename: "novel.txt",
         rebuild: true,
         spine_template: "drama",
+        knowledge_pipeline: "structured_v1",
       }),
     );
+  });
+
+  it("requires confirmation and cancellation does not switch knowledge pipeline", async () => {
+    const user = userEvent.setup();
+    mocks.uploadNovel.mockResolvedValue({ ok: true, data: { filename: "novel.txt", size: 12 } });
+    mocks.startIngest.mockRejectedValueOnce(new Error("结构化导入失败: schema invalid"));
+    mocks.switchKnowledgePipeline.mockRejectedValue(new Error("已有正式资产，不能切换知识图谱"));
+    const { container } = render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    await user.upload(fileInput!, new File(["Chapter 1"], "novel.txt", { type: "text/plain" }));
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+    expect(await screen.findByText("结构化导入失败: schema invalid")).toBeInTheDocument();
+    const switchButton = screen.getByRole("button", { name: "切换知识图谱" });
+    await user.click(switchButton);
+    expect(await screen.findByText("切换到知识图谱？")).toBeInTheDocument();
+    expect(mocks.switchKnowledgePipeline).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "取消，保留结构化导入" }));
+    expect(mocks.switchKnowledgePipeline).not.toHaveBeenCalled();
+    await user.click(switchButton);
+    await user.click(screen.getByRole("button", { name: "确认切换知识图谱" }));
+    await waitFor(() => expect(mocks.switchKnowledgePipeline).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("已有正式资产，不能切换知识图谱")).toBeInTheDocument();
   });
 
   it("shows the backend upload error instead of a generic failure", async () => {

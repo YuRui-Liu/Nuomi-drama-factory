@@ -35,6 +35,36 @@ class CellMapping:
 
 
 @dataclass(frozen=True)
+class VideoPlanUnit:
+    id: str
+    beat_ids: tuple[str, ...]
+    mode: Literal["i2va", "fl2va"]
+    duration_seconds: float
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["beat_ids"] = list(self.beat_ids)
+        return result
+
+
+@dataclass(frozen=True)
+class VideoPlan:
+    revision: int = 0
+    source: Literal["recommended", "manual"] = "recommended"
+    units: tuple[VideoPlanUnit, ...] = ()
+    total_duration_seconds: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "revision": self.revision,
+            "source": self.source,
+            "units": [unit.to_dict() for unit in self.units],
+            "total_duration_seconds": self.total_duration_seconds,
+        }
+
+
+@dataclass(frozen=True)
 class GroupStageState:
     status: StageStatus = "pending"
     revision: int = 0
@@ -73,6 +103,7 @@ class NarrativeGroup:
     beat_ids: tuple[str, ...]
     layout: GridLayout
     cell_to_beat: tuple[CellMapping, ...]
+    video_plan: VideoPlan = field(default_factory=VideoPlan)
     stages: dict[StageName, GroupStageState] = field(default_factory=_default_stages)
     errors: tuple[dict, ...] = ()
 
@@ -110,4 +141,5 @@ class NarrativeGroup:
     def to_dict(self) -> dict:
         result = asdict(self)
         result["video_inputs"] = list(self.video_inputs)
+        result["video_plan"] = self.video_plan.to_dict()
         return result

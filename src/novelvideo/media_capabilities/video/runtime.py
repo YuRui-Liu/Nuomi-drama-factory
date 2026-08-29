@@ -24,6 +24,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorSegment,
     build_h3_timeline_data,
 )
+from novelvideo.media_capabilities.video.h3_prompt_profile import H3_GLOBAL_CONTINUITY_PROMPT
 from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
@@ -271,7 +272,7 @@ def _director_timeline_payload(
         },
         "videoClips": [],
         "global": {
-            "taskType": task_type, "prompt": "", "refs": [],
+            "taskType": task_type, "prompt": H3_GLOBAL_CONTINUITY_PROMPT, "refs": [],
             "referenceVideo": {"videoFile": "", "fileName": "", "type": "input", "subfolder": ""},
             "continuousReference": False, "genImage": {"imageFile": ""},
             "sourceWidth": output["width"], "sourceHeight": output["height"],

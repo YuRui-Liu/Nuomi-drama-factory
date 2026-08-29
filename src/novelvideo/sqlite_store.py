@@ -19,6 +19,14 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 from rich.console import Console
 
+from novelvideo.assets.organization import (
+    AssetFolderConflict,
+    AssetFolderNotFound,
+    canonical_asset_key,
+    new_asset_folder_id,
+    normalize_asset_purpose,
+    normalize_folder_name,
+)
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -245,6 +253,88 @@ CREATE TABLE IF NOT EXISTS episode_stage_revisions (
     stale INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (episode_number, stage)
+);
+
+CREATE TABLE IF NOT EXISTS asset_folders (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS asset_placements (
+    asset_key TEXT PRIMARY KEY,
+    asset_type TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    folder_id TEXT REFERENCES asset_folders(id) ON DELETE SET NULL,
+    purpose TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_placements_folder
+    ON asset_placements(folder_id);
+CREATE INDEX IF NOT EXISTS idx_asset_placements_purpose
+    ON asset_placements(purpose);
+
+CREATE TABLE IF NOT EXISTS story_analysis_runs (
+    run_id TEXT PRIMARY KEY,
+    pipeline_version TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    spine_template TEXT NOT NULL DEFAULT '',
+    source_sha256 TEXT NOT NULL,
+    source_length INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_runs_source
+    ON story_analysis_runs(source_sha256, schema_version);
+
+CREATE TABLE IF NOT EXISTS story_analysis_chunks (
+    run_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    section_type TEXT NOT NULL DEFAULT '',
+    section_label TEXT NOT NULL DEFAULT '',
+    source_start INTEGER NOT NULL DEFAULT 0,
+    source_end INTEGER NOT NULL DEFAULT 0,
+    source_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (run_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_chunks_status
+    ON story_analysis_chunks(run_id, status);
+
+CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
+    run_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, artifact_type)
+);
+
+CREATE TABLE IF NOT EXISTS entity_evidence (
+    run_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    source_start INTEGER NOT NULL,
+    source_end INTEGER NOT NULL,
+    evidence_kind TEXT NOT NULL DEFAULT '',
+    evidence_text TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, entity_type, entity_id, chunk_id, source_start, source_end)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity
+    ON entity_evidence(entity_type, entity_id);
+
+CREATE TABLE IF NOT EXISTS active_evidence_runs (
+    entity_type TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    activated_at TEXT DEFAULT (datetime('now'))
 );
 """
 
@@ -1851,6 +1941,638 @@ class SQLiteStore:
         await db.commit()
         self._props.clear()
         return cursor.rowcount or 0
+
+    @staticmethod
+    def _folder_dict(row, *, asset_count: int | None = None) -> dict[str, Any]:
+        value = {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+        if asset_count is not None:
+            value["asset_count"] = int(asset_count)
+        return value
+
+    @staticmethod
+    def _placement_dict(row) -> dict[str, Any]:
+        return {
+            "asset_key": str(row["asset_key"]),
+            "asset_type": str(row["asset_type"]),
+            "asset_id": str(row["asset_id"]),
+            "folder_id": str(row["folder_id"]) if row["folder_id"] else None,
+            "purpose": str(row["purpose"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    async def create_asset_folder(
+        self,
+        name: str,
+        *,
+        folder_id: str | None = None,
+    ) -> dict[str, Any]:
+        db = await self._ensure_db()
+        normalized_name = normalize_folder_name(name)
+        resolved_id = str(folder_id or new_asset_folder_id())
+        try:
+            await db.execute(
+                "INSERT INTO asset_folders (id, name) VALUES (?, ?)",
+                (resolved_id, normalized_name),
+            )
+            await db.commit()
+        except sqlite3.IntegrityError as exc:
+            await db.rollback()
+            raise AssetFolderConflict(
+                f"Asset folder already exists: {normalized_name}"
+            ) from exc
+        async with db.execute(
+            "SELECT id, name, created_at, updated_at FROM asset_folders WHERE id = ?",
+            (resolved_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._folder_dict(row)
+
+    async def list_asset_folders(self) -> list[dict[str, Any]]:
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT f.id, f.name, f.created_at, f.updated_at, "
+            "COUNT(p.asset_key) AS asset_count "
+            "FROM asset_folders f LEFT JOIN asset_placements p "
+            "ON p.folder_id = f.id GROUP BY f.id "
+            "ORDER BY lower(f.name), f.id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            self._folder_dict(row, asset_count=int(row["asset_count"]))
+            for row in rows
+        ]
+
+    async def rename_asset_folder(
+        self,
+        folder_id: str,
+        name: str,
+    ) -> dict[str, Any]:
+        db = await self._ensure_db()
+        normalized_name = normalize_folder_name(name)
+        try:
+            cursor = await db.execute(
+                "UPDATE asset_folders SET name = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (normalized_name, folder_id),
+            )
+            if not cursor.rowcount:
+                await db.rollback()
+                raise AssetFolderNotFound(f"Asset folder not found: {folder_id}")
+            await db.commit()
+        except sqlite3.IntegrityError as exc:
+            await db.rollback()
+            raise AssetFolderConflict(
+                f"Asset folder already exists: {normalized_name}"
+            ) from exc
+        async with db.execute(
+            "SELECT id, name, created_at, updated_at FROM asset_folders WHERE id = ?",
+            (folder_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._folder_dict(row)
+
+    async def delete_asset_folder(self, folder_id: str) -> dict[str, Any]:
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT 1 FROM asset_folders WHERE id = ?", (folder_id,)
+            ) as cursor:
+                if await cursor.fetchone() is None:
+                    raise AssetFolderNotFound(
+                        f"Asset folder not found: {folder_id}"
+                    )
+            cursor = await db.execute(
+                "UPDATE asset_placements SET folder_id = NULL, "
+                "updated_at = datetime('now') WHERE folder_id = ?",
+                (folder_id,),
+            )
+            unfiled_count = cursor.rowcount or 0
+            await db.execute("DELETE FROM asset_folders WHERE id = ?", (folder_id,))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return {"id": folder_id, "unfiled_count": unfiled_count}
+
+    async def put_asset_organization(
+        self, asset_type: str, asset_id: str, *, folder_id: str | None, purpose: str
+    ) -> dict[str, Any]:
+        asset_key, normalized_type, normalized_id = canonical_asset_key(
+            asset_type, asset_id
+        )
+        normalized_purpose = normalize_asset_purpose(purpose)
+        normalized_folder_id = str(folder_id).strip() if folder_id else None
+        db = await self._ensure_db()
+        if normalized_folder_id:
+            async with db.execute(
+                "SELECT 1 FROM asset_folders WHERE id = ?", (normalized_folder_id,)
+            ) as cursor:
+                if await cursor.fetchone() is None:
+                    raise AssetFolderNotFound(
+                        f"Asset folder not found: {normalized_folder_id}"
+                    )
+        await db.execute(
+            "INSERT INTO asset_placements "
+            "(asset_key, asset_type, asset_id, folder_id, purpose) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(asset_key) DO UPDATE SET "
+            "asset_type = excluded.asset_type, asset_id = excluded.asset_id, "
+            "folder_id = excluded.folder_id, purpose = excluded.purpose, "
+            "updated_at = datetime('now')",
+            (asset_key, normalized_type, normalized_id, normalized_folder_id, normalized_purpose),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT asset_key, asset_type, asset_id, folder_id, purpose, "
+            "created_at, updated_at FROM asset_placements WHERE asset_key = ?",
+            (asset_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._placement_dict(row)
+
+    async def list_asset_organization(
+        self,
+        *,
+        folder_id: str | None = None,
+        purpose: str | None = None,
+        unfiled: bool = False,
+    ) -> list[dict[str, Any]]:
+        db = await self._ensure_db()
+        clauses: list[str] = []
+        params: list[str] = []
+        if unfiled:
+            clauses.append("folder_id IS NULL")
+        elif folder_id is not None:
+            clauses.append("folder_id = ?")
+            params.append(str(folder_id))
+        if purpose is not None:
+            clauses.append("purpose = ?")
+            params.append(normalize_asset_purpose(purpose))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = (
+            "SELECT asset_key, asset_type, asset_id, folder_id, purpose, "
+            "created_at, updated_at FROM asset_placements"
+            f"{where} ORDER BY asset_key"
+        )
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [self._placement_dict(row) for row in rows]
+
+    async def formal_asset_count(self) -> int:
+        """Return persisted assets that permanently lock pipeline selection."""
+
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM characters) + "
+            "(SELECT COUNT(*) FROM scenes) + "
+            "(SELECT COUNT(*) FROM props) + "
+            "(SELECT COUNT(*) FROM episodes) + "
+            "(SELECT COUNT(*) FROM asset_placements) AS total"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["total"] or 0)
+
+    async def build_episodes_from_chapters(
+        self,
+        novel_text: str | None = None,
+        generate_metadata: bool = False,
+        on_progress: Any = None,
+        on_log: Any = None,
+    ) -> List[NovelEpisode]:
+        """Map source chapters deterministically without graph or runtime access.
+
+        Existing episode asset menus are copied forward. Rows not represented
+        by the current source are left untouched rather than destructively
+        deleted; explicit project cleanup remains a separate user action.
+        """
+        from novelvideo.chapter_detector import ChapterDetector
+        from novelvideo.novel_source import require_imported_novel
+
+        def report(value: float, task: str) -> None:
+            if on_progress:
+                on_progress(value, task)
+
+        def log(message: str) -> None:
+            if on_log:
+                on_log(message)
+
+        if novel_text is None:
+            novel_text = require_imported_novel(self.project_dir)
+        report(0.1, "检测章节结构...")
+        chapters = ChapterDetector().detect(novel_text)
+        if not chapters:
+            raise ValueError("未检测到章节标记，请检查导入内容")
+        episodes: list[NovelEpisode] = []
+        for index, chapter in enumerate(chapters):
+            content = str(chapter.content or "")
+            summary = content[:200].strip() + ("..." if len(content) > 200 else "")
+            episode = NovelEpisode(
+                number=int(chapter.number),
+                title=f"第{chapter.number}集",
+                chapter_start=int(chapter.number),
+                chapter_end=int(chapter.number),
+                raw_content=content,
+                beat_source_text=content,
+                content_summary=summary,
+            )
+            old = self._episodes.get(episode.number)
+            if old is not None:
+                episode.identity_ids = list(old.identity_ids)
+                episode.scene_menu = old.scene_menu
+                episode.prop_menu = old.prop_menu
+                episode.identity_default_map_json = old.identity_default_map_json
+                episode.sketch_colors_json = old.sketch_colors_json
+            episodes.append(episode)
+            report(
+                0.1 + ((index + 1) / len(chapters)) * 0.7,
+                f"处理第 {chapter.number} 章...",
+            )
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            for episode in episodes:
+                await db.execute(
+                    "INSERT INTO episodes "
+                    "(number, title, chapter_start, chapter_end, raw_content, beat_source_text, "
+                    "content_summary, main_conflict, cliffhanger, key_events, character_names, "
+                    "identity_ids, event_ids, scene_menu_json, prop_menu_json, "
+                    "identity_default_map_json, sketch_colors_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(number) DO UPDATE SET title=excluded.title, "
+                    "chapter_start=excluded.chapter_start, chapter_end=excluded.chapter_end, "
+                    "raw_content=excluded.raw_content, beat_source_text=excluded.beat_source_text, "
+                    "content_summary=excluded.content_summary, updated_at=datetime('now')",
+                    (
+                        episode.number, episode.title, episode.chapter_start, episode.chapter_end,
+                        episode.raw_content, episode.beat_source_text, episode.content_summary,
+                        episode.main_conflict, episode.cliffhanger,
+                        json.dumps(episode.key_events, ensure_ascii=False),
+                        json.dumps(episode.character_names, ensure_ascii=False),
+                        json.dumps(episode.identity_ids, ensure_ascii=False),
+                        json.dumps(episode.event_ids, ensure_ascii=False),
+                        episode.scene_menu_json, episode.prop_menu_json,
+                        episode.identity_default_map_json, episode.sketch_colors_json,
+                    ),
+                )
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+        await self.load_graph_state()
+        published = [self._episodes[episode.number] for episode in episodes]
+        report(1.0, "章节映射完成")
+        log(f"章节映射完成: {len(published)} 集")
+        return published
+
+    async def get_reusable_analysis_run(
+        self,
+        *,
+        source_sha256: str,
+        schema_version: int,
+        pipeline_version: str,
+        spine_template: str = "",
+    ) -> dict | None:
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT * FROM story_analysis_runs WHERE source_sha256 = ? "
+            "AND schema_version = ? AND pipeline_version = ? AND spine_template = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (source_sha256, int(schema_version), pipeline_version, spine_template),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def start_analysis_run(
+        self,
+        *,
+        run_id: str,
+        pipeline_version: str,
+        schema_version: int,
+        spine_template: str,
+        source_sha256: str,
+        source_length: int,
+        chunks: list,
+    ) -> None:
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "INSERT OR REPLACE INTO story_analysis_runs "
+                "(run_id, pipeline_version, schema_version, spine_template, source_sha256, "
+                "source_length, status, error, completed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', '', '')",
+                (
+                    run_id,
+                    pipeline_version,
+                    int(schema_version),
+                    spine_template,
+                    source_sha256,
+                    int(source_length),
+                ),
+            )
+            await db.execute(
+                "DELETE FROM story_analysis_chunks WHERE run_id = ?", (run_id,)
+            )
+            await db.executemany(
+                "INSERT INTO story_analysis_chunks "
+                "(run_id, chunk_id, chunk_index, section_type, section_label, source_start, "
+                "source_end, source_hash, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+                [
+                    (
+                        run_id,
+                        chunk.chunk_id,
+                        int(chunk.chunk_index),
+                        chunk.section_type,
+                        chunk.section_label,
+                        int(chunk.source_start),
+                        int(chunk.source_end),
+                        chunk.source_hash,
+                    )
+                    for chunk in chunks
+                ],
+            )
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+
+    async def finish_analysis_run(
+        self, run_id: str, *, status: str, error: str = ""
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            "UPDATE story_analysis_runs SET status = ?, error = ?, "
+            "completed_at = datetime('now') WHERE run_id = ?",
+            (status, str(error)[:2000], run_id),
+        )
+        await db.commit()
+
+    async def get_analysis_artifact(self, run_id: str, artifact_type: str) -> str:
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT result_json FROM story_analysis_artifacts "
+            "WHERE run_id = ? AND artifact_type = ?",
+            (run_id, artifact_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["result_json"]) if row else ""
+
+    async def save_analysis_artifact(
+        self, run_id: str, artifact_type: str, result_json: str
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            "INSERT INTO story_analysis_artifacts "
+            "(run_id, artifact_type, result_json, created_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(run_id, artifact_type) DO UPDATE SET "
+            "result_json = excluded.result_json, created_at = excluded.created_at",
+            (run_id, artifact_type, result_json),
+        )
+        await db.commit()
+
+    async def replace_entity_evidence(
+        self,
+        run_id: str,
+        entity_type: str,
+        entity_id: str,
+        evidence: list[dict],
+    ) -> None:
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "DELETE FROM entity_evidence "
+                "WHERE run_id = ? AND entity_type = ? AND entity_id = ?",
+                (run_id, entity_type, entity_id),
+            )
+            await db.executemany(
+                "INSERT OR REPLACE INTO entity_evidence "
+                "(run_id, entity_type, entity_id, chunk_id, source_start, source_end, "
+                "evidence_kind, evidence_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        entity_type,
+                        entity_id,
+                        str(item.get("chunk_id", "")),
+                        int(item.get("source_start", 0)),
+                        int(item.get("source_end", 0)),
+                        str(item.get("evidence_kind", "")),
+                        str(item.get("evidence_text", "")),
+                    )
+                    for item in evidence
+                ],
+            )
+            await db.execute(
+                "INSERT INTO active_evidence_runs (entity_type, run_id, activated_at) "
+                "VALUES (?, ?, datetime('now')) "
+                "ON CONFLICT(entity_type) DO UPDATE SET "
+                "run_id = excluded.run_id, activated_at = excluded.activated_at",
+                (entity_type, run_id),
+            )
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+
+    async def list_entity_evidence(
+        self, entity_type: str, entity_id: str
+    ) -> list[dict]:
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT e.* FROM entity_evidence e "
+            "LEFT JOIN active_evidence_runs a ON a.entity_type = e.entity_type "
+            "WHERE e.entity_type = ? AND e.entity_id = ? "
+            "AND (a.run_id IS NULL OR e.run_id = a.run_id) "
+            "ORDER BY e.chunk_id, e.source_start",
+            (entity_type, entity_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def publish_character_analysis_atomic(
+        self,
+        run_id: str,
+        characters: List[NovelCharacter],
+        evidence_by_entity: dict[str, list[dict]],
+    ) -> list[str]:
+        """Publish a character analysis as one active, auditable transaction.
+
+        Existing character rows are user assets and are never overwritten.
+        Evidence from earlier runs remains stored for audit, while the active-run
+        pointer makes ordinary reads expose only the newly published analysis.
+        """
+
+        db = await self._ensure_db()
+        added: list[str] = []
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            for character in characters:
+                cursor = await db.execute(
+                    "INSERT INTO characters "
+                    "(name, aliases_json, role, is_main, gender, age_group, body_type, "
+                    "description, face_prompt, appearance_details, identities_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(name) DO NOTHING",
+                    (
+                        character.name,
+                        json.dumps(character.aliases, ensure_ascii=False),
+                        character.role,
+                        int(character.is_main),
+                        character.gender,
+                        character.age_group,
+                        character.body_type,
+                        character.description,
+                        character.face_prompt,
+                        character.appearance_details,
+                        character.identities_json,
+                    ),
+                )
+                if (cursor.rowcount or 0) > 0:
+                    added.append(character.name)
+
+            await db.execute(
+                "DELETE FROM entity_evidence WHERE run_id = ? AND entity_type = 'character'",
+                (run_id,),
+            )
+            rows: list[tuple[Any, ...]] = []
+            for entity_id, evidence in evidence_by_entity.items():
+                for item in evidence:
+                    rows.append(
+                        (
+                            run_id,
+                            "character",
+                            str(entity_id),
+                            str(item.get("chunk_id", "")),
+                            int(item.get("source_start", 0)),
+                            int(item.get("source_end", 0)),
+                            str(item.get("evidence_kind", "")),
+                            str(item.get("evidence_text", "")),
+                        )
+                    )
+            if rows:
+                await db.executemany(
+                    "INSERT INTO entity_evidence "
+                    "(run_id, entity_type, entity_id, chunk_id, source_start, source_end, "
+                    "evidence_kind, evidence_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+            await db.execute(
+                "INSERT INTO active_evidence_runs (entity_type, run_id, activated_at) "
+                "VALUES ('character', ?, datetime('now')) "
+                "ON CONFLICT(entity_type) DO UPDATE SET "
+                "run_id = excluded.run_id, activated_at = excluded.activated_at",
+                (run_id,),
+            )
+            cursor = await db.execute(
+                "UPDATE story_analysis_runs SET status = 'completed', error = '', "
+                "completed_at = datetime('now') WHERE run_id = ?",
+                (run_id,),
+            )
+            if not cursor.rowcount:
+                raise ValueError(f"Story analysis run not found: {run_id}")
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+        await self.load_graph_state()
+        return added
+
+    async def add_characters_atomic(
+        self, characters: List[NovelCharacter], *, skip_existing: bool = True
+    ) -> list[str]:
+        """Add a complete cast batch in one transaction without overwriting assets."""
+        db = await self._ensure_db()
+        added: list[str] = []
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            for character in characters:
+                clause = "DO NOTHING" if skip_existing else (
+                    "DO UPDATE SET aliases_json=excluded.aliases_json, role=excluded.role, "
+                    "is_main=excluded.is_main, gender=excluded.gender, age_group=excluded.age_group, "
+                    "body_type=excluded.body_type, description=excluded.description, "
+                    "face_prompt=excluded.face_prompt, appearance_details=excluded.appearance_details, "
+                    "updated_at=datetime('now')"
+                )
+                cursor = await db.execute(
+                    "INSERT INTO characters "
+                    "(name, aliases_json, role, is_main, gender, age_group, body_type, "
+                    "description, face_prompt, appearance_details, identities_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    f"ON CONFLICT(name) {clause}",
+                    (
+                        character.name,
+                        json.dumps(character.aliases, ensure_ascii=False),
+                        character.role,
+                        int(character.is_main),
+                        character.gender,
+                        character.age_group,
+                        character.body_type,
+                        character.description,
+                        character.face_prompt,
+                        character.appearance_details,
+                        character.identities_json,
+                    ),
+                )
+                if (cursor.rowcount or 0) > 0:
+                    added.append(character.name)
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+        await self.load_graph_state()
+        return added
+
+    async def add_scenes_atomic(
+        self, scenes: List[NovelScene], *, skip_existing: bool = True
+    ) -> list[str]:
+        """Add a scene catalogue atomically and leave existing user rows untouched."""
+        db = await self._ensure_db()
+        added: list[str] = []
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            for scene in scenes:
+                clause = "DO NOTHING" if skip_existing else (
+                    "DO UPDATE SET aliases_json=excluded.aliases_json, "
+                    "scene_type=excluded.scene_type, time_of_day=excluded.time_of_day, "
+                    "environment_prompt=excluded.environment_prompt, "
+                    "description=excluded.description, updated_at=datetime('now')"
+                )
+                cursor = await db.execute(
+                    "INSERT INTO scenes "
+                    "(name, aliases_json, scene_type, base_scene_id, variant_id, time_of_day, "
+                    "environment_prompt, variant_prompt, description, spatial_layout_image, notes) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    f"ON CONFLICT(name) {clause}",
+                    (
+                        scene.name,
+                        json.dumps(scene.aliases, ensure_ascii=False),
+                        scene.scene_type,
+                        scene.base_scene_id,
+                        scene.variant_id,
+                        scene.time_of_day,
+                        scene.environment_prompt,
+                        scene.variant_prompt,
+                        scene.description,
+                        scene.spatial_layout_image,
+                        scene.notes,
+                    ),
+                )
+                if (cursor.rowcount or 0) > 0:
+                    added.append(scene.name)
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+        return added
 
     @property
     def character_count(self) -> int:
