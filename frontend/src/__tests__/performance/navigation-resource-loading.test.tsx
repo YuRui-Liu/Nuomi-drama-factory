@@ -532,7 +532,10 @@ const dynamicImportCalls = (root: ts.Node, modulePath: string) => {
   return calls;
 };
 
-const functionBoundToName = (sourceFile: ts.SourceFile, bindingName: string) => {
+const functionBoundToName = (
+  sourceFile: ts.SourceFile,
+  bindingName: string,
+): ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | null => {
   let result: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | null = null;
   const visit = (node: ts.Node) => {
     if (result) return;
@@ -594,20 +597,21 @@ const dynamicImportsFollowUploadStart = (
   functionName: string,
 ) => {
   const uploadFunction = functionBoundToName(sourceFile, functionName);
-  if (!uploadFunction?.body) return false;
+  const uploadBody = uploadFunction?.body;
+  if (!uploadBody) return false;
   const imports = dynamicImportCalls(sourceFile, modulePath);
   if (imports.length === 0) return false;
 
   const uploadStartCalls: ts.CallExpression[] = [];
   const visit = (node: ts.Node) => {
-    if (node !== uploadFunction.body && ts.isFunctionLike(node)) return;
+    if (node !== uploadBody && ts.isFunctionLike(node)) return;
     if (ts.isCallExpression(node) && isUploadStartCall(node)) uploadStartCalls.push(node);
     ts.forEachChild(node, visit);
   };
-  visit(uploadFunction.body);
+  visit(uploadBody);
   return imports.every(
     (importCall) =>
-      nodeWithin(importCall, uploadFunction.body) &&
+      nodeWithin(importCall, uploadBody) &&
       uploadStartCalls.some((uploadStart) => uploadStart.end <= importCall.pos),
   );
 };
