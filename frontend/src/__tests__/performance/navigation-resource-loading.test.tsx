@@ -185,4 +185,77 @@ describe("navigation resource loading", () => {
       'sortKey === "usage" && refIndex.isError ? "name" : sortKey',
     );
   });
+
+  it("defers optional freezone features until interaction", () => {
+    const freezoneShell = readSource("src/features/freezone/FreezoneShell.tsx");
+    const optionalModules = [
+      "@/features/superchat/superchat-panel",
+      "./commit/CommitDialog",
+      "@/pipeline-import/CreateIdentityDialog",
+      "@/pipeline-import/CompareDialog",
+      "@/pipeline-import/MaskEditor",
+    ];
+
+    for (const modulePath of optionalModules) {
+      const escapedModulePath = modulePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const staticValueImport = new RegExp(
+        `^\\s*import\\s+(?!type\\b)(?!\\()[^"']*["']${escapedModulePath}["']`,
+        "m",
+      );
+      const dynamicImport = new RegExp(
+        `import\\(\\s*["']${escapedModulePath}["']\\s*\\)`,
+      );
+
+      expect(freezoneShell, modulePath).not.toMatch(staticValueImport);
+      expect(freezoneShell, modulePath).toMatch(dynamicImport);
+    }
+
+    expect(freezoneShell).toContain('role="status"');
+    expect(freezoneShell).toContain('aria-live="polite"');
+  });
+
+  it("uses one static canvas node domain import in the freezone shell", () => {
+    const freezoneShell = readSource("src/features/freezone/FreezoneShell.tsx");
+
+    expect(freezoneShell).not.toMatch(
+      /await\s+import\(\s*["']@\/features\/canvas\/domain\/canvasNodes["']\s*\)/,
+    );
+    const canvasNodeImports = freezoneShell.match(
+      /^\s*import\s+(?!type\b)(?!\()[^"']*["']@\/features\/canvas\/domain\/canvasNodes["']/gm,
+    );
+    expect(canvasNodeImports).toHaveLength(1);
+    expect(canvasNodeImports?.[0]).toMatch(/\bCANVAS_NODE_TYPES\b/);
+    expect(canvasNodeImports?.[0]).toMatch(/\bDEFAULT_NODE_WIDTH\b/);
+  });
+
+  it("defers the node tool dialog and annotate editor", () => {
+    const canvas = readSource("src/features/canvas/Canvas.tsx");
+    const nodeToolDialog = readSource("src/features/canvas/ui/NodeToolDialog.tsx");
+    const lazyNodeToolDialog = readSource("src/features/canvas/ui/LazyNodeToolDialog.tsx");
+
+    expect(canvas).not.toContain("./ui/NodeToolDialog");
+    expect(canvas).toContain("./ui/LazyNodeToolDialog");
+    expect(lazyNodeToolDialog).toMatch(
+      /lazy\(\s*\(\)\s*=>\s*import\(\s*["']\.\/NodeToolDialog["']\s*\)/,
+    );
+    expect(lazyNodeToolDialog).toMatch(/role=["']status["']/);
+    expect(lazyNodeToolDialog).toMatch(/aria-live=["']polite["']/);
+    expect(nodeToolDialog).not.toMatch(
+      /^\s*import\s+(?!type\b)(?!\()[^"']*["']\.\/tool-editors\/AnnotateToolEditor["']/m,
+    );
+    expect(nodeToolDialog).toMatch(
+      /lazy\(\s*\(\)\s*=>\s*import\(\s*["']\.\/tool-editors\/AnnotateToolEditor["']\s*\)/,
+    );
+  });
+
+  it("loads video transcoding only after a video upload starts", () => {
+    const videoNode = readSource("src/features/canvas/nodes/VideoNode.tsx");
+
+    expect(videoNode).not.toMatch(
+      /^\s*import\s+(?!type\b)(?!\()[^"']*["']@\/features\/canvas\/application\/videoTranscode["']/m,
+    );
+    expect(videoNode).toMatch(
+      /import\(\s*["']@\/features\/canvas\/application\/videoTranscode["']\s*\)/,
+    );
+  });
 });
