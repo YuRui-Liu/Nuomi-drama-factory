@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Literal, Self
+from typing import Literal, NoReturn, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+)
 from ulid import ULID
 
 
@@ -33,8 +41,55 @@ class ValidationReport(FrozenModel):
     version: int = 1
 
 
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _FrozenMapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _thaw_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
+
+
+class _FrozenMapping(dict[str, object]):
+    def __init__(self, value: Mapping[object, object]) -> None:
+        dict.__init__(self)
+        for key, item in value.items():
+            dict.__setitem__(self, str(key), _freeze_json_value(item))
+
+    @staticmethod
+    def _deny_mutation(*args: object, **kwargs: object) -> NoReturn:
+        raise TypeError("frozen mapping cannot be modified")
+
+    __setitem__ = _deny_mutation
+    __delitem__ = _deny_mutation
+    clear = _deny_mutation
+    pop = _deny_mutation
+    popitem = _deny_mutation
+    setdefault = _deny_mutation
+    update = _deny_mutation
+    __ior__ = _deny_mutation
+
+
 class AssetMigrationReport(FrozenModel):
     items: tuple[dict[str, object], ...] = ()
+
+    @field_validator("items", mode="after")
+    @classmethod
+    def freeze_items(
+        cls, items: tuple[dict[str, object], ...]
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(_FrozenMapping(item) for item in items)
+
+    @field_serializer("items")
+    def serialize_items(self, items: tuple[dict[str, object], ...]) -> object:
+        return _thaw_json_value(items)
 
 
 class ShotPlan(FrozenModel):
@@ -87,8 +142,15 @@ class DirectorPlanRevision(FrozenModel):
     groups: tuple[NarrativeGroupPlan, ...]
     validation_report: ValidationReport = ValidationReport()
     migration_report: AssetMigrationReport = AssetMigrationReport()
-    created_at: datetime
-    activated_at: datetime | None = None
+    created_at: AwareDatetime
+    activated_at: AwareDatetime | None = None
+
+    @field_validator("created_at", "activated_at", mode="after")
+    @classmethod
+    def normalize_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.astimezone(timezone.utc)
 
     @classmethod
     def new(
