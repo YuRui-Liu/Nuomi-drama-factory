@@ -25,6 +25,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     build_h3_timeline_data,
 )
 from novelvideo.media_capabilities.video.h3_prompt_profile import H3_GLOBAL_CONTINUITY_PROMPT
+from novelvideo.media_capabilities.video.h3_size_settings import resolve_h3_size_setting
 from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
@@ -155,38 +156,16 @@ _DIRECTOR_ASPECT_LABELS = {
 
 def _director_output_settings(aspect_ratio: str, resolution: str | None) -> dict:
     """Map product options into the version-5 Director output contract."""
-    ratio = aspect_ratio if aspect_ratio in _DIRECTOR_ASPECT_LABELS else "9:16"
-    left, right = (int(value) for value in ratio.split(":"))
-    long_edge = 736
-    if resolution:
-        normalized = resolution.lower().strip()
-        if normalized.endswith("p") and normalized[:-1].isdigit():
-            long_edge = int(normalized[:-1])
-        elif "x" in normalized:
-            width, height = (int(value) for value in normalized.split("x", 1))
-            long_edge = max(width, height)
-        else:
-            raise ValueError("H3 resolution must be '<height>p' or '<width>x<height>'")
-    multiple = 32
-    if left >= right:
-        width = ((long_edge + multiple - 1) // multiple) * multiple
-        height = (
-            (width * right + left * multiple - 1) // (left * multiple)
-        ) * multiple
-    else:
-        height = ((long_edge + multiple - 1) // multiple) * multiple
-        width = (
-            (height * left + right * multiple - 1) // (right * multiple)
-        ) * multiple
-    long_edge = max(width, height)
+    setting = resolve_h3_size_setting(resolution or "720p", aspect_ratio)
     return {
         "mode": "fixed",
-        "aspectRatio": _DIRECTOR_ASPECT_LABELS[ratio],
-        "megapixels": round(width * height / 1_000_000, 3),
-        "multiple": multiple,
-        "longEdge": long_edge,
-        "width": width,
-        "height": height,
+        "aspectRatio": _DIRECTOR_ASPECT_LABELS[setting.aspect_ratio],
+        "megapixels": setting.megapixels,
+        "multiple": setting.multiple,
+        "width": setting.width,
+        "height": setting.height,
+        "longEdge": setting.long_edge,
+        "refMaxSize": setting.ref_max_size,
         "maxExportFrames": 0,
         "exportMode": "all",
         "audioMode": "generate",
@@ -353,6 +332,7 @@ async def generate_h3_director_video(
         runtime.account.capability_limits,
         runtime.account.queue_limit,
     )
+    size_setting = resolve_h3_size_setting(resolution or "720p", aspect_ratio)
     client = runtime.create_client()
 
     async def upload(source: str) -> UploadedReference:
@@ -407,7 +387,7 @@ async def generate_h3_director_video(
                 None,
             ),
             aspect_ratio=aspect_ratio,
-            resolution=resolution,
+            resolution=f"{size_setting.width}x{size_setting.height}",
         )
         timeline_data = _director_timeline_payload(
             timeline,
