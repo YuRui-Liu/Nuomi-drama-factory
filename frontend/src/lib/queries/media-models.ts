@@ -150,14 +150,26 @@ export function useUpdateMediaDefaults(project: string) {
           ...(videoWorkflowParameters === undefined
             ? {}
             : { video_workflow_parameters: videoWorkflowParameters }),
-          narrative_sketch_provider: imageDefaults.narrativeSketchProvider ?? "grsai-main",
-          narrative_sketch_model: imageDefaults.narrativeSketchModel ?? "nano-banana-2",
-          narrative_render_provider: imageDefaults.narrativeRenderProvider ?? "grsai-main",
-          narrative_render_model: imageDefaults.narrativeRenderModel ?? "gpt-image-2",
-          narrative_render_image_size: coerceNarrativeImageSize(
-            imageDefaults.narrativeRenderModel ?? "gpt-image-2",
-            imageDefaults.narrativeRenderImageSize,
-          ),
+          ...(imageDefaults.narrativeSketchProvider === undefined
+            ? {}
+            : { narrative_sketch_provider: imageDefaults.narrativeSketchProvider }),
+          ...(imageDefaults.narrativeSketchModel === undefined
+            ? {}
+            : { narrative_sketch_model: imageDefaults.narrativeSketchModel }),
+          ...(imageDefaults.narrativeRenderProvider === undefined
+            ? {}
+            : { narrative_render_provider: imageDefaults.narrativeRenderProvider }),
+          ...(imageDefaults.narrativeRenderModel === undefined
+            ? {}
+            : { narrative_render_model: imageDefaults.narrativeRenderModel }),
+          ...(imageDefaults.narrativeRenderImageSize === undefined
+            ? {}
+            : {
+                narrative_render_image_size: coerceNarrativeImageSize(
+                  imageDefaults.narrativeRenderModel ?? "gpt-image-2",
+                  imageDefaults.narrativeRenderImageSize,
+                ),
+              }),
         },
       }).json<ApiResponse<MediaDefaults>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.mediaDefaults(project) }),

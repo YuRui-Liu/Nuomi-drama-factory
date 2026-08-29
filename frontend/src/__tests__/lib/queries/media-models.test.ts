@@ -152,14 +152,9 @@ describe("video media model contract", () => {
     await waitFor(() => expect(provided.result.current.isSuccess).toBe(true));
 
     expect(payloads[0]).not.toHaveProperty("video_workflow_parameters");
-    expect(payloads[0]).toMatchObject({
+    expect(payloads[0]).toEqual({
       video_model: "runninghub:minimax-h3",
       h3_mode: "auto",
-      narrative_sketch_provider: "grsai-main",
-      narrative_sketch_model: "nano-banana-2",
-      narrative_render_provider: "grsai-main",
-      narrative_render_model: "gpt-image-2",
-      narrative_render_image_size: "1K",
     });
     expect(payloads[1]).toMatchObject({
       video_workflow_parameters: {
