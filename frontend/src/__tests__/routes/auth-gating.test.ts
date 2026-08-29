@@ -63,6 +63,9 @@ vi.mock("@/task-center/provider", () => ({
 }));
 vi.mock("@/components/task-center/status-bar", () => ({ TaskStatusBar: () => null }));
 vi.mock("@/components/task-center/panel", () => ({ TaskPanel: () => null }));
+vi.mock("@/features/companion/MyBuddyCompanion", () => ({ MyBuddyCompanion: () => null }));
+vi.mock("@/features/rewards/AccessoryUnlockPrompt", () => ({ AccessoryUnlockPrompt: () => null }));
+vi.mock("@/features/version-update/VersionUpdateDialog", () => ({ VersionUpdateDialog: () => null }));
 vi.mock("framer-motion", () => ({
   motion: {
     div: ({ children, ...props }: ComponentProps<"div">) => createElement("div", props, children),
@@ -77,6 +80,14 @@ vi.mock("@/lib/region-cookie", () => ({
   getRegionCookie: () => regionState.cookie,
 }));
 
+// Route transforms are unrelated to the auth assertions and can be delayed by
+// worker contention in the full suite. Prepare them during test collection so
+// the per-test timeout measures only the guard behavior under test.
+const [{ Route: loginRoute }, { Route: appRoute }] = await Promise.all([
+  import("@/routes/login"),
+  import("@/routes/_app"),
+]);
+
 function expectRedirect(error: unknown, to: string) {
   expect((error as { options?: { to?: string; replace?: boolean } }).options).toMatchObject({
     to,
@@ -86,7 +97,6 @@ function expectRedirect(error: unknown, to: string) {
 
 describe("runtime auth gating", () => {
   beforeEach(() => {
-    vi.resetModules();
     runtimeState.authRequired = true;
     authState.username = null;
     authState.getCurrentUser.mockReset();
@@ -100,10 +110,9 @@ describe("runtime auth gating", () => {
   it("login beforeLoad redirects CE/no-auth runtime to the app without probing auth", async () => {
     runtimeState.authRequired = false;
     authState.getCurrentUser.mockResolvedValue(false);
-    const { Route } = await import("@/routes/login");
 
     try {
-      await Route.options.beforeLoad?.({} as never);
+      await loginRoute.options.beforeLoad?.({} as never);
       throw new Error("expected redirect");
     } catch (error) {
       expectRedirect(error, "/");
@@ -115,25 +124,22 @@ describe("runtime auth gating", () => {
     runtimeState.authRequired = false;
     clusterState.mode = "multi-region";
     regionState.cookie = null;
-    const { Route } = await import("@/routes/login");
 
-    await expect(Route.options.beforeLoad?.({} as never)).resolves.toBeUndefined();
+    await expect(loginRoute.options.beforeLoad?.({} as never)).resolves.toBeUndefined();
     expect(authState.reset).toHaveBeenCalledTimes(1);
     expect(authState.getCurrentUser).not.toHaveBeenCalled();
   });
 
   it("login beforeLoad keeps EE/auth-required runtime on login when unauthenticated", async () => {
     runtimeState.authRequired = true;
-    const { Route } = await import("@/routes/login");
 
-    await expect(Route.options.beforeLoad?.({} as never)).resolves.toBeUndefined();
+    await expect(loginRoute.options.beforeLoad?.({} as never)).resolves.toBeUndefined();
   });
 
   it("_app missing-username mount guard validates CE/no-auth runtime instead of redirecting", async () => {
     runtimeState.authRequired = false;
     authState.validateSession.mockResolvedValue(true);
-    const { Route } = await import("@/routes/_app");
-    const Component = Route.options.component as ComponentType;
+    const Component = appRoute.options.component as ComponentType;
 
     render(createElement(Component));
 
@@ -143,8 +149,7 @@ describe("runtime auth gating", () => {
 
   it("_app missing-username mount guard redirects EE/auth-required runtime", async () => {
     runtimeState.authRequired = true;
-    const { Route } = await import("@/routes/_app");
-    const Component = Route.options.component as ComponentType;
+    const Component = appRoute.options.component as ComponentType;
 
     render(createElement(Component));
 
