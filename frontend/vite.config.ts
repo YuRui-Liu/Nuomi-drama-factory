@@ -102,6 +102,7 @@ export default defineConfig(({ mode }) => {
     // Split heavy shared deps out of the main chunk so the initial payload is
     // mostly app code; vendor bundles cache across deploys.
     build: {
+      manifest: true,
       rollupOptions: {
         output: {
           manualChunks(id) {

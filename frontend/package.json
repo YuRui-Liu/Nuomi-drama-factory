@@ -7,7 +7,7 @@
   "packageManager": "pnpm@11.5.0",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/check-freezone-bundle-budget.mjs",
     "build:ce": "tsc -b && vite build --mode ce",
     "preview": "vite preview",
     "test": "vitest run",
