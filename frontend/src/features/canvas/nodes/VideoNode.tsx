@@ -227,6 +227,62 @@ type VideoNodeProps = NodeProps & {
   selected?: boolean;
 };
 
+interface ProcessVideoUploadOptions {
+  file: File;
+  projectId: string;
+  nodeId: string;
+  loadTranscoder: () => Promise<
+    typeof import("@/features/canvas/application/videoTranscode")
+  >;
+  uploadVideo: typeof uploadFreezoneVideo;
+  updateNodeData: (nodeId: string, data: Partial<VideoNodeData>) => void;
+  onTranscoded: (file: File) => void;
+  clearTransientPreview: () => void;
+}
+
+export async function processVideoUpload({
+  file,
+  projectId,
+  nodeId,
+  loadTranscoder,
+  uploadVideo,
+  updateNodeData,
+  onTranscoded,
+  clearTransientPreview,
+}: ProcessVideoUploadOptions): Promise<void> {
+  let prepared = { file, transcoded: false };
+  try {
+    const { ensureWebSafeVideo } = await loadTranscoder();
+    prepared = await ensureWebSafeVideo(file);
+  } catch (error) {
+    console.error(
+      "[video-node] video preparation failed, uploading as-is",
+      error,
+    );
+  }
+
+  try {
+    if (prepared.transcoded) {
+      onTranscoded(prepared.file);
+    }
+    const uploaded = await uploadVideo(
+      projectId,
+      prepared.file,
+      prepared.file.name,
+    );
+    updateNodeData(nodeId, {
+      videoUrl: uploaded.url,
+      previewImageUrl: null,
+      sourceFileName: file.name,
+      isUploading: false,
+    });
+  } catch (error) {
+    console.error("[video-node] upload failed", error);
+    updateNodeData(nodeId, { isUploading: false });
+    clearTransientPreview();
+  }
+}
+
 const DEFAULT_WIDTH = 580;
 const DEFAULT_HEIGHT = 380;
 const MIN_WIDTH = 480;
@@ -1366,37 +1422,26 @@ export const VideoNode = memo(
         transientUrlRef.current = previewUrl;
         setTransientPreviewUrl(previewUrl);
         updateNodeData(id, { sourceFileName: file.name, isUploading: true });
-        try {
-          // HEVC（飞书录屏/iPhone）等 Web 不兼容编码先在浏览器内转成 H.264 再上传，
-          // 否则 Edge 等无对应解码器的浏览器只有声音没画面。见 videoTranscode.ts。
-          // 转码期间 UI 统一走「上传中」loading，不单独显示转码进度。
-          const { ensureWebSafeVideo } = await import(
-            "@/features/canvas/application/videoTranscode"
-          );
-          const prepared = await ensureWebSafeVideo(file);
-          if (prepared.transcoded) {
+        // HEVC（飞书录屏/iPhone）等 Web 不兼容编码先在浏览器内转成 H.264 再上传，
+        // 否则 Edge 等无对应解码器的浏览器只有声音没画面。见 videoTranscode.ts。
+        // 转码期间 UI 统一走「上传中」loading，不单独显示转码进度。
+        await processVideoUpload({
+          file,
+          projectId,
+          nodeId: id,
+          loadTranscoder: () =>
+            import("@/features/canvas/application/videoTranscode"),
+          uploadVideo: uploadFreezoneVideo,
+          updateNodeData,
+          onTranscoded: (preparedFile) => {
             // 源编码在本浏览器可能根本解不了（Edge+HEVC），本地预览也换成转码产物。
             clearTransientPreview();
-            const preparedUrl = URL.createObjectURL(prepared.file);
+            const preparedUrl = URL.createObjectURL(preparedFile);
             transientUrlRef.current = preparedUrl;
             setTransientPreviewUrl(preparedUrl);
-          }
-          const uploaded = await uploadFreezoneVideo(
-            projectId,
-            prepared.file,
-            prepared.file.name,
-          );
-          updateNodeData(id, {
-            videoUrl: uploaded.url,
-            previewImageUrl: null,
-            sourceFileName: file.name,
-            isUploading: false,
-          });
-        } catch (error) {
-          console.error("[video-node] upload failed", error);
-          updateNodeData(id, { isUploading: false });
-          clearTransientPreview();
-        }
+          },
+          clearTransientPreview,
+        });
       },
       [clearTransientPreview, id, updateNodeData],
     );
