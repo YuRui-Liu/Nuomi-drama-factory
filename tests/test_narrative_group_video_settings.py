@@ -34,6 +34,17 @@ def test_video_settings_defaults_are_frozen_and_do_not_share_overrides():
         first.revision = 1
 
 
+def test_video_settings_overrides_are_copied_and_deeply_read_only():
+    source = {"duration": "10"}
+    settings = models.VideoSettings(overrides=source)
+
+    source["duration"] = "20"
+
+    assert dict(settings.overrides) == {"duration": "10"}
+    with pytest.raises(TypeError):
+        settings.overrides["duration"] = "30"
+
+
 def test_old_sidecar_without_video_settings_loads_defaults(tmp_path):
     path = service.sidecar_path(tmp_path, 1)
     path.parent.mkdir(parents=True)

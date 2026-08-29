@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 StageName = Literal["sketch", "render", "video"]
 StageStatus = Literal[
@@ -64,11 +65,46 @@ class VideoPlan:
         }
 
 
+class _FrozenStringMapping(Mapping[str, str]):
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[str, str] | None = None) -> None:
+        object.__setattr__(
+            self,
+            "_items",
+            tuple(() if values is None else values.items()),
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise TypeError("mapping is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("mapping is immutable")
+
+    def __getitem__(self, key: str) -> str:
+        for item_key, value in self._items:
+            if item_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Mapping) and dict(self) == dict(other)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenStringMapping:
+        return self
+
+
 @dataclass(frozen=True)
 class VideoSettings:
     workflow_id: str = "runninghub:minimax-h3"
     revision: int = 0
-    overrides: dict[str, str] = field(default_factory=dict)
+    overrides: Mapping[str, str] = field(default_factory=_FrozenStringMapping)
 
     def __post_init__(self) -> None:
         if not isinstance(self.workflow_id, str):
@@ -80,7 +116,7 @@ class VideoSettings:
             if not isinstance(key, str) or not isinstance(value, str):
                 raise TypeError("override keys and values must be strings")
             copied[key] = value
-        object.__setattr__(self, "overrides", copied)
+        object.__setattr__(self, "overrides", _FrozenStringMapping(copied))
 
     def to_dict(self) -> dict[str, Any]:
         return {
