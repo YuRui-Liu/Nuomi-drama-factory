@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const readSource = (relativePath: string) => {
@@ -8,6 +9,190 @@ const readSource = (relativePath: string) => {
   const source = readFileSync(path, "utf8");
   expect(source.trim(), `${relativePath} should not be empty`).not.toBe("");
   return source;
+};
+const readSourceFile = (relativePath: string) =>
+  ts.createSourceFile(
+    relativePath,
+    readSource(relativePath),
+    ts.ScriptTarget.Latest,
+    true,
+    relativePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+
+const modulePathOf = (node: ts.ImportDeclaration) =>
+  ts.isStringLiteralLike(node.moduleSpecifier) ? node.moduleSpecifier.text : null;
+
+const isProductionValueImport = (node: ts.ImportDeclaration) => {
+  const clause = node.importClause;
+  if (!clause || clause.isTypeOnly) return false;
+  if (clause.name) return true;
+  if (!clause.namedBindings) return false;
+  if (ts.isNamespaceImport(clause.namedBindings)) return true;
+  return clause.namedBindings.elements.some((element) => !element.isTypeOnly);
+};
+
+const productionValueImportsFrom = (sourceFile: ts.SourceFile, modulePath: string) =>
+  sourceFile.statements.filter(
+    (statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) &&
+      modulePathOf(statement) === modulePath &&
+      isProductionValueImport(statement),
+  );
+
+const hasDynamicImport = (root: ts.Node, modulePath: string) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteralLike(node.arguments[0]) &&
+      node.arguments[0].text === modulePath
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+};
+
+const isLazyCall = (node: ts.Node): node is ts.CallExpression =>
+  ts.isCallExpression(node) &&
+  (ts.isIdentifier(node.expression)
+    ? node.expression.text === "lazy"
+    : ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "lazy");
+
+const lazyBindingsForModule = (sourceFile: ts.SourceFile, modulePath: string) => {
+  const bindings: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      isLazyCall(node.initializer) &&
+      hasDynamicImport(node.initializer, modulePath)
+    ) {
+      bindings.push(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return bindings;
+};
+
+const jsxTagName = (node: ts.JsxTagNameExpression, sourceFile: ts.SourceFile) =>
+  node.getText(sourceFile);
+
+const containsJsxComponent = (
+  root: ts.Node,
+  componentName: string,
+  sourceFile: ts.SourceFile,
+) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      jsxTagName(node.tagName, sourceFile) === componentName
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+};
+
+const literalJsxAttribute = (
+  element: ts.JsxOpeningLikeElement,
+  attributeName: string,
+  sourceFile: ts.SourceFile,
+) => {
+  const attribute = element.attributes.properties.find(
+    (property): property is ts.JsxAttribute =>
+      ts.isJsxAttribute(property) && property.name.getText(sourceFile) === attributeName,
+  );
+  if (!attribute?.initializer) return null;
+  if (ts.isStringLiteral(attribute.initializer)) return attribute.initializer.text;
+  if (
+    ts.isJsxExpression(attribute.initializer) &&
+    attribute.initializer.expression &&
+    ts.isStringLiteralLike(attribute.initializer.expression)
+  ) {
+    return attribute.initializer.expression.text;
+  }
+  return null;
+};
+
+const containsAccessibleStatus = (root: ts.Node, sourceFile: ts.SourceFile) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      literalJsxAttribute(node, "role", sourceFile) === "status" &&
+      literalJsxAttribute(node, "aria-live", sourceFile) === "polite"
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+};
+
+const hasAccessibleSuspenseBoundary = (
+  sourceFile: ts.SourceFile,
+  componentName: string,
+) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (ts.isJsxElement(node)) {
+      const suspenseName = jsxTagName(node.openingElement.tagName, sourceFile);
+      const fallback = node.openingElement.attributes.properties.find(
+        (property): property is ts.JsxAttribute =>
+          ts.isJsxAttribute(property) && property.name.getText(sourceFile) === "fallback",
+      );
+      const rendersComponent = node.children.some((child) =>
+        containsJsxComponent(child, componentName, sourceFile),
+      );
+      if (
+        (suspenseName === "Suspense" || suspenseName.endsWith(".Suspense")) &&
+        fallback?.initializer &&
+        rendersComponent &&
+        containsAccessibleStatus(fallback.initializer, sourceFile)
+      ) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+};
+
+const importedValueBindings = (
+  sourceFile: ts.SourceFile,
+  modulePath: string,
+  importedName: string,
+) => {
+  const bindings: string[] = [];
+  for (const declaration of productionValueImportsFrom(sourceFile, modulePath)) {
+    const namedBindings = declaration.importClause?.namedBindings;
+    if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
+    for (const element of namedBindings.elements) {
+      const sourceName = element.propertyName?.text ?? element.name.text;
+      if (!element.isTypeOnly && sourceName === importedName) bindings.push(element.name.text);
+    }
+  }
+  return bindings;
 };
 
 describe("navigation resource loading", () => {
@@ -187,7 +372,7 @@ describe("navigation resource loading", () => {
   });
 
   it("defers optional freezone features until interaction", () => {
-    const freezoneShell = readSource("src/features/freezone/FreezoneShell.tsx");
+    const freezoneShell = readSourceFile("src/features/freezone/FreezoneShell.tsx");
     const optionalModules = [
       "@/features/superchat/superchat-panel",
       "./commit/CommitDialog",
@@ -197,65 +382,84 @@ describe("navigation resource loading", () => {
     ];
 
     for (const modulePath of optionalModules) {
-      const escapedModulePath = modulePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const staticValueImport = new RegExp(
-        `^\\s*import\\s+(?!type\\b)(?!\\()[^"']*["']${escapedModulePath}["']`,
-        "m",
-      );
-      const dynamicImport = new RegExp(
-        `import\\(\\s*["']${escapedModulePath}["']\\s*\\)`,
-      );
+      expect(productionValueImportsFrom(freezoneShell, modulePath), modulePath).toHaveLength(0);
+      expect(hasDynamicImport(freezoneShell, modulePath), modulePath).toBe(true);
 
-      expect(freezoneShell, modulePath).not.toMatch(staticValueImport);
-      expect(freezoneShell, modulePath).toMatch(dynamicImport);
+      const lazyBindings = lazyBindingsForModule(freezoneShell, modulePath);
+      expect(lazyBindings.length, `${modulePath} should be loaded through React.lazy`).toBeGreaterThan(0);
+      expect(
+        lazyBindings.some((binding) =>
+          hasAccessibleSuspenseBoundary(freezoneShell, binding),
+        ),
+        `${modulePath} should render inside an accessible Suspense fallback`,
+      ).toBe(true);
     }
-
-    expect(freezoneShell).toContain('role="status"');
-    expect(freezoneShell).toContain('aria-live="polite"');
   });
 
   it("uses one static canvas node domain import in the freezone shell", () => {
-    const freezoneShell = readSource("src/features/freezone/FreezoneShell.tsx");
+    const freezoneShell = readSourceFile("src/features/freezone/FreezoneShell.tsx");
+    const canvasNodeModule = "@/features/canvas/domain/canvasNodes";
 
-    expect(freezoneShell).not.toMatch(
-      /await\s+import\(\s*["']@\/features\/canvas\/domain\/canvasNodes["']\s*\)/,
-    );
-    const canvasNodeImports = freezoneShell.match(
-      /^\s*import\s+(?!type\b)(?!\()[^"']*["']@\/features\/canvas\/domain\/canvasNodes["']/gm,
-    );
-    expect(canvasNodeImports).toHaveLength(1);
-    expect(canvasNodeImports?.[0]).toMatch(/\bCANVAS_NODE_TYPES\b/);
-    expect(canvasNodeImports?.[0]).toMatch(/\bDEFAULT_NODE_WIDTH\b/);
+    expect(hasDynamicImport(freezoneShell, canvasNodeModule)).toBe(false);
+    const importsBothRuntimeValues = productionValueImportsFrom(
+      freezoneShell,
+      canvasNodeModule,
+    ).some((declaration) => {
+      const namedBindings = declaration.importClause?.namedBindings;
+      if (!namedBindings || !ts.isNamedImports(namedBindings)) return false;
+      const runtimeNames = namedBindings.elements
+        .filter((element) => !element.isTypeOnly)
+        .map((element) => element.propertyName?.text ?? element.name.text);
+      return (
+        runtimeNames.includes("CANVAS_NODE_TYPES") &&
+        runtimeNames.includes("DEFAULT_NODE_WIDTH")
+      );
+    });
+    expect(importsBothRuntimeValues).toBe(true);
   });
 
   it("defers the node tool dialog and annotate editor", () => {
-    const canvas = readSource("src/features/canvas/Canvas.tsx");
-    const nodeToolDialog = readSource("src/features/canvas/ui/NodeToolDialog.tsx");
-    const lazyNodeToolDialog = readSource("src/features/canvas/ui/LazyNodeToolDialog.tsx");
+    const canvas = readSourceFile("src/features/canvas/Canvas.tsx");
+    const nodeToolDialog = readSourceFile("src/features/canvas/ui/NodeToolDialog.tsx");
+    const lazyNodeToolDialog = readSourceFile(
+      "src/features/canvas/ui/LazyNodeToolDialog.tsx",
+    );
 
-    expect(canvas).not.toContain("./ui/NodeToolDialog");
-    expect(canvas).toContain("./ui/LazyNodeToolDialog");
-    expect(lazyNodeToolDialog).toMatch(
-      /lazy\(\s*\(\)\s*=>\s*import\(\s*["']\.\/NodeToolDialog["']\s*\)/,
+    expect(productionValueImportsFrom(canvas, "./ui/NodeToolDialog")).toHaveLength(0);
+    const lazyDialogBindings = importedValueBindings(
+      canvas,
+      "./ui/LazyNodeToolDialog",
+      "LazyNodeToolDialog",
     );
-    expect(lazyNodeToolDialog).toMatch(/role=["']status["']/);
-    expect(lazyNodeToolDialog).toMatch(/aria-live=["']polite["']/);
-    expect(nodeToolDialog).not.toMatch(
-      /^\s*import\s+(?!type\b)(?!\()[^"']*["']\.\/tool-editors\/AnnotateToolEditor["']/m,
-    );
-    expect(nodeToolDialog).toMatch(
-      /lazy\(\s*\(\)\s*=>\s*import\(\s*["']\.\/tool-editors\/AnnotateToolEditor["']\s*\)/,
-    );
+    expect(lazyDialogBindings.length).toBeGreaterThan(0);
+    expect(
+      lazyDialogBindings.some((binding) => containsJsxComponent(canvas, binding, canvas)),
+    ).toBe(true);
+
+    const nodeToolBindings = lazyBindingsForModule(lazyNodeToolDialog, "./NodeToolDialog");
+    expect(nodeToolBindings.length).toBeGreaterThan(0);
+    expect(
+      nodeToolBindings.some((binding) =>
+        hasAccessibleSuspenseBoundary(lazyNodeToolDialog, binding),
+      ),
+    ).toBe(true);
+
+    const annotateModule = "./tool-editors/AnnotateToolEditor";
+    expect(productionValueImportsFrom(nodeToolDialog, annotateModule)).toHaveLength(0);
+    const annotateBindings = lazyBindingsForModule(nodeToolDialog, annotateModule);
+    expect(annotateBindings.length).toBeGreaterThan(0);
+    expect(
+      annotateBindings.some((binding) =>
+        containsJsxComponent(nodeToolDialog, binding, nodeToolDialog),
+      ),
+    ).toBe(true);
   });
 
   it("loads video transcoding only after a video upload starts", () => {
-    const videoNode = readSource("src/features/canvas/nodes/VideoNode.tsx");
+    const videoNode = readSourceFile("src/features/canvas/nodes/VideoNode.tsx");
+    const transcodeModule = "@/features/canvas/application/videoTranscode";
 
-    expect(videoNode).not.toMatch(
-      /^\s*import\s+(?!type\b)(?!\()[^"']*["']@\/features\/canvas\/application\/videoTranscode["']/m,
-    );
-    expect(videoNode).toMatch(
-      /import\(\s*["']@\/features\/canvas\/application\/videoTranscode["']\s*\)/,
-    );
+    expect(productionValueImportsFrom(videoNode, transcodeModule)).toHaveLength(0);
+    expect(hasDynamicImport(videoNode, transcodeModule)).toBe(true);
   });
 });
