@@ -26,6 +26,10 @@ from novelvideo.api.deps import (
 from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterError,
+    resolve_workflow_parameters,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowScene,
     VideoWorkflowUnavailable,
@@ -50,6 +54,7 @@ from novelvideo.narrative_groups.service import (
     stage_history,
     update_video_manifest_dialogue_source,
     update_video_plan,
+    update_video_settings,
 )
 from novelvideo.ports import get_task_backend
 
@@ -119,6 +124,14 @@ class NarrativeGroupVideoRequest(BaseModel):
     resolution: str | None = None
     revision: int = Field(ge=0)
     plan_revision: int = Field(ge=1)
+    settings_revision: int | None = Field(default=None, ge=0)
+
+
+class NarrativeGroupVideoSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0)
+    workflow_id: str = Field(min_length=1)
+    overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class NarrativeGroupVideoPlanUnitRequest(BaseModel):
@@ -151,6 +164,26 @@ async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bo
         else ensure_groups(resolved.project_dir, episode, beats)
     )
     return resolved, groups, beats
+
+
+def _project_video_workflow_defaults(resolved, workflow) -> dict[str, str]:
+    from novelvideo.project_config import load_project_config_from_state_dir
+
+    config = load_project_config_from_state_dir(
+        getattr(resolved.ctx, "state_dir", resolved.project_dir),
+        username=getattr(resolved.ctx, "owner_username", ""),
+        project=getattr(resolved.ctx, "project_name", ""),
+    )
+    namespaces = config.get("video_workflow_parameters")
+    raw = namespaces.get(workflow.id) if isinstance(namespaces, Mapping) else None
+    overrides = dict(raw) if isinstance(raw, Mapping) else {}
+    if (
+        workflow.id == "runninghub:minimax-h3"
+        and not overrides
+        and config.get("video_resolution") in {"720p", "1080p"}
+    ):
+        overrides["resolution"] = config["video_resolution"]
+    return resolve_workflow_parameters(workflow, overrides)
 
 
 def _asset_url(project: str, project_dir: Path, value: str) -> str:
@@ -861,7 +894,33 @@ async def _enqueue_group_video(
             status_code=422,
             detail="Video mode is unsupported by the selected workflow",
         )
-    resolved, _, _ = await _resolve_groups(project, episode, user)
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    source_group = next((item for item in groups if item.id == group_id), None)
+    if source_group is None:
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
+    settings = source_group.video_settings
+    if request.settings_revision is not None:
+        if request.settings_revision != settings.revision:
+            raise HTTPException(
+                status_code=409,
+                detail="Narrative group video settings revision is stale",
+            )
+        if workflow.id != settings.workflow_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Narrative group video workflow does not match saved settings",
+            )
+    try:
+        project_defaults = _project_video_workflow_defaults(resolved, workflow)
+        parameter_overrides = dict(settings.overrides)
+        if request.settings_revision is None and request.resolution is not None:
+            parameter_overrides["resolution"] = request.resolution
+        workflow_parameters = resolve_workflow_parameters(
+            workflow,
+            {**project_defaults, **parameter_overrides},
+        )
+    except VideoWorkflowParameterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         group, reservation = reserve_video_revision(
             resolved.project_dir, episode, group_id,
@@ -882,7 +941,8 @@ async def _enqueue_group_video(
         "model": request.model,
         "mode": request.mode,
         "aspect_ratio": request.aspect_ratio,
-        "resolution": request.resolution,
+        "workflow_parameters": workflow_parameters,
+        "settings_revision": settings.revision,
     }
     try:
         queued = await get_task_backend().enqueue_project_task(
@@ -935,6 +995,57 @@ async def generate_render_group(
     return await _enqueue_group_action(
         project, episode, group_id, "render", user, generation_request=body
     )
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/settings"
+)
+async def put_group_video_settings(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: NarrativeGroupVideoSettingsRequest,
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
+    user: dict = Depends(get_api_user),
+):
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    registry = build_video_workflow_registry(media_store, credential_resolver)
+    try:
+        workflow = registry.resolve(
+            request.workflow_id, VideoWorkflowScene.NARRATIVE_GROUP
+        )
+        project_defaults = _project_video_workflow_defaults(resolved, workflow)
+        resolved_values = resolve_workflow_parameters(
+            workflow, {**project_defaults, **request.overrides}
+        )
+        normalized_overrides = {
+            key: value
+            for key, value in resolved_values.items()
+            if project_defaults.get(key) != value
+        }
+        group = update_video_settings(
+            resolved.project_dir,
+            episode,
+            group_id,
+            expected_revision=request.expected_revision,
+            workflow_id=workflow.id,
+            overrides=normalized_overrides,
+            project_defaults=project_defaults,
+        )
+    except VideoWorkflowUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except VideoWorkflowParameterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except (RuntimeError, TypeError) as exc:
+        status_code = 409 if isinstance(exc, RuntimeError) else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "data": _serialize(project, resolved.project_dir, [group])[0],
+    }
 
 
 @router.put(
