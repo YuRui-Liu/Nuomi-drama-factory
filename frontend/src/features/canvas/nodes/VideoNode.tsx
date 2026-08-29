@@ -81,7 +81,6 @@ import {
   resolveImageDisplayUrl,
   snapToAllowedAspectRatio,
 } from "@/features/canvas/application/imageData";
-import { ensureWebSafeVideo } from "@/features/canvas/application/videoTranscode";
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
@@ -1371,6 +1370,9 @@ export const VideoNode = memo(
           // HEVC（飞书录屏/iPhone）等 Web 不兼容编码先在浏览器内转成 H.264 再上传，
           // 否则 Edge 等无对应解码器的浏览器只有声音没画面。见 videoTranscode.ts。
           // 转码期间 UI 统一走「上传中」loading，不单独显示转码进度。
+          const { ensureWebSafeVideo } = await import(
+            "@/features/canvas/application/videoTranscode"
+          );
           const prepared = await ensureWebSafeVideo(file);
           if (prepared.transcoded) {
             // 源编码在本浏览器可能根本解不了（Edge+HEVC），本地预览也换成转码产物。
