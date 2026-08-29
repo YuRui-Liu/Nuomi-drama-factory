@@ -60,11 +60,18 @@ def test_h3_adapter_delegates_to_injected_director_generator():
         adapter.generate_narrative_group(ctx, request)
     )
 
-    assert result == NarrativeGroupVideoResult(
-        output_path="result.mp4",
-        provider_task_id="provider-1",
-        actual_mode="fl2va",
-    )
+    assert result.output_path == "result.mp4"
+    assert result.provider_task_id == "provider-1"
+    assert result.actual_mode == "fl2va"
+    assert result.provider_parameters == {
+        "megapixels": 2.0,
+        "multiple": 32,
+        "width": 1088,
+        "height": 1920,
+        "longEdge": 1920,
+        "refMaxSize": 1920,
+    }
+    assert result.actual_output == {"width": 1088, "height": 1920}
     assert calls == [
         (
             ctx,

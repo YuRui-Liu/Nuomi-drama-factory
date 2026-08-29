@@ -79,6 +79,7 @@ class H3TimelineEntry(BaseModel):
         "quality_rejected",
         "transport_failed",
         "postprocess_failed",
+        "quality_mismatch",
     ] = "completed"
 
     @model_validator(mode="after")
@@ -159,6 +160,7 @@ class H3DirectorOutputManifest(BaseModel):
         "quality_rejected",
         "transport_failed",
         "postprocess_failed",
+        "quality_mismatch",
     ] = "completed"
 
     @field_validator(

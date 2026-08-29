@@ -3,7 +3,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, updateNarrativeGroupVideoPlan, useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroupReferences, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage, type NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
+import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, updateNarrativeGroupVideoPlan, updateNarrativeGroupVideoSettings, useGenerateNarrativeGroupVideo, useNarrativeGroupAction, useNarrativeGroupReferences, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage, type NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
 import { availableVideoModels, resolveVideoModel, resolveVideoMode, useMediaDefaults, useUpdateMediaDefaults, useVideoModels } from "@/lib/queries/media-models";
 import { episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import { useTaskController } from "@/hooks/use-task-controller";
@@ -18,6 +18,7 @@ import { GroupReferenceDialog } from "./group-reference-dialog";
 import { useProjectAspectRatio } from "@/stores/aspect-ratio-store";
 import { NarrativeAspectSelector } from "./narrative-aspect-selector";
 import { ProjectVideoModelSelect } from "./project-video-model-select";
+import { GroupVideoParameters } from "./group-video-parameters";
 import { coerceNarrativeImageSize, supportedNarrativeImageSizes, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 
 function taskScope(response: unknown): string | undefined {
@@ -51,6 +52,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const updateDefaults = useUpdateMediaDefaults(project);
   const [pendingAction, setPendingAction] = useState<{ groupId: string; stage: NarrativeGridStage; action: "generate" | "regenerate" } | null>(null);
   const [videoPlanSaving, setVideoPlanSaving] = useState(false);
+  const [videoSettingsSaving, setVideoSettingsSaving] = useState(false);
   const [selectedVideoModelId, setSelectedVideoModelId] = useState<string | null>(null);
   const [renderSettingsOpen, setRenderSettingsOpen] = useState(false);
   const [renderModelDraft, setRenderModelDraft] = useState("gpt-image-2");
@@ -156,7 +158,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   };
   const runGroupVideo = async (request: { video_model: string; h3_mode: "auto" | "i2va" | "fl2va" }) => {
     try {
-      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}) });
+      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}) });
       groupVideoTask.start({ scope: taskScope(response) });
       toast.success("H3 导演台组合视频已进入队列");
     } catch (error) { toast.error(error instanceof Error ? error.message : "组合视频任务提交失败"); }
@@ -179,6 +181,73 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     }
   };
   const frames = groupFrameSummary(group.video_inputs ?? []);
+  const videoOverrides = group.video_settings?.workflow_id === modelId
+    ? group.video_settings.overrides
+    : {};
+  const projectVideoDefaults = mediaDefaults?.video_workflow_parameters?.[modelId] ?? {};
+  const saveVideoOverride = async (key: string, value: string) => {
+    setVideoSettingsSaving(true);
+    try {
+      await updateNarrativeGroupVideoSettings(project, episode, {
+        groupId: group.id,
+        expectedRevision: group.video_settings?.revision ?? 0,
+        workflowId: modelId,
+        overrides: { ...videoOverrides, [key]: value },
+      });
+      await groupsQuery.refetch();
+      toast.success("本组视频清晰度已保存");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "视频清晰度保存失败");
+    } finally {
+      setVideoSettingsSaving(false);
+    }
+  };
+  const restoreVideoDefault = async (key: string) => {
+    const overrides = { ...videoOverrides };
+    delete overrides[key];
+    setVideoSettingsSaving(true);
+    try {
+      await updateNarrativeGroupVideoSettings(project, episode, {
+        groupId: group.id,
+        expectedRevision: group.video_settings?.revision ?? 0,
+        workflowId: modelId,
+        overrides,
+      });
+      await groupsQuery.refetch();
+      toast.success("已恢复项目默认清晰度");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "恢复项目默认失败");
+    } finally {
+      setVideoSettingsSaving(false);
+    }
+  };
+  const promoteVideoDefault = async (key: string, value: string) => {
+    setVideoSettingsSaving(true);
+    try {
+      await updateDefaults.mutateAsync({
+        videoModel: modelId,
+        videoMode,
+        videoWorkflowParameters: {
+          ...(mediaDefaults?.video_workflow_parameters ?? {}),
+          [modelId]: { ...projectVideoDefaults, [key]: value },
+        },
+      });
+      const overrides = { ...videoOverrides };
+      delete overrides[key];
+      await updateNarrativeGroupVideoSettings(project, episode, {
+        groupId: group.id,
+        expectedRevision: group.video_settings?.revision ?? 0,
+        workflowId: modelId,
+        overrides,
+      });
+      await groupsQuery.refetch();
+      toast.success("已设为项目默认清晰度");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "项目默认清晰度保存失败");
+    } finally {
+      setVideoSettingsSaving(false);
+    }
+  };
   const changeVideoModel = async (videoModel: string) => {
     const targetModel = models.find((item) => item.id === videoModel);
     if (!targetModel) return;
@@ -227,7 +296,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   return <div className="flex h-full min-h-0 overflow-hidden" data-narrative-group-workbench>
     <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/10 p-4"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">叙事组生产</h2><Button variant="ghost" size="icon" onClick={() => groupsQuery.refetch()}><RefreshCw className="size-4" /></Button></div><NarrativeGroupList groups={groups} selectedId={group.id} onSelect={(id) => select({ project, episode }, id)} /></aside>
     <GroupReferenceDialog open={pendingAction !== null} preview={referencesQuery.data?.ok ? referencesQuery.data.data : null} loading={referencesQuery.isLoading} error={referencesQuery.error instanceof Error ? referencesQuery.error : null} submitting={action.isPending} stage={pendingAction?.stage ?? "render"} defaultProvider={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_provider : mediaDefaults?.narrative_render_provider} defaultModel={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_model : mediaDefaults?.narrative_render_model} defaultImageSize={mediaDefaults?.narrative_render_image_size} sketchReady={group.stages.sketch.status === "completed" && !!group.stages.sketch.grid_asset} onRetry={() => referencesQuery.refetch()} onSubmit={confirmAction} onOpenChange={(open) => { if (!open) setPendingAction(null); }} />
-    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p>{group.stages.render.requested_image_size || group.stages.render.actual_pixel_size ? <p className="mt-1 text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"}{group.stages.render.requested_pixel_size ? ` / ${group.stages.render.requested_pixel_size}` : ""} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p> : null}</div><div className="flex flex-wrap items-start justify-end gap-3">{aspectSelector}<Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending} onChange={changeVideoModel} /></div></div>{renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}<GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4"><GroupVideoStage modelId={modelId} mode={videoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} /><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
+    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p>{group.stages.render.requested_image_size || group.stages.render.actual_pixel_size ? <p className="mt-1 text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"}{group.stages.render.requested_pixel_size ? ` / ${group.stages.render.requested_pixel_size}` : ""} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p> : null}</div><div className="flex flex-wrap items-start justify-end gap-3">{aspectSelector}<Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending} onChange={changeVideoModel} /></div></div>{renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}<GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4 space-y-3"><GroupVideoParameters parameters={model?.parameters ?? []} projectDefaults={projectVideoDefaults} overrides={videoOverrides} aspectRatio={aspectRatio} busy={group.stages.video.status === "queued" || group.stages.video.status === "running"} saving={videoSettingsSaving || updateDefaults.isPending} onSaveOverride={saveVideoOverride} onRestoreDefault={restoreVideoDefault} onPromoteDefault={promoteVideoDefault} /><GroupVideoStage modelId={modelId} mode={videoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} /><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
       try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
     }} /></div></main>

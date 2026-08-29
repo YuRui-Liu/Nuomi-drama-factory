@@ -585,6 +585,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     project_dir = _project_dir(payload, ctx)
     group_id = str(payload["group_id"])
     revision = int(payload["revision"])
+    workflow_parameters = dict(payload.get("workflow_parameters") or {})
+    if not workflow_parameters:
+        workflow_parameters = {"resolution": str(payload.get("resolution") or "720p")}
     saved = stage_payload(project_dir, episode, group_id, "video")
     if saved["revision"] != revision:
         return {"status": "stale", "group_id": group_id, "revision": revision}
@@ -595,7 +598,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         and int(plan_revision) != int(saved_plan_revision or 0)
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
-    record_stage_result(project_dir, episode, group_id, "video", expected_revision=revision, status="running", error="")
+    record_stage_result(
+        project_dir, episode, group_id, "video", expected_revision=revision,
+        status="running", error="", workflow_parameters=workflow_parameters,
+    )
     manifest_path: Path | None = None
     try:
         workflow = _workflow_definition_for_payload(payload)
@@ -663,6 +669,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     default_status="quality_rejected",
                 ),
                 workflow_id=workflow.id,
+                workflow_parameters=workflow_parameters,
                 status="quality_rejected",
             )
             save_h3_director_manifest(manifest_path, rejected_manifest)
@@ -688,6 +695,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             physical_video=None,
             entries=evidenced_entries,
             workflow_id=workflow.id,
+            workflow_parameters=workflow_parameters,
             status="submitted",
         )
         save_h3_director_manifest(manifest_path, manifest)
@@ -718,7 +726,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     segments=tuple(segments),
                     output_path=str(output),
                     aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
-                    resolution=payload.get("resolution"),
+                    workflow_parameters=workflow_parameters,
                     on_provider_submitted=on_provider_submitted,
                 ),
             )
@@ -736,8 +744,51 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             "generated",
             physical_video=str(generated.output_path),
             provider_task_id=generated.provider_task_id,
+            provider_parameters=generated.provider_parameters,
+            actual_output=generated.actual_output,
         )
         save_h3_director_manifest(manifest_path, manifest)
+
+        expected_output = (
+            int(generated.provider_parameters.get("width") or 0),
+            int(generated.provider_parameters.get("height") or 0),
+        )
+        actual_output = (
+            int(generated.actual_output.get("width") or 0),
+            int(generated.actual_output.get("height") or 0),
+        )
+        if expected_output != actual_output:
+            message = (
+                f"video output resolution mismatch: expected "
+                f"{expected_output[0]}x{expected_output[1]}, got "
+                f"{actual_output[0]}x{actual_output[1]}"
+            )
+            manifest = _manifest_with_status(
+                manifest,
+                "quality_mismatch",
+                physical_video=str(generated.output_path),
+                provider_task_id=generated.provider_task_id,
+                provider_parameters=generated.provider_parameters,
+                actual_output=generated.actual_output,
+            )
+            save_h3_director_manifest(manifest_path, manifest)
+            record_stage_result(
+                project_dir, episode, group_id, "video",
+                expected_revision=revision, status="partial_failure", error=message,
+                video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
+                actual_provider=workflow.provider, actual_model=workflow.id,
+                actual_mode=generated.actual_mode,
+                workflow_parameters=workflow_parameters,
+                provider_parameters=generated.provider_parameters,
+                actual_output=generated.actual_output,
+            )
+            return {
+                "status": "partial_failure", "group_id": group_id,
+                "revision": revision, "error": message,
+                "video_asset": str(generated.output_path),
+                "manifest_asset": str(manifest_path),
+                "provider_task_id": generated.provider_task_id,
+            }
 
         try:
             if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
@@ -791,7 +842,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             project_dir, episode, group_id, "video", expected_revision=revision, status="completed",
             video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
             actual_provider=workflow.provider, actual_model=workflow.id,
-            actual_mode=generated.actual_mode, **stems,
+            actual_mode=generated.actual_mode,
+            workflow_parameters=workflow_parameters,
+            provider_parameters=generated.provider_parameters,
+            actual_output=generated.actual_output,
+            **stems,
         )
         return {"status": "completed", "group_id": group_id, "revision": revision,
                 "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),

@@ -68,6 +68,9 @@ export interface NarrativeStageState {
   requested_pixel_size?: string | null;
   actual_pixel_size?: string | null;
   resolution_warning?: string | null;
+  workflow_parameters?: Record<string, string>;
+  provider_parameters?: Record<string, unknown>;
+  actual_output?: Record<string, number>;
   actual_mode?: string | null;
   source_sketch_revision?: number | null;
   constraint_mode?: "strong_sketch" | "unconstrained" | "" | null;
@@ -128,6 +131,9 @@ export interface NarrativeGroupVideoPromptUnit {
 }
 
 export interface NarrativeGroupVideoPromptManifest {
+  workflow_parameters?: Record<string, string>;
+  provider_parameters?: Record<string, unknown>;
+  actual_output?: Record<string, number>;
   units: NarrativeGroupVideoPromptUnit[];
   [key: string]: unknown;
 }

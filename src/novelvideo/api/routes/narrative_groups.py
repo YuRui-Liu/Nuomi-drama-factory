@@ -606,7 +606,16 @@ def _serialize_prompt_review(
                 entry.get("provider_task_id"), manifest.get("provider_task_id")
             ),
         })
-    return {"units": units}
+    def snapshot(name: str) -> dict[str, Any]:
+        value = manifest.get(name)
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    return {
+        "workflow_parameters": snapshot("workflow_parameters"),
+        "provider_parameters": snapshot("provider_parameters"),
+        "actual_output": snapshot("actual_output"),
+        "units": units,
+    }
 
 
 @router.get("/projects/{project}/episodes/{episode}/narrative-groups")

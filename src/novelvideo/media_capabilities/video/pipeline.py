@@ -54,6 +54,7 @@ class VideoCandidate(BaseModel):
     artifact: MediaArtifact
     status: MediaTaskStatus
     quality_issues: tuple[VideoQualityIssue, ...] = ()
+    probe: VideoProbe | None = None
     reference_hashes: tuple[str, ...] = ()
 
 
@@ -201,7 +202,8 @@ class H3VideoPipeline:
         ):
             raise RuntimeError("video generation succeeded without an artifact")
         artifact = MediaArtifact.model_validate(completed.output["artifacts"][0])
-        issues = validate_video(await self.probe_video(artifact), request)
+        probe = await self.probe_video(artifact)
+        issues = validate_video(probe, request)
         current_attempt = self.store.list_attempts(task.id)[-1]
         candidate = VideoCandidate(
             task_id=task.id,
@@ -213,6 +215,7 @@ class H3VideoPipeline:
                 else MediaTaskStatus.SUCCEEDED
             ),
             quality_issues=issues,
+            probe=probe,
             reference_hashes=tuple(current_attempt.input_asset_hashes or ()),
         )
         self.register_candidate(candidate)
@@ -276,7 +279,8 @@ class H3VideoPipeline:
             # Provider completion is not a quality verdict.  The artifact can
             # have failed QC on the original request (or changed on disk), so
             # every idempotent reuse must probe it again.
-            issues = validate_video(await self.probe_video(artifact), request)
+            probe = await self.probe_video(artifact)
+            issues = validate_video(probe, request)
             candidate = VideoCandidate(
                 task_id=task.id,
                 provider_task_id=(
@@ -289,6 +293,7 @@ class H3VideoPipeline:
                     else MediaTaskStatus.SUCCEEDED
                 ),
                 quality_issues=issues,
+                probe=probe,
                 reference_hashes=tuple(
                     current_attempt.input_asset_hashes if current_attempt else ()
                 ),
@@ -349,7 +354,8 @@ class H3VideoPipeline:
         if not isinstance(completed.output, dict) or not completed.output.get("artifacts"):
             raise RuntimeError("video generation succeeded without an artifact")
         artifact = MediaArtifact.model_validate(completed.output["artifacts"][0])
-        issues = validate_video(await self.probe_video(artifact), request)
+        probe = await self.probe_video(artifact)
+        issues = validate_video(probe, request)
         current_attempt = self.store.list_attempts(task.id)[-1]
         candidate = VideoCandidate(
             task_id=task.id,
@@ -357,6 +363,7 @@ class H3VideoPipeline:
             artifact=artifact,
             status=(MediaTaskStatus.QUALITY_FAILED if issues else MediaTaskStatus.SUCCEEDED),
             quality_issues=issues,
+            probe=probe,
             reference_hashes=tuple(current_attempt.input_asset_hashes or ()),
         )
         self.register_candidate(candidate)

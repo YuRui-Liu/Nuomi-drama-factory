@@ -43,6 +43,12 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
       {query.isLoading ? <p role="status" className="text-sm text-muted-foreground">正在加载提示词…</p> : null}
       {query.isError ? <p role="alert" className="text-sm text-destructive">提示词加载失败，请稍后重试。</p> : null}
       {!query.isLoading && !query.isError && units.length === 0 ? <p className="text-sm text-muted-foreground">暂无可复盘的生成提示词。</p> : null}
+      {manifest ? <section className="rounded-lg border border-white/10 bg-black/20 p-4">
+        <h3 className="font-medium">本次生成参数</h3>
+        <PromptSection title="产品参数" value={Object.keys(manifest.workflow_parameters ?? {}).length ? manifest.workflow_parameters : null} empty="历史任务未记录" />
+        <PromptSection title="RunningHub 工作流参数" value={Object.keys(manifest.provider_parameters ?? {}).length ? manifest.provider_parameters : null} empty="历史任务未记录" />
+        <PromptSection title="实际输出尺寸" value={Object.keys(manifest.actual_output ?? {}).length ? manifest.actual_output : null} empty="历史任务未记录" />
+      </section> : null}
       {units.length > 0 ? <div className="space-y-4">{units.map((unit, index) => {
         const label = unit.label || `Beat ${unit.beat_ids.join(" → ")}`;
         return <article key={narrativeGroupVideoPromptUnitKey(unit, index)} className="rounded-lg border border-white/10 bg-black/20 p-4">

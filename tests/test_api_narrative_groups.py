@@ -12,6 +12,10 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowRegistry,
     VideoWorkflowScene,
 )
+from novelvideo.media_capabilities.video.parameters import (
+    VideoWorkflowParameterDefinition,
+    VideoWorkflowParameterOption,
+)
 from novelvideo.narrative_groups.references import (
     GroupImageReference,
     GroupReferencePreview,
@@ -89,6 +93,17 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
                     adapter_key="minimax-h3",
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                     supported_modes=("auto", "i2va", "fl2va"),
+                    parameters=(
+                        VideoWorkflowParameterDefinition(
+                            key="resolution",
+                            label="清晰度",
+                            default="720p",
+                            options=(
+                                VideoWorkflowParameterOption(value="720p", label="720p"),
+                                VideoWorkflowParameterOption(value="1080p", label="1080p", relative_cost="higher"),
+                            ),
+                        ),
+                    ),
                 ),
             )
         ),
@@ -496,7 +511,8 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "model": "runninghub:minimax-h3",
         "mode": "auto",
         "aspect_ratio": "16:9",
-        "resolution": "720p",
+        "workflow_parameters": {"resolution": "720p"},
+        "settings_revision": 0,
     }
 
 

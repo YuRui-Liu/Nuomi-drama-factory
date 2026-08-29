@@ -43,6 +43,7 @@ class H3GenerationResult:
     output_path: str
     provider_task_id: str | None
     actual_mode: str
+    actual_output: dict[str, int] | None = None
 
 
 def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfile:
@@ -434,10 +435,13 @@ async def generate_h3_director_video(
             },
             on_provider_submitted=on_provider_submitted,
         )
-        if candidate.status is not MediaTaskStatus.SUCCEEDED:
-            codes = ", ".join(issue.code for issue in candidate.quality_issues)
-            raise RuntimeError(f"MiniMax H3 output failed quality checks: {codes}")
         source = artifact_root / candidate.artifact.local_path
+        actual_probe = getattr(candidate, "probe", None)
+        if candidate.status is not MediaTaskStatus.SUCCEEDED:
+            issue_codes = {issue.code for issue in candidate.quality_issues}
+            if issue_codes != {"video.resolution_mismatch"}:
+                codes = ", ".join(sorted(issue_codes))
+                raise RuntimeError(f"MiniMax H3 output failed quality checks: {codes}")
         target = Path(output_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(shutil.copy2, source, target)
@@ -445,6 +449,14 @@ async def generate_h3_director_video(
             output_path=target.as_posix(),
             provider_task_id=candidate.provider_task_id,
             actual_mode=actual_mode.value,
+            actual_output=(
+                {"width": actual_probe.width, "height": actual_probe.height}
+                if actual_probe is not None
+                else {
+                    "width": int(output_settings["width"]),
+                    "height": int(output_settings["height"]),
+                }
+            ),
         )
     finally:
         await client.close()

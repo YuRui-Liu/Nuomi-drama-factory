@@ -20,15 +20,16 @@ class NarrativeGroupVideoRequest:
     segments: tuple[H3DirectorSegment, ...]
     output_path: str
     aspect_ratio: str
-    workflow_parameters: Mapping[str, str] = MappingProxyType({})
+    workflow_parameters: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    resolution: str | None = None
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "workflow_parameters",
-            MappingProxyType(dict(self.workflow_parameters)),
-        )
+        parameters = dict(self.workflow_parameters)
+        parameters.setdefault("resolution", str(self.resolution or "720p"))
+        object.__setattr__(self, "workflow_parameters", MappingProxyType(parameters))
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,8 +134,19 @@ class H3WorkflowAdapter:
                 else None
             ),
             actual_mode=str(generated.actual_mode),
-            provider_parameters={"mode": str(generated.actual_mode)},
-            actual_output={"width": setting.width, "height": setting.height},
+            provider_parameters={
+                "megapixels": setting.megapixels,
+                "multiple": setting.multiple,
+                "width": setting.width,
+                "height": setting.height,
+                "longEdge": setting.long_edge,
+                "refMaxSize": setting.ref_max_size,
+            },
+            actual_output=(
+                dict(generated_actual_output)
+                if (generated_actual_output := getattr(generated, "actual_output", None))
+                else {"width": setting.width, "height": setting.height}
+            ),
         )
 
 
