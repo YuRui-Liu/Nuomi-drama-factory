@@ -45,10 +45,17 @@ def validate_director_plan(
                 )
             seen_source_ids.add(span_id)
 
-    first_known_ids = list(dict.fromkeys(span_id for span_id in grouped_ids if span_id in spans_by_id))
-    expected_known_ids = [span_id for span_id in expected_ids if span_id in first_known_ids]
+    grouped_ordinals = [
+        spans_by_id[span_id].ordinal
+        for span_id in grouped_ids
+        if span_id in spans_by_id
+    ]
+    has_order_descent = any(
+        current < previous
+        for previous, current in zip(grouped_ordinals, grouped_ordinals[1:])
+    )
     has_unknown_group_source = any(span_id not in spans_by_id for span_id in grouped_ids)
-    if first_known_ids != expected_known_ids or has_unknown_group_source:
+    if has_order_descent or has_unknown_group_source:
         mismatch_group_index = _first_order_mismatch_group(revision, spans_by_id)
         _add_issue(
             issues,

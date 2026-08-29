@@ -111,6 +111,18 @@ def test_reports_missing_duplicate_and_out_of_order_source_spans() -> None:
     ]
 
 
+def test_duplicate_occurrence_that_moves_backward_also_reports_order_mismatch() -> None:
+    spans = (make_span("span-1", 1), make_span("span-2", 2))
+    group = make_group(source_span_ids=("span-1", "span-2", "span-1"))
+
+    report = validate_director_plan(make_revision((group,)), spans)
+
+    assert issue_pairs(report) == [
+        ("duplicate_source_span", "groups.0.source_span_ids"),
+        ("source_order_mismatch", "groups.0.source_span_ids"),
+    ]
+
+
 def test_reports_an_unknown_group_source_as_an_order_mismatch() -> None:
     group = make_group(source_span_ids=("span-1", "unknown"))
 
