@@ -72,6 +72,10 @@ def test_parameter_models_normalize_declared_strings() -> None:
             VideoWorkflowParameterDefinition,
             {"key": "resolution", "label": " ", "default": "720p", "options": (_option(),)},
         ),
+        (
+            VideoWorkflowParameterDefinition,
+            {"key": "resolution", "label": "分辨率", "default": " ", "options": (_option(),)},
+        ),
     ],
 )
 def test_parameter_models_reject_blank_declared_strings(model, values) -> None:
@@ -79,12 +83,39 @@ def test_parameter_models_reject_blank_declared_strings(model, values) -> None:
         model(**values)
 
 
-def test_parameter_models_are_frozen_and_forbid_extra_fields() -> None:
+def test_parameter_option_is_frozen_and_forbids_extra_fields() -> None:
     option = _option()
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         VideoWorkflowParameterOption(value="720p", label="标准", width=1280)
     with pytest.raises(ValidationError, match="Instance is frozen"):
         option.label = "changed"  # type: ignore[misc]
+
+
+def test_parameter_definition_is_frozen() -> None:
+    parameter = _parameter()
+
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        parameter.label = "changed"  # type: ignore[misc]
+
+
+def test_parameter_definition_forbids_extra_fields() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        VideoWorkflowParameterDefinition(
+            key="resolution",
+            label="分辨率",
+            default="720p",
+            options=(_option(),),
+            node_id="internal",
+        )
+
+
+def test_parameter_models_reject_invalid_literal_values() -> None:
+    with pytest.raises(ValidationError, match="enum"):
+        _parameter(type="range")
+    with pytest.raises(ValidationError, match="narrative_group"):
+        _parameter(scope="project")
+    with pytest.raises(ValidationError, match="standard|higher"):
+        _option(relative_cost="lower")
 
 
 def test_parameter_definition_rejects_empty_or_duplicate_options() -> None:
@@ -108,16 +139,27 @@ def test_resolve_workflow_parameters_merges_defaults_then_overrides() -> None:
     }
 
 
-def test_resolve_workflow_parameters_rejects_unknown_keys_and_values() -> None:
+def test_resolve_workflow_parameters_rejects_unknown_key_without_mutating_input() -> None:
     workflow = _workflow(_parameter())
+    overrides = {"quality": "high"}
 
     with pytest.raises(VideoWorkflowParameterError, match="unknown workflow parameter: quality"):
-        resolve_workflow_parameters(workflow, {"quality": "high"})
+        resolve_workflow_parameters(workflow, overrides)
+
+    assert overrides == {"quality": "high"}
+
+
+def test_resolve_workflow_parameters_rejects_unknown_value_without_mutating_input() -> None:
+    workflow = _workflow(_parameter())
+    overrides = {"resolution": "4k"}
+
     with pytest.raises(
         VideoWorkflowParameterError,
         match="invalid value for workflow parameter resolution: 4k",
     ):
-        resolve_workflow_parameters(workflow, {"resolution": "4k"})
+        resolve_workflow_parameters(workflow, overrides)
+
+    assert overrides == {"resolution": "4k"}
 
 
 def test_resolve_workflow_parameters_returns_new_dict_without_mutating_input() -> None:
