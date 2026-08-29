@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Protocol
 
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
@@ -19,8 +20,15 @@ class NarrativeGroupVideoRequest:
     segments: tuple[H3DirectorSegment, ...]
     output_path: str
     aspect_ratio: str
-    resolution: str | None = None
+    workflow_parameters: Mapping[str, str] = MappingProxyType({})
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "workflow_parameters",
+            MappingProxyType(dict(self.workflow_parameters)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +36,8 @@ class NarrativeGroupVideoResult:
     output_path: str
     provider_task_id: str | None
     actual_mode: str
+    provider_parameters: dict[str, object] = field(default_factory=dict)
+    actual_output: dict[str, int] = field(default_factory=dict)
 
 
 class VideoWorkflowAdapter(Protocol):
@@ -97,11 +107,20 @@ class H3WorkflowAdapter:
         ctx: ProjectContext,
         request: NarrativeGroupVideoRequest,
     ) -> NarrativeGroupVideoResult:
+        from novelvideo.media_capabilities.video.h3_size_settings import (
+            resolve_h3_size_setting,
+        )
+
+        try:
+            resolution = request.workflow_parameters["resolution"]
+        except KeyError as exc:
+            raise ValueError("H3 workflow parameter 'resolution' is required") from exc
+        setting = resolve_h3_size_setting(resolution, request.aspect_ratio)
         kwargs = {
             "segments": request.segments,
             "output_path": request.output_path,
             "aspect_ratio": request.aspect_ratio,
-            "resolution": request.resolution,
+            "resolution": setting.resolution,
         }
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
@@ -114,6 +133,8 @@ class H3WorkflowAdapter:
                 else None
             ),
             actual_mode=str(generated.actual_mode),
+            provider_parameters={"mode": str(generated.actual_mode)},
+            actual_output={"width": setting.width, "height": setting.height},
         )
 
 

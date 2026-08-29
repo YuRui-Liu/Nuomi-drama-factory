@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from copy import deepcopy
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable, Literal
@@ -140,6 +141,9 @@ class H3DirectorOutputManifest(BaseModel):
     format_version: int = Field(default=1, gt=0)
     workflow_id: str | None = None
     provider_task_id: str | None = None
+    workflow_parameters: dict[str, str] = Field(default_factory=dict)
+    provider_parameters: dict[str, object] = Field(default_factory=dict)
+    actual_output: dict[str, int] = Field(default_factory=dict)
     original_audio_path: str | None = None
     original_audio_status: str = "not_requested"
     dialogue_stem_path: str | None = None
@@ -169,6 +173,13 @@ class H3DirectorOutputManifest(BaseModel):
             if not value:
                 raise ValueError("value must not be blank")
         return value
+
+    @field_validator(
+        "workflow_parameters", "provider_parameters", "actual_output", mode="before"
+    )
+    @classmethod
+    def snapshot_parameters(cls, value: object) -> object:
+        return deepcopy(value)
 
     @model_validator(mode="after")
     def validate_and_normalize(self) -> "H3DirectorOutputManifest":
