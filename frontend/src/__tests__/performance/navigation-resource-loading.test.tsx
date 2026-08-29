@@ -213,6 +213,150 @@ const containsJsxComponent = (
   return found;
 };
 
+const containsGuardIdentifier = (root: ts.Node, guardNames: string[]) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (ts.isIdentifier(node) && guardNames.includes(node.text)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+};
+
+const isNullishExpression = (node: ts.Expression) =>
+  node.kind === ts.SyntaxKind.NullKeyword ||
+  (ts.isIdentifier(node) && node.text === "undefined");
+
+const conditionRequiresPresentGuard = (
+  condition: ts.Expression,
+  conditionResult: boolean,
+  guardNames: string[],
+): boolean => {
+  const unwrapped = unwrapLoaderExpression(condition);
+  if (!containsGuardIdentifier(unwrapped, guardNames)) return false;
+  if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
+    return !conditionResult;
+  }
+  if (ts.isBinaryExpression(unwrapped)) {
+    const comparesNullish =
+      isNullishExpression(unwrapped.left) || isNullishExpression(unwrapped.right);
+    if (comparesNullish) {
+      if (
+        unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      ) {
+        return !conditionResult;
+      }
+      if (
+        unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
+      ) {
+        return conditionResult;
+      }
+    }
+  }
+  return conditionResult;
+};
+
+const nodeWithin = (node: ts.Node, container: ts.Node) =>
+  node.pos >= container.pos && node.end <= container.end;
+
+const statementReturns = (statement: ts.Statement) => {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found || (node !== statement && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  return found;
+};
+
+const jsxMountHasGuard = (mount: ts.Node, guardNames: string[]) => {
+  let current: ts.Node = mount;
+  while (current.parent) {
+    const parent = current.parent;
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      nodeWithin(current, parent.right) &&
+      conditionRequiresPresentGuard(parent.left, true, guardNames)
+    ) {
+      return true;
+    }
+    if (ts.isConditionalExpression(parent)) {
+      if (
+        nodeWithin(current, parent.whenTrue) &&
+        conditionRequiresPresentGuard(parent.condition, true, guardNames)
+      ) {
+        return true;
+      }
+      if (
+        nodeWithin(current, parent.whenFalse) &&
+        conditionRequiresPresentGuard(parent.condition, false, guardNames)
+      ) {
+        return true;
+      }
+    }
+    if (ts.isIfStatement(parent)) {
+      if (
+        nodeWithin(current, parent.thenStatement) &&
+        conditionRequiresPresentGuard(parent.expression, true, guardNames)
+      ) {
+        return true;
+      }
+      if (
+        parent.elseStatement &&
+        nodeWithin(current, parent.elseStatement) &&
+        conditionRequiresPresentGuard(parent.expression, false, guardNames)
+      ) {
+        return true;
+      }
+    }
+    if (ts.isBlock(parent)) {
+      for (const statement of parent.statements) {
+        if (statement.end > mount.pos) break;
+        if (
+          ts.isIfStatement(statement) &&
+          !statement.elseStatement &&
+          statementReturns(statement.thenStatement) &&
+          conditionRequiresPresentGuard(statement.expression, false, guardNames)
+        ) {
+          return true;
+        }
+      }
+    }
+    current = parent;
+  }
+  return false;
+};
+
+const jsxComponentMountsAreGuarded = (
+  sourceFile: ts.SourceFile,
+  componentName: string,
+  guardNames: string[],
+) => {
+  const mounts: ts.Node[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      jsxTagName(node.tagName, sourceFile) === componentName
+    ) {
+      mounts.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return mounts.length > 0 && mounts.every((mount) => jsxMountHasGuard(mount, guardNames));
+};
+
 const literalJsxAttribute = (
   element: ts.JsxOpeningLikeElement,
   attributeName: string,
@@ -369,6 +513,105 @@ const importedValueBindings = (
   }
   return bindings;
 };
+
+const dynamicImportCalls = (root: ts.Node, modulePath: string) => {
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteralLike(node.arguments[0]) &&
+      node.arguments[0].text === modulePath
+    ) {
+      calls.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return calls;
+};
+
+const functionBoundToName = (sourceFile: ts.SourceFile, bindingName: string) => {
+  let result: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | null = null;
+  const visit = (node: ts.Node) => {
+    if (result) return;
+    if (ts.isFunctionDeclaration(node) && node.name?.text === bindingName) {
+      result = node;
+      return;
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === bindingName) {
+      const initializer = node.initializer;
+      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+        result = initializer;
+        return;
+      }
+      if (initializer && ts.isCallExpression(initializer)) {
+        const callback = initializer.arguments.find(
+          (argument): argument is ts.ArrowFunction | ts.FunctionExpression =>
+            ts.isArrowFunction(argument) || ts.isFunctionExpression(argument),
+        );
+        if (callback) {
+          result = callback;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return result;
+};
+
+const isTrueExpression = (node: ts.Expression) =>
+  unwrapLoaderExpression(node).kind === ts.SyntaxKind.TrueKeyword;
+
+const objectSetsUploadingTrue = (node: ts.ObjectLiteralExpression) =>
+  node.properties.some(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      property.name.getText() === "isUploading" &&
+      isTrueExpression(property.initializer),
+  );
+
+const isUploadStartCall = (node: ts.CallExpression) => {
+  if (
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "setIsUploading" &&
+    node.arguments[0] &&
+    isTrueExpression(node.arguments[0])
+  ) {
+    return true;
+  }
+  return node.arguments.some(
+    (argument) => ts.isObjectLiteralExpression(argument) && objectSetsUploadingTrue(argument),
+  );
+};
+
+const dynamicImportsFollowUploadStart = (
+  sourceFile: ts.SourceFile,
+  modulePath: string,
+  functionName: string,
+) => {
+  const uploadFunction = functionBoundToName(sourceFile, functionName);
+  if (!uploadFunction?.body) return false;
+  const imports = dynamicImportCalls(sourceFile, modulePath);
+  if (imports.length === 0) return false;
+
+  const uploadStartCalls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (node !== uploadFunction.body && ts.isFunctionLike(node)) return;
+    if (ts.isCallExpression(node) && isUploadStartCall(node)) uploadStartCalls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(uploadFunction.body);
+  return imports.every(
+    (importCall) =>
+      nodeWithin(importCall, uploadFunction.body) &&
+      uploadStartCalls.some((uploadStart) => uploadStart.end <= importCall.pos),
+  );
+};
+
 describe("navigation resource loading", () => {
   it("keeps the login visual experience out of the eager route module", () => {
     const loginRoute = readSource("src/routes/login.tsx");
@@ -548,24 +791,38 @@ describe("navigation resource loading", () => {
   it("defers optional freezone features until interaction", () => {
     const freezoneShell = readSourceFile("src/features/freezone/FreezoneShell.tsx");
     const optionalModules = [
-      "@/features/superchat/superchat-panel",
-      "./commit/CommitDialog",
-      "@/pipeline-import/CreateIdentityDialog",
-      "@/pipeline-import/CompareDialog",
-      "@/pipeline-import/MaskEditor",
+      {
+        modulePath: "@/features/superchat/superchat-panel",
+        guardNames: ["chatOpen", "open", "shouldRenderPanel", "panelVisible"],
+      },
+      { modulePath: "./commit/CommitDialog", guardNames: ["pushState", "commitDialog"] },
+      {
+        modulePath: "@/pipeline-import/CreateIdentityDialog",
+        guardNames: ["createIdentitySource", "createIdentityNodeId"],
+      },
+      {
+        modulePath: "@/pipeline-import/CompareDialog",
+        guardNames: ["comparePair", "compareDialog"],
+      },
+      {
+        modulePath: "@/pipeline-import/MaskEditor",
+        guardNames: ["maskTarget", "maskEditorState"],
+      },
     ];
 
-    for (const modulePath of optionalModules) {
+    for (const { modulePath, guardNames } of optionalModules) {
       expect(productionValueImportsFrom(freezoneShell, modulePath), modulePath).toHaveLength(0);
       expect(hasDynamicImport(freezoneShell, modulePath), modulePath).toBe(true);
 
       const lazyBindings = lazyBindingsForModule(freezoneShell, modulePath);
       expect(lazyBindings.length, `${modulePath} should be loaded through React.lazy`).toBeGreaterThan(0);
       expect(
-        lazyBindings.some((binding) =>
-          hasAccessibleSuspenseBoundary(freezoneShell, binding),
+        lazyBindings.some(
+          (binding) =>
+            hasAccessibleSuspenseBoundary(freezoneShell, binding) &&
+            jsxComponentMountsAreGuarded(freezoneShell, binding, guardNames),
         ),
-        `${modulePath} should render inside an accessible Suspense fallback`,
+        `${modulePath} should mount only after interaction with an accessible fallback`,
       ).toBe(true);
     }
   });
@@ -636,5 +893,8 @@ describe("navigation resource loading", () => {
 
     expect(productionValueImportsFrom(videoNode, transcodeModule)).toHaveLength(0);
     expect(hasDynamicImport(videoNode, transcodeModule)).toBe(true);
+    expect(dynamicImportsFollowUploadStart(videoNode, transcodeModule, "processFile")).toBe(
+      true,
+    );
   });
 });
