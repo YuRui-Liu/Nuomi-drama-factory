@@ -22,7 +22,7 @@ NormalizedString = Annotated[str, BeforeValidator(_normalize_non_empty_string)]
 
 
 class VideoWorkflowParameterOption(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     value: NormalizedString
     label: NormalizedString
@@ -31,7 +31,7 @@ class VideoWorkflowParameterOption(BaseModel):
 
 
 class VideoWorkflowParameterDefinition(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     key: NormalizedString
     type: Literal["enum"] = "enum"
@@ -70,11 +70,26 @@ def resolve_workflow_parameters(
     overrides: Mapping[str, str],
 ) -> dict[str, str]:
     """Return defaults merged with validated workflow parameter overrides."""
+    if not isinstance(overrides, Mapping):
+        raise VideoWorkflowParameterError(
+            "workflow parameter overrides must be a mapping"
+        )
+    override_items = tuple(overrides.items())
+    for key, value in override_items:
+        if not isinstance(key, str):
+            raise VideoWorkflowParameterError(
+                "workflow parameter override keys must be strings"
+            )
+        if not isinstance(value, str):
+            raise VideoWorkflowParameterError(
+                "workflow parameter override values must be strings"
+            )
+
     parameters = {parameter.key: parameter for parameter in definition.parameters}
     resolved = {
         parameter.key: parameter.default for parameter in definition.parameters
     }
-    for key, value in overrides.items():
+    for key, value in override_items:
         parameter = parameters.get(key)
         if parameter is None:
             raise VideoWorkflowParameterError(

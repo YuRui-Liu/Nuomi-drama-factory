@@ -60,6 +60,14 @@ def test_parameter_models_normalize_declared_strings() -> None:
 
 
 @pytest.mark.parametrize(
+    "model",
+    [VideoWorkflowParameterOption, VideoWorkflowParameterDefinition],
+)
+def test_parameter_models_enable_strict_validation(model) -> None:
+    assert model.model_config["strict"] is True
+
+
+@pytest.mark.parametrize(
     ("model", "values"),
     [
         (VideoWorkflowParameterOption, {"value": " ", "label": "标准"}),
@@ -170,3 +178,33 @@ def test_resolve_workflow_parameters_returns_new_dict_without_mutating_input() -
 
     assert resolved is not overrides
     assert overrides == {"resolution": "1080p"}
+
+
+def test_resolve_workflow_parameters_rejects_non_mapping_without_mutating_input() -> None:
+    workflow = _workflow(_parameter())
+    overrides = [("resolution", "1080p")]
+
+    with pytest.raises(VideoWorkflowParameterError, match="must be a mapping"):
+        resolve_workflow_parameters(workflow, overrides)  # type: ignore[arg-type]
+
+    assert overrides == [("resolution", "1080p")]
+
+
+def test_resolve_workflow_parameters_rejects_non_string_key_without_mutating_input() -> None:
+    workflow = _workflow(_parameter())
+    overrides = {1: "1080p"}
+
+    with pytest.raises(VideoWorkflowParameterError, match="keys must be strings"):
+        resolve_workflow_parameters(workflow, overrides)  # type: ignore[arg-type]
+
+    assert overrides == {1: "1080p"}
+
+
+def test_resolve_workflow_parameters_rejects_list_value_without_mutating_input() -> None:
+    workflow = _workflow(_parameter())
+    overrides = {"resolution": ["1080p"]}
+
+    with pytest.raises(VideoWorkflowParameterError, match="values must be strings"):
+        resolve_workflow_parameters(workflow, overrides)  # type: ignore[arg-type]
+
+    assert overrides == {"resolution": ["1080p"]}
