@@ -127,6 +127,46 @@ def test_asset_migration_items_dump_as_plain_json_objects() -> None:
     assert json.loads(report.model_dump_json()) == expected
 
 
+class MutableValue:
+    pass
+
+
+@pytest.mark.parametrize("invalid_value", [{"one"}, bytearray(b"one"), MutableValue()])
+def test_asset_migration_items_reject_non_json_values(invalid_value: object) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AssetMigrationReport(items=({"invalid": invalid_value},))
+
+    assert exc_info.value.errors()[0]["loc"][0] == "items"
+
+
+def test_asset_migration_items_accept_all_json_value_types() -> None:
+    report = AssetMigrationReport(
+        items=(
+            {
+                "null": None,
+                "bool": True,
+                "int": 1,
+                "float": 1.5,
+                "string": "value",
+                "list": [1, {"nested": False}],
+            },
+        )
+    )
+
+    assert json.loads(report.model_dump_json()) == {
+        "items": [
+            {
+                "null": None,
+                "bool": True,
+                "int": 1,
+                "float": 1.5,
+                "string": "value",
+                "list": [1, {"nested": False}],
+            }
+        ]
+    }
+
+
 @pytest.mark.parametrize("field", ["created_at", "activated_at"])
 def test_revision_rejects_naive_datetimes(field: str) -> None:
     with pytest.raises(ValidationError) as exc_info:

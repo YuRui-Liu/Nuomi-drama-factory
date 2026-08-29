@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     field_serializer,
     field_validator,
 )
@@ -41,7 +42,7 @@ class ValidationReport(FrozenModel):
     version: int = 1
 
 
-def _freeze_json_value(value: object) -> object:
+def _freeze_json_value(value: JsonValue) -> object:
     if isinstance(value, Mapping):
         return _FrozenMapping(value)
     if isinstance(value, (list, tuple)):
@@ -58,10 +59,10 @@ def _thaw_json_value(value: object) -> object:
 
 
 class _FrozenMapping(dict[str, object]):
-    def __init__(self, value: Mapping[object, object]) -> None:
+    def __init__(self, value: Mapping[str, JsonValue]) -> None:
         dict.__init__(self)
         for key, item in value.items():
-            dict.__setitem__(self, str(key), _freeze_json_value(item))
+            dict.__setitem__(self, key, _freeze_json_value(item))
 
     @staticmethod
     def _deny_mutation(*args: object, **kwargs: object) -> NoReturn:
@@ -78,17 +79,17 @@ class _FrozenMapping(dict[str, object]):
 
 
 class AssetMigrationReport(FrozenModel):
-    items: tuple[dict[str, object], ...] = ()
+    items: tuple[dict[str, JsonValue], ...] = ()
 
     @field_validator("items", mode="after")
     @classmethod
     def freeze_items(
-        cls, items: tuple[dict[str, object], ...]
-    ) -> tuple[dict[str, object], ...]:
+        cls, items: tuple[dict[str, JsonValue], ...]
+    ) -> tuple[dict[str, JsonValue], ...]:
         return tuple(_FrozenMapping(item) for item in items)
 
     @field_serializer("items")
-    def serialize_items(self, items: tuple[dict[str, object], ...]) -> object:
+    def serialize_items(self, items: tuple[dict[str, JsonValue], ...]) -> object:
         return _thaw_json_value(items)
 
 
