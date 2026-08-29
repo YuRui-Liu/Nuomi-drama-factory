@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
+import {
+  CANVAS_NODE_TYPES,
+  DEFAULT_NODE_WIDTH,
+} from "@/features/canvas/domain/canvasNodes";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
 import type { SupertaleProjectSummary } from "@/api/projects";
 import {
@@ -24,8 +28,6 @@ import { currentCanvasParam } from "@/lib/app-router";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { isCeRuntime } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
-import { SuperChatPanel } from "@/features/superchat/superchat-panel";
-import { CommitDialog } from "./commit/CommitDialog";
 import { promoteToAsset } from "./commit/promoteToAsset";
 import { commitDirectorRenderFromCanvasSource } from "./commit/directorRenderCommit";
 import {
@@ -35,9 +37,6 @@ import {
 } from "./commit/sceneDirectorWorldCommit";
 import { nodeDataAfterCommittedSlot } from "./commit/committedNodePatch";
 import { isCommitCandidateData } from "./commit/commitEligibility";
-import { CreateIdentityDialog } from "@/pipeline-import/CreateIdentityDialog";
-import { CompareDialog } from "@/pipeline-import/CompareDialog";
-import { MaskEditor } from "@/pipeline-import/MaskEditor";
 import { AssetLibraryPanel } from "./AssetLibraryPanel";
 import { CanvasDebugPanel } from "./CanvasDebugPanel";
 import type { PushResult, PushTarget, PushTargetKind } from "@/api/push";
@@ -80,6 +79,28 @@ import {
   removeLocalFreezoneProjection,
 } from "@/features/freezone/canvasSyncRuntime";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
+
+const LazySuperChatPanel = lazy(() =>
+  import("@/features/superchat/superchat-panel").then((module) => ({
+    default: module.SuperChatPanel,
+  })),
+);
+const LazyCommitDialog = lazy(() =>
+  import("./commit/CommitDialog").then((module) => ({ default: module.CommitDialog })),
+);
+const LazyCreateIdentityDialog = lazy(() =>
+  import("@/pipeline-import/CreateIdentityDialog").then((module) => ({
+    default: module.CreateIdentityDialog,
+  })),
+);
+const LazyCompareDialog = lazy(() =>
+  import("@/pipeline-import/CompareDialog").then((module) => ({
+    default: module.CompareDialog,
+  })),
+);
+const LazyMaskEditor = lazy(() =>
+  import("@/pipeline-import/MaskEditor").then((module) => ({ default: module.MaskEditor })),
+);
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 
@@ -767,9 +788,6 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     );
 
   const handleMaskEditResult = async (newUrl: string) => {
-    const { CANVAS_NODE_TYPES, DEFAULT_NODE_WIDTH } = await import(
-      "@/features/canvas/domain/canvasNodes"
-    );
     const addNode = useCanvasStore.getState().addNode;
     const baseLabel = maskTarget?.label ?? "edit";
     addNode(
@@ -870,58 +888,74 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       </div>
       <NodeReplaceDragPreview />
       {pushState && (
-        <CommitDialog
-          project={projectId}
-          sourceUrl={pushState.sourceUrl}
-          previewUrl={pushState.previewUrl ?? undefined}
-          sourceLabelOverride={pushState.sourceLabel}
-          mediaType={pushState.mediaType}
-          defaultTarget={pushState.defaultTarget}
-          directorControlBundle={pushState.directorControlBundle}
-          nodeData={pushState.nodeData}
-          getNodeData={() => resolveSubmitNodeData(latestCanvasNodeData(pushState.nodeId), pushState.nodeData)}
-          onClose={() => setPushState(null)}
-          onSuccess={(msg, result, target, nodeDataPatch) => {
-            if (nodeDataPatch) {
-              useCanvasStore.getState().updateNodeData(pushState.nodeId, nodeDataPatch);
-            }
-            refreshCommittedTargetNodes(target, result);
-            invalidateCommittedTargetQueries(target);
-            markCommitCandidatePushed(pushState.nodeId, target, result);
-            setAssetLibraryReloadToken((token) => token + 1);
-            setPushState(null);
-            setToast(msg);
-          }}
-        />
+        <Suspense
+          fallback={<div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 text-sm">正在加载提交窗口…</div>}
+        >
+          <LazyCommitDialog
+            project={projectId}
+            sourceUrl={pushState.sourceUrl}
+            previewUrl={pushState.previewUrl ?? undefined}
+            sourceLabelOverride={pushState.sourceLabel}
+            mediaType={pushState.mediaType}
+            defaultTarget={pushState.defaultTarget}
+            directorControlBundle={pushState.directorControlBundle}
+            nodeData={pushState.nodeData}
+            getNodeData={() => resolveSubmitNodeData(latestCanvasNodeData(pushState.nodeId), pushState.nodeData)}
+            onClose={() => setPushState(null)}
+            onSuccess={(msg, result, target, nodeDataPatch) => {
+              if (nodeDataPatch) {
+                useCanvasStore.getState().updateNodeData(pushState.nodeId, nodeDataPatch);
+              }
+              refreshCommittedTargetNodes(target, result);
+              invalidateCommittedTargetQueries(target);
+              markCommitCandidatePushed(pushState.nodeId, target, result);
+              setAssetLibraryReloadToken((token) => token + 1);
+              setPushState(null);
+              setToast(msg);
+            }}
+          />
+        </Suspense>
       )}
       {createIdentitySource && (
-        <CreateIdentityDialog
-          project={projectId}
-          sourceUrl={createIdentitySource.imageUrl}
-          previewUrl={createIdentitySource.previewUrl ?? undefined}
-          defaultCharacter={presetDefaultCharacter}
-          onClose={() => setCreateIdentitySource(null)}
-          onSuccess={(msg) => {
-            setCreateIdentitySource(null);
-            setToast(msg);
-          }}
-        />
+        <Suspense
+          fallback={<div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 text-sm">正在加载角色身份…</div>}
+        >
+          <LazyCreateIdentityDialog
+            project={projectId}
+            sourceUrl={createIdentitySource.imageUrl}
+            previewUrl={createIdentitySource.previewUrl ?? undefined}
+            defaultCharacter={presetDefaultCharacter}
+            onClose={() => setCreateIdentitySource(null)}
+            onSuccess={(msg) => {
+              setCreateIdentitySource(null);
+              setToast(msg);
+            }}
+          />
+        </Suspense>
       )}
       {comparePair && (
-        <CompareDialog
-          left={comparePair.left}
-          right={comparePair.right}
-          onClose={() => setComparePair(null)}
-        />
+        <Suspense
+          fallback={<div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 text-sm">正在加载对比窗口…</div>}
+        >
+          <LazyCompareDialog
+            left={comparePair.left}
+            right={comparePair.right}
+            onClose={() => setComparePair(null)}
+          />
+        </Suspense>
       )}
       {maskTarget && (
-        <MaskEditor
-          project={projectId}
-          baseUrl={maskTarget.url}
-          baseLabel={maskTarget.label}
-          onClose={() => setMaskTarget(null)}
-          onResult={handleMaskEditResult}
-        />
+        <Suspense
+          fallback={<div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 text-sm">正在加载蒙版编辑器…</div>}
+        >
+          <LazyMaskEditor
+            project={projectId}
+            baseUrl={maskTarget.url}
+            baseLabel={maskTarget.label}
+            onClose={() => setMaskTarget(null)}
+            onResult={handleMaskEditResult}
+          />
+        </Suspense>
       )}
       {toast && <Toast text={toast} onClose={() => setToast(null)} />}
     </div>
@@ -975,7 +1009,13 @@ function FreezoneChatDock({
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
             </SheetHeader>
-            <SuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+            {open && (
+              <Suspense
+                fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
+              >
+                <LazySuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+              </Suspense>
+            )}
           </SheetContent>
         </Sheet>
       </>
@@ -1012,7 +1052,11 @@ function FreezoneChatDock({
         }}
         aria-label={title}
       >
-        <SuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+        <Suspense
+          fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
+        >
+          <LazySuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+        </Suspense>
       </aside>
     </>
   );
