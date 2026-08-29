@@ -167,6 +167,23 @@ def test_asset_migration_items_accept_all_json_value_types() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"value": float("nan")},
+        {"value": [float("inf")]},
+        {"value": {"nested": float("-inf")}},
+    ],
+)
+def test_asset_migration_items_reject_non_finite_floats(
+    item: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AssetMigrationReport(items=(item,))  # type: ignore[arg-type]
+
+    assert exc_info.value.errors()[0]["loc"][0] == "items"
+
+
 @pytest.mark.parametrize("field", ["created_at", "activated_at"])
 def test_revision_rejects_naive_datetimes(field: str) -> None:
     with pytest.raises(ValidationError) as exc_info:

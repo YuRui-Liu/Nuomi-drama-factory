@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Literal, NoReturn, Self
 
 from pydantic import (
@@ -43,6 +44,8 @@ class ValidationReport(FrozenModel):
 
 
 def _freeze_json_value(value: JsonValue) -> object:
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("JSON floats must be finite")
     if isinstance(value, Mapping):
         return _FrozenMapping(value)
     if isinstance(value, (list, tuple)):
