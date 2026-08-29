@@ -148,6 +148,9 @@ class GroupStageState:
     requested_pixel_size: str = ""
     actual_pixel_size: str = ""
     resolution_warning: str = ""
+    workflow_parameters: dict[str, str] = field(default_factory=dict)
+    provider_parameters: dict[str, Any] = field(default_factory=dict)
+    actual_output: dict[str, int] = field(default_factory=dict)
     cleanup_reports: tuple[dict[str, Any], ...] = ()
     source_sketch_revision: int = 0
     constraint_mode: str = ""

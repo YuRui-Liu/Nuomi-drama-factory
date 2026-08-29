@@ -681,6 +681,9 @@ def record_stage_result(
     requested_pixel_size: str | None = None,
     actual_pixel_size: str | None = None,
     resolution_warning: str | None = None,
+    workflow_parameters: Mapping[str, str] | None = None,
+    provider_parameters: Mapping[str, Any] | None = None,
+    actual_output: Mapping[str, int] | None = None,
     source_sketch_revision: int | None = None,
     constraint_mode: str | None = None,
     cleanup_reports: Iterable[Mapping[str, Any]] | None = None,
@@ -764,6 +767,21 @@ def record_stage_result(
                     if resolution_warning is None
                     else str(resolution_warning)
                 ),
+                workflow_parameters=(
+                    current.workflow_parameters
+                    if workflow_parameters is None
+                    else {str(key): str(value) for key, value in workflow_parameters.items()}
+                ),
+                provider_parameters=(
+                    current.provider_parameters
+                    if provider_parameters is None
+                    else dict(provider_parameters)
+                ),
+                actual_output=(
+                    current.actual_output
+                    if actual_output is None
+                    else {str(key): int(value) for key, value in actual_output.items()}
+                ),
                 source_sketch_revision=(
                     current.source_sketch_revision
                     if source_sketch_revision is None
@@ -806,6 +824,9 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
         "actual_mode": state.actual_mode,
+        "workflow_parameters": dict(state.workflow_parameters),
+        "provider_parameters": dict(state.provider_parameters),
+        "actual_output": dict(state.actual_output),
         "source_sketch_revision": state.source_sketch_revision,
         "constraint_mode": state.constraint_mode,
         "created_at": state.created_at,
@@ -869,6 +890,9 @@ def rollback_stage_revision(
                 actual_provider=source.get("actual_provider", ""),
                 actual_model=source.get("actual_model", ""),
                 actual_mode=source.get("actual_mode", ""),
+                workflow_parameters=dict(source.get("workflow_parameters") or {}),
+                provider_parameters=dict(source.get("provider_parameters") or {}),
+                actual_output=dict(source.get("actual_output") or {}),
                 source_sketch_revision=int(source.get("source_sketch_revision") or 0),
                 constraint_mode=source.get("constraint_mode", ""),
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -900,6 +924,9 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
                 "ambience_stem_status": state.ambience_stem_status,
                 "error": state.error,
                 "revision": state.revision,
+                "workflow_parameters": dict(state.workflow_parameters),
+                "provider_parameters": dict(state.provider_parameters),
+                "actual_output": dict(state.actual_output),
                 "cell_to_beat": [item.__dict__ for item in group.cell_to_beat],
                 "beat_ids": list(group.beat_ids),
                 "layout": group.layout.__dict__,
