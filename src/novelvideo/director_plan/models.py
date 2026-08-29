@@ -63,9 +63,16 @@ def _thaw_json_value(value: object) -> object:
 
 class _FrozenMapping(dict[str, object]):
     def __init__(self, value: Mapping[str, JsonValue]) -> None:
+        if getattr(self, "_initialized", False):
+            raise TypeError("frozen mapping cannot be reinitialized")
         dict.__init__(self)
         for key, item in value.items():
             dict.__setitem__(self, key, _freeze_json_value(item))
+        object.__setattr__(self, "_initialized", True)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Self:
+        memo[id(self)] = self
+        return self
 
     @staticmethod
     def _deny_mutation(*args: object, **kwargs: object) -> NoReturn:
@@ -79,6 +86,8 @@ class _FrozenMapping(dict[str, object]):
     setdefault = _deny_mutation
     update = _deny_mutation
     __ior__ = _deny_mutation
+    __setattr__ = _deny_mutation
+    __delattr__ = _deny_mutation
 
 
 class AssetMigrationReport(FrozenModel):

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -117,6 +118,25 @@ def test_asset_migration_items_are_recursively_immutable() -> None:
         report.items[0]["metadata"]["new"] = "changed"  # type: ignore[index]
     with pytest.raises(TypeError):
         report.items[0]["metadata"]["tags"][0] = "changed"  # type: ignore[index]
+
+
+def test_asset_migration_mapping_cannot_be_reinitialized() -> None:
+    report = AssetMigrationReport(items=({"asset_id": "asset-1"},))
+    original_dump = report.model_dump()
+
+    with pytest.raises((TypeError, AttributeError)):
+        report.items[0].__init__({"asset_id": "changed", "invalid": object()})
+
+    assert report.model_dump() == original_dump
+
+
+def test_asset_migration_report_supports_deepcopy() -> None:
+    report = AssetMigrationReport(items=({"metadata": {"tags": ["one"]}},))
+
+    copied = deepcopy(report)
+
+    assert copied.model_dump() == report.model_dump()
+    assert copied.model_dump_json() == report.model_dump_json()
 
 
 def test_asset_migration_items_dump_as_plain_json_objects() -> None:
