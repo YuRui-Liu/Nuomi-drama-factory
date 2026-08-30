@@ -352,6 +352,86 @@ def test_list_all_styles_orders_real_groups_and_keeps_ids_unique(monkeypatch):
     assert len(ids) == len(set(ids))
 
 
+def test_save_custom_style_rejects_extension_style_id(monkeypatch):
+    from novelvideo.models import StyleConfig
+    from novelvideo.services.style_service import StyleService
+
+    extension_id = "drama_ext.japanese_cel_animation"
+    saved = False
+
+    def record_save(*args, **kwargs):
+        nonlocal saved
+        saved = True
+        return True
+
+    monkeypatch.setattr(
+        StyleService,
+        "_load_project_custom_style_map",
+        classmethod(lambda cls, *args, **kwargs: {}),
+    )
+    monkeypatch.setattr(
+        StyleService,
+        "_save_project_custom_style_map",
+        classmethod(record_save),
+    )
+
+    result = StyleService.save_custom_style(
+        extension_id,
+        StyleConfig(id=extension_id, name="Shadow extension"),
+        username="alice",
+        project="demo",
+    )
+
+    assert result is False
+    assert saved is False
+
+
+def test_get_style_ignores_historical_custom_collision_with_extension(monkeypatch):
+    from novelvideo.services.style_service import StyleService
+
+    extension_id = "drama_ext.japanese_cel_animation"
+    monkeypatch.setattr(
+        StyleService,
+        "_load_project_custom_style_map",
+        classmethod(
+            lambda cls, *args, **kwargs: {
+                extension_id: {"id": extension_id, "name": "Shadow extension"},
+            }
+        ),
+    )
+
+    style = StyleService.get_style(extension_id, username="alice", project="demo")
+
+    assert style is not None
+    assert style.is_preset is True
+    assert style.name != "Shadow extension"
+
+
+def test_list_all_styles_filters_historical_custom_id_collisions(monkeypatch):
+    from novelvideo.services.style_service import StyleService
+
+    extension_id = "drama_ext.japanese_cel_animation"
+    custom_styles = {
+        extension_id: {"id": extension_id, "name": "Shadow extension"},
+        "custom_z": {"id": "custom_z", "name": "Custom Z"},
+        "custom_a": {"id": "custom_a", "name": "Custom A"},
+    }
+    monkeypatch.setattr(
+        StyleService,
+        "_load_project_custom_style_map",
+        classmethod(lambda cls, *args, **kwargs: custom_styles),
+    )
+
+    styles = StyleService.list_all_styles(username="alice", project="demo")
+    ids = [style["id"] for style in styles]
+    custom = [style for style in styles if style["type"] == "custom"]
+
+    assert ids.count(extension_id) == 1
+    assert len(ids) == len(set(ids))
+    assert [style["id"] for style in custom] == ["custom_a", "custom_z"]
+    assert [style["order"] for style in custom] == [0, 1]
+
+
 def test_style_preview_get_returns_image_without_generation():
     response = _client().get("/styles/anime/preview")
 

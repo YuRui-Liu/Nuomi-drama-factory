@@ -414,6 +414,9 @@ class StyleService:
             是否保存成功
         """
         try:
+            if style_id.startswith("drama_ext.") or cls.is_read_only_style(style_id):
+                return False
+
             # 确保 ID 一致
             config.id = style_id
             config.is_preset = False
@@ -501,11 +504,8 @@ class StyleService:
     ) -> Optional[StyleConfig]:
         """获取风格配置（统一入口）。
 
-        查找顺序：
-        1. 先查自定义风格（Redis）
-        2. 再查系统预设（文件）
-
-        这样允许用户通过创建同名自定义风格来覆盖系统预设。
+        ``drama_ext.*`` 命名空间只解析已注册扩展风格，避免历史自定义
+        数据覆盖只读目录项。其他 ID 保持原有“自定义 → 系统预设”顺序。
 
         Args:
             style_id: 风格 ID
@@ -513,7 +513,10 @@ class StyleService:
         Returns:
             StyleConfig 实例，如果不存在返回 None
         """
-        # 优先查找自定义风格（允许覆盖预设）
+        if style_id.startswith("drama_ext."):
+            return cls._extension_as_config(style_id)
+
+        # 其他 ID 继续允许自定义风格覆盖原系统预设
         custom = cls.get_custom_style(style_id, username=username, project=project, project_dir=project_dir)
         if custom:
             return custom
@@ -634,8 +637,12 @@ class StyleService:
                 }
             )
 
-        # 自定义风格
-        for order, style_id in enumerate(cls.list_custom_styles(username=username, project=project, project_dir=project_dir)):
+        # 自定义风格；历史冲突项 fail-safe 为已列出的只读风格。
+        listed_ids = {style["id"] for style in styles}
+        custom_order = 0
+        for style_id in cls.list_custom_styles(username=username, project=project, project_dir=project_dir):
+            if style_id in listed_ids:
+                continue
             config = cls.get_custom_style(style_id, username=username, project=project, project_dir=project_dir)
             if config:
                 styles.append({
@@ -644,7 +651,7 @@ class StyleService:
                     "label": config.label or config.name,
                     "type": "custom",
                     "group": "custom",
-                    "order": order,
+                    "order": custom_order,
                     "read_only": False,
                     "category": None,
                     "summary": None,
@@ -656,6 +663,8 @@ class StyleService:
                     "style_family": config.style_family,
                     "animation_subtype": config.animation_subtype,
                 })
+                listed_ids.add(style_id)
+                custom_order += 1
 
         return styles
 
