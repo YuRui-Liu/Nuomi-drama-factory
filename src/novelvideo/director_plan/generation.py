@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from .models import GenerationBatch, NarrativeGroupPlan, ShotPlan, VideoSegment
+import hashlib
+import json
+
+from .models import (
+    DirectorPlanRevision,
+    GenerationBatchPlan,
+    NarrativeGroupPlan,
+    ProductionPlan,
+    ShotPlan,
+    VideoSegmentPlan,
+)
 
 
 _LAYOUTS = {
@@ -13,18 +23,27 @@ _LAYOUTS = {
 
 def plan_generation_batches(
     group: NarrativeGroupPlan,
-) -> tuple[GenerationBatch, ...]:
+    *,
+    revision_id: str | None = None,
+) -> tuple[GenerationBatchPlan, ...]:
     """Plan image calls for one narrative group without blank cells."""
     style_snapshot_id = _require_style_snapshot(group)
     counts = (3, 2) if len(group.shots) == 5 else (len(group.shots),)
-    batches: list[GenerationBatch] = []
+    batches: list[GenerationBatchPlan] = []
     offset = 0
     for batch_index, count in enumerate(counts, start=1):
         shots = group.shots[offset : offset + count]
         layout, rows, columns = _LAYOUTS[count]
         batches.append(
-            GenerationBatch(
-                id=f"batch:{group.id}:{batch_index}",
+            GenerationBatchPlan(
+                id=_production_id(
+                    "batch",
+                    revision_id,
+                    group.id,
+                    tuple(shot.id for shot in shots),
+                    style_snapshot_id,
+                    fallback_index=batch_index,
+                ),
                 group_id=group.id,
                 shot_ids=tuple(shot.id for shot in shots),
                 layout=layout,
@@ -38,7 +57,11 @@ def plan_generation_batches(
     return tuple(batches)
 
 
-def plan_video_segments(group: NarrativeGroupPlan) -> tuple[VideoSegment, ...]:
+def plan_video_segments(
+    group: NarrativeGroupPlan,
+    *,
+    revision_id: str | None = None,
+) -> tuple[VideoSegmentPlan, ...]:
     """Plan independent video calls from shots belonging to one group."""
     style_snapshot_id = _require_style_snapshot(group)
     shot_groups: list[list[ShotPlan]] = []
@@ -56,8 +79,15 @@ def plan_video_segments(group: NarrativeGroupPlan) -> tuple[VideoSegment, ...]:
         shot_groups.append(current)
 
     return tuple(
-        VideoSegment(
-            id=f"segment:{group.id}:{index}",
+        VideoSegmentPlan(
+            id=_production_id(
+                "segment",
+                revision_id,
+                group.id,
+                tuple(shot.id for shot in shots),
+                style_snapshot_id,
+                fallback_index=index,
+            ),
             group_id=group.id,
             shot_ids=tuple(shot.id for shot in shots),
             duration_seconds=sum(shot.duration_seconds for shot in shots),
@@ -69,6 +99,58 @@ def plan_video_segments(group: NarrativeGroupPlan) -> tuple[VideoSegment, ...]:
         )
         for index, shots in enumerate(shot_groups, start=1)
     )
+
+
+def build_production_plan(revision: DirectorPlanRevision) -> ProductionPlan:
+    """Derive the complete immutable production plan for one revision."""
+    batches: list[GenerationBatchPlan] = []
+    segments: list[VideoSegmentPlan] = []
+    for raw_group in revision.groups:
+        group = raw_group
+        if not (group.style_snapshot_id or "").strip():
+            group = group.model_copy(
+                update={"style_snapshot_id": revision.project_style_snapshot_id}
+            )
+        batches.extend(
+            plan_generation_batches(group, revision_id=revision.revision_id)
+        )
+        segments.extend(plan_video_segments(group, revision_id=revision.revision_id))
+
+    payload = {
+        "revision_id": revision.revision_id,
+        "episode": revision.episode,
+        "generation_batches": [item.model_dump(mode="json") for item in batches],
+        "video_segments": [item.model_dump(mode="json") for item in segments],
+    }
+    production_plan_hash = hashlib.sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    return ProductionPlan(
+        **payload,
+        production_plan_hash=production_plan_hash,
+    )
+
+
+def _production_id(
+    kind: str,
+    revision_id: str | None,
+    group_id: str,
+    shot_ids: tuple[str, ...],
+    style_snapshot_id: str,
+    *,
+    fallback_index: int,
+) -> str:
+    if revision_id is None:
+        return f"{kind}:{group_id}:{fallback_index}"
+    identity = json.dumps(
+        [revision_id, group_id, list(shot_ids), style_snapshot_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    return f"{kind}:{revision_id}:{group_id}:{digest}"
 
 
 def _can_merge(

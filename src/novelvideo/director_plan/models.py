@@ -121,7 +121,7 @@ class StyleSnapshot(FrozenModel):
     projections: StyleProjections
 
 
-class GenerationBatch(FrozenModel):
+class GenerationBatchPlan(FrozenModel):
     id: str
     group_id: str
     shot_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
@@ -132,7 +132,7 @@ class GenerationBatch(FrozenModel):
     style_snapshot_id: str
 
 
-class VideoSegment(FrozenModel):
+class VideoSegmentPlan(FrozenModel):
     id: str
     group_id: str
     shot_ids: tuple[str, ...] = Field(min_length=1)
@@ -140,6 +140,14 @@ class VideoSegment(FrozenModel):
     continuity_reason: str
     audio_mode: Literal["project_default", "external_tts", "h3_original"]
     style_snapshot_id: str
+
+
+class ProductionPlan(FrozenModel):
+    revision_id: str
+    episode: int = Field(gt=0)
+    generation_batches: tuple[GenerationBatchPlan, ...] = ()
+    video_segments: tuple[VideoSegmentPlan, ...] = ()
+    production_plan_hash: str
 
 
 class ShotPlan(FrozenModel):
