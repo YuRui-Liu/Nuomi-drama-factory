@@ -105,6 +105,22 @@ class AssetMigrationReport(FrozenModel):
         return _thaw_json_value(items)
 
 
+class StyleProjections(FrozenModel):
+    director: str
+    image: str
+    video: str
+    panel_tag: str
+
+
+class StyleSnapshot(FrozenModel):
+    snapshot_id: str
+    style_id: str
+    style_version: str
+    catalog_hash: str
+    style_hash: str
+    projections: StyleProjections
+
+
 class ShotPlan(FrozenModel):
     id: str
     source_span_ids: tuple[str, ...]

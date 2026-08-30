@@ -41,9 +41,13 @@ class StyleService:
 
     # 预设文件目录
     PRESETS_DIR = Path(__file__).parent.parent / "styles" / "presets"
+    EXTENSION_CATALOG_PATH = (
+        Path(__file__).parent.parent / "extension_styles" / "catalog.json"
+    )
 
     # 预设风格缓存（避免重复读取文件）
     _preset_cache: dict[str, StyleConfig] = {}
+    _extension_cache = None
     STYLE_FAMILY_LABELS = {
         "live_action": "真人",
         "animation": "动画",
@@ -230,6 +234,118 @@ class StyleService:
             return None
 
     @classmethod
+    def _extension_catalog(cls):
+        from novelvideo.extension_styles import load_catalog
+
+        if cls._extension_cache is None:
+            cls._extension_cache = load_catalog(cls.EXTENSION_CATALOG_PATH)
+        return cls._extension_cache
+
+    @classmethod
+    def get_extension_style(cls, style_id: str):
+        return next(
+            (style for style in cls._extension_catalog() if style.id == style_id),
+            None,
+        )
+
+    @classmethod
+    def _extension_as_config(cls, style_id: str) -> Optional[StyleConfig]:
+        from novelvideo.extension_styles import compile_prompt_fragment
+
+        style = cls.get_extension_style(style_id)
+        if style is None:
+            return None
+        image_fragments = {
+            key: style.prompt_fragment[key]
+            for key in ("medium", "rendering", "lighting", "color", "camera")
+        }
+        return StyleConfig(
+            id=style.id,
+            name=style.name,
+            label=style.name,
+            style_instructions=compile_prompt_fragment(
+                {**image_fragments, "constraints": ()}
+            ),
+            avoid_instructions=", ".join(style.prompt_fragment["constraints"]),
+            style_tag=", ".join(
+                phrases[0]
+                for key in style.prompt_fragment
+                if (phrases := style.prompt_fragment[key])
+            ),
+            style_family=(
+                "live_action" if style.category == "realistic" else "animation"
+            ),
+            animation_subtype=("3d" if style.category == "3d" else "2d"),
+            is_preset=True,
+        )
+
+    @classmethod
+    def projection_sources(
+        cls,
+        style_id: str,
+        *,
+        username: str | None = None,
+        project: str | None = None,
+        project_dir: str | Path | None = None,
+    ):
+        from novelvideo.extension_styles.schema import FRAGMENT_KEYS
+        from novelvideo.styles.resolver import ProjectionStyle
+
+        sources = list(cls._extension_catalog())
+        if any(style.id == style_id for style in sources):
+            return tuple(sources)
+        config = cls.get_style(
+            style_id,
+            username=username,
+            project=project,
+            project_dir=project_dir,
+        )
+        if config is None:
+            return tuple(sources)
+        fragments = {key: () for key in FRAGMENT_KEYS}
+        fragments["medium"] = tuple(
+            item.strip()
+            for item in config.style_instructions.split(",")
+            if item.strip()
+        )
+        fragments["constraints"] = tuple(
+            item.strip()
+            for item in config.avoid_instructions.split(",")
+            if item.strip()
+        )
+        sources.append(
+            ProjectionStyle(
+                id=config.id,
+                version="1",
+                prompt_fragment=fragments,
+                panel_tag=config.style_tag,
+            )
+        )
+        return tuple(sources)
+
+    @classmethod
+    def resolve_style_snapshot(
+        cls,
+        project_style: str,
+        override: str | None = None,
+        *,
+        username: str | None = None,
+        project: str | None = None,
+        project_dir: str | Path | None = None,
+    ):
+        from novelvideo.styles.resolver import StyleResolver
+
+        effective_id = override or project_style
+        return StyleResolver(
+            cls.projection_sources(
+                effective_id,
+                username=username,
+                project=project,
+                project_dir=project_dir,
+            )
+        ).resolve(project_style, override)
+
+    @classmethod
     def get_custom_style(
         cls,
         style_id: str,
@@ -384,6 +500,10 @@ class StyleService:
         if preset:
             return preset
 
+        extension = cls._extension_as_config(style_id)
+        if extension:
+            return extension
+
         return None
 
     @classmethod
@@ -453,6 +573,26 @@ class StyleService:
 
         # 系统预设
         styles.extend(cls.list_preset_styles())
+
+        for style in cls._extension_catalog():
+            styles.append(
+                {
+                    "id": style.id,
+                    "name": style.name,
+                    "label": style.name,
+                    "type": "extension",
+                    "category": style.category,
+                    "preview_url": style.preview_asset,
+                    "style_family": (
+                        "live_action"
+                        if style.category == "realistic"
+                        else "animation"
+                    ),
+                    "animation_subtype": (
+                        "3d" if style.category == "3d" else "2d"
+                    ),
+                }
+            )
 
         # 自定义风格
         for style_id in cls.list_custom_styles(username=username, project=project, project_dir=project_dir):
@@ -602,6 +742,14 @@ class StyleService:
     def clear_cache(cls):
         """清除预设缓存（用于热重载）。"""
         cls._preset_cache.clear()
+        cls._extension_cache = None
+
+    @classmethod
+    def is_read_only_style(cls, style_id: str) -> bool:
+        return (
+            cls.get_preset(style_id) is not None
+            or cls.get_extension_style(style_id) is not None
+        )
 
     @classmethod
     def get_legacy_style_preset(

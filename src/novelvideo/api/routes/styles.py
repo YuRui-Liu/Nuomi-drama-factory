@@ -72,6 +72,35 @@ async def get_style(
     return {"ok": True, "data": payload}
 
 
+@router.get("/styles/{style_id}/snapshot-preview")
+async def get_style_snapshot_preview(
+    style_id: str,
+    project: str | None = Query(None, description="项目名"),
+    user: dict = Depends(get_api_user),
+):
+    """Return purpose-specific projections without internal catalog metadata."""
+    from novelvideo.services.style_service import StyleService
+
+    username = user["username"]
+    project_name = project
+    project_dir = None
+    if project:
+        resolved = await resolve_project_scope(project, user, required_role="viewer")
+        username = resolved.username
+        project_name = resolved.project_name
+        project_dir = resolved.project_dir
+    try:
+        snapshot = StyleService.resolve_style_snapshot(
+            style_id,
+            username=username,
+            project=project_name,
+            project_dir=project_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "data": snapshot.model_dump(mode="json")}
+
+
 @router.get("/styles/{style_id}/preview")
 async def get_style_preview(
     style_id: str,
@@ -129,7 +158,7 @@ async def create_style(body: dict, user: dict = Depends(get_api_user)):
     resolved = await resolve_project_scope(project, user, required_role="editor")
 
     # 检查是否与预设冲突
-    if StyleService.get_preset(style_id):
+    if StyleService.is_read_only_style(style_id):
         return {"ok": False, "error": f"Cannot override preset style '{style_id}'"}
 
     try:
@@ -175,7 +204,7 @@ async def delete_style(
     from novelvideo.services.style_service import StyleService
 
     # 不允许删除预设
-    if StyleService.get_preset(style_id):
+    if StyleService.is_read_only_style(style_id):
         return {"ok": False, "error": "Cannot delete preset styles"}
 
     if not project:

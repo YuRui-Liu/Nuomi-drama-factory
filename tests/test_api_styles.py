@@ -154,6 +154,31 @@ def _client():
     return TestClient(app)
 
 
+def test_snapshot_preview_returns_purpose_projections_without_internal_paths():
+    response = _client().get(
+        "/styles/drama_ext.japanese_cel_animation/snapshot-preview"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert set(payload["projections"]) == {"director", "image", "video", "panel_tag"}
+    assert payload["style_id"] == "drama_ext.japanese_cel_animation"
+    serialized = response.text.casefold()
+    assert "source_audit" not in serialized
+    assert "catalog.json" not in serialized
+    assert "preview_asset" not in serialized
+    assert "local_path" not in serialized
+
+
+def test_style_catalog_keeps_six_presets_and_eighteen_extensions():
+    from novelvideo.services.style_service import StyleService
+
+    styles = StyleService.list_all_styles()
+
+    assert len([style for style in styles if style["type"] == "preset"]) == 6
+    assert len([style for style in styles if style["type"] == "extension"]) == 18
+
+
 def test_style_preview_get_returns_image_without_generation():
     response = _client().get("/styles/anime/preview")
 

@@ -126,6 +126,14 @@ def _deep_freeze(value: Any) -> Any:
     raise ValueError("source only supports JSON-compatible values")
 
 
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_deep_thaw(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class ExtensionStyle:
     id: str
@@ -137,6 +145,22 @@ class ExtensionStyle:
     preview_asset: str
     source: Mapping[str, Any]
     version: str
+
+    def projection_input(self) -> dict[str, Any]:
+        """Return a detached, deterministic input suitable for projection."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "category": self.category,
+            "summary": self.summary,
+            "prompt_fragment": {
+                key: list(self.prompt_fragment[key]) for key in FRAGMENT_KEYS
+            },
+            "use_cases": list(self.use_cases),
+            "preview_asset": self.preview_asset,
+            "source": _deep_thaw(self.source),
+            "version": self.version,
+        }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ExtensionStyle":
