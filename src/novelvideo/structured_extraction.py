@@ -153,7 +153,7 @@ def merge_character_candidates(
 def _create_agent(agent: Any = None) -> Any:
     if agent is not None:
         return agent
-    from pydantic_ai import Agent
+    from pydantic_ai import Agent, PromptedOutput
     from novelvideo.config import (
         get_newapi_text_pydantic_model,
         get_newapi_text_pydantic_model_settings,
@@ -167,7 +167,9 @@ def _create_agent(agent: Any = None) -> Any:
         model_settings=get_newapi_text_pydantic_model_settings(
             "CHARACTER_BUILD_THINKING_LEVEL", "low"
         ),
-        output_type=ChunkCharacterOutput,
+        # DeepSeek thinking models reject native tool output because it adds
+        # tool_choice. PromptedOutput preserves typed validation without tools.
+        output_type=PromptedOutput(ChunkCharacterOutput),
         name="Structured Character Extractor",
     )
 
