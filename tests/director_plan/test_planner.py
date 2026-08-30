@@ -158,7 +158,9 @@ async def test_planner_parses_structured_outputs() -> None:
     assert len(agent.calls) == 2
 
 
-def test_default_planner_uses_prompted_output_without_tool_choice(monkeypatch) -> None:
+def test_default_planner_uses_one_resolved_model_for_transport_and_audit(
+    monkeypatch,
+) -> None:
     captured, model = {}, object()
 
     class CapturingAgent:
@@ -167,15 +169,27 @@ def test_default_planner_uses_prompted_output_without_tool_choice(monkeypatch) -
 
     monkeypatch.setattr(planner_module, "Agent", CapturingAgent)
     monkeypatch.setattr(
-        planner_module, "get_newapi_text_pydantic_model", lambda env, default: model
+        planner_module,
+        "load_text_runtime_settings",
+        lambda: SimpleNamespace(model="configured-director-model"),
     )
+
+    def capture_model(env, default, *, model_name_override=None):
+        captured["model_env"] = env
+        captured["model_name_override"] = model_name_override
+        return model
+
+    monkeypatch.setattr(planner_module, "get_newapi_text_pydantic_model", capture_model)
     monkeypatch.setattr(
         planner_module,
         "get_newapi_text_pydantic_model_settings",
         lambda env, default: {"openai_reasoning_effort": default},
     )
-    DirectorPlanner()
+    planner = DirectorPlanner()
     assert captured["model"] is model
+    assert captured["model_env"] == "DIRECTOR_PLAN_MODEL"
+    assert captured["model_name_override"] == "configured-director-model"
+    assert planner.model_name == "configured-director-model"
     assert isinstance(captured["output_type"], PromptedOutput)
     assert captured["output_type"].outputs is DirectorPlanDraft
     assert captured["retries"] == {"tools": 0, "output": 2}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .models import (
@@ -23,51 +24,91 @@ class DirectorPlanService:
         self._store = store
         self._planner = planner
 
-    async def create_draft(self, input: DirectorPlanInput) -> DirectorPlanRevision:
+    async def create_draft(
+        self,
+        input: DirectorPlanInput,
+        *,
+        on_stage: Callable[[str], None] | None = None,
+    ) -> DirectorPlanRevision:
+        planner_model = str(getattr(self._planner, "model_name", "") or "").strip()
+        if planner_model:
+            input = input.model_copy(update={"director_model": planner_model})
         validating: DirectorPlanRevision | None = None
         try:
-            draft = DirectorPlanDraft.model_validate(
-                await self._planner.plan_episode(input)
-            )
-            validating = self._make_revision(input, draft.groups).model_copy(
-                update={"status": "validating"}
-            )
-            self._store.save(validating)
-
-            groups = validating.groups
-            report = validate_director_plan(validating, input.source_spans)
-            for group_id in self._failed_group_ids(groups, report):
-                for _attempt in range(2):
-                    index = next(
-                        (i for i, group in enumerate(groups) if group.id == group_id),
-                        None,
-                    )
-                    if index is None or not self._group_has_errors(index, report):
-                        break
-                    repair_input = self._repair_input(input, groups, index, report)
-                    replacement = await self._planner.repair_group(repair_input)
-                    if replacement.id != group_id:
-                        raise ValueError(
-                            "group repair cannot replace a different group id"
-                        )
-                    groups = groups[:index] + (replacement,) + groups[index + 1 :]
-                    candidate = validating.model_copy(update={"groups": groups})
-                    report = validate_director_plan(candidate, input.source_spans)
-
-            final_status = "review_required" if report.passed else "failed"
-            terminal = self._make_revision(
-                input, groups, parent_revision_id=validating.revision_id
-            ).model_copy(update={"status": final_status, "validation_report": report})
-            self._store.save(terminal)
-            return terminal
+            raw_draft = await self._planner.plan_episode(input)
         except Exception as exc:
-            if isinstance(exc, DirectorPlanPlanningError):
-                raise
-            failed = self._failed_revision(input, validating, exc)
-            self._store.save(failed)
-            raise DirectorPlanPlanningError(
-                "director_plan_provider_error", str(exc)
-            ) from exc
+            self._raise_planning_error(
+                input, None, "director_plan_provider_error", "planner", exc
+            )
+        try:
+            draft = DirectorPlanDraft.model_validate(raw_draft)
+        except Exception as exc:
+            self._raise_planning_error(
+                input, None, "director_plan_contract_error", "planner.output", exc
+            )
+        if on_stage is not None:
+            on_stage("episode_planned")
+
+        validating = self._make_revision(input, draft.groups).model_copy(
+            update={"status": "validating"}
+        )
+        self._store.save(validating)
+
+        groups = validating.groups
+        try:
+            report = validate_director_plan(validating, input.source_spans)
+        except Exception as exc:
+            self._raise_planning_error(
+                input, validating, "director_plan_validation_error", "validation", exc
+            )
+        for group_id in self._failed_group_ids(groups, report):
+            for _attempt in range(2):
+                index = next(
+                    (i for i, group in enumerate(groups) if group.id == group_id),
+                    None,
+                )
+                if index is None or not self._group_has_errors(index, report):
+                    break
+                repair_input = self._repair_input(input, groups, index, report)
+                try:
+                    replacement = await self._planner.repair_group(repair_input)
+                except Exception as exc:
+                    self._raise_planning_error(
+                        input,
+                        validating,
+                        "director_plan_provider_error",
+                        f"groups.{index}.repair",
+                        exc,
+                    )
+                if replacement.id != group_id:
+                    self._raise_planning_error(
+                        input,
+                        validating,
+                        "director_plan_contract_error",
+                        f"groups.{index}.repair",
+                        ValueError("group repair cannot replace a different group id"),
+                    )
+                groups = groups[:index] + (replacement,) + groups[index + 1 :]
+                candidate = validating.model_copy(update={"groups": groups})
+                try:
+                    report = validate_director_plan(candidate, input.source_spans)
+                except Exception as exc:
+                    self._raise_planning_error(
+                        input,
+                        validating,
+                        "director_plan_validation_error",
+                        "validation",
+                        exc,
+                    )
+
+        if on_stage is not None:
+            on_stage("validated")
+        final_status = "review_required" if report.passed else "failed"
+        terminal = self._make_revision(
+            input, groups, parent_revision_id=validating.revision_id
+        ).model_copy(update={"status": final_status, "validation_report": report})
+        self._store.save(terminal)
+        return terminal
 
     @staticmethod
     def _make_revision(
@@ -86,18 +127,20 @@ class DirectorPlanService:
             parent_revision_id=parent_revision_id,
         )
 
-    def _failed_revision(
+    def _raise_planning_error(
         self,
         input: DirectorPlanInput,
         validating: DirectorPlanRevision | None,
+        code: str,
+        location: str,
         exc: Exception,
-    ) -> DirectorPlanRevision:
+    ) -> None:
         issue = ValidationIssue(
-            code="director_plan_provider_error",
+            code=code,
             message=str(exc),
-            location="planner",
+            location=location,
         )
-        return self._make_revision(
+        failed = self._make_revision(
             input,
             validating.groups if validating is not None else (),
             parent_revision_id=(
@@ -109,6 +152,12 @@ class DirectorPlanService:
                 "validation_report": ValidationReport(issues=(issue,)),
             }
         )
+        error = DirectorPlanPlanningError(code, str(exc))
+        try:
+            self._store.save(failed)
+        except Exception as storage_error:
+            error.add_note(f"failed to persist failure revision: {storage_error}")
+        raise error from exc
 
     @staticmethod
     def _failed_group_ids(

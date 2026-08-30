@@ -25,8 +25,13 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
     )
 
     class Service:
-        async def create_draft(self, value):
+        async def create_draft(self, value, *, on_stage):
             assert value is input_value
+            assert progress_events == [(0.05, "M1 source_locked")]
+            on_stage("episode_planned")
+            assert progress_events[-1] == (0.55, "M1 episode_planned")
+            on_stage("validated")
+            assert progress_events[-1] == (0.8, "M1 validated")
             return revision
 
     monkeypatch.setattr(
@@ -78,7 +83,9 @@ async def test_director_plan_runner_enforces_180_second_timeout(monkeypatch):
     seen: dict[str, float] = {}
 
     class Service:
-        async def create_draft(self, _value):
+        async def create_draft(self, _value, *, on_stage):
+            on_stage("episode_planned")
+            on_stage("validated")
             return SimpleNamespace(
                 revision_id="r",
                 status="review_required",
@@ -119,7 +126,7 @@ async def test_director_plan_runner_exposes_structured_failure_without_secrets(m
     from novelvideo.task_backend.runners import director_plan
 
     class Service:
-        async def create_draft(self, _value):
+        async def create_draft(self, _value, *, on_stage):
             error = RuntimeError("provider rejected sk-live-secret")
             error.code = "director_plan_provider_error"
             raise error

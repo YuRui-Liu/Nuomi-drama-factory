@@ -342,7 +342,7 @@ def _project_task_failure_for_exception(exc: BaseException) -> tuple[str, dict[s
 
     structured_error_code = getattr(exc, "error_code", None)
     if isinstance(structured_error_code, str) and re.fullmatch(
-        r"[A-Z][A-Z0-9_]{2,63}", structured_error_code
+        r"[A-Za-z][A-Za-z0-9_]{2,63}", structured_error_code
     ):
         payload: dict[str, Any] = {"error_code": structured_error_code}
         validation_report = getattr(exc, "validation_report", None)

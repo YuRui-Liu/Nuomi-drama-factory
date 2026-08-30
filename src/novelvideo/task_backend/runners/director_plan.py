@@ -164,7 +164,13 @@ async def _run_director_plan(
     service = _build_director_plan_service(ctx)
     try:
         revision = await asyncio.wait_for(
-            service.create_draft(input_value),
+            service.create_draft(
+                input_value,
+                on_stage=lambda stage: progress(
+                    0.55 if stage == "episode_planned" else 0.8,
+                    f"M1 {stage}",
+                ),
+            ),
             timeout=DIRECTOR_PLAN_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError as exc:
@@ -174,9 +180,7 @@ async def _run_director_plan(
     except Exception as exc:
         code = str(getattr(exc, "code", "director_plan_failed"))
         raise DirectorPlanTaskError(code) from exc
-    progress(0.55, "M1 episode_planned")
     report = _validation_report(revision)
-    progress(0.8, "M1 validated")
     if not bool(report.get("passed")) or str(revision.status) != "review_required":
         raise DirectorPlanTaskError(
             "DIRECTOR_PLAN_VALIDATION_FAILED", validation_report=report

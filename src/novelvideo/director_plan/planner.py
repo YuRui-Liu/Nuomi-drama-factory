@@ -8,6 +8,7 @@ from pydantic_ai import Agent, PromptedOutput
 from novelvideo.config import (
     get_newapi_text_pydantic_model,
     get_newapi_text_pydantic_model_settings,
+    load_text_runtime_settings,
 )
 
 from .models import NarrativeGroupPlan, SourceSpan
@@ -45,8 +46,17 @@ class GroupRepairInput(_FrozenModel):
 
 class DirectorPlanner:
     def __init__(self, agent: Any | None = None) -> None:
+        self.model_name = (
+            str(load_text_runtime_settings().model).strip()
+            if agent is None
+            else str(getattr(agent, "model_name", "") or "").strip()
+        ) or "deepseek-v4-flash"
         self._agent = agent or Agent(
-            get_newapi_text_pydantic_model("DIRECTOR_PLAN_MODEL", "deepseek-v4-flash"),
+            get_newapi_text_pydantic_model(
+                "DIRECTOR_PLAN_MODEL",
+                "deepseek-v4-flash",
+                model_name_override=self.model_name,
+            ),
             output_type=PromptedOutput(DirectorPlanDraft),
             retries={"tools": 0, "output": 2},
             model_settings=get_newapi_text_pydantic_model_settings(

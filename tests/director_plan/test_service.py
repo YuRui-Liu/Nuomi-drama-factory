@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan, SourceSpan
 from novelvideo.director_plan.planner import DirectorPlanDraft, DirectorPlanInput
@@ -69,6 +70,47 @@ class FakePlanner:
     async def repair_group(self, value):
         self.repair_calls.append(value)
         return self.repairs.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_service_uses_planner_resolved_model_for_prompt_and_revision(tmp_path) -> None:
+    planned = group("g1", 1, "s1")
+
+    class AuditedPlanner(FakePlanner):
+        model_name = "configured-director-model"
+
+        async def plan_episode(self, value):
+            assert value.director_model == self.model_name
+            return await super().plan_episode(value)
+
+    planner = AuditedPlanner(DirectorPlanDraft(groups=(planned,)), [])
+    value = episode().model_copy(
+        update={
+            "source_spans": (span("s1", 1),),
+            "director_model": "stale-default",
+        }
+    )
+
+    result = await DirectorPlanService(DirectorPlanStore(tmp_path), planner).create_draft(
+        value
+    )
+
+    assert result.director_model == "configured-director-model"
+
+
+@pytest.mark.asyncio
+async def test_service_reports_planning_and_validation_at_real_boundaries(tmp_path) -> None:
+    events: list[str] = []
+    planned = group("g1", 1, "s1")
+    planner = FakePlanner(DirectorPlanDraft(groups=(planned,)), [])
+
+    result = await DirectorPlanService(DirectorPlanStore(tmp_path), planner).create_draft(
+        episode().model_copy(update={"source_spans": (span("s1", 1),)}),
+        on_stage=events.append,
+    )
+
+    assert result.status == "review_required"
+    assert events == ["episode_planned", "validated"]
 
 
 @pytest.mark.asyncio
@@ -176,3 +218,45 @@ async def test_service_saves_failed_revision_and_codes_provider_errors(
         }
     ]
     assert store.load_active(1) is None
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_invalid_provider_output_as_contract_error(
+    tmp_path,
+) -> None:
+    class InvalidPlanner:
+        async def plan_episode(self, value):
+            return {"groups": "not-a-list"}
+
+    store = DirectorPlanStore(tmp_path)
+    with pytest.raises(DirectorPlanPlanningError) as error:
+        await DirectorPlanService(store, InvalidPlanner()).create_draft(episode())
+
+    assert error.value.code == "director_plan_contract_error"
+    assert isinstance(error.value.__cause__, ValidationError)
+    assert store.list(1)[0].validation_report.issues[0].code == (
+        "director_plan_contract_error"
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_does_not_retry_or_mask_storage_failure() -> None:
+    class FailingStore:
+        def __init__(self):
+            self.calls = 0
+
+        def save(self, revision):
+            self.calls += 1
+            raise OSError("disk unavailable")
+
+    store = FailingStore()
+    planner = FakePlanner(
+        DirectorPlanDraft(groups=(group("g1", 1, "s1"),)), []
+    )
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        await DirectorPlanService(store, planner).create_draft(
+            episode().model_copy(update={"source_spans": (span("s1", 1),)})
+        )
+
+    assert store.calls == 1
