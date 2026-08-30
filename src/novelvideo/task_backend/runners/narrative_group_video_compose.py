@@ -85,6 +85,15 @@ def build_ffmpeg_filter_complex(
     audio_labels: list[str] = []
     for index, visual_start in enumerate(visual_starts):
         incoming = plan.transitions[index - 1] if index else None
+        outgoing = plan.transitions[index] if index < len(plan.transitions) else None
+        main_source = f"{index}:a"
+        tail_source = main_source
+        if outgoing is not None and outgoing.audio == "l_cut":
+            main_source = f"a{index}-main"
+            tail_source = f"a{index}-tail"
+            filters.append(
+                f"[{index}:a]asplit=2[{main_source}][{tail_source}]"
+            )
         lead = (
             incoming.audio_ms / 1000
             if incoming is not None and incoming.audio == "j_cut"
@@ -92,21 +101,19 @@ def build_ffmpeg_filter_complex(
         )
         label = f"j{index}" if lead else f"a{index}"
         delay_ms = max(0, round((visual_start - lead) * 1000))
-        filters.append(f"[{index}:a]adelay={delay_ms}|{delay_ms}[{label}]")
+        filters.append(f"[{main_source}]adelay={delay_ms}|{delay_ms}[{label}]")
         audio_labels.append(label)
 
-        if index < len(plan.transitions):
-            outgoing = plan.transitions[index]
-            if outgoing.audio == "l_cut":
-                tail = outgoing.audio_ms / 1000
-                tail_start = max(0.0, durations[index] - tail)
-                boundary_ms = round(visual_starts[index + 1] * 1000)
-                tail_label = f"l{index + 1}"
-                filters.append(
-                    f"[{index}:a]atrim=start={tail_start:.6f},asetpts=PTS-STARTPTS,"
-                    f"adelay={boundary_ms}|{boundary_ms}[{tail_label}]"
-                )
-                audio_labels.append(tail_label)
+        if outgoing is not None and outgoing.audio == "l_cut":
+            tail = outgoing.audio_ms / 1000
+            tail_start = max(0.0, durations[index] - tail)
+            boundary_ms = round(visual_starts[index + 1] * 1000)
+            tail_label = f"l{index + 1}"
+            filters.append(
+                f"[{tail_source}]atrim=start={tail_start:.6f},asetpts=PTS-STARTPTS,"
+                f"adelay={boundary_ms}|{boundary_ms}[{tail_label}]"
+            )
+            audio_labels.append(tail_label)
 
     mixed = "".join(f"[{label}]" for label in audio_labels)
     filters.extend((

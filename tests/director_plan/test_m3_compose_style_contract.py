@@ -37,11 +37,15 @@ def test_compose_filter_applies_directional_j_and_l_cuts() -> None:
 
     assert "xfade=transition=fade:duration=0.333333:offset=3.666667" in graph
     # J-cut: input 1 audio starts 300ms before its 3.666667s visual boundary.
-    assert "[1:a]adelay=3367|3367[j1]" in graph
+    assert "adelay=3367|3367[j1]" in graph
     # L-cut: the final 500ms of input 1 is replayed from the next 8.666667s boundary.
-    assert "[1:a]atrim=start=4.500000" in graph
+    assert "atrim=start=4.500000" in graph
     assert "adelay=8667|8667[l2]" in graph
     assert "acrossfade" not in graph
+    assert "[1:a]asplit=2[a1-main][a1-tail]" in graph
+    assert "[a1-main]adelay=3367|3367[j1]" in graph
+    assert "[a1-tail]atrim=start=4.500000" in graph
+    assert graph.count("[1:a]") == 1
 
 
 @pytest.mark.asyncio
