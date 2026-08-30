@@ -153,12 +153,20 @@ class DirectorPlanService:
         *,
         parent_revision_id: str | None = None,
     ) -> DirectorPlanRevision:
+        if input.project_style_snapshot is not None:
+            groups = tuple(
+                group.model_copy(
+                    update={"style_snapshot_id": input.project_style_snapshot_id}
+                )
+                for group in groups
+            )
         return DirectorPlanRevision.new(
             episode=input.episode,
             source_script_hash=input.source_script_hash,
             director_model=input.director_model,
             prompt_version=input.prompt_version,
             project_style_snapshot_id=input.project_style_snapshot_id,
+            project_style_snapshot=input.project_style_snapshot,
             groups=groups,
             parent_revision_id=parent_revision_id,
         )

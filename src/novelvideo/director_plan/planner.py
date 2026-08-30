@@ -11,7 +11,7 @@ from novelvideo.config import (
     load_text_runtime_settings,
 )
 
-from .models import NarrativeGroupPlan, SourceSpan
+from .models import NarrativeGroupPlan, SourceSpan, StyleSnapshot
 from .prompts import build_episode_prompt, build_group_repair_prompt
 
 
@@ -31,6 +31,7 @@ class DirectorPlanInput(_FrozenModel):
     aspect_ratio: str
     style_director: dict[str, Any]
     project_style_snapshot_id: str
+    project_style_snapshot: StyleSnapshot | None = None
     director_model: str = "deepseek-v4-flash"
     prompt_version: str = "director-plan-v2"
 

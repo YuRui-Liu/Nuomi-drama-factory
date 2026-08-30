@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
 
@@ -16,7 +16,11 @@ from novelvideo.media_capabilities.audio.stem_separator import (
 )
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
-    create_h3_prompt_optimizer,
+)
+from novelvideo.media_capabilities.video.h3_episode_pack import (
+    H3EpisodeInput,
+    H3EpisodeVideoSegment,
+    create_h3_episode_pack_optimizer,
 )
 from novelvideo.media_capabilities.video.h3_prompt_profile import (
     H3_PROMPT_PROFILE_ID,
@@ -322,9 +326,10 @@ async def _optimize_missing_prompts(
     max_parallel: int | None = None,
     evidence_by_segment: dict[str, dict[str, Any]] | None = None,
 ) -> list[H3DirectorSegment]:
-    limit = max_parallel or max(1, int(os.getenv("DRAMACLAW_H3_PROMPT_CONCURRENCY", "3")))
-    semaphore = asyncio.Semaphore(limit)
-    optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
+    del max_parallel
+    optimizer = create_h3_episode_pack_optimizer(
+        cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
+    )
     contexts = [
         _prompt_context(
             segment, beat,
@@ -337,40 +342,62 @@ async def _optimize_missing_prompts(
         for index, (segment, beat) in enumerate(zip(segments, beats, strict=True))
     ]
 
-    async def optimize(segment: H3DirectorSegment, context: H3PromptContext) -> H3DirectorSegment:
-        async with semaphore:
-            mode = _mode_for(segment)
-            try:
-                result = await optimizer.optimize_segment(segment, context, mode)
-            except H3PromptQualityError as exc:
-                if evidence_by_segment is not None:
-                    evidence_by_segment[segment.segment_id] = {
-                        "prompt_profile": {
-                            "id": H3_PROMPT_PROFILE_ID,
-                            "version": H3_PROMPT_PROFILE_VERSION,
-                            "compiler_version": H3_PROMPT_COMPILER_VERSION,
-                        },
-                        "quality_report": exc.report.model_dump(mode="json"),
-                        "input_summary": _input_summary(segment, context, mode),
-                        "_status": "quality_rejected",
-                    }
-                raise
-            if evidence_by_segment is not None:
-                evidence_by_segment[segment.segment_id] = {
-                    "director_plan": result.plan.model_dump(mode="json"),
-                    "prompt_profile": {
-                        "id": result.prompt_profile_id,
-                        "version": result.prompt_profile_version,
-                        "compiler_version": result.compiler_version,
-                    },
-                    "quality_report": result.quality_report.model_dump(mode="json"),
-                    "input_summary": _input_summary(segment, context, mode),
-                    "_final_prompt": result.prompt,
-                }
-            return segment.model_copy(update={"prompt": result.prompt})
-
-    # gather preserves source order even though the work is concurrent.
-    return list(await asyncio.gather(*(optimize(segment, context) for segment, context in zip(segments, contexts, strict=True))))
+    active = __import__(
+        "novelvideo.director_plan.store", fromlist=["DirectorPlanStore"]
+    ).DirectorPlanStore(project_dir).load_active(episode)
+    revision_id = str(getattr(active, "revision_id", "") or f"episode:{episode}")
+    snapshot = getattr(active, "project_style_snapshot", None)
+    style_hash = str(getattr(snapshot, "style_hash", "") or "legacy-style")
+    style_video = {
+        "projection": str(
+            getattr(getattr(snapshot, "projections", None), "video", "")
+        )
+    }
+    entries = tuple(
+        H3EpisodeVideoSegment(
+            segment_id=segment.segment_id,
+            group_id=segment.segment_id.split(":")[1] if ":" in segment.segment_id else "group",
+            shot_ids=tuple(segment.segment_id.split("--")),
+            duration_seconds=segment.duration_seconds,
+            style_snapshot_id=str(
+                getattr(snapshot, "snapshot_id", "") or "legacy-style"
+            ),
+            source_segment=segment,
+            context=context,
+            mode=_mode_for(segment),
+            summary=context.visual_description or segment.prompt,
+            character_anchor=segment.speaker,
+            scene_anchor=context.director_context,
+        )
+        for segment, context in zip(segments, contexts, strict=True)
+    )
+    result = await optimizer.optimize(
+        H3EpisodeInput(
+            episode=episode,
+            director_revision_id=revision_id,
+            style_hash=style_hash,
+            style_video=style_video,
+            segments=entries,
+        )
+    )
+    by_id = {item.segment_id: item for item in result.segments}
+    optimized = []
+    for segment, context in zip(segments, contexts, strict=True):
+        item = by_id[segment.segment_id]
+        if evidence_by_segment is not None:
+            evidence_by_segment[segment.segment_id] = {
+                "director_plan": item.plan.model_dump(mode="json"),
+                "prompt_profile": {
+                    "id": H3_PROMPT_PROFILE_ID,
+                    "version": H3_PROMPT_PROFILE_VERSION,
+                    "compiler_version": item.compiler_version,
+                },
+                "quality_report": item.quality_report.model_dump(mode="json"),
+                "input_summary": _input_summary(segment, context, _mode_for(segment)),
+                "_final_prompt": item.prompt,
+            }
+        optimized.append(segment.model_copy(update={"prompt": item.prompt}))
+    return optimized
 
 
 def _input_summary(
@@ -832,16 +859,53 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             save_h3_director_manifest(manifest_path, manifest)
 
         try:
-            generated = await adapter.generate_narrative_group(
-                ctx,
-                NarrativeGroupVideoRequest(
-                    segments=tuple(segments),
-                    output_path=str(output),
-                    aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
-                    workflow_parameters=workflow_parameters,
-                    on_provider_submitted=on_provider_submitted,
-                ),
+            generated_segments = []
+            segment_errors = []
+            for segment_index, segment in enumerate(segments, start=1):
+                segment_output = output.with_name(
+                    f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
+                )
+                try:
+                    item = await adapter.generate_narrative_group(
+                        ctx,
+                        NarrativeGroupVideoRequest(
+                            segments=(segment,),
+                            output_path=str(segment_output),
+                            aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
+                            workflow_parameters=workflow_parameters,
+                            on_provider_submitted=on_provider_submitted,
+                        ),
+                    )
+                    generated_segments.append((segment_index, segment, item))
+                except Exception as exc:
+                    segment_errors.append(
+                        {"segment_id": segment.segment_id, "error": f"{type(exc).__name__}: {exc}"}
+                    )
+            if not generated_segments:
+                raise RuntimeError(f"all video segments failed: {segment_errors}")
+            from novelvideo.task_backend.runners.narrative_group_video_compose import (
+                SegmentCompositionItem,
+                build_local_composition_plan,
+                compose_local_segments,
             )
+
+            composition = build_local_composition_plan(
+                tuple(
+                    SegmentCompositionItem(
+                        group_ordinal=1,
+                        segment_ordinal=index,
+                        path=str(item.output_path),
+                        relation_to_previous="single" if index == 1 else "causal",
+                        has_leading_dialogue=bool(segment.dialogue.strip()),
+                    )
+                    for index, segment, item in generated_segments
+                )
+            )
+            if len(composition.paths) > 1:
+                compose_local_segments(composition, output)
+                generated = replace(generated_segments[-1][2], output_path=str(output))
+            else:
+                generated = generated_segments[0][2]
         except Exception:
             manifest = _manifest_with_status(
                 manifest,

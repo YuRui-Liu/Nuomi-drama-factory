@@ -156,6 +156,12 @@ class NarrativeGroupDialogueSourceRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class NarrativeGroupStyleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    style_id: str = Field(min_length=1)
+    action: Literal["restyle", "redirect"] = "restyle"
+
+
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = await make_sqlite_store_for_context(resolved.ctx)
@@ -900,6 +906,8 @@ async def _enqueue_group_video(
     request: NarrativeGroupVideoRequest,
     media_store: MediaCapabilityStore,
     credential_resolver: CredentialResolver,
+    *,
+    segment_id: str = "",
 ):
     registry = build_video_workflow_registry(media_store, credential_resolver)
     try:
@@ -963,6 +971,7 @@ async def _enqueue_group_video(
         "aspect_ratio": request.aspect_ratio,
         "workflow_parameters": workflow_parameters,
         "settings_revision": settings.revision,
+        "segment_id": segment_id,
     }
     try:
         queued = await get_task_backend().enqueue_project_task(
@@ -1124,6 +1133,73 @@ async def generate_video_group(
         media_store,
         credential_resolver,
     )
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/segments/{segment_id}/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_video_segment(
+    project: str, episode: int, group_id: str, segment_id: str,
+    request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
+    user: dict = Depends(get_api_user),
+):
+    _, groups, _ = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    if segment_id not in {str(item.get("id")) for item in group.video_segments}:
+        raise HTTPException(status_code=404, detail="Video segment not found")
+    return await _enqueue_group_video(
+        project, episode, group_id, user, request, media_store,
+        credential_resolver, segment_id=segment_id,
+    )
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/style"
+)
+async def put_group_style(
+    project: str, episode: int, group_id: str,
+    request: NarrativeGroupStyleRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    if not any(item.id == group_id for item in groups):
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    from novelvideo.services.style_service import StyleService
+
+    snapshot = StyleService.resolve_style_snapshot(
+        request.style_id, username=resolved.ctx.owner_username,
+        project=resolved.ctx.project_name, project_dir=resolved.project_dir,
+    )
+    store = DirectorPlanStore(resolved.project_dir)
+    active = store.load_active(episode)
+    if active is None:
+        raise HTTPException(status_code=409, detail="Active director plan required")
+    child = active.new(
+        episode=active.episode, source_script_hash=active.source_script_hash,
+        director_model=active.director_model, prompt_version=active.prompt_version,
+        project_style_snapshot_id=snapshot.snapshot_id,
+        project_style_snapshot=snapshot,
+        groups=tuple(
+            item.model_copy(update={"style_snapshot_id": snapshot.snapshot_id})
+            if item.id == group_id else item for item in active.groups
+        ),
+        parent_revision_id=active.revision_id,
+    ).model_copy(update={
+        "status": "review_required", "validation_report": active.validation_report
+    })
+    store.save(child)
+    if request.action == "restyle":
+        child = store.activate(episode, child.revision_id)
+    return {"ok": True, "data": {
+        "revision_id": child.revision_id, "status": child.status,
+        "action": request.action,
+        "style_snapshot": snapshot.model_dump(mode="json"),
+    }}
 
 
 @router.post(

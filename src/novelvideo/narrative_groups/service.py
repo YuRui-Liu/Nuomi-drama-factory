@@ -393,6 +393,11 @@ def _materialize_active_groups(
         previous_groups = load_groups(project_path, episode)
         previous_by_id = {group.id: group for group in previous_groups}
         projected = []
+        from novelvideo.director_plan.generation import (
+            plan_generation_batches,
+            plan_video_segments,
+        )
+
         for group in active.groups:
             shot_ids = tuple(shot.id for shot in group.shots)
             previous = previous_by_id.get(group.id)
@@ -413,6 +418,85 @@ def _materialize_active_groups(
                 objective=group.objective,
                 visible_turn=group.visible_turn,
                 director_revision_id=active.revision_id,
+                generation_batches=tuple(
+                    {
+                        **item.model_dump(mode="json"),
+                        "provider": "",
+                        "model": "",
+                        "requested_resolution": "",
+                        "actual_resolution": "",
+                        "style_hash": (
+                            active.project_style_snapshot.style_hash
+                            if active.project_style_snapshot is not None else ""
+                        ),
+                        "cleanup_reports": [],
+                    }
+                    for item in plan_generation_batches(group)
+                ),
+                video_segments=tuple(
+                    {
+                        **item.model_dump(mode="json"),
+                        "status": "pending",
+                        "error": "",
+                        "provider_task_id": None,
+                    }
+                    for item in plan_video_segments(group)
+                ),
+                effective_style_snapshot=(
+                    {
+                        **active.project_style_snapshot.model_dump(mode="json"),
+                        "source": "inherited",
+                    }
+                    if active.project_style_snapshot is not None
+                    else {
+                        "snapshot_id": group.style_snapshot_id,
+                        "source": "inherited",
+                    }
+                ),
+            )
+            generation_batches = plan_generation_batches(group)
+            video_segments = plan_video_segments(group)
+            base = replace(
+                base,
+                video_plan=VideoPlan(
+                    revision=1,
+                    source="recommended",
+                    units=tuple(
+                        VideoPlanUnit(
+                            id=segment.id,
+                            beat_ids=segment.shot_ids,
+                            mode="fl2va" if len(segment.shot_ids) > 1 else "i2va",
+                            duration_seconds=segment.duration_seconds,
+                            reason=segment.continuity_reason,
+                        )
+                        for segment in video_segments
+                    ),
+                    total_duration_seconds=sum(
+                        segment.duration_seconds for segment in video_segments
+                    ),
+                ),
+                stages={
+                    **base.stages,
+                    "render": replace(
+                        base.stages["render"],
+                        provider_parameters={
+                            "style_snapshot_id": group.style_snapshot_id,
+                            "generation_batches": [
+                                item.model_dump(mode="json")
+                                for item in generation_batches
+                            ],
+                        },
+                    ),
+                    "video": replace(
+                        base.stages["video"],
+                        provider_parameters={
+                            "style_snapshot_id": group.style_snapshot_id,
+                            "video_segments": [
+                                item.model_dump(mode="json") for item in video_segments
+                            ],
+                        },
+                    ),
+                },
             )
             if previous is not None and _same_projection_structure(previous, base):
                 base = replace(

@@ -120,14 +120,30 @@ async def _build_director_plan_input(
         raise DirectorPlanTaskError("EPISODE_SOURCE_NOT_FOUND")
     if int(source.source_revision) != source_revision:
         raise DirectorPlanTaskError("SOURCE_REVISION_CONFLICT")
+    from novelvideo.project_config import load_project_config_file_from_state_dir
+    from novelvideo.services.style_service import StyleService
+
+    config = load_project_config_file_from_state_dir(ctx.state_dir)
+    project_style = str(config.get("visual_style") or "chinese_period_drama")
+    snapshot = StyleService.resolve_style_snapshot(
+        project_style,
+        username=ctx.owner_username,
+        project=ctx.project_name,
+        project_dir=ctx.output_dir,
+    )
     return DirectorPlanInput(
         episode=episode,
         source_script_hash=str(source.content_hash),
         source_spans=_source_spans(episode, str(source.content)),
         relevant_bible={},
         aspect_ratio="9:16",
-        style_director={},
-        project_style_snapshot_id=f"source-revision:{source_revision}",
+        style_director={
+            "snapshot_id": snapshot.snapshot_id,
+            "style_hash": snapshot.style_hash,
+            "projection": snapshot.projections.director,
+        },
+        project_style_snapshot_id=snapshot.snapshot_id,
+        project_style_snapshot=snapshot,
     )
 
 

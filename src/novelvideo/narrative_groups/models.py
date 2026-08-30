@@ -182,6 +182,9 @@ class NarrativeGroup:
     objective: str = ""
     visible_turn: str = ""
     director_revision_id: str = ""
+    generation_batches: tuple[dict[str, Any], ...] = ()
+    video_segments: tuple[dict[str, Any], ...] = ()
+    effective_style_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @property
     def video_inputs(self) -> tuple[dict[str, Any], ...]:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,42 @@ class SegmentCompositionItem:
 class LocalCompositionPlan:
     paths: tuple[str, ...]
     transitions: tuple[H3TransitionRule, ...]
+
+
+def compose_local_segments(plan: LocalCompositionPlan, output_path: Path) -> Path:
+    """Compose provider segment files in the exact reviewed order."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = output_path.with_suffix(".composition.json")
+    manifest.write_text(
+        json.dumps(
+            {
+                "paths": list(plan.paths),
+                "transitions": [item.model_dump(mode="json") for item in plan.transitions],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    command = ["ffmpeg", "-y"]
+    for path in plan.paths:
+        command.extend(["-i", path])
+    inputs = "".join(f"[{index}:v][{index}:a]" for index in range(len(plan.paths)))
+    command.extend(
+        [
+            "-filter_complex",
+            f"{inputs}concat=n={len(plan.paths)}:v=1:a=1[outv][outa]",
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            str(output_path),
+        ]
+    )
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"local segment composition failed: {completed.stderr[-500:]}")
+    return output_path
 
 
 def build_local_composition_plan(
@@ -102,5 +140,6 @@ __all__ = [
     "LocalCompositionPlan",
     "SegmentCompositionItem",
     "build_local_composition_plan",
+    "compose_local_segments",
     "run_narrative_group_video_compose",
 ]

@@ -237,6 +237,7 @@ class DirectorPlanRevision(FrozenModel):
     director_model: str
     prompt_version: str
     project_style_snapshot_id: str
+    project_style_snapshot: StyleSnapshot | None = None
     edit_source: Literal["planner", "human"] = "planner"
     groups: tuple[NarrativeGroupPlan, ...]
     validation_report: ValidationReport = ValidationReport()
@@ -260,6 +261,7 @@ class DirectorPlanRevision(FrozenModel):
         director_model: str,
         prompt_version: str,
         project_style_snapshot_id: str,
+        project_style_snapshot: StyleSnapshot | None = None,
         groups: tuple[NarrativeGroupPlan, ...],
         parent_revision_id: str | None = None,
     ) -> Self:
@@ -272,6 +274,7 @@ class DirectorPlanRevision(FrozenModel):
             director_model=director_model,
             prompt_version=prompt_version,
             project_style_snapshot_id=project_style_snapshot_id,
+            project_style_snapshot=project_style_snapshot,
             groups=groups,
             created_at=datetime.now(timezone.utc),
         )
