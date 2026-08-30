@@ -111,6 +111,33 @@ async def test_service_repairs_at_most_twice_then_saves_failed(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_service_does_not_confuse_group_1_with_group_10(tmp_path) -> None:
+    spans = tuple(span(f"s{i}", i) for i in range(1, 12))
+    groups = tuple(
+        group(
+            f"g{i}",
+            i,
+            f"s{i}",
+            "" if i in {2, 11} else "goal",
+        )
+        for i in range(1, 12)
+    )
+    planner = FakePlanner(
+        DirectorPlanDraft(groups=groups),
+        [group("g2", 2, "s2", "fixed-2"), group("g11", 11, "s11", "fixed-11")],
+    )
+    store = DirectorPlanStore(tmp_path)
+
+    result = await DirectorPlanService(store, planner).create_draft(
+        episode().model_copy(update={"source_spans": spans})
+    )
+
+    assert [call.failed_group.id for call in planner.repair_calls] == ["g2", "g11"]
+    assert result.status == "review_required"
+    assert result.validation_report.passed is True
+
+
+@pytest.mark.asyncio
 async def test_service_saves_failed_revision_and_codes_provider_errors(
     tmp_path,
 ) -> None:
@@ -122,5 +149,16 @@ async def test_service_saves_failed_revision_and_codes_provider_errors(
     with pytest.raises(DirectorPlanPlanningError) as error:
         await DirectorPlanService(store, BrokenPlanner()).create_draft(episode())
     assert error.value.code == "director_plan_provider_error"
-    assert [item.status for item in store.list(1)] == ["failed"]
+    revisions = store.list(1)
+    assert [item.status for item in revisions] == ["failed"]
+    assert [
+        issue.model_dump(mode="json") for issue in revisions[0].validation_report.issues
+    ] == [
+        {
+            "code": "director_plan_provider_error",
+            "message": "provider unavailable",
+            "location": "planner",
+            "severity": "error",
+        }
+    ]
     assert store.load_active(1) is None

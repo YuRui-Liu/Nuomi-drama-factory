@@ -114,23 +114,28 @@ class DirectorPlanService:
     def _failed_group_ids(
         groups: tuple[NarrativeGroupPlan, ...], report: ValidationReport
     ) -> tuple[str, ...]:
-        ids: list[str] = []
-        for issue in report.issues:
-            parts = issue.location.split(".")
-            if len(parts) < 2 or parts[0] != "groups" or not parts[1].isdigit():
-                continue
-            index = int(parts[1])
-            if index < len(groups) and groups[index].id not in ids:
-                ids.append(groups[index].id)
-        return tuple(ids)
+        return tuple(
+            group.id
+            for index, group in enumerate(groups)
+            if any(
+                issue.severity == "error"
+                and DirectorPlanService._issue_matches_group(issue.location, index)
+                for issue in report.issues
+            )
+        )
 
     @staticmethod
     def _group_has_errors(index: int, report: ValidationReport) -> bool:
-        prefix = f"groups.{index}"
         return any(
-            issue.severity == "error" and issue.location.startswith(prefix)
+            issue.severity == "error"
+            and DirectorPlanService._issue_matches_group(issue.location, index)
             for issue in report.issues
         )
+
+    @staticmethod
+    def _issue_matches_group(location: str, index: int) -> bool:
+        prefix = f"groups.{index}"
+        return location == prefix or location.startswith(prefix + ".")
 
     @staticmethod
     def _repair_input(
@@ -151,7 +156,7 @@ class DirectorPlanService:
         issues = tuple(
             issue.model_dump(mode="json")
             for issue in report.issues
-            if issue.location.startswith(f"groups.{index}")
+            if DirectorPlanService._issue_matches_group(issue.location, index)
         )
         return GroupRepairInput(
             episode=input,

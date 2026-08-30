@@ -41,6 +41,9 @@ def build_episode_prompt(input: Any) -> str:
         "relevant_bible": input.relevant_bible,
         "aspect_ratio": input.aspect_ratio,
         "style_director": input.style_director,
+        "project_style_snapshot_id": input.project_style_snapshot_id,
+        "director_model": input.director_model,
+        "prompt_version": input.prompt_version,
     }
     return (
         _EPISODE_AUTHORITY.rstrip()
