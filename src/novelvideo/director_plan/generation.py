@@ -24,10 +24,20 @@ _LAYOUTS = {
 def plan_generation_batches(
     group: NarrativeGroupPlan,
     *,
-    revision_id: str | None = None,
+    revision_id: str,
+    style_snapshot_hash: str,
+    model: str = "gpt-image-2",
+    aspect_ratio: str = "9:16",
+    resolution: str = "2K",
+    reference_image_limit: int = 10,
+    retry_limit: int = 2,
 ) -> tuple[GenerationBatchPlan, ...]:
     """Plan image calls for one narrative group without blank cells."""
     style_snapshot_id = _require_style_snapshot(group)
+    style_snapshot_hash = _require_nonempty(
+        style_snapshot_hash, "style_snapshot_hash"
+    )
+    revision_id = _require_nonempty(revision_id, "revision_id")
     counts = (3, 2) if len(group.shots) == 5 else (len(group.shots),)
     batches: list[GenerationBatchPlan] = []
     offset = 0
@@ -42,7 +52,7 @@ def plan_generation_batches(
                     group.id,
                     tuple(shot.id for shot in shots),
                     style_snapshot_id,
-                    fallback_index=batch_index,
+                    style_snapshot_hash,
                 ),
                 group_id=group.id,
                 shot_ids=tuple(shot.id for shot in shots),
@@ -51,6 +61,12 @@ def plan_generation_batches(
                 columns=columns,
                 capacity=count,
                 style_snapshot_id=style_snapshot_id,
+                style_snapshot_hash=style_snapshot_hash,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                reference_image_limit=reference_image_limit,
+                retry_limit=retry_limit,
             )
         )
         offset += count
@@ -60,10 +76,15 @@ def plan_generation_batches(
 def plan_video_segments(
     group: NarrativeGroupPlan,
     *,
-    revision_id: str | None = None,
+    revision_id: str,
+    style_snapshot_hash: str,
 ) -> tuple[VideoSegmentPlan, ...]:
     """Plan independent video calls from shots belonging to one group."""
     style_snapshot_id = _require_style_snapshot(group)
+    style_snapshot_hash = _require_nonempty(
+        style_snapshot_hash, "style_snapshot_hash"
+    )
+    revision_id = _require_nonempty(revision_id, "revision_id")
     shot_groups: list[list[ShotPlan]] = []
     current: list[ShotPlan] = []
     for shot in group.shots:
@@ -86,7 +107,7 @@ def plan_video_segments(
                 group.id,
                 tuple(shot.id for shot in shots),
                 style_snapshot_id,
-                fallback_index=index,
+                style_snapshot_hash,
             ),
             group_id=group.id,
             shot_ids=tuple(shot.id for shot in shots),
@@ -96,29 +117,66 @@ def plan_video_segments(
             ),
             audio_mode="project_default",
             style_snapshot_id=style_snapshot_id,
+            style_snapshot_hash=style_snapshot_hash,
         )
-        for index, shots in enumerate(shot_groups, start=1)
+        for shots in shot_groups
     )
 
 
-def build_production_plan(revision: DirectorPlanRevision) -> ProductionPlan:
+def build_production_plan(
+    revision: DirectorPlanRevision,
+    *,
+    model: str = "gpt-image-2",
+    aspect_ratio: str = "9:16",
+    resolution: str = "2K",
+    reference_image_limit: int = 10,
+    retry_limit: int = 2,
+) -> ProductionPlan:
     """Derive the complete immutable production plan for one revision."""
     batches: list[GenerationBatchPlan] = []
     segments: list[VideoSegmentPlan] = []
+    snapshot = revision.project_style_snapshot
+    if snapshot is None:
+        raise ValueError("production plan requires project_style_snapshot")
+    if snapshot.snapshot_id != revision.project_style_snapshot_id:
+        raise ValueError("project style snapshot id does not match snapshot")
     for raw_group in revision.groups:
         group = raw_group
         if not (group.style_snapshot_id or "").strip():
             group = group.model_copy(
                 update={"style_snapshot_id": revision.project_style_snapshot_id}
             )
+        if group.style_snapshot_id != snapshot.snapshot_id:
+            raise ValueError("group style snapshot must match the revision snapshot")
         batches.extend(
-            plan_generation_batches(group, revision_id=revision.revision_id)
+            plan_generation_batches(
+                group,
+                revision_id=revision.revision_id,
+                style_snapshot_hash=snapshot.style_hash,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                reference_image_limit=reference_image_limit,
+                retry_limit=retry_limit,
+            )
         )
-        segments.extend(plan_video_segments(group, revision_id=revision.revision_id))
+        segments.extend(
+            plan_video_segments(
+                group,
+                revision_id=revision.revision_id,
+                style_snapshot_hash=snapshot.style_hash,
+            )
+        )
 
     payload = {
         "revision_id": revision.revision_id,
         "episode": revision.episode,
+        "style_snapshot_hash": snapshot.style_hash,
+        "model": model,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "reference_image_limit": reference_image_limit,
+        "retry_limit": retry_limit,
         "generation_batches": [item.model_dump(mode="json") for item in batches],
         "video_segments": [item.model_dump(mode="json") for item in segments],
     }
@@ -135,17 +193,20 @@ def build_production_plan(revision: DirectorPlanRevision) -> ProductionPlan:
 
 def _production_id(
     kind: str,
-    revision_id: str | None,
+    revision_id: str,
     group_id: str,
     shot_ids: tuple[str, ...],
     style_snapshot_id: str,
-    *,
-    fallback_index: int,
+    style_snapshot_hash: str,
 ) -> str:
-    if revision_id is None:
-        return f"{kind}:{group_id}:{fallback_index}"
     identity = json.dumps(
-        [revision_id, group_id, list(shot_ids), style_snapshot_id],
+        [
+            revision_id,
+            group_id,
+            list(shot_ids),
+            style_snapshot_id,
+            style_snapshot_hash,
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -174,3 +235,10 @@ def _require_style_snapshot(group: NarrativeGroupPlan) -> str:
     if not style_snapshot_id:
         raise ValueError("narrative group requires style_snapshot_id")
     return style_snapshot_id
+
+
+def _require_nonempty(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    return normalized

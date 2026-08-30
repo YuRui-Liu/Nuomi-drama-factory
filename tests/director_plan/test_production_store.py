@@ -35,6 +35,7 @@ def _plan(
                 columns=2,
                 capacity=2,
                 style_snapshot_id="style-1",
+                style_snapshot_hash="style-hash-1",
             ),
         ),
         video_segments=(
@@ -46,6 +47,7 @@ def _plan(
                 continuity_reason="single_shot",
                 audio_mode="project_default",
                 style_snapshot_id="style-1",
+                style_snapshot_hash="style-hash-1",
             ),
             VideoSegmentPlan(
                 id="segment-2",
@@ -55,8 +57,10 @@ def _plan(
                 continuity_reason="single_shot",
                 audio_mode="project_default",
                 style_snapshot_id="style-1",
+                style_snapshot_hash="style-hash-1",
             ),
         ),
+        style_snapshot_hash="style-hash-1",
         production_plan_hash=plan_hash,
     )
 
@@ -75,7 +79,11 @@ def _completed_segment(production_id: str, uri: str) -> VideoSegmentState:
 def test_initialize_persists_revision_scoped_schema_and_plan_hash(
     tmp_path: Path,
 ) -> None:
-    state = ProductionStore(tmp_path).initialize(_plan())
+    state = ProductionStore(tmp_path).initialize(
+        _plan(),
+        expected_revision_id="revision-1",
+        expected_plan_hash="plan-hash-1",
+    )
 
     path = (
         tmp_path
@@ -97,7 +105,11 @@ def test_atomic_save_failure_keeps_previous_state(
     import novelvideo.director_plan.production_store as production_store
 
     store = ProductionStore(tmp_path)
-    current = store.initialize(_plan())
+    current = store.initialize(
+        _plan(),
+        expected_revision_id="revision-1",
+        expected_plan_hash="plan-hash-1",
+    )
     path = store.path_for(1, "revision-1")
     original = path.read_bytes()
     updated = current.model_copy(
@@ -128,7 +140,11 @@ def test_atomic_save_failure_keeps_previous_state(
 
 def test_updating_one_segment_does_not_overwrite_its_sibling(tmp_path: Path) -> None:
     store = ProductionStore(tmp_path)
-    store.initialize(_plan())
+    store.initialize(
+        _plan(),
+        expected_revision_id="revision-1",
+        expected_plan_hash="plan-hash-1",
+    )
     first = store.update_video_segment(
         1,
         "revision-1",
@@ -163,7 +179,11 @@ def test_stale_revision_or_plan_cannot_mutate_active_revision(
     tmp_path: Path, expected_revision_id: str, expected_plan_hash: str
 ) -> None:
     store = ProductionStore(tmp_path)
-    store.initialize(_plan())
+    store.initialize(
+        _plan(),
+        expected_revision_id="revision-1",
+        expected_plan_hash="plan-hash-1",
+    )
 
     with pytest.raises(ProductionStateConflict):
         store.update_video_segment(
@@ -179,7 +199,11 @@ def test_stale_revision_or_plan_cannot_mutate_active_revision(
 def test_two_readers_with_same_cas_version_conflict(tmp_path: Path) -> None:
     first_store = ProductionStore(tmp_path)
     second_store = ProductionStore(tmp_path)
-    first_reader = first_store.initialize(_plan())
+    first_reader = first_store.initialize(
+        _plan(),
+        expected_revision_id="revision-1",
+        expected_plan_hash="plan-hash-1",
+    )
     second_reader = second_store.load(1, "revision-1")
 
     first_store.update_video_segment(
@@ -215,6 +239,30 @@ def test_reset_requires_exact_resolved_project_confirmation(tmp_path: Path) -> N
     assert director_data.is_dir()
 
 
+@pytest.mark.parametrize(
+    ("expected_revision_id", "expected_plan_hash"),
+    [("old-revision", "plan-hash-1"), ("revision-1", "old-plan-hash")],
+)
+def test_initialize_rejects_stale_expectations_before_writing(
+    tmp_path: Path, expected_revision_id: str, expected_plan_hash: str
+) -> None:
+    with pytest.raises(ProductionStateConflict):
+        ProductionStore(tmp_path).initialize(
+            _plan(),
+            expected_revision_id=expected_revision_id,
+            expected_plan_hash=expected_plan_hash,
+        )
+
+    assert not (tmp_path / "director_plans").exists()
+
+
+def test_load_missing_state_has_no_filesystem_side_effects(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        ProductionStore(tmp_path).load(1, "revision-1")
+
+    assert not (tmp_path / "director_plans").exists()
+
+
 def test_reset_deletes_only_director_and_legacy_sidecar_data(tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "director_plans").mkdir(parents=True)
@@ -231,3 +279,20 @@ def test_reset_deletes_only_director_and_legacy_sidecar_data(tmp_path: Path) -> 
     assert not (project / "director_plans").exists()
     assert not (project / ".narrative_groups").exists()
     assert keep.read_text(encoding="utf-8") == "keep"
+
+
+def test_reset_rejects_director_data_symlink_outside_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    outside.mkdir()
+    link = project / "director_plans"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="outside exact project"):
+        reset_test_director_data(project, confirmed_project_dir=project)
+
+    assert outside.is_dir()

@@ -8,6 +8,22 @@ from novelvideo.director_plan.generation import (
 from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan
 
 
+REVISION_ID = "revision-1"
+STYLE_HASH = "style-hash-1"
+
+
+def generation_batches(group: NarrativeGroupPlan):
+    return plan_generation_batches(
+        group, revision_id=REVISION_ID, style_snapshot_hash=STYLE_HASH
+    )
+
+
+def video_segments(group: NarrativeGroupPlan):
+    return plan_video_segments(
+        group, revision_id=REVISION_ID, style_snapshot_hash=STYLE_HASH
+    )
+
+
 def shot(index: int, **updates: object) -> ShotPlan:
     values: dict[str, object] = {
         "id": f"shot-{index}",
@@ -51,7 +67,7 @@ def group_with_shots(count: int, **shot_updates: object) -> NarrativeGroupPlan:
 def test_generation_batches_never_have_blank_cells(
     count: int, layouts: tuple[str, ...]
 ) -> None:
-    batches = plan_generation_batches(group_with_shots(count))
+    batches = generation_batches(group_with_shots(count))
 
     assert tuple(batch.layout for batch in batches) == layouts
     assert sum(len(batch.shot_ids) for batch in batches) == count
@@ -61,7 +77,7 @@ def test_generation_batches_never_have_blank_cells(
 
 
 def test_five_shots_use_three_plus_two_in_original_order() -> None:
-    batches = plan_generation_batches(group_with_shots(5))
+    batches = generation_batches(group_with_shots(5))
 
     assert [batch.shot_ids for batch in batches] == [
         ("shot-1", "shot-2", "shot-3"),
@@ -81,7 +97,7 @@ def test_video_segments_default_to_one_shot_and_merge_only_continuous_action() -
         }
     )
 
-    segments = plan_video_segments(group)
+    segments = video_segments(group)
 
     assert [segment.shot_ids for segment in segments] == [
         ("shot-1",),
@@ -117,17 +133,26 @@ def test_segment_merge_requires_same_subject_space_and_max_duration(
         }
     )
 
-    assert [segment.shot_ids for segment in plan_video_segments(group)] == [
+    assert [segment.shot_ids for segment in video_segments(group)] == [
         ("shot-1",),
         ("shot-2",),
     ]
 
 
 def test_generation_models_are_frozen() -> None:
-    batch = plan_generation_batches(group_with_shots(1))[0]
-    segment = plan_video_segments(group_with_shots(1))[0]
+    batch = generation_batches(group_with_shots(1))[0]
+    segment = video_segments(group_with_shots(1))[0]
 
     with pytest.raises(ValidationError, match="frozen"):
         batch.layout = "diptych"  # type: ignore[misc]
     with pytest.raises(ValidationError, match="frozen"):
         segment.duration_seconds = 9  # type: ignore[misc]
+
+
+def test_public_generation_api_requires_revision_and_style_hash() -> None:
+    group = group_with_shots(1)
+
+    with pytest.raises(TypeError):
+        plan_generation_batches(group)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        plan_video_segments(group)  # type: ignore[call-arg]

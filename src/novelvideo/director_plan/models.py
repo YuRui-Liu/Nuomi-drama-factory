@@ -130,6 +130,12 @@ class GenerationBatchPlan(FrozenModel):
     columns: int = Field(gt=0)
     capacity: int = Field(gt=0, le=4)
     style_snapshot_id: str
+    style_snapshot_hash: str = Field(min_length=1)
+    model: str = Field(default="gpt-image-2", min_length=1)
+    aspect_ratio: str = Field(default="9:16", pattern=r"^[1-9]\d*:[1-9]\d*$")
+    resolution: Literal["1K", "2K", "4K"] = "2K"
+    reference_image_limit: int = Field(default=10, ge=0, le=14)
+    retry_limit: int = Field(default=2, ge=0, le=10)
 
 
 class VideoSegmentPlan(FrozenModel):
@@ -140,11 +146,18 @@ class VideoSegmentPlan(FrozenModel):
     continuity_reason: str
     audio_mode: Literal["project_default", "external_tts", "h3_original"]
     style_snapshot_id: str
+    style_snapshot_hash: str = Field(min_length=1)
 
 
 class ProductionPlan(FrozenModel):
     revision_id: str
     episode: int = Field(gt=0)
+    style_snapshot_hash: str = Field(min_length=1)
+    model: str = Field(default="gpt-image-2", min_length=1)
+    aspect_ratio: str = Field(default="9:16", pattern=r"^[1-9]\d*:[1-9]\d*$")
+    resolution: Literal["1K", "2K", "4K"] = "2K"
+    reference_image_limit: int = Field(default=10, ge=0, le=14)
+    retry_limit: int = Field(default=2, ge=0, le=10)
     generation_batches: tuple[GenerationBatchPlan, ...] = ()
     video_segments: tuple[VideoSegmentPlan, ...] = ()
     production_plan_hash: str

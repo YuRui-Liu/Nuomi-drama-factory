@@ -70,15 +70,25 @@ class ProductionStore:
             raise ValueError("revision_id must stay inside the episode directory")
         return path
 
-    def initialize(self, plan: ProductionPlan) -> ProductionExecutionState:
+    def initialize(
+        self,
+        plan: ProductionPlan,
+        *,
+        expected_revision_id: str,
+        expected_plan_hash: str,
+    ) -> ProductionExecutionState:
+        if plan.revision_id != expected_revision_id:
+            raise ProductionStateConflict("target revision id does not match")
+        if plan.production_plan_hash != expected_plan_hash:
+            raise ProductionStateConflict("production plan hash does not match")
         with self._guard(plan.episode, plan.revision_id):
             path = self.path_for(plan.episode, plan.revision_id)
             if path.is_file():
                 current = self._read(path)
                 self._validate_identity(
                     current,
-                    expected_revision_id=plan.revision_id,
-                    expected_plan_hash=plan.production_plan_hash,
+                    expected_revision_id=expected_revision_id,
+                    expected_plan_hash=expected_plan_hash,
                 )
                 return current
             state = ProductionExecutionState.new(
@@ -95,11 +105,10 @@ class ProductionStore:
             return state
 
     def load(self, episode: int, revision_id: str) -> ProductionExecutionState:
-        with self._guard(episode, revision_id):
-            path = self.path_for(episode, revision_id)
-            if not path.is_file():
-                raise FileNotFoundError(path)
-            return self._read(path)
+        path = self.path_for(episode, revision_id)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return self._read(path)
 
     def save(
         self,
