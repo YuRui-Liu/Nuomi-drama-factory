@@ -107,7 +107,9 @@ def match_one(
     confidence: Literal["high", "medium", "low"] = (
         "high" if score >= 0.85 else "medium" if score >= 0.65 else "low"
     )
-    same_style = asset.style_hash == style_hash
+    asset_style = asset.style_hash.strip()
+    target_style = style_hash.strip()
+    same_style = bool(asset_style and target_style and asset_style == target_style)
     suggested: Literal["accepted", "review", "unmatched"] = (
         "unmatched"
         if confidence == "low"

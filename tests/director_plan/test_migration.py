@@ -121,6 +121,19 @@ def test_different_style_can_only_be_reference() -> None:
     assert item.decision == "review"
 
 
+def test_empty_style_hashes_never_enable_formal_reuse() -> None:
+    item = match_one(
+        _asset(style_hash=""),
+        _shot("new-shot"),
+        scene="走廊",
+        style_hash="",
+    )
+
+    assert item.confidence == "high"
+    assert item.reuse_mode == "reference_only"
+    assert item.decision != "accepted"
+
+
 def test_item_id_is_stable_and_manual_decision_is_immutable() -> None:
     item = match_one(
         _asset(), _shot("new-shot"), scene="走廊", style_hash="style-a"
