@@ -177,6 +177,11 @@ class NarrativeGroup:
     video_settings: VideoSettings = field(default_factory=VideoSettings)
     stages: dict[StageName, GroupStageState] = field(default_factory=_default_stages)
     errors: tuple[dict, ...] = ()
+    source_span_ids: tuple[str, ...] = ()
+    shot_ids: tuple[str, ...] = ()
+    objective: str = ""
+    visible_turn: str = ""
+    director_revision_id: str = ""
 
     @property
     def video_inputs(self) -> tuple[dict[str, Any], ...]:

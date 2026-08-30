@@ -23,6 +23,7 @@ from novelvideo.api.deps import (
     make_sqlite_store_for_context,
     resolve_project_scope,
 )
+from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
@@ -45,7 +46,7 @@ from novelvideo.narrative_groups.references import (
 )
 from novelvideo.narrative_groups.service import (
     advance_revision,
-    ensure_groups,
+    load_effective_groups,
     load_group_video_prompt_manifest,
     rebuild_groups,
     rollback_stage_revision,
@@ -158,11 +159,18 @@ async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bo
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = await make_sqlite_store_for_context(resolved.ctx)
     beats = await store.get_beats_as_dicts(episode)
-    groups = (
-        rebuild_groups(resolved.project_dir, episode, beats)
-        if rebuild
-        else ensure_groups(resolved.project_dir, episode, beats)
-    )
+    if rebuild:
+        if DirectorPlanStore(resolved.project_dir).load_active(episode) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "DIRECTOR_PLAN_ACTIVE",
+                    "message": "Active director plan controls narrative groups",
+                },
+            )
+        groups = rebuild_groups(resolved.project_dir, episode, beats)
+    else:
+        groups = load_effective_groups(resolved.project_dir, episode, beats)
     return resolved, groups, beats
 
 

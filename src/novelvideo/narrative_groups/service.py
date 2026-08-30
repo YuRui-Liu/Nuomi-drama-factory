@@ -16,6 +16,8 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 import portalocker
 
+from novelvideo.director_plan.store import DirectorPlanStore
+
 from .nonvisual import is_nonvisual_production_note
 from .models import (
     CellMapping,
@@ -255,6 +257,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
     for name, raw_state in (data.get("stages") or {}).items():
         state = dict(raw_state)
         state["cell_assets"] = tuple(state.get("cell_assets") or ())
+        state["cleanup_reports"] = tuple(state.get("cleanup_reports") or ())
         state["revision_history"] = tuple(state.get("revision_history") or ())
         stages[name] = GroupStageState(**state)
     default_stages = {
@@ -298,6 +301,13 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         video_settings=video_settings,
         stages=stages or default_stages,
         errors=tuple(data.get("errors") or ()),
+        source_span_ids=tuple(
+            str(value) for value in data.get("source_span_ids") or ()
+        ),
+        shot_ids=tuple(str(value) for value in data.get("shot_ids") or ()),
+        objective=str(data.get("objective") or ""),
+        visible_turn=str(data.get("visible_turn") or ""),
+        director_revision_id=str(data.get("director_revision_id") or ""),
     )
 
 
@@ -335,6 +345,60 @@ def ensure_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -
         groups = group_beats(source)
         save_groups(project_dir, episode, groups)
         return groups
+
+
+def load_effective_groups(
+    project_dir: str | Path,
+    episode: int,
+    legacy_beats: Iterable[Any],
+) -> list[NarrativeGroup]:
+    """Read active director groups through the legacy narrative-group DTO."""
+    project_path = Path(project_dir)
+    active = DirectorPlanStore(project_path).load_active(episode)
+    if active is None:
+        return ensure_groups(project_dir, episode, legacy_beats)
+
+    previous_by_id = (
+        {group.id: group for group in load_groups(project_path, episode)}
+        if sidecar_path(project_path, episode).is_file()
+        else {}
+    )
+    projected = []
+    for group in active.groups:
+        shot_ids = tuple(shot.id for shot in group.shots)
+        previous = previous_by_id.get(group.id)
+        projected.append(
+            NarrativeGroup(
+                id=group.id,
+                ordinal=group.ordinal,
+                beat_ids=group.source_span_ids,
+                layout=layout_for_group(len(shot_ids)),
+                cell_to_beat=tuple(
+                    CellMapping(cell=cell, beat_id=shot_id)
+                    for cell, shot_id in enumerate(shot_ids)
+                ),
+                video_plan=(previous.video_plan if previous else VideoPlan()),
+                video_settings=(
+                    previous.video_settings if previous else VideoSettings()
+                ),
+                stages=(
+                    previous.stages
+                    if previous
+                    else {
+                        "sketch": GroupStageState(),
+                        "render": GroupStageState(),
+                        "video": GroupStageState(),
+                    }
+                ),
+                errors=(previous.errors if previous else ()),
+                source_span_ids=group.source_span_ids,
+                shot_ids=shot_ids,
+                objective=group.objective,
+                visible_turn=group.visible_turn,
+                director_revision_id=active.revision_id,
+            )
+        )
+    return projected
 
 
 def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:

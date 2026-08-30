@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import narrative_groups
+from novelvideo.director_plan.models import (
+    DirectorPlanRevision,
+    NarrativeGroupPlan,
+    ShotPlan,
+    ValidationReport,
+)
+from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
@@ -121,6 +129,45 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
     return TestClient(app), backend
 
 
+def activate_director_plan(tmp_path: Path) -> None:
+    group = NarrativeGroupPlan(
+        id="director-group",
+        ordinal=1,
+        source_span_ids=("span-1", "span-2"),
+        scene_anchor="hallway",
+        time_anchor="night",
+        objective="reach the door",
+        visible_turn="the door opens",
+        relation_to_previous="single",
+        shots=(
+            ShotPlan(
+                id="shot-1",
+                source_span_ids=("span-1",),
+                subject="hero",
+                action="opens the door",
+                visible_start_state="closed",
+                visible_end_state="open",
+                duration_seconds=3,
+            ),
+        ),
+    )
+    revision = DirectorPlanRevision(
+        revision_id="rev-api-active",
+        episode=1,
+        status="review_required",
+        source_script_hash="sha256:abc",
+        director_model="director-v1",
+        prompt_version="v2",
+        project_style_snapshot_id="style-1",
+        groups=(group,),
+        validation_report=ValidationReport(passed=True),
+        created_at=datetime(2026, 8, 30, 12, tzinfo=timezone.utc),
+    )
+    store = DirectorPlanStore(tmp_path)
+    store.save(revision)
+    store.activate(1, revision.revision_id)
+
+
 def make_reference_preview(tmp_path: Path):
     character = tmp_path / "assets" / "characters" / "hero.png"
     scene = tmp_path / "assets" / "scenes" / "room.png"
@@ -165,6 +212,40 @@ def test_get_migrates_old_episode_to_stable_groups(monkeypatch, tmp_path):
     assert [group["id"] for group in groups] == ["ng-01"]
     assert groups[0]["layout"] == {"rows": 2, "columns": 3, "capacity": 6}
     assert groups[0]["cell_to_beat"][0] == {"cell": 0, "beat_id": "beat-1"}
+
+
+def test_get_projects_active_director_plan_fields(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
+
+    response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    assert response.status_code == 200
+    [group] = response.json()["data"]
+    assert group["id"] == "director-group"
+    assert group["beat_ids"] == ["span-1", "span-2"]
+    assert group["source_span_ids"] == ["span-1", "span-2"]
+    assert group["shot_ids"] == ["shot-1"]
+    assert group["objective"] == "reach the door"
+    assert group["visible_turn"] == "the door opens"
+    assert group["director_revision_id"] == "rev-api-active"
+
+
+def test_rebuild_rejects_when_director_plan_is_active(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/rebuild"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "DIRECTOR_PLAN_ACTIVE",
+            "message": "Active director plan controls narrative groups",
+        }
+    }
 
 
 def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
