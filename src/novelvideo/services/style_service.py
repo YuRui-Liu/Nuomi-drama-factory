@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from novelvideo.config import OUTPUT_DIR
+from novelvideo.extension_styles import CatalogSnapshot, ExtensionStyleRegistry
 from novelvideo.models import StyleConfig
 from novelvideo.project_config import load_project_config_file, update_project_config_file
 
@@ -47,7 +48,7 @@ class StyleService:
 
     # 预设风格缓存（避免重复读取文件）
     _preset_cache: dict[str, StyleConfig] = {}
-    _extension_cache = None
+    _extension_registry = ExtensionStyleRegistry(EXTENSION_CATALOG_PATH)
     STYLE_FAMILY_LABELS = {
         "live_action": "真人",
         "animation": "动画",
@@ -234,25 +235,39 @@ class StyleService:
             return None
 
     @classmethod
-    def _extension_catalog(cls):
-        from novelvideo.extension_styles import load_catalog
-
-        if cls._extension_cache is None:
-            cls._extension_cache = load_catalog(cls.EXTENSION_CATALOG_PATH)
-        return cls._extension_cache
+    def _extension_snapshot(cls) -> CatalogSnapshot:
+        return cls._extension_registry.snapshot()
 
     @classmethod
-    def get_extension_style(cls, style_id: str):
+    def _extension_catalog(
+        cls, catalog_snapshot: CatalogSnapshot | None = None
+    ):
+        return (catalog_snapshot or cls._extension_snapshot()).styles
+
+    @classmethod
+    def get_extension_style(
+        cls,
+        style_id: str,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ):
         return next(
-            (style for style in cls._extension_catalog() if style.id == style_id),
+            (
+                style
+                for style in cls._extension_catalog(catalog_snapshot)
+                if style.id == style_id
+            ),
             None,
         )
 
     @classmethod
-    def _extension_as_config(cls, style_id: str) -> Optional[StyleConfig]:
+    def _extension_as_config(
+        cls,
+        style_id: str,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> Optional[StyleConfig]:
         from novelvideo.extension_styles import compile_prompt_fragment
 
-        style = cls.get_extension_style(style_id)
+        style = cls.get_extension_style(style_id, catalog_snapshot)
         if style is None:
             return None
         image_fragments = {
@@ -287,19 +302,23 @@ class StyleService:
         username: str | None = None,
         project: str | None = None,
         project_dir: str | Path | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
     ):
         from novelvideo.extension_styles.schema import FRAGMENT_KEYS
         from novelvideo.styles.resolver import ProjectionStyle
 
-        sources = list(cls._extension_catalog())
+        snapshot = catalog_snapshot or cls._extension_snapshot()
+        sources = list(snapshot.styles)
         if any(style.id == style_id for style in sources):
             return tuple(sources)
-        config = cls.get_style(
+        config = cls.get_custom_style(
             style_id,
             username=username,
             project=project,
             project_dir=project_dir,
         )
+        if config is None:
+            config = cls.get_preset(style_id)
         if config is None:
             return tuple(sources)
         fragments = {key: () for key in FRAGMENT_KEYS}
@@ -336,13 +355,17 @@ class StyleService:
         from novelvideo.styles.resolver import StyleResolver
 
         effective_id = override or project_style
+        catalog_snapshot = cls._extension_snapshot()
         return StyleResolver(
             cls.projection_sources(
                 effective_id,
                 username=username,
                 project=project,
                 project_dir=project_dir,
-            )
+                catalog_snapshot=catalog_snapshot,
+            ),
+            catalog_generation=catalog_snapshot.generation,
+            catalog_hash=catalog_snapshot.catalog_hash,
         ).resolve(project_style, override)
 
     @classmethod
@@ -543,7 +566,7 @@ class StyleService:
         """
         styles = []
         if cls.PRESETS_DIR.exists():
-            for f in sorted(cls.PRESETS_DIR.glob("*.json")):
+            for order, f in enumerate(sorted(cls.PRESETS_DIR.glob("*.json"))):
                 style_id = f.stem
                 config = cls.get_preset(style_id)
                 if config:
@@ -552,6 +575,15 @@ class StyleService:
                         "name": config.name,
                         "label": config.label or config.name,
                         "type": "preset",
+                        "group": "preset",
+                        "order": order,
+                        "read_only": True,
+                        "category": None,
+                        "summary": None,
+                        "use_cases": [],
+                        "source_group": "builtin",
+                        "catalog_generation": None,
+                        "preview_url": None,
                         "style_family": config.style_family,
                         "animation_subtype": config.animation_subtype,
                     })
@@ -574,14 +606,22 @@ class StyleService:
         # 系统预设
         styles.extend(cls.list_preset_styles())
 
-        for style in cls._extension_catalog():
+        catalog_snapshot = cls._extension_snapshot()
+        for order, style in enumerate(catalog_snapshot.styles):
             styles.append(
                 {
                     "id": style.id,
                     "name": style.name,
                     "label": style.name,
                     "type": "extension",
+                    "group": "extension",
+                    "order": order,
+                    "read_only": True,
                     "category": style.category,
+                    "summary": style.summary,
+                    "use_cases": list(style.use_cases),
+                    "source_group": style.source.get("repository", "extension"),
+                    "catalog_generation": catalog_snapshot.generation,
                     "preview_url": style.preview_asset,
                     "style_family": (
                         "live_action"
@@ -595,7 +635,7 @@ class StyleService:
             )
 
         # 自定义风格
-        for style_id in cls.list_custom_styles(username=username, project=project, project_dir=project_dir):
+        for order, style_id in enumerate(cls.list_custom_styles(username=username, project=project, project_dir=project_dir)):
             config = cls.get_custom_style(style_id, username=username, project=project, project_dir=project_dir)
             if config:
                 styles.append({
@@ -603,6 +643,15 @@ class StyleService:
                     "name": config.name,
                     "label": config.label or config.name,
                     "type": "custom",
+                    "group": "custom",
+                    "order": order,
+                    "read_only": False,
+                    "category": None,
+                    "summary": None,
+                    "use_cases": [],
+                    "source_group": "project",
+                    "catalog_generation": None,
+                    "preview_url": None,
                     "preview_path": config.preview_path,
                     "style_family": config.style_family,
                     "animation_subtype": config.animation_subtype,
@@ -742,7 +791,7 @@ class StyleService:
     def clear_cache(cls):
         """清除预设缓存（用于热重载）。"""
         cls._preset_cache.clear()
-        cls._extension_cache = None
+        return cls._extension_registry.reload(force=True)
 
     @classmethod
     def is_read_only_style(cls, style_id: str) -> bool:

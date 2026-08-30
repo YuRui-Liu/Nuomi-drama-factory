@@ -178,6 +178,17 @@ def test_style_catalog_keeps_six_presets_and_eighteen_extensions():
     assert len([style for style in styles if style["type"] == "preset"]) == 6
     assert len([style for style in styles if style["type"] == "extension"]) == 18
 
+    extension = next(style for style in styles if style["type"] == "extension")
+    assert extension["group"] == "extension"
+    assert extension["order"] == 0
+    assert extension["read_only"] is True
+    assert extension["category"]
+    assert extension["summary"]
+    assert extension["use_cases"]
+    assert extension["source_group"] == "freestylefly/awesome-gpt-image-2"
+    assert extension["catalog_generation"] >= 1
+    assert extension["preview_url"].startswith("/images/extension-styles/")
+
 
 def test_style_preview_get_returns_image_without_generation():
     response = _client().get("/styles/anime/preview")

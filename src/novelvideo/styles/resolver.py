@@ -18,9 +18,16 @@ class ProjectionStyle:
 
 
 class StyleResolver:
-    def __init__(self, catalog: Sequence[ExtensionStyle | ProjectionStyle]) -> None:
+    def __init__(
+        self,
+        catalog: Sequence[ExtensionStyle | ProjectionStyle],
+        *,
+        catalog_generation: int = 0,
+        catalog_hash: str | None = None,
+    ) -> None:
         self._styles = {style.id: _as_projection_style(style) for style in catalog}
-        self._catalog_hash = _stable_hash(
+        self._catalog_generation = catalog_generation
+        self._catalog_hash = catalog_hash or _stable_hash(
             [_style_payload(self._styles[style_id]) for style_id in sorted(self._styles)]
         )
 
@@ -38,10 +45,8 @@ class StyleResolver:
             panel_tag=style.panel_tag.strip() or _panel_tag(fragments),
         )
         hash_payload = {
-            "style_id": style.id,
-            "style_version": style.version,
-            "catalog_hash": self._catalog_hash,
-            "projections": projections.model_dump(mode="json"),
+            "catalog_generation": self._catalog_generation,
+            "style": _style_payload(style),
         }
         style_hash = _stable_hash(hash_payload)
         return StyleSnapshot(

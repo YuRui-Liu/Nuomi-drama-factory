@@ -113,3 +113,61 @@ def test_style_snapshot_is_immutable() -> None:
 
     with pytest.raises(ValidationError, match="frozen"):
         snapshot.projections.video = "changed"  # type: ignore[misc]
+
+
+def test_style_hash_uses_selected_payload_and_catalog_generation() -> None:
+    selected = extension_style()
+    unrelated = ExtensionStyle.from_dict(
+        {
+            **selected.projection_input(),
+            "id": "drama_ext.unrelated",
+            "name": "Unrelated",
+            "preview_asset": "/images/extension-styles/unrelated.webp",
+        }
+    )
+
+    first = StyleResolver(
+        (selected,), catalog_generation=7, catalog_hash="catalog-a"
+    ).resolve(selected.id, None)
+    same_generation = StyleResolver(
+        (selected, unrelated), catalog_generation=7, catalog_hash="catalog-b"
+    ).resolve(selected.id, None)
+    next_generation = StyleResolver(
+        (selected,), catalog_generation=8, catalog_hash="catalog-a"
+    ).resolve(selected.id, None)
+
+    assert same_generation.style_hash == first.style_hash
+    assert next_generation.style_hash != first.style_hash
+    assert first.catalog_hash == "catalog-a"
+
+
+def test_service_resolve_uses_one_catalog_snapshot(monkeypatch) -> None:
+    from novelvideo.extension_styles.registry import CatalogSnapshot
+    from novelvideo.services.style_service import StyleService
+
+    catalog = (extension_style(),)
+    snapshot = CatalogSnapshot(
+        styles=catalog,
+        generation=11,
+        catalog_hash="catalog-11",
+        fingerprint=None,
+        diagnostics=None,  # type: ignore[arg-type]
+    )
+
+    class OneShotRegistry:
+        calls = 0
+
+        def snapshot(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise AssertionError("catalog snapshot read more than once")
+            return snapshot
+
+    registry = OneShotRegistry()
+    monkeypatch.setattr(StyleService, "_extension_registry", registry, raising=False)
+
+    resolved = StyleService.resolve_style_snapshot(catalog[0].id)
+
+    assert resolved.style_id == catalog[0].id
+    assert resolved.catalog_hash == "catalog-11"
+    assert registry.calls == 1
