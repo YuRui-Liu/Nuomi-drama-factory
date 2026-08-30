@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+
+import portalocker
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import Agent, PromptedOutput
@@ -128,6 +131,21 @@ class H3EpisodePackOptimizer:
         self._quality_revisions = min(2, max(0, quality_revisions))
 
     async def optimize(self, value: H3EpisodeInput) -> H3EpisodeOptimizationResult:
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        lock = portalocker.Lock(
+            str(self._cache_dir / f"episode-{value.episode}-{value.director_revision_id}.lock"),
+            mode="a+",
+            timeout=180,
+        )
+        await asyncio.to_thread(lock.acquire)
+        try:
+            return await self._optimize_locked(value)
+        finally:
+            await asyncio.to_thread(lock.release)
+
+    async def _optimize_locked(
+        self, value: H3EpisodeInput
+    ) -> H3EpisodeOptimizationResult:
         cached: dict[str, H3EpisodeSegmentResult] = {}
         misses: list[H3EpisodeVideoSegment] = []
         hashes: dict[str, str] = {}

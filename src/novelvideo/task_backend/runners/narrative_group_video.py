@@ -53,7 +53,12 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     build_video_workflow_registry,
 )
 from novelvideo.narrative_groups.nonvisual import is_nonvisual_production_note
-from novelvideo.narrative_groups.service import record_stage_result, stage_payload
+from novelvideo.narrative_groups.service import (
+    load_materialized_groups,
+    record_stage_result,
+    record_video_segment_result,
+    stage_payload,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
 
@@ -327,6 +332,20 @@ async def _optimize_missing_prompts(
     evidence_by_segment: dict[str, dict[str, Any]] | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
+    requested_ids = {segment.segment_id for segment in segments}
+    episode_segments: list[H3DirectorSegment] = []
+    episode_beats: list[Mapping[str, Any]] = []
+    segment_group_ids: dict[str, str] = {}
+    for group in load_materialized_groups(project_dir, episode):
+        render = stage_payload(project_dir, episode, group.id, "render")
+        candidate = _build_segments({"mode": "auto"}, list(beats), render)
+        candidate_beats = _canonical_beats_for_segments(candidate, list(beats))
+        episode_segments.extend(candidate)
+        episode_beats.extend(candidate_beats)
+        segment_group_ids.update({item.segment_id: group.id for item in candidate})
+    if episode_segments:
+        segments = episode_segments
+        beats = list(episode_beats)
     optimizer = create_h3_episode_pack_optimizer(
         cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
     )
@@ -356,7 +375,7 @@ async def _optimize_missing_prompts(
     entries = tuple(
         H3EpisodeVideoSegment(
             segment_id=segment.segment_id,
-            group_id=segment.segment_id.split(":")[1] if ":" in segment.segment_id else "group",
+            group_id=segment_group_ids.get(segment.segment_id, "group"),
             shot_ids=tuple(segment.segment_id.split("--")),
             duration_seconds=segment.duration_seconds,
             style_snapshot_id=str(
@@ -396,7 +415,8 @@ async def _optimize_missing_prompts(
                 "input_summary": _input_summary(segment, context, _mode_for(segment)),
                 "_final_prompt": item.prompt,
             }
-        optimized.append(segment.model_copy(update={"prompt": item.prompt}))
+        if segment.segment_id in requested_ids:
+            optimized.append(segment.model_copy(update={"prompt": item.prompt}))
     return optimized
 
 
@@ -737,13 +757,19 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             # one-beat-per-segment interpretation.
             render_state = {**render_state, "video_plan": {}}
         raw_segments = _build_segments(payload, beats, render_state)
+        materialized_group = next(
+            group for group in load_materialized_groups(project_dir, episode)
+            if group.id == group_id
+        )
+        durable_segment_ids = [
+            str(item.get("id")) for item in materialized_group.video_segments
+        ]
         if requested_segment_id:
-            raw_segments = [
-                segment
-                for segment in raw_segments
-                if segment.segment_id == requested_segment_id
-            ]
-            if not raw_segments:
+            try:
+                requested_index = durable_segment_ids.index(requested_segment_id)
+                raw_segments = [raw_segments[requested_index]]
+                durable_segment_ids = [requested_segment_id]
+            except (ValueError, IndexError):
                 raise ValueError(
                     f"video segment is unavailable: {requested_segment_id}"
                 )
@@ -862,6 +888,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             generated_segments = []
             segment_errors = []
             for segment_index, segment in enumerate(segments, start=1):
+                durable_segment_id = durable_segment_ids[segment_index - 1]
                 segment_output = output.with_name(
                     f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
                 )
@@ -877,9 +904,17 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         ),
                     )
                     generated_segments.append((segment_index, segment, item))
+                    record_video_segment_result(
+                        project_dir, episode, group_id, durable_segment_id,
+                        status="completed", provider_task_id=item.provider_task_id,
+                        result={"output_path": str(item.output_path)},
+                    )
                 except Exception as exc:
-                    segment_errors.append(
-                        {"segment_id": segment.segment_id, "error": f"{type(exc).__name__}: {exc}"}
+                    message = f"{type(exc).__name__}: {exc}"
+                    segment_errors.append({"segment_id": segment.segment_id, "error": message})
+                    record_video_segment_result(
+                        project_dir, episode, group_id, durable_segment_id,
+                        status="failed", error=message,
                     )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")
@@ -917,12 +952,21 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
 
         manifest = _manifest_with_status(
             manifest,
-            "generated",
+            "partial_failure" if segment_errors else "generated",
             physical_video=str(generated.output_path),
             provider_task_id=generated.provider_task_id,
             provider_parameters=generated.provider_parameters,
             actual_output=generated.actual_output,
         )
+        if segment_errors:
+            failed_ids = {str(item["segment_id"]) for item in segment_errors}
+            manifest = manifest.model_copy(update={
+                "entries": tuple(
+                    entry.model_copy(update={"status": "transport_failed"})
+                    if entry.segment.segment_id in failed_ids else entry
+                    for entry in manifest.entries
+                )
+            })
         save_h3_director_manifest(manifest_path, manifest)
 
         expected_output = (
@@ -1014,8 +1058,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             ambience_stem_status=stems.get("ambience_stem_status", "not_requested"),
         )
         save_h3_director_manifest(manifest_path, manifest)
+        terminal_status = "partial_failure" if segment_errors else "completed"
         record_stage_result(
-            project_dir, episode, group_id, "video", expected_revision=revision, status="completed",
+            project_dir, episode, group_id, "video", expected_revision=revision,
+            status=terminal_status,
+            error=(json.dumps(segment_errors, ensure_ascii=False) if segment_errors else ""),
             video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
             actual_provider=workflow.provider, actual_model=workflow.id,
             actual_mode=generated.actual_mode,
@@ -1024,7 +1071,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             actual_output=generated.actual_output,
             **stems,
         )
-        return {"status": "completed", "group_id": group_id, "revision": revision,
+        return {"status": terminal_status, "group_id": group_id, "revision": revision,
                 "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),
                 "provider_task_id": generated.provider_task_id, "logical_shots": len(segments)}
     except Exception as exc:

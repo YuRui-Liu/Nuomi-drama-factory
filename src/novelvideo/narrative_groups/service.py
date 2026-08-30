@@ -308,6 +308,13 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         objective=str(data.get("objective") or ""),
         visible_turn=str(data.get("visible_turn") or ""),
         director_revision_id=str(data.get("director_revision_id") or ""),
+        generation_batches=tuple(
+            dict(item) for item in data.get("generation_batches") or ()
+        ),
+        video_segments=tuple(
+            dict(item) for item in data.get("video_segments") or ()
+        ),
+        effective_style_snapshot=dict(data.get("effective_style_snapshot") or {}),
     )
 
 
@@ -398,7 +405,13 @@ def _materialize_active_groups(
             plan_video_segments,
         )
 
-        for group in active.groups:
+        for raw_group in active.groups:
+            snapshot_id = str(
+                raw_group.style_snapshot_id
+                or active.project_style_snapshot_id
+                or "legacy-default"
+            )
+            group = raw_group.model_copy(update={"style_snapshot_id": snapshot_id})
             shot_ids = tuple(shot.id for shot in group.shots)
             previous = previous_by_id.get(group.id)
             base = NarrativeGroup(
@@ -439,6 +452,7 @@ def _materialize_active_groups(
                         "status": "pending",
                         "error": "",
                         "provider_task_id": None,
+                        "result": {},
                     }
                     for item in plan_video_segments(group)
                 ),
@@ -499,11 +513,32 @@ def _materialize_active_groups(
                 },
             )
             if previous is not None and _same_projection_structure(previous, base):
+                prior_segments = {
+                    str(item.get("id")): item for item in previous.video_segments
+                }
                 base = replace(
                     base,
                     video_plan=previous.video_plan,
                     stages=previous.stages,
                     errors=previous.errors,
+                    video_segments=tuple(
+                        {
+                            **item,
+                            **{
+                                key: prior_segments.get(str(item.get("id")), {}).get(
+                                    key, item.get(key)
+                                )
+                                for key in (
+                                    "status", "error", "provider_task_id", "result"
+                                )
+                            },
+                        }
+                        for item in base.video_segments
+                    ),
+                )
+            elif previous is not None:
+                base = replace(
+                    base, video_plan=VideoPlan(), stages=_empty_stages()
                 )
             else:
                 base = replace(base, stages=_empty_stages())
@@ -524,6 +559,50 @@ def load_materialized_groups(
     if active is not None:
         return _materialize_active_groups(project_path, episode, active)
     return load_groups(project_path, episode)
+
+
+def record_video_segment_result(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    segment_id: str,
+    *,
+    status: str,
+    error: str = "",
+    provider_task_id: str | None = None,
+    result: Mapping[str, Any] | None = None,
+) -> NarrativeGroup:
+    """Persist an isolated provider outcome without discarding sibling segments."""
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        updated: list[NarrativeGroup] = []
+        found: NarrativeGroup | None = None
+        for group in groups:
+            if group.id != group_id:
+                updated.append(group)
+                continue
+            matched = False
+            segments = []
+            for item in group.video_segments:
+                if str(item.get("id")) != segment_id:
+                    segments.append(item)
+                    continue
+                matched = True
+                segments.append({
+                    **item,
+                    "status": status,
+                    "error": error,
+                    "provider_task_id": provider_task_id,
+                    "result": dict(result or {}),
+                })
+            if not matched:
+                raise KeyError(segment_id)
+            found = replace(group, video_segments=tuple(segments))
+            updated.append(found)
+        if found is None:
+            raise KeyError(group_id)
+        save_groups(project_dir, episode, updated)
+        return found
 
 
 def generation_beats_for_group(
