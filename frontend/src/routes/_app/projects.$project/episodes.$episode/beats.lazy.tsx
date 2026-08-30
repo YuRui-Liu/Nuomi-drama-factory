@@ -68,6 +68,7 @@ import { RenderGridGallery } from "@/components/episode/beat-workbench/render-gr
 import { ViewToggles } from "@/components/episode/beat-workbench/view-toggles";
 import { ActionPanel } from "@/components/episode/beat-workbench/action-panel";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
+import { DirectorReviewWorkbench } from "@/components/episode/director-review";
 import { RenderPlanDialog } from "@/components/episode/beat-workbench/render-plan-dialog";
 import { useHideHeaderOnScroll } from "@/components/episode/header-collapse";
 import { Button } from "@/components/ui/button";
@@ -158,7 +159,7 @@ function BeatsTabContent() {
 
   // Project-level prefs mirrored from NiceGUI video_studio_page.video_settings.
   const [videoBackend, setVideoBackendState] = useState(DEFAULT_VIDEO_MODEL);
-  const [workbenchMode, setWorkbenchMode] = useState<"groups" | "repair">("groups");
+  const [workbenchMode, setWorkbenchMode] = useState<"groups" | "director" | "repair">("groups");
 
   // 左(渲染/Beat 区)与右(详情/功能区)的可拖拽宽度占比。拖动中间分隔条调节占比;
   // 比例持久化到 localStorage —— 属 UI 偏好(region 无关),不随切区清空。clamp 25%–70%。
@@ -617,17 +618,36 @@ function BeatsTabContent() {
     );
   }
 
-  if (workbenchMode === "groups") {
+  if (workbenchMode === "director") {
     return (
-      <NarrativeGroupWorkbench
+      <DirectorReviewWorkbench
         project={project}
         episode={epNum}
-        onRepairBeat={(beatId) => {
-          const beatNumber = Number.parseInt(beatId, 10);
-          if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
-          setWorkbenchMode("repair");
-        }}
+        onClose={() => setWorkbenchMode("groups")}
       />
+    );
+  }
+
+  if (workbenchMode === "groups") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-10 shrink-0 items-center justify-end border-b border-white/[0.055] px-3">
+          <Button type="button" variant="outline" size="sm" onClick={() => setWorkbenchMode("director")}>
+            重新导演分镜
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          <NarrativeGroupWorkbench
+            project={project}
+            episode={epNum}
+            onRepairBeat={(beatId) => {
+              const beatNumber = Number.parseInt(beatId, 10);
+              if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
+              setWorkbenchMode("repair");
+            }}
+          />
+        </div>
+      </div>
     );
   }
 
