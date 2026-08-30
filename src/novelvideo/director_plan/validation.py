@@ -181,7 +181,7 @@ def _first_order_mismatch_group(
         for span_id in group.source_span_ids:
             span = spans_by_id.get(span_id)
             if span is None:
-                continue
+                return group_index
             if previous_ordinal is not None and span.ordinal < previous_ordinal:
                 return group_index
             previous_ordinal = span.ordinal

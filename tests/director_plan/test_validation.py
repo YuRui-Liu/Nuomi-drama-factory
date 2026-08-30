@@ -135,6 +135,31 @@ def test_reports_an_unknown_group_source_as_an_order_mismatch() -> None:
     ]
 
 
+def test_unknown_source_order_mismatch_points_to_its_actual_group() -> None:
+    spans = tuple(make_span(f"span-{index}", index) for index in range(1, 4))
+    groups = (
+        make_group(),
+        make_group(
+            id="group-2",
+            ordinal=2,
+            source_span_ids=("span-2",),
+            shots=(make_shot(id="shot-2", source_span_ids=("span-2",)),),
+        ),
+        make_group(
+            id="group-3",
+            ordinal=3,
+            source_span_ids=("span-3", "unknown"),
+            shots=(make_shot(id="shot-3", source_span_ids=("span-3",)),),
+        ),
+    )
+
+    report = validate_director_plan(make_revision(groups), spans)
+
+    assert issue_pairs(report) == [
+        ("source_order_mismatch", "groups.2.source_span_ids")
+    ]
+
+
 def test_reports_group_crossing_a_scene_or_time_boundary() -> None:
     spans = (
         make_span("span-1", 1),
