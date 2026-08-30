@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from difflib import SequenceMatcher
+from hashlib import sha256
 from typing import Literal
 
 from pydantic import Field
@@ -34,6 +35,7 @@ class MigrationEvidence(FrozenModel):
 
 
 class MigrationItem(FrozenModel):
+    item_id: str
     old_asset_id: str
     old_asset_path: str
     old_asset_kind: Literal["image", "video"]
@@ -114,6 +116,8 @@ def match_one(
         else "review"
     )
     return MigrationItem(
+        item_id="mig-"
+        + sha256(f"{asset.asset_id}\0{shot.id}".encode("utf-8")).hexdigest()[:24],
         old_asset_id=asset.asset_id,
         old_asset_path=asset.asset_path,
         old_asset_kind=asset.asset_kind,
@@ -163,3 +167,30 @@ def match_assets(
             for item in items
         )
     )
+
+
+def update_decision(
+    report: MigrationReport,
+    item_id: str,
+    decision: Literal["accepted", "rejected", "reference_only"],
+) -> MigrationReport:
+    """Apply one explicit human decision without mutating the stored report."""
+    matched = False
+    items: list[MigrationItem] = []
+    for item in report.items:
+        if item.item_id != item_id:
+            items.append(item)
+            continue
+        matched = True
+        if decision == "accepted" and item.reuse_mode == "reference_only":
+            raise ValueError("different-style assets cannot be formally accepted")
+        update: dict[str, object] = {
+            "decision": decision,
+            "manual_decision": decision,
+        }
+        if decision == "reference_only":
+            update["reuse_mode"] = "reference_only"
+        items.append(item.model_copy(update=update))
+    if not matched:
+        raise KeyError(item_id)
+    return MigrationReport(items=tuple(items))

@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from novelvideo.director_plan.migration import LegacyShotAsset, match_assets, match_one
+from novelvideo.director_plan.migration import (
+    LegacyShotAsset,
+    match_assets,
+    match_one,
+    update_decision,
+)
 from novelvideo.director_plan.models import (
     DirectorPlanRevision,
     NarrativeGroupPlan,
@@ -114,6 +119,27 @@ def test_different_style_can_only_be_reference() -> None:
 
     assert item.reuse_mode == "reference_only"
     assert item.decision == "review"
+
+
+def test_item_id_is_stable_and_manual_decision_is_immutable() -> None:
+    item = match_one(
+        _asset(), _shot("new-shot"), scene="走廊", style_hash="style-a"
+    )
+    repeated = match_one(
+        _asset(), _shot("new-shot"), scene="走廊", style_hash="style-a"
+    )
+
+    assert item.item_id == repeated.item_id
+    assert item.item_id.startswith("mig-")
+    report = match_assets(
+        old_plan=_plan("old", (_shot("old-shot"),)),
+        new_plan=_plan("new", (_shot("new-shot"),)),
+        assets=(_asset(),),
+    )
+    updated = update_decision(report, item.item_id, "rejected")
+    assert updated.items[0].decision == "rejected"
+    assert updated.items[0].manual_decision == "rejected"
+    assert item.decision == "accepted"
 
 
 def test_medium_and_low_confidence_matches_require_review() -> None:
