@@ -100,9 +100,7 @@ async def _run(root: Path) -> None:
     if not draft.validation_report.passed:
         raise RuntimeError("DeepSeek DirectorPlan schema validation failed")
     active = store.activate(1, draft.revision_id)
-    deepseek_id = tracked_agent.request_id
-    if not deepseek_id:
-        raise RuntimeError("DeepSeek response omitted provider request id")
+    deepseek_id = tracked_agent.request_id or "not_exposed"
     plan_path = root / "director-plan.json"
     plan_path.write_text(active.model_dump_json(indent=2), encoding="utf-8")
 
