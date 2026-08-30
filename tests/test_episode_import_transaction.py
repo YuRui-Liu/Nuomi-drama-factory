@@ -361,6 +361,56 @@ async def test_overwrite_repository_commit_failure_restores_old_novel(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_episode_journal_recovers_one_access_denied_without_rewrite(
+    tmp_path, monkeypatch
+) -> None:
+    from novelvideo import episode_source_store as source_store_module
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.episode_sources import build_episode_candidate
+    from novelvideo.sqlite_store import SQLiteStore
+
+    project = tmp_path / "project"
+    state = tmp_path / "state"
+    sqlite = SQLiteStore("test/journal-access-denied", str(project), str(state))
+    await sqlite.initialize()
+    repository = EpisodeSourceStore(sqlite)
+    await repository.upsert_sources(
+        [build_episode_candidate("E01.md", "第1集\n旧")], expected_revision=0
+    )
+    journal = state / "episode_source_pending_commit.json"
+    real_replace = source_store_module.os.replace
+    journal_attempts = 0
+
+    class WindowsAccessDenied(PermissionError):
+        winerror = 5
+
+    def guarded_replace(source, target) -> None:
+        nonlocal journal_attempts
+        if target == journal:
+            journal_attempts += 1
+            if journal_attempts == 1:
+                raise WindowsAccessDenied(13, "Access is denied", str(target))
+            if journal.exists():
+                raise AssertionError("journal must not be rewritten after publication")
+        real_replace(source, target)
+
+    monkeypatch.setattr(source_store_module.os, "replace", guarded_replace)
+    try:
+        await repository.upsert_sources(
+            [build_episode_candidate("E02.md", "第2集\n新")],
+            expected_revision=1,
+            canonical_novel="第1集\n旧\n\n第2集\n新\n",
+        )
+
+        assert await repository.current_revision() == 2
+        assert journal_attempts == 2
+        assert not journal.exists()
+        assert not list(state.glob("episode_source_pending_commit.*.novel"))
+    finally:
+        await sqlite.close()
+
+
+@pytest.mark.asyncio
 async def test_new_store_recovers_novel_after_process_interrupt_between_replace_and_commit(
     tmp_path,
 ) -> None:

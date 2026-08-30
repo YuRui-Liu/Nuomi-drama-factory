@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -401,7 +402,6 @@ class EpisodeSourceStore:
                 )
                 os.replace(novel_temporary, novel_path)
                 novel_replaced = True
-                self._update_journal_phase("novel_replaced")
             await db.commit()
             if canonical_novel is not None:
                 self._clear_journal(
@@ -596,11 +596,6 @@ class EpisodeSourceStore:
         }
         self._replace_json(journal, payload)
 
-    def _update_journal_phase(self, phase: str) -> None:
-        payload = json.loads(self._journal_path.read_text(encoding="utf-8"))
-        payload["phase"] = phase
-        self._replace_json(self._journal_path, payload)
-
     @staticmethod
     def _replace_json(path: Path, payload: Mapping[str, Any]) -> None:
         temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
@@ -611,9 +606,20 @@ class EpisodeSourceStore:
                     "utf-8"
                 ),
             )
-            os.replace(temporary, path)
+            EpisodeSourceStore._replace_with_access_denied_retry(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _replace_with_access_denied_retry(source: Path, target: Path) -> None:
+        for attempt in range(4):
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError as exc:
+                if getattr(exc, "winerror", None) != 5 or attempt == 3:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
 
     @staticmethod
     def _replace_from_backup(backup: Path, target: Path) -> None:
