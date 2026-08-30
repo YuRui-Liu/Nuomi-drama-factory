@@ -9,6 +9,7 @@ from pydantic_ai import PromptedOutput
 import novelvideo.director_plan.planner as planner_module
 from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan, SourceSpan
 from novelvideo.director_plan.planner import (
+    DirectorPlanContractError,
     DirectorPlanDraft,
     DirectorPlanInput,
     DirectorPlanner,
@@ -156,6 +157,25 @@ async def test_planner_parses_structured_outputs() -> None:
     )
     assert repaired == expected
     assert len(agent.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_planner_marks_wrong_repair_group_id_as_contract_failure() -> None:
+    expected = group("g1", 1, "s1")
+    wrong = group("g2", 1, "s1")
+    planner = DirectorPlanner(
+        agent=FakeAgent({"groups": [wrong.model_dump(mode="json")]})
+    )
+
+    with pytest.raises(DirectorPlanContractError, match="different group id"):
+        await planner.repair_group(
+            GroupRepairInput(
+                episode=episode(),
+                failed_group=expected,
+                relevant_source_spans=(episode().source_spans[0],),
+                issues=(),
+            )
+        )
 
 
 def test_default_planner_uses_one_resolved_model_for_transport_and_audit(

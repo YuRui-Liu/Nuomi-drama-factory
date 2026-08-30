@@ -4,7 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan, SourceSpan
-from novelvideo.director_plan.planner import DirectorPlanDraft, DirectorPlanInput
+from novelvideo.director_plan.planner import (
+    DirectorPlanDraft,
+    DirectorPlanInput,
+    DirectorPlanner,
+)
 from novelvideo.director_plan.service import (
     DirectorPlanPlanningError,
     DirectorPlanService,
@@ -237,6 +241,22 @@ async def test_service_preserves_invalid_provider_output_as_contract_error(
     assert store.list(1)[0].validation_report.issues[0].code == (
         "director_plan_contract_error"
     )
+
+
+@pytest.mark.asyncio
+async def test_service_classifies_real_planner_schema_failure_as_contract_error(
+    tmp_path,
+) -> None:
+    class Agent:
+        async def run(self, _prompt):
+            return type("Response", (), {"output": {"groups": "not-a-list"}})()
+
+    with pytest.raises(DirectorPlanPlanningError) as error:
+        await DirectorPlanService(
+            DirectorPlanStore(tmp_path), DirectorPlanner(agent=Agent())
+        ).create_draft(episode())
+
+    assert error.value.code == "director_plan_contract_error"
 
 
 @pytest.mark.asyncio

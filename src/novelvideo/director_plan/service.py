@@ -9,7 +9,12 @@ from .models import (
     ValidationIssue,
     ValidationReport,
 )
-from .planner import DirectorPlanDraft, DirectorPlanInput, GroupRepairInput
+from .planner import (
+    DirectorPlanContractError,
+    DirectorPlanDraft,
+    DirectorPlanInput,
+    GroupRepairInput,
+)
 from .validation import validate_director_plan
 
 
@@ -36,6 +41,10 @@ class DirectorPlanService:
         validating: DirectorPlanRevision | None = None
         try:
             raw_draft = await self._planner.plan_episode(input)
+        except DirectorPlanContractError as exc:
+            self._raise_planning_error(
+                input, None, "director_plan_contract_error", "planner.output", exc
+            )
         except Exception as exc:
             self._raise_planning_error(
                 input, None, "director_plan_provider_error", "planner", exc
@@ -72,6 +81,14 @@ class DirectorPlanService:
                 repair_input = self._repair_input(input, groups, index, report)
                 try:
                     replacement = await self._planner.repair_group(repair_input)
+                except DirectorPlanContractError as exc:
+                    self._raise_planning_error(
+                        input,
+                        validating,
+                        "director_plan_contract_error",
+                        f"groups.{index}.repair",
+                        exc,
+                    )
                 except Exception as exc:
                     self._raise_planning_error(
                         input,

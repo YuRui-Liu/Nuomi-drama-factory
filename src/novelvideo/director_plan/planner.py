@@ -19,6 +19,10 @@ class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class DirectorPlanContractError(ValueError):
+    """The provider responded, but its structured director-plan output was invalid."""
+
+
 class DirectorPlanInput(_FrozenModel):
     episode: int
     source_script_hash: str
@@ -66,14 +70,24 @@ class DirectorPlanner:
 
     async def plan_episode(self, input: DirectorPlanInput) -> DirectorPlanDraft:
         response = await self._agent.run(build_episode_prompt(input))
-        return DirectorPlanDraft.model_validate(response.output)
+        try:
+            return DirectorPlanDraft.model_validate(response.output)
+        except Exception as exc:
+            raise DirectorPlanContractError("invalid episode plan schema") from exc
 
     async def repair_group(self, input: GroupRepairInput) -> NarrativeGroupPlan:
         response = await self._agent.run(build_group_repair_prompt(input))
-        draft = DirectorPlanDraft.model_validate(response.output)
+        try:
+            draft = DirectorPlanDraft.model_validate(response.output)
+        except Exception as exc:
+            raise DirectorPlanContractError("invalid group repair schema") from exc
         if len(draft.groups) != 1:
-            raise ValueError("group repair must return exactly one group")
+            raise DirectorPlanContractError(
+                "group repair must return exactly one group"
+            )
         group = draft.groups[0]
         if group.id != input.failed_group.id:
-            raise ValueError("group repair cannot replace a different group id")
+            raise DirectorPlanContractError(
+                "group repair cannot replace a different group id"
+            )
         return group
