@@ -42,12 +42,53 @@ def test_route_enums_reject_unsupported_values():
         AgentTaskRoute(runtime="codex", model="gpt-5", reasoning_effort="extreme")
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.6-sol&whoami",
+        "gpt-5.6-sol|whoami",
+        "gpt-5.6-sol%PATH%",
+        "gpt-5.6-sol\nwhoami",
+    ],
+)
+def test_codex_model_rejects_windows_shell_metacharacters(model):
+    with pytest.raises(ValidationError, match="model"):
+        AgentTaskRoute(runtime="codex", model=model)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"fallback": "retry"},
+        {"fallback": "explicit_backup"},
+        {"backup_runtime": "model_api"},
+        {"backup_model": "deepseek-v4-flash"},
+    ],
+)
+def test_unimplemented_fallback_configuration_is_rejected(payload):
+    with pytest.raises(ValidationError):
+        AgentTaskRoute(runtime="codex", model="gpt-5.6-sol", **payload)
+
+
 def test_empty_overrides_do_not_change_source():
     snapshot = resolve_agent_task_route(
         task_role="director_plan",
         global_route=AgentTaskRoute(runtime="model_api", model="deepseek-v4-flash"),
         project_override=AgentTaskRouteOverride(),
         task_override=AgentTaskRouteOverride(),
+    )
+
+    assert snapshot.source == "global"
+
+
+def test_noop_overrides_do_not_claim_route_source():
+    snapshot = resolve_agent_task_route(
+        task_role="director_plan",
+        global_route=AgentTaskRoute(runtime="model_api", model="deepseek-v4-flash"),
+        project_override=AgentTaskRouteOverride(
+            runtime="model_api", model="deepseek-v4-flash"
+        ),
+        task_override=AgentTaskRouteOverride(fallback="stop"),
     )
 
     assert snapshot.source == "global"

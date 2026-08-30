@@ -10,6 +10,7 @@ from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from novelvideo.text_task_runtime.runtime import (
     CodexStructuredRuntime,
     ModelApiStructuredRuntime,
+    RoutedCodexCliStructuredBackend,
     current_text_task_runtime,
     text_task_runtime_scope,
 )
@@ -98,6 +99,20 @@ def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):
     assert ["-c", 'model_reasoning_effort="high"'] == argv[
         argv.index("-c") : argv.index("-c") + 2
     ]
+
+
+def test_codex_backend_rejects_shell_metacharacters_before_windows_launcher(tmp_path):
+    backend = RoutedCodexCliStructuredBackend(
+        model="gpt-5.6-sol&whoami",
+        codex_bin="codex.cmd",
+    )
+
+    with pytest.raises(ValueError, match="model"):
+        backend.build_argv(
+            cwd=str(tmp_path),
+            output_path=str(tmp_path / "out.txt"),
+            schema_path=None,
+        )
 
 
 def test_model_api_runtime_rejects_direct_snapshot_with_unsupported_skill():

@@ -61,11 +61,15 @@ def resolve_agent_task_route(
     route = global_route
     source = "global"
     if project_override is not None and project_override.model_dump(exclude_none=True):
-        route = _apply_override(route, project_override)
-        source = "project"
+        updated_route = _apply_override(route, project_override)
+        if updated_route != route:
+            source = "project"
+        route = updated_route
     if task_override is not None and task_override.model_dump(exclude_none=True):
-        route = _apply_override(route, task_override)
-        source = "task"
+        updated_route = _apply_override(route, task_override)
+        if updated_route != route:
+            source = "task"
+        route = updated_route
     if route.skill_id or route.skill_version:
         raise ValueError(
             "Task routes do not support skill_id/skill_version with current runtimes"

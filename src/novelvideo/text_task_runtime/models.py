@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 TextTaskRuntimeName = Literal["codex", "model_api"]
-TextTaskFallback = Literal["stop", "retry", "explicit_backup"]
+TextTaskFallback = Literal["stop"]
 TextTaskRouteSource = Literal["global", "project", "task"]
 TextTaskReasoningEffort = Literal[
     "none", "minimal", "low", "medium", "high", "xhigh"
 ]
+TEXT_TASK_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+
+
+def validate_text_task_model_name(value: str) -> str:
+    """Reject values that cannot safely cross Windows command launchers."""
+
+    if re.fullmatch(TEXT_TASK_MODEL_PATTERN, value) is None:
+        raise ValueError("model must be a safe provider model identifier")
+    return value
 
 
 class AgentTaskRoute(BaseModel):
@@ -20,13 +30,11 @@ class AgentTaskRoute(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runtime: TextTaskRuntimeName = "model_api"
-    model: str = Field(default="deepseek-v4-flash", min_length=1)
+    model: str = Field(default="deepseek-v4-flash", pattern=TEXT_TASK_MODEL_PATTERN)
     reasoning_effort: TextTaskReasoningEffort | None = None
     skill_id: str | None = None
     skill_version: str | None = None
     fallback: TextTaskFallback = "stop"
-    backup_runtime: TextTaskRuntimeName | None = None
-    backup_model: str | None = None
 
 
 class AgentTaskRouteOverride(BaseModel):
@@ -35,13 +43,11 @@ class AgentTaskRouteOverride(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runtime: TextTaskRuntimeName | None = None
-    model: str | None = None
+    model: str | None = Field(default=None, pattern=TEXT_TASK_MODEL_PATTERN)
     reasoning_effort: TextTaskReasoningEffort | None = None
     skill_id: str | None = None
     skill_version: str | None = None
     fallback: TextTaskFallback | None = None
-    backup_runtime: TextTaskRuntimeName | None = None
-    backup_model: str | None = None
 
 
 class AgentTaskRoutingConfig(BaseModel):

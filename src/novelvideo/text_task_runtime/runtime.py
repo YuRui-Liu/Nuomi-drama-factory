@@ -16,7 +16,10 @@ from pydantic_ai import Agent, PromptedOutput
 from novelvideo.knowledge_runtime.codex import (
     CodexCliStructuredBackend as _BaseCodexCliStructuredBackend,
 )
-from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+from novelvideo.text_task_runtime.models import (
+    AgentTaskRouteSnapshot,
+    validate_text_task_model_name,
+)
 
 T = TypeVar("T")
 
@@ -58,12 +61,13 @@ class RoutedCodexCliStructuredBackend(_BaseCodexCliStructuredBackend):
     ) -> list[str]:
         from novelvideo.knowledge_runtime.codex import build_codex_exec_argv
 
+        model = validate_text_task_model_name(self.model)
         argv = build_codex_exec_argv(
             codex_bin=self.codex_bin,
             cwd=cwd,
             output_path=output_path,
             schema_path=schema_path,
-            model=self.model,
+            model=model,
         )
         if self.reasoning_effort:
             argv[-1:-1] = [
