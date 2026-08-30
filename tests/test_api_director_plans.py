@@ -127,6 +127,56 @@ def test_list_and_detail_require_viewer_and_serialize_revisions(monkeypatch):
     assert calls == [("project-1", "viewer"), ("project-1", "viewer")]
 
 
+def test_list_and_detail_redact_failed_revision_validation_issue_messages(
+    monkeypatch,
+):
+    revision = _revision(status="failed", passed=False)
+    revision.model_dump = lambda **_kwargs: {
+        "revision_id": "revision-1",
+        "episode": 2,
+        "status": "failed",
+        "validation_report": {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "provider_rejected",
+                    "location": "groups.0",
+                    "severity": "error",
+                    "message": "provider rejected sk-live-secret",
+                }
+            ],
+        },
+        "groups": [],
+    }
+
+    class Store:
+        def list(self, _episode):
+            return [revision]
+
+        def load(self, _episode, _revision_id):
+            return revision
+
+    client, _calls, *_ = _client(monkeypatch, store=Store(), role="viewer")
+
+    listed = client.get("/api/v1/projects/project-1/episodes/2/director-plans")
+    detailed = client.get(
+        "/api/v1/projects/project-1/episodes/2/director-plans/revision-1"
+    )
+
+    for response in (listed, detailed):
+        assert response.status_code == 200
+        assert "sk-live-secret" not in response.text
+        data = response.json()["data"]
+        revision_data = data[0] if isinstance(data, list) else data
+        issue = revision_data["validation_report"]["issues"][0]
+        assert issue == {
+            "code": "provider_rejected",
+            "location": "groups.0",
+            "severity": "error",
+            "message": "provider rejected [redacted]",
+        }
+
+
 def test_detail_missing_is_404_and_invalid_activation_is_409(monkeypatch):
     class Store:
         def load(self, _episode, _revision_id):

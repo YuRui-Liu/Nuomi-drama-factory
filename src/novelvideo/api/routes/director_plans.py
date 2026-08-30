@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,8 +14,14 @@ from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.ports import get_task_backend
 from novelvideo.task_identity import project_task_state_key
+from novelvideo.utils.error_redaction import safe_exception_message
 
 router = APIRouter()
+
+_BARE_API_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:sk)-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
 
 
 def _build_director_plan_store(ctx: Any) -> DirectorPlanStore:
@@ -39,7 +47,25 @@ async def _resolve_source_revision(ctx: Any, episode: int) -> int:
 
 
 def _dump_revision(revision: Any) -> dict[str, Any]:
-    return dict(revision.model_dump(mode="json"))
+    dumped = dict(revision.model_dump(mode="json"))
+    report = dumped.get("validation_report")
+    if not isinstance(report, Mapping):
+        return dumped
+    issues = report.get("issues")
+    if not isinstance(issues, list):
+        return dumped
+
+    safe_issues: list[Any] = []
+    for issue in issues:
+        if not isinstance(issue, Mapping) or "message" not in issue:
+            safe_issues.append(issue)
+            continue
+        safe_issue = dict(issue)
+        message = safe_exception_message(RuntimeError(str(issue["message"])))
+        safe_issue["message"] = _BARE_API_TOKEN.sub("[redacted]", message)
+        safe_issues.append(safe_issue)
+    dumped["validation_report"] = {**report, "issues": safe_issues}
+    return dumped
 
 
 async def _resolve(project: str, user: dict, *, role: str):
