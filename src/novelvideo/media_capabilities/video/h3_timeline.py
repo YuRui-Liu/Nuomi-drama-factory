@@ -23,6 +23,41 @@ class DialogueSource(StrEnum):
     H3_NATIVE = "h3_native"
 
 
+class H3TransitionRule(BaseModel):
+    model_config = _MODEL_CONFIG
+    kind: Literal["hard_cut", "dissolve"] = "hard_cut"
+    frames: int = Field(default=0, ge=0)
+    audio: Literal["none", "j_cut", "l_cut"] = "none"
+    audio_ms: int = Field(default=0, ge=0, le=500)
+    source: str = Field(min_length=1)
+
+
+def transition_for(
+    relation: str,
+    *,
+    has_leading_dialogue: bool = False,
+    has_trailing_ambience: bool = False,
+) -> H3TransitionRule:
+    relation = relation.strip() or "single"
+    kind: Literal["hard_cut", "dissolve"] = (
+        "dissolve" if relation == "time_jump" else "hard_cut"
+    )
+    frames = 8 if kind == "dissolve" else 0
+    if has_leading_dialogue:
+        audio, audio_ms = "j_cut", 300
+    elif has_trailing_ambience:
+        audio, audio_ms = "l_cut", 500
+    else:
+        audio, audio_ms = "none", 0
+    return H3TransitionRule(
+        kind=kind,
+        frames=frames,
+        audio=audio,
+        audio_ms=audio_ms,
+        source=f"relation:{relation}",
+    )
+
+
 class H3DirectorSegment(BaseModel):
     model_config = _MODEL_CONFIG
     segment_id: str = Field(min_length=1)
@@ -144,6 +179,7 @@ class H3DirectorOutputManifest(BaseModel):
     provider_task_id: str | None = None
     workflow_parameters: dict[str, str] = Field(default_factory=dict)
     provider_parameters: dict[str, object] = Field(default_factory=dict)
+    transition_rules: tuple[H3TransitionRule, ...] = ()
     actual_output: dict[str, int] = Field(default_factory=dict)
     original_audio_path: str | None = None
     original_audio_status: str = "not_requested"
@@ -300,6 +336,7 @@ __all__ = [
     "H3CompiledTimeline",
     "H3Timeline",
     "H3TimelineEntry",
+    "H3TransitionRule",
     "build_h3_timeline_data",
     "compile_h3_timeline",
     "frames_for_duration",
@@ -307,5 +344,6 @@ __all__ = [
     "load_h3_director_manifest",
     "save_director_manifest",
     "save_h3_director_manifest",
+    "transition_for",
     "validate_director_segments",
 ]

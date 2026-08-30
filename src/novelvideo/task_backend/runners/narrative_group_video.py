@@ -6,8 +6,9 @@ import asyncio
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from novelvideo.media_capabilities.audio.stem_separator import (
     DemucsStemSeparator,
@@ -579,11 +580,106 @@ async def _separate_stems(video_path: Path, directory: Path) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class SegmentProviderRequest:
+    segment_ids: tuple[str, ...]
+    prompt: str
+    duration_seconds: float
+    dialogue_source: DialogueSource
+    audio_override: str | None
+
+
+@dataclass(frozen=True)
+class SegmentRunResult:
+    segment_id: str
+    status: Literal["completed", "failed"]
+    output_path: str | None = None
+    provider_task_id: str | None = None
+    error: str = ""
+
+
+SegmentTTS = Callable[[H3DirectorSegment], Awaitable[Any]]
+SegmentProvider = Callable[[SegmentProviderRequest], Awaitable[Any]]
+
+
+def video_segment_task_key(project: str, episode: int, segment_id: str) -> str:
+    return (
+        "task:narrative_group_video_segment:"
+        f"project:{project}:episode:{episode}:segment:{segment_id}"
+    )
+
+
+async def run_video_segment(
+    segment: H3DirectorSegment,
+    *,
+    tts: SegmentTTS | None,
+    provider: SegmentProvider,
+    audio_mode: Literal["project_default", "external_tts", "h3_original"] = (
+        "project_default"
+    ),
+) -> SegmentRunResult:
+    has_dialogue = bool(segment.dialogue.strip())
+    use_external_tts = audio_mode == "external_tts" or (
+        audio_mode == "project_default" and has_dialogue
+    )
+    audio_override: str | None = None
+    duration = segment.duration_seconds
+    if use_external_tts:
+        if tts is None:
+            raise ValueError("external_tts requires a segment TTS renderer")
+        rendered = await tts(segment)
+        audio_override = str(getattr(rendered, "audio_path", "") or "").strip()
+        duration = float(getattr(rendered, "duration_seconds", 0) or 0)
+        if not audio_override or duration <= 0:
+            raise ValueError("segment TTS must provide audio_path and actual duration")
+        dialogue_source = DialogueSource.EXTERNAL_TTS
+    else:
+        dialogue_source = DialogueSource.H3_NATIVE
+    prompt = segment.prompt.rstrip() + "\nnon_diegetic_music=N/A"
+    generated = await provider(
+        SegmentProviderRequest(
+            segment_ids=(segment.segment_id,),
+            prompt=prompt,
+            duration_seconds=duration,
+            dialogue_source=dialogue_source,
+            audio_override=audio_override,
+        )
+    )
+    return SegmentRunResult(
+        segment_id=segment.segment_id,
+        status="completed",
+        output_path=str(getattr(generated, "output_path", "") or "") or None,
+        provider_task_id=(
+            str(getattr(generated, "provider_task_id", "") or "") or None
+        ),
+    )
+
+
+async def run_video_segments(
+    segments: tuple[H3DirectorSegment, ...],
+    *,
+    tts: SegmentTTS | None,
+    provider: SegmentProvider,
+) -> tuple[SegmentRunResult, ...]:
+    async def isolated(segment: H3DirectorSegment) -> SegmentRunResult:
+        try:
+            return await run_video_segment(segment, tts=tts, provider=provider)
+        except Exception as exc:
+            return SegmentRunResult(
+                segment_id=segment.segment_id,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    return tuple(await asyncio.gather(*(isolated(segment) for segment in segments)))
+
+
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     project_dir = _project_dir(payload, ctx)
     group_id = str(payload["group_id"])
+    requested_segment_id = str(payload.get("segment_id") or "").strip()
     revision = int(payload["revision"])
     workflow_parameters = dict(payload.get("workflow_parameters") or {})
     if not workflow_parameters:
@@ -614,6 +710,16 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             # one-beat-per-segment interpretation.
             render_state = {**render_state, "video_plan": {}}
         raw_segments = _build_segments(payload, beats, render_state)
+        if requested_segment_id:
+            raw_segments = [
+                segment
+                for segment in raw_segments
+                if segment.segment_id == requested_segment_id
+            ]
+            if not raw_segments:
+                raise ValueError(
+                    f"video segment is unavailable: {requested_segment_id}"
+                )
         if not raw_segments:
             record_stage_result(
                 project_dir, episode, group_id, "video",
@@ -627,7 +733,13 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             }
         segment_beats = _canonical_beats_for_segments(raw_segments, beats)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
-        output = video_dir / f"{group_id}_r{revision}.mp4"
+        segment_suffix = (
+            "_segment_"
+            + hashlib.sha256(requested_segment_id.encode("utf-8")).hexdigest()[:12]
+            if requested_segment_id
+            else ""
+        )
+        output = video_dir / f"{group_id}_r{revision}{segment_suffix}.mp4"
         manifest_path = output.with_suffix(".manifest.json")
         evidence_by_segment: dict[str, dict[str, Any]] = {}
         try:
@@ -870,5 +982,15 @@ def run_narrative_group_video(envelope: dict[str, Any], ctx: ProjectContext) -> 
 
 
 register_project_task_runner("narrative_group_video", run_narrative_group_video)
+register_project_task_runner(
+    "narrative_group_video_segment", run_narrative_group_video
+)
 
-__all__ = ["run_narrative_group_video"]
+__all__ = [
+    "SegmentProviderRequest",
+    "SegmentRunResult",
+    "run_narrative_group_video",
+    "run_video_segment",
+    "run_video_segments",
+    "video_segment_task_key",
+]

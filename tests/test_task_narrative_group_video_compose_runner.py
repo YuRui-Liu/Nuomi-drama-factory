@@ -30,3 +30,27 @@ def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypa
     assert len(calls) == 1
     assert calls[0][0]["task_type"] == "compose_episode"
     assert calls[0][0]["payload"]["beats"] == [{"id": "beat-1", "beat_number": 1}]
+
+
+def test_local_composition_orders_groups_and_segments_and_records_rules():
+    from novelvideo.task_backend.runners.narrative_group_video_compose import (
+        SegmentCompositionItem,
+        build_local_composition_plan,
+    )
+
+    plan = build_local_composition_plan(
+        (
+            SegmentCompositionItem(2, 1, "g2-s1.mp4", "time_jump"),
+            SegmentCompositionItem(
+                1, 2, "g1-s2.mp4", "progressive", has_leading_dialogue=True
+            ),
+            SegmentCompositionItem(1, 1, "g1-s1.mp4", "single"),
+        )
+    )
+
+    assert plan.paths == ("g1-s1.mp4", "g1-s2.mp4", "g2-s1.mp4")
+    assert [(rule.kind, rule.frames, rule.audio, rule.audio_ms) for rule in plan.transitions] == [
+        ("hard_cut", 0, "j_cut", 300),
+        ("dissolve", 8, "none", 0),
+    ]
+    assert all(rule.source.startswith("relation:") for rule in plan.transitions)

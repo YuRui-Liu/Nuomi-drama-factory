@@ -15,6 +15,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     load_h3_director_manifest,
     save_director_manifest,
     validate_director_segments,
+    transition_for,
 )
 from novelvideo.utils.path_resolver import PathResolver
 
@@ -40,6 +41,34 @@ def test_h3_legal_frame_count_uses_24fps_17k_plus_5_ceiling() -> None:
     assert frames_for_duration(5) == 124
     assert frames_for_duration(1) == 39
     assert frames_for_duration(124 / 24) == 124
+
+
+def test_transition_policy_is_deterministic_and_records_audio_edges(tmp_path) -> None:
+    assert transition_for("causal").model_dump() == {
+        "kind": "hard_cut",
+        "frames": 0,
+        "audio": "none",
+        "audio_ms": 0,
+        "source": "relation:causal",
+    }
+    assert transition_for("progressive", has_leading_dialogue=True).audio == "j_cut"
+    assert transition_for("progressive", has_leading_dialogue=True).audio_ms == 300
+    assert transition_for("time_jump").kind == "dissolve"
+    assert transition_for("time_jump").frames == 8
+    assert transition_for("causal", has_trailing_ambience=True).audio == "l_cut"
+    assert transition_for("causal", has_trailing_ambience=True).audio_ms == 500
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1), _segment("s2", 2, 1)])
+    rule = transition_for("time_jump", has_leading_dialogue=True)
+    target = tmp_path / "transition-manifest.json"
+    save_director_manifest(
+        target,
+        H3DirectorOutputManifest(
+            physical_video="episode.mp4",
+            entries=timeline.entries,
+            transition_rules=(rule,),
+        ),
+    )
+    assert load_h3_director_manifest(target).transition_rules == (rule,)
 
 
 def test_compile_timeline_has_stable_cumulative_offsets() -> None:
