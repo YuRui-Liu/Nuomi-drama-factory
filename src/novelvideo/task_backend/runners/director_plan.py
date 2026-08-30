@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 from novelvideo.director_plan.models import SourceSpan
@@ -139,7 +141,132 @@ def _load_asset_migration_context(
     output_dir = getattr(ctx, "output_dir", None)
     if output_dir is None:
         return None, ()
-    return DirectorPlanStore(output_dir).load_active(episode), ()
+    root = Path(output_dir).resolve()
+    active = DirectorPlanStore(root).load_active(episode)
+    if active is None:
+        return None, ()
+    from novelvideo.narrative_groups.service import load_groups
+
+    sidecars = {group.id: group for group in load_groups(root, episode)}
+    assets: list[LegacyShotAsset] = []
+    seen: set[tuple[str, str]] = set()
+    for group in active.groups:
+        sidecar = sidecars.get(group.id)
+        if sidecar is None or (
+            sidecar.director_revision_id
+            and sidecar.director_revision_id != active.revision_id
+        ):
+            continue
+        shots = {shot.id: shot for shot in group.shots}
+        for stage_name in ("render", "sketch"):
+            stage = sidecar.stages.get(stage_name)
+            if stage is None:
+                continue
+            stage_style = str(stage.provider_parameters.get("style_hash") or "")
+            for cell in stage.cell_assets:
+                shot_id = str(cell.get("shot_id") or cell.get("beat_id") or "")
+                shot = shots.get(shot_id)
+                path = _safe_project_asset(root, cell.get("path"))
+                if shot is None or path is None:
+                    continue
+                asset_id = str(cell.get("asset_id") or cell.get("id") or path)
+                key = (asset_id, shot_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                assets.append(
+                    _legacy_asset(
+                        asset_id=asset_id,
+                        asset_path=path,
+                        asset_kind="image",
+                        shot=shot,
+                        scene=group.scene_anchor,
+                        style_hash=str(cell.get("style_hash") or stage_style),
+                    )
+                )
+        video = sidecar.stages.get("video")
+        if video is not None:
+            path = _safe_project_asset(root, video.video_asset)
+            if path is not None:
+                style_hash = str(
+                    video.provider_parameters.get("style_hash")
+                    or _manifest_style_hash(root, video.manifest_asset)
+                )
+                for shot in group.shots:
+                    asset_id = f"video:{sidecar.id}:{video.revision}"
+                    key = (asset_id, shot.id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    assets.append(
+                        _legacy_asset(
+                            asset_id=asset_id,
+                            asset_path=path,
+                            asset_kind="video",
+                            shot=shot,
+                            scene=group.scene_anchor,
+                            style_hash=style_hash,
+                        )
+                    )
+    return active, tuple(assets)
+
+
+def _safe_project_asset(root: Path, stored: Any) -> str | None:
+    value = str(stored or "").strip()
+    if not value:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    return str(resolved)
+
+
+def _manifest_style_hash(root: Path, stored: Any) -> str:
+    path = _safe_project_asset(root, stored)
+    if path is None:
+        return ""
+    manifest = Path(path)
+    if manifest.stat().st_size > 2_000_000:
+        return ""
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    metadata = payload.get("metadata")
+    return str(
+        payload.get("style_hash")
+        or (metadata.get("style_hash") if isinstance(metadata, dict) else "")
+        or ""
+    )
+
+
+def _legacy_asset(
+    *,
+    asset_id: str,
+    asset_path: str,
+    asset_kind: str,
+    shot: Any,
+    scene: str,
+    style_hash: str,
+) -> LegacyShotAsset:
+    return LegacyShotAsset(
+        asset_id=asset_id,
+        asset_path=asset_path,
+        asset_kind=asset_kind,
+        old_shot_id=shot.id,
+        source_span_ids=shot.source_span_ids,
+        subject=shot.subject,
+        scene=scene,
+        action=shot.action,
+        shot_size=shot.shot_size,
+        camera_angle=shot.camera_angle,
+        style_hash=style_hash,
+    )
 
 
 def _validation_report(revision: Any) -> dict[str, Any]:

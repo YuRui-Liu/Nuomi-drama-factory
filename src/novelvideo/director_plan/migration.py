@@ -13,6 +13,8 @@ from .models import DirectorPlanRevision, FrozenModel, ShotPlan
 
 class LegacyShotAsset(FrozenModel):
     asset_id: str
+    asset_path: str
+    asset_kind: Literal["image", "video"] = "image"
     old_shot_id: str
     source_span_ids: tuple[str, ...] = ()
     subject: str = ""
@@ -33,13 +35,17 @@ class MigrationEvidence(FrozenModel):
 
 class MigrationItem(FrozenModel):
     old_asset_id: str
+    old_asset_path: str
+    old_asset_kind: Literal["image", "video"]
     old_shot_id: str
     new_shot_id: str
     score: float = Field(ge=0, le=1)
     confidence: Literal["high", "medium", "low"]
     reuse_mode: Literal["formal", "reference_only"]
-    suggested_decision: Literal["accepted", "review"]
-    decision: Literal["accepted", "review", "rejected", "reference_only"]
+    suggested_decision: Literal["accepted", "review", "unmatched"]
+    decision: Literal[
+        "accepted", "review", "unmatched", "rejected", "reference_only"
+    ]
     manual_decision: Literal["accepted", "rejected", "reference_only"] | None = None
     conflict: bool = False
     evidence: MigrationEvidence
@@ -100,11 +106,17 @@ def match_one(
         "high" if score >= 0.85 else "medium" if score >= 0.65 else "low"
     )
     same_style = asset.style_hash == style_hash
-    suggested: Literal["accepted", "review"] = (
-        "accepted" if confidence == "high" and same_style else "review"
+    suggested: Literal["accepted", "review", "unmatched"] = (
+        "unmatched"
+        if confidence == "low"
+        else "accepted"
+        if confidence == "high" and same_style
+        else "review"
     )
     return MigrationItem(
         old_asset_id=asset.asset_id,
+        old_asset_path=asset.asset_path,
+        old_asset_kind=asset.asset_kind,
         old_shot_id=asset.old_shot_id,
         new_shot_id=shot.id,
         score=score,

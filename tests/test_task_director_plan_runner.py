@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from novelvideo.director_plan.models import ValidationReport
+from novelvideo.director_plan.store import DirectorPlanStore
+from novelvideo.narrative_groups.models import (
+    CellMapping,
+    GridLayout,
+    GroupStageState,
+    NarrativeGroup,
+)
+from novelvideo.narrative_groups.service import save_groups
+
+from director_plan.test_migration import _plan, _shot
 
 
 @pytest.mark.asyncio
@@ -163,6 +176,69 @@ async def test_director_plan_runner_exposes_structured_failure_without_secrets(m
     assert captured.value.error_code == "director_plan_provider_error"
     assert captured.value.validation_report == {"passed": False, "issues": []}
     assert "sk-live-secret" not in str(captured.value)
+
+
+def test_asset_migration_context_collects_real_project_assets_safely(tmp_path: Path):
+    from novelvideo.task_backend.runners import director_plan
+
+    old_plan = _plan("old-revision", (_shot("old-shot"),)).model_copy(
+        update={"validation_report": ValidationReport(passed=True)}
+    )
+    store = DirectorPlanStore(tmp_path)
+    store.save(old_plan)
+    store.activate(1, old_plan.revision_id)
+
+    safe_asset = tmp_path / "assets" / "old-shot.png"
+    safe_asset.parent.mkdir()
+    safe_asset.write_bytes(b"image")
+    unsafe_asset = tmp_path.parent / "outside.png"
+    unsafe_asset.write_bytes(b"outside")
+    save_groups(
+        tmp_path,
+        1,
+        [
+            NarrativeGroup(
+                id="ng-1",
+                ordinal=1,
+                beat_ids=("old-shot",),
+                layout=GridLayout(rows=1, columns=1, capacity=1),
+                cell_to_beat=(CellMapping(cell=0, beat_id="old-shot"),),
+                shot_ids=("old-shot",),
+                director_revision_id=old_plan.revision_id,
+                stages={
+                    "render": GroupStageState(
+                        status="completed",
+                        cell_assets=(
+                            {
+                                "asset_id": "asset-safe",
+                                "beat_id": "old-shot",
+                                "path": str(safe_asset),
+                                "style_hash": "style-a",
+                            },
+                            {
+                                "asset_id": "asset-unsafe",
+                                "beat_id": "old-shot",
+                                "path": str(unsafe_asset),
+                                "style_hash": "style-a",
+                            },
+                        ),
+                    )
+                },
+            )
+        ],
+    )
+
+    loaded_plan, assets = director_plan._load_asset_migration_context(
+        SimpleNamespace(output_dir=tmp_path), 1
+    )
+
+    assert loaded_plan is not None
+    assert loaded_plan.revision_id == old_plan.revision_id
+    assert len(assets) == 1
+    assert assets[0].asset_id == "asset-safe"
+    assert assets[0].old_shot_id == "old-shot"
+    assert assets[0].asset_path == str(safe_asset.resolve())
+    assert assets[0].style_hash == "style-a"
 
 
 @pytest.mark.asyncio

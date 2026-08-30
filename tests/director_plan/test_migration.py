@@ -71,6 +71,7 @@ def _plan(
 def _asset(asset_id: str = "asset-1", *, style_hash: str = "style-a") -> LegacyShotAsset:
     return LegacyShotAsset(
         asset_id=asset_id,
+        asset_path=f"assets/{asset_id}.png",
         old_shot_id="old-shot",
         source_span_ids=("s1",),
         subject="阿远",
@@ -132,7 +133,7 @@ def test_medium_and_low_confidence_matches_require_review() -> None:
     assert medium.confidence in {"medium", "low"}
     assert medium.decision == "review"
     assert low.confidence == "low"
-    assert low.decision == "review"
+    assert low.decision == "unmatched"
 
 
 def test_conflicting_high_candidates_are_all_downgraded_to_review() -> None:
