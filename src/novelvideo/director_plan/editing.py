@@ -39,6 +39,7 @@ def apply_edit(
     """Apply one structural command and return a validated child revision."""
     try:
         groups = _dispatch_edit(revision.groups, command, source_spans)
+        _validate_shot_source_order(groups, source_spans)
     except DirectorEditError:
         raise
     except (KeyError, ValidationError, ValueError) as exc:
@@ -204,6 +205,21 @@ def _source_ids_for_shots(
 ) -> tuple[str, ...]:
     used = {span_id for shot in shots for span_id in shot.source_span_ids}
     return tuple(span.id for span in sorted(source_spans, key=lambda item: item.ordinal) if span.id in used)
+
+
+def _validate_shot_source_order(
+    groups: tuple[NarrativeGroupPlan, ...], source_spans: Sequence[SourceSpan]
+) -> None:
+    ordinal_by_id = {span.id: span.ordinal for span in source_spans}
+    ordinals = [
+        ordinal_by_id[span_id]
+        for group in groups
+        for shot in group.shots
+        for span_id in shot.source_span_ids
+        if span_id in ordinal_by_id
+    ]
+    if any(current < previous for previous, current in zip(ordinals, ordinals[1:])):
+        raise _edit_error("source_order_mismatch", "Edit violates source order.")
 
 
 def _group_index(groups: tuple[NarrativeGroupPlan, ...], group_id: str) -> int:

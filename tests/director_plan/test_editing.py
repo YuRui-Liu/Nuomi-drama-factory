@@ -162,6 +162,15 @@ def test_move_shot_rejects_source_order_reversal() -> None:
         )
 
 
+def test_move_shot_within_group_rejects_shot_source_order_reversal() -> None:
+    with pytest.raises(DirectorEditError, match="source order"):
+        apply_edit(
+            active_plan(),
+            MoveShot(shot_id="shot-1", target_group_id="ng-01", index=1),
+            source_spans(),
+        )
+
+
 def test_reorder_groups_is_validated_against_source_order() -> None:
     with pytest.raises(DirectorEditError, match="source order"):
         apply_edit(
