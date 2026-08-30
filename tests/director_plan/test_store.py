@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import queue
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -118,21 +120,58 @@ def test_concurrent_processes_cannot_overwrite_same_revision(tmp_path: Path) -> 
         )
         for source_hash in ("sha256:one", "sha256:two")
     ]
-    for process in processes:
-        process.start()
-    for _ in processes:
-        ready.get(timeout=10)
-    start.set()
-    for process in processes:
-        process.join(timeout=15)
+    deadline = time.monotonic() + 60
+    queue_stage = "starting processes"
 
-    assert [process.exitcode for process in processes] == [0, 0]
-    outcomes = sorted(results.get(timeout=5)[0] for _ in processes)
-    assert outcomes == ["saved", "value_error"]
-    assert DirectorPlanStore(tmp_path).load(1, "race").source_script_hash in {
-        "sha256:one",
-        "sha256:two",
-    }
+    def remaining_time() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    def diagnostics() -> str:
+        return (
+            f"queue_stage={queue_stage}; "
+            f"exitcodes={[process.exitcode for process in processes]}"
+        )
+
+    started_processes = []
+    try:
+        for process in processes:
+            process.start()
+            started_processes.append(process)
+        for index, _ in enumerate(processes, start=1):
+            queue_stage = f"ready {index}/{len(processes)}"
+            try:
+                ready.get(timeout=remaining_time())
+            except queue.Empty:
+                pytest.fail(f"timed out waiting for child readiness; {diagnostics()}")
+
+        queue_stage = "children running"
+        start.set()
+        for index, process in enumerate(processes, start=1):
+            queue_stage = f"join {index}/{len(processes)}"
+            process.join(timeout=remaining_time())
+            assert not process.is_alive(), f"timed out joining child; {diagnostics()}"
+
+        assert [process.exitcode for process in processes] == [0, 0], diagnostics()
+        outcomes = []
+        for index, _ in enumerate(processes, start=1):
+            queue_stage = f"result {index}/{len(processes)}"
+            try:
+                outcomes.append(results.get(timeout=remaining_time())[0])
+            except queue.Empty:
+                pytest.fail(f"timed out waiting for child result; {diagnostics()}")
+
+        assert sorted(outcomes) == ["saved", "value_error"], diagnostics()
+        assert DirectorPlanStore(tmp_path).load(1, "race").source_script_hash in {
+            "sha256:one",
+            "sha256:two",
+        }, diagnostics()
+    finally:
+        start.set()
+        for process in started_processes:
+            if process.is_alive():
+                process.terminate()
+        for process in started_processes:
+            process.join(timeout=remaining_time())
 
 
 def test_load_missing_revision_raises_file_not_found(tmp_path: Path) -> None:
