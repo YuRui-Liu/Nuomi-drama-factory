@@ -4,11 +4,13 @@ from collections.abc import Callable
 from typing import Any
 
 from .models import (
+    AssetMigrationReport,
     DirectorPlanRevision,
     NarrativeGroupPlan,
     ValidationIssue,
     ValidationReport,
 )
+from .migration import LegacyShotAsset, match_assets
 from .planner import (
     DirectorPlanContractError,
     DirectorPlanDraft,
@@ -34,6 +36,8 @@ class DirectorPlanService:
         input: DirectorPlanInput,
         *,
         on_stage: Callable[[str], None] | None = None,
+        old_plan: DirectorPlanRevision | None = None,
+        assets: tuple[LegacyShotAsset, ...] = (),
     ) -> DirectorPlanRevision:
         planner_model = str(getattr(self._planner, "model_name", "") or "").strip()
         if planner_model:
@@ -124,6 +128,21 @@ class DirectorPlanService:
         terminal = self._make_revision(
             input, groups, parent_revision_id=validating.revision_id
         ).model_copy(update={"status": final_status, "validation_report": report})
+        if report.passed and old_plan is not None:
+            migration = match_assets(
+                old_plan=old_plan,
+                new_plan=terminal,
+                assets=assets,
+            )
+            terminal = terminal.model_copy(
+                update={
+                    "migration_report": AssetMigrationReport(
+                        items=tuple(
+                            item.model_dump(mode="json") for item in migration.items
+                        )
+                    )
+                }
+            )
         self._store.save(terminal)
         return terminal
 

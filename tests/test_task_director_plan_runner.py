@@ -15,6 +15,8 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
 
     progress_events: list[tuple[float, str]] = []
     input_value = object()
+    old_plan = object()
+    assets = (object(),)
     revision = SimpleNamespace(
         revision_id="revision-1",
         status="review_required",
@@ -25,8 +27,10 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
     )
 
     class Service:
-        async def create_draft(self, value, *, on_stage):
+        async def create_draft(self, value, *, on_stage, old_plan, assets):
             assert value is input_value
+            assert old_plan is old_plan_value
+            assert assets is assets_value
             assert progress_events == [(0.05, "M1 source_locked")]
             on_stage("episode_planned")
             assert progress_events[-1] == (0.55, "M1 episode_planned")
@@ -43,6 +47,12 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
         director_plan,
         "_build_director_plan_service",
         lambda _ctx: Service(),
+    )
+    old_plan_value, assets_value = old_plan, assets
+    monkeypatch.setattr(
+        director_plan,
+        "_load_asset_migration_context",
+        lambda _ctx, _episode: (old_plan_value, assets_value),
     )
     monkeypatch.setattr(
         director_plan,
@@ -67,6 +77,7 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
         (0.05, "M1 source_locked"),
         (0.55, "M1 episode_planned"),
         (0.8, "M1 validated"),
+        (0.85, "M2 assets_matched"),
         (1.0, "M1 review_ready"),
     ]
     assert result == {
@@ -83,7 +94,7 @@ async def test_director_plan_runner_enforces_180_second_timeout(monkeypatch):
     seen: dict[str, float] = {}
 
     class Service:
-        async def create_draft(self, _value, *, on_stage):
+        async def create_draft(self, _value, *, on_stage, old_plan, assets):
             on_stage("episode_planned")
             on_stage("validated")
             return SimpleNamespace(
@@ -126,7 +137,7 @@ async def test_director_plan_runner_exposes_structured_failure_without_secrets(m
     from novelvideo.task_backend.runners import director_plan
 
     class Service:
-        async def create_draft(self, _value, *, on_stage):
+        async def create_draft(self, _value, *, on_stage, old_plan, assets):
             error = RuntimeError("provider rejected sk-live-secret")
             error.code = "director_plan_provider_error"
             raise error

@@ -1,0 +1,153 @@
+"""Deterministic, explainable matching of legacy shot assets to a new plan."""
+
+from __future__ import annotations
+
+from collections import Counter
+from difflib import SequenceMatcher
+from typing import Literal
+
+from pydantic import Field
+
+from .models import DirectorPlanRevision, FrozenModel, ShotPlan
+
+
+class LegacyShotAsset(FrozenModel):
+    asset_id: str
+    old_shot_id: str
+    source_span_ids: tuple[str, ...] = ()
+    subject: str = ""
+    scene: str = ""
+    action: str = ""
+    shot_size: str = ""
+    camera_angle: str = ""
+    style_hash: str
+
+
+class MigrationEvidence(FrozenModel):
+    source_overlap: float = Field(ge=0, le=1)
+    subject_overlap: float = Field(ge=0, le=1)
+    scene_match: float = Field(ge=0, le=1)
+    action_similarity: float = Field(ge=0, le=1)
+    shot_semantic_similarity: float = Field(ge=0, le=1)
+
+
+class MigrationItem(FrozenModel):
+    old_asset_id: str
+    old_shot_id: str
+    new_shot_id: str
+    score: float = Field(ge=0, le=1)
+    confidence: Literal["high", "medium", "low"]
+    reuse_mode: Literal["formal", "reference_only"]
+    suggested_decision: Literal["accepted", "review"]
+    decision: Literal["accepted", "review", "rejected", "reference_only"]
+    manual_decision: Literal["accepted", "rejected", "reference_only"] | None = None
+    conflict: bool = False
+    evidence: MigrationEvidence
+
+
+class MigrationReport(FrozenModel):
+    items: tuple[MigrationItem, ...] = ()
+
+
+def _set_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> float:
+    left_set = {value.strip() for value in left if value.strip()}
+    right_set = {value.strip() for value in right if value.strip()}
+    union = left_set | right_set
+    return len(left_set & right_set) / len(union) if union else 0.0
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left = left.strip().casefold()
+    right = right.strip().casefold()
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _semantic_similarity(asset: LegacyShotAsset, shot: ShotPlan) -> float:
+    return (
+        float(asset.shot_size.strip().casefold() == shot.shot_size.strip().casefold())
+        + float(
+            asset.camera_angle.strip().casefold()
+            == shot.camera_angle.strip().casefold()
+        )
+    ) / 2
+
+
+def match_one(
+    asset: LegacyShotAsset,
+    shot: ShotPlan,
+    *,
+    scene: str,
+    style_hash: str,
+) -> MigrationItem:
+    evidence = MigrationEvidence(
+        source_overlap=_set_overlap(asset.source_span_ids, shot.source_span_ids),
+        subject_overlap=_text_similarity(asset.subject, shot.subject),
+        scene_match=float(asset.scene.strip().casefold() == scene.strip().casefold()),
+        action_similarity=_text_similarity(asset.action, shot.action),
+        shot_semantic_similarity=_semantic_similarity(asset, shot),
+    )
+    score = round(
+        0.35 * evidence.source_overlap
+        + 0.20 * evidence.subject_overlap
+        + 0.15 * evidence.scene_match
+        + 0.15 * evidence.action_similarity
+        + 0.15 * evidence.shot_semantic_similarity,
+        6,
+    )
+    confidence: Literal["high", "medium", "low"] = (
+        "high" if score >= 0.85 else "medium" if score >= 0.65 else "low"
+    )
+    same_style = asset.style_hash == style_hash
+    suggested: Literal["accepted", "review"] = (
+        "accepted" if confidence == "high" and same_style else "review"
+    )
+    return MigrationItem(
+        old_asset_id=asset.asset_id,
+        old_shot_id=asset.old_shot_id,
+        new_shot_id=shot.id,
+        score=score,
+        confidence=confidence,
+        reuse_mode="formal" if same_style else "reference_only",
+        suggested_decision=suggested,
+        decision=suggested,
+        evidence=evidence,
+    )
+
+
+def match_assets(
+    *,
+    old_plan: DirectorPlanRevision,
+    new_plan: DirectorPlanRevision,
+    assets: tuple[LegacyShotAsset, ...],
+) -> MigrationReport:
+    old_shot_ids = {
+        shot.id for group in old_plan.groups for shot in group.shots
+    }
+    candidates = tuple(asset for asset in assets if asset.old_shot_id in old_shot_ids)
+    items: list[MigrationItem] = []
+    for group in new_plan.groups:
+        style_hash = group.style_snapshot_id or new_plan.project_style_snapshot_id
+        for shot in group.shots:
+            ranked = sorted(
+                (
+                    match_one(asset, shot, scene=group.scene_anchor, style_hash=style_hash)
+                    for asset in candidates
+                ),
+                key=lambda item: (-item.score, item.old_asset_id),
+            )
+            if ranked:
+                items.append(ranked[0])
+
+    accepted_counts = Counter(
+        item.old_asset_id for item in items if item.decision == "accepted"
+    )
+    return MigrationReport(
+        items=tuple(
+            item.model_copy(update={"decision": "review", "conflict": True})
+            if accepted_counts[item.old_asset_id] > 1
+            else item
+            for item in items
+        )
+    )

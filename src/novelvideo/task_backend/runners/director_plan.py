@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from novelvideo.director_plan.models import SourceSpan
+from novelvideo.director_plan.migration import LegacyShotAsset
 from novelvideo.director_plan.planner import DirectorPlanInput, DirectorPlanner
 from novelvideo.director_plan.service import DirectorPlanService
 from novelvideo.director_plan.store import DirectorPlanStore
@@ -132,6 +133,15 @@ def _build_director_plan_service(ctx: ProjectContext) -> DirectorPlanService:
     return DirectorPlanService(DirectorPlanStore(ctx.output_dir), DirectorPlanner())
 
 
+def _load_asset_migration_context(
+    ctx: ProjectContext, episode: int
+) -> tuple[Any | None, tuple[LegacyShotAsset, ...]]:
+    output_dir = getattr(ctx, "output_dir", None)
+    if output_dir is None:
+        return None, ()
+    return DirectorPlanStore(output_dir).load_active(episode), ()
+
+
 def _validation_report(revision: Any) -> dict[str, Any]:
     report = revision.validation_report
     if hasattr(report, "model_dump"):
@@ -162,6 +172,7 @@ async def _run_director_plan(
     input_value = await _build_director_plan_input(payload, ctx)
     progress(0.05, "M1 source_locked")
     service = _build_director_plan_service(ctx)
+    old_plan, assets = _load_asset_migration_context(ctx, episode)
     try:
         revision = await asyncio.wait_for(
             service.create_draft(
@@ -170,6 +181,8 @@ async def _run_director_plan(
                     0.55 if stage == "episode_planned" else 0.8,
                     f"M1 {stage}",
                 ),
+                old_plan=old_plan,
+                assets=assets,
             ),
             timeout=DIRECTOR_PLAN_TIMEOUT_SECONDS,
         )
@@ -185,6 +198,7 @@ async def _run_director_plan(
         raise DirectorPlanTaskError(
             "DIRECTOR_PLAN_VALIDATION_FAILED", validation_report=report
         )
+    progress(0.85, "M2 assets_matched")
     progress(1.0, "M1 review_ready")
     return {
         "revision_id": str(revision.revision_id),
