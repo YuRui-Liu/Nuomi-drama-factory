@@ -115,10 +115,10 @@ describe("director plan query contract", () => {
     );
     const migration = renderHook(() => useDirectorPlanMigration("demo", 1, "rev-2"), { wrapper });
 
-    await waitFor(() => expect(list.result.current.data?.data).toHaveLength(1));
-    await waitFor(() => expect(detail.result.current.data?.data.revision_id).toBe("rev-2"));
-    await waitFor(() => expect(comparison.result.current.data?.data.base).toBeDefined());
-    await waitFor(() => expect(migration.result.current.data?.data.items).toEqual([]));
+    await waitFor(() => expect(list.result.current.data?.ok && list.result.current.data.data).toHaveLength(1));
+    await waitFor(() => expect(detail.result.current.data?.ok && detail.result.current.data.data.revision_id).toBe("rev-2"));
+    await waitFor(() => expect(comparison.result.current.data?.ok && comparison.result.current.data.data.base).toBeDefined());
+    await waitFor(() => expect(migration.result.current.data?.ok && migration.result.current.data.data.items).toEqual([]));
 
     expect(directorPlanKeys.detail("demo", 1, "rev-2")).toEqual([
       "projects", "demo", "episodes", 1, "director-plans", "rev-2",

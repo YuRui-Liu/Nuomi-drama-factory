@@ -51,7 +51,7 @@ export function DirectorReviewWorkbench({ project, episode, onClose }: {
   onClose: () => void;
 }) {
   const plans = useDirectorPlans(project, episode);
-  const revisions = plans.data?.data ?? [];
+  const revisions = plans.data?.ok ? plans.data.data : [];
   const [selectedId, setSelectedId] = useState("");
   const selected = revisions.find((item) => item.revision_id === selectedId)
     ?? newestReviewRevision(revisions);
@@ -77,8 +77,10 @@ export function DirectorReviewWorkbench({ project, episode, onClose }: {
   const updateMigration = useUpdateDirectorPlanMigration(project, episode);
   const pending = create.isPending || edit.isPending || activate.isPending || abandon.isPending || updateMigration.isPending;
 
-  const compared = comparison.data?.data;
-  const migrationReport = migration.data?.data ?? selected?.migration_report ?? { items: [] };
+  const compared = comparison.data?.ok ? comparison.data.data : undefined;
+  const migrationReport = migration.data?.ok
+    ? migration.data.data
+    : selected?.migration_report ?? { items: [] };
   const orderedRevisions = useMemo(
     () => [...revisions].sort((a, b) => b.created_at.localeCompare(a.created_at)),
     [revisions],
