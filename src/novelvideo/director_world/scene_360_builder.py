@@ -132,6 +132,7 @@ def build_prompt(
     avoid_instructions = (
         style_preset.get("gemini_avoid_instructions") or style_preset.get("negative_prompt") or ""
     )
+    has_image_references = has_master or has_reverse or has_spatial_layout
     reference_lines = ["INPUT IMAGE ROLES:"]
     if has_master:
         reference_lines.extend(
@@ -249,7 +250,10 @@ def build_prompt(
             ]
         )
     reference_block = "\n".join(reference_lines)
-    scene_description = clean_scene_description_for_360(scene_description)
+    scene_description = clean_scene_description_for_360(
+        scene_description,
+        has_image_references=has_image_references,
+    )
     layer_mode = str(layer_mode or "full").strip().lower()
     if layer_mode == "shell_only":
         layer_contract = """LAYER MODE: SCENE SHELL ONLY
@@ -265,13 +269,20 @@ def build_prompt(
 - The result will become an empty scene shell for camera/blocking tests; do not
   imply or reserve any later object-layer reconstruction."""
     else:
+        environment_sources = (
+            "the scene description and attached visual references"
+            if has_image_references
+            else "the scene description"
+        )
         layer_contract = """LAYER MODE: FULL ENVIRONMENT
 - Generate the complete environment, including only the fixed architecture,
   fixtures, furniture/object groups, and reusable action zones represented by
-  the scene description and master visual reference.
+  {environment_sources}.
 - Do not add extra furniture, counters, fixtures, doors, windows, props, clutter,
   or set dressing because of genre/location expectations.
-- No people, no characters, no story action."""
+- No people, no characters, no story action.""".format(
+            environment_sources=environment_sources
+        )
     if has_master and has_reverse:
         spatial_contract = (
             f"""SCENE SPATIAL CONTRACT:
@@ -363,7 +374,7 @@ by master.png and reverse_master.png."""
   of the panorama. They are opposite directions, exactly 180° apart.
 - Do NOT make a triangular/fan-shaped room where front and back are only 90° apart.
   This is one shared camera point with two opposite 180° hemispheres."""
-    else:
+    elif has_image_references:
         spatial_contract = ""
         overlap_contract = ""
         scene_block = f"""SCENE:
@@ -383,6 +394,44 @@ by master.png and reverse_master.png."""
   master image is attached.
 - The panorama must still represent a full 360-degree space around one fixed camera,
   not a flat wide shot or triangular room."""
+    else:
+        spatial_contract = ""
+        overlap_contract = ""
+        scene_block = f"""TEXT-ONLY SCENE CONTRACT:
+{scene_description}"""
+        geometry_priority = """TEXT-ONLY GEOMETRY / STYLE PRIORITY:
+- Scene description is the sole geometry and scene-identity source.
+- Project style preset is the sole visual-style source.
+- No master, reverse, floorplan, spatial-layout, or other reference image is required.
+- Infer only missing continuity needed to form one plausible closed 360-degree space.
+- Do not invent extra rooms, openings, furniture, fixtures, props, or set dressing."""
+        azimuth_contract = """TEXT-ONLY AZIMUTH CONTRACT:
+- Treat the description's front, right, back, and left directions as successive
+  90-degree yaw regions around one fixed camera.
+- Keep each named fixture in its described direction and render every unique fixture once.
+- The panorama must represent a full 360-degree space, not a flat wide shot or triangular room."""
+
+    if has_image_references:
+        seam_reference_contract = """- When master+reverse references are attached, the left/right seam is a safe
+  low-detail side wall continuation. It must not cut or duplicate a reverse
+  hallway, doorway, display panel, sign, cabinet, or other unique fixture.
+  Explicit SHARED OVERLAP anchors may be seam-adjacent only if they merge into
+  one physical object in a 360 viewer, not one copy on each panorama edge.
+- When master+reverse references are NOT attached, the first and last columns must
+  depict the same continuous surface/material and should avoid cutting a unique object."""
+        style_contract = """- Match the attached master image style exactly when present:
+  same linework density, mixed-media texture, color treatment, lighting mood,
+  material rendering, and animated-background finish.
+- Do not invent new readable text. Preserve existing simple numeric marks or
+  abstract signage visible in attached references.
+- Signs or posters may use abstract marks inspired by attached references, but do
+  not rely on new readable text."""
+    else:
+        seam_reference_contract = """- The first and last columns must depict the same
+  continuous surface/material and should avoid cutting a unique object."""
+        style_contract = """- Follow the project style preset consistently across the full panorama.
+- Do not request, assume, or describe any missing reference image.
+- Do not invent readable text; signs and posters may contain abstract unreadable marks only."""
     return f"""Generate a 360-degree equirectangular panorama image in exact 2:1
 aspect ratio for scene `{scene_name}`.
 
@@ -406,13 +455,7 @@ PROJECTION REQUIREMENTS:
 - Camera is fixed at the center of the room at normal human eye height.
 - Full 360-degree environment around the camera.
 - Left and right edges must connect seamlessly with no visible seam.
-- When master+reverse references are attached, the left/right seam is a safe
-  low-detail side wall continuation. It must not cut or duplicate a reverse
-  hallway, doorway, display panel, sign, cabinet, or other unique fixture.
-  Explicit SHARED OVERLAP anchors may be seam-adjacent only if they merge into
-  one physical object in a 360 viewer, not one copy on each panorama edge.
-- When master+reverse references are NOT attached, the first and last columns must
-  depict the same continuous surface/material and should avoid cutting a unique object.
+{seam_reference_contract}
 - Horizon must be level and centered.
 - Use normal VR panorama projection: no single flat wide shot, no 4-panel sheet,
   no cubemap atlas, no borders.
@@ -426,16 +469,10 @@ PROJECTION REQUIREMENTS:
   labels, mirrors, sliced objects, or heavy stretching.
 
 STYLE CONTRACT:
-- Match the master image style exactly when a master reference is attached:
-  same linework density, mixed-media texture, color treatment, lighting mood,
-  material rendering, and animated-background finish.
+{style_contract}
 - Do not drift into photorealism, live-action, clean 3D render, game asset,
   or glossy architectural visualization.
 - No people, no characters, no story action.
-- Do not invent new readable text. Preserve existing simple numeric marks or
-  abstract signage already visible in the master/reverse references.
-- Signs or posters may use abstract marks inspired by the master/reverse, but do
-  not rely on new readable text.
 
 PROJECT STYLE PRESET:
 {style_instructions}
@@ -453,7 +490,11 @@ at seam, no giant close foreground object, no photorealism.
 """
 
 
-def clean_scene_description_for_360(scene_description: str) -> str:
+def clean_scene_description_for_360(
+    scene_description: str,
+    *,
+    has_image_references: bool = True,
+) -> str:
     """Remove voxel/DirectorWorld control language before image panorama generation."""
     raw = str(scene_description or "").strip()
     if not raw:
@@ -470,6 +511,14 @@ def clean_scene_description_for_360(scene_description: str) -> str:
         "不要放 actor",
         "不要放 prop",
     )
+    text_only_reference_markers = (
+        "master 图代表",
+        "reverse 图应代表",
+        "master 视觉风格",
+        "master visual",
+        "reverse visual",
+        "spatial_layout",
+    )
     lines: list[str] = []
     for line in raw.splitlines():
         text = line.strip()
@@ -477,6 +526,10 @@ def clean_scene_description_for_360(scene_description: str) -> str:
             continue
         lowered = text.lower()
         if any(marker in lowered for marker in blocked_markers):
+            continue
+        if not has_image_references and any(
+            marker in lowered for marker in text_only_reference_markers
+        ):
             continue
         lines.append(text)
     return "\n".join(lines).strip() or DEFAULT_SCENE_DESCRIPTION

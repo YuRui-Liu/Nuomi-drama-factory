@@ -74,6 +74,28 @@ def _find_identity(character, identity_id: str, identity_name: str):
     return None
 
 
+def _character_portrait_face_prompt(character: Any) -> str:
+    explicit = str(getattr(character, "face_prompt", "") or "").strip()
+    if explicit:
+        return explicit
+
+    context_parts = [
+        f"name: {str(getattr(character, 'name', '') or '').strip()}",
+        f"gender: {str(getattr(character, 'gender', '') or '').strip()}",
+        f"age group: {str(getattr(character, 'age_group', '') or '').strip()}",
+        f"body type: {str(getattr(character, 'body_type', '') or '').strip()}",
+        f"role: {str(getattr(character, 'role', '') or '').strip()}",
+        f"source description: {str(getattr(character, 'description', '') or '').strip()}",
+    ]
+    context = "; ".join(part for part in context_parts if not part.endswith(": "))
+    return (
+        "Face details were not specified in the imported source. Design one stable "
+        f"reusable facial identity consistent with this character context: {context}. "
+        "Use natural facial proportions and distinctive, repeatable features; do not "
+        "add clothing, props, action, or an exaggerated expression."
+    )
+
+
 async def _generate_grsai_image(
     *, model: str, prompt: str, output_path: str | Path,
     reference_paths: list[str] | None = None,
@@ -219,9 +241,7 @@ async def _generate_character_portrait(
     scope: str,
     update,
 ) -> Path:
-    face_prompt = str(character.face_prompt or "").strip()
-    if not face_prompt:
-        raise RuntimeError("请先设置面部特征 (face_prompt)")
+    face_prompt = _character_portrait_face_prompt(character)
     char_assets_dir = output_dir / "assets" / "characters" / character.name
     portrait_path = char_assets_dir / "portrait.png"
     temp_dir = char_assets_dir / f".tmp_portrait_{_asset_suffix()}"

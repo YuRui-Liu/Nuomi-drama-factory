@@ -92,3 +92,46 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert calls["sqlite_closed"] is True
     assert calls["grsai"]["model"] == "gpt-image-2"
     assert "newapi_gpt_image2" not in str(calls["grsai"])
+
+
+@pytest.mark.asyncio
+async def test_character_portrait_designs_face_when_import_has_no_face_prompt(
+    monkeypatch, tmp_path
+):
+    from novelvideo.models import NovelCharacter
+    from novelvideo.task_backend.runners import character_image
+
+    character = NovelCharacter(
+        name="林默",
+        gender="男",
+        age_group="youth",
+        body_type="清瘦",
+        description="二十多岁的广播站值班员，神情警觉",
+        face_prompt="",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_grsai_image(**kwargs):
+        captured.update(kwargs)
+        output = Path(kwargs["output_path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"png")
+        return output
+
+    monkeypatch.setattr(character_image, "_generate_grsai_image", fake_grsai_image)
+
+    output = await character_image._generate_character_portrait(
+        character=character,
+        ethnicity="Chinese",
+        output_dir=tmp_path,
+        style="post_apocalyptic",
+        model="gpt-image-2",
+        task_type="character_portrait",
+        scope="character:林默:portrait",
+        update=lambda *_args: None,
+    )
+
+    assert output.read_bytes() == b"png"
+    assert "林默" in str(captured["prompt"])
+    assert "广播站值班员" in str(captured["prompt"])
+    assert "stable reusable facial identity" in str(captured["prompt"])
