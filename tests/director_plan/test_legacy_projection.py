@@ -57,10 +57,13 @@ def _group(
 
 
 def _activate(
-    project_dir: Path, groups: tuple[NarrativeGroupPlan, ...]
+    project_dir: Path,
+    groups: tuple[NarrativeGroupPlan, ...],
+    *,
+    revision_id: str = "rev-active",
 ) -> DirectorPlanRevision:
     revision = DirectorPlanRevision(
-        revision_id="rev-active",
+        revision_id=revision_id,
         episode=1,
         status="review_required",
         source_script_hash="sha256:abc",
@@ -174,11 +177,14 @@ def test_active_projection_preserves_same_id_legacy_generation_state(
                 ordinal=1,
                 beat_ids=("span-1",),
                 layout=GridLayout(rows=1, columns=1, capacity=1),
-                cell_to_beat=(CellMapping(cell=0, beat_id="span-1"),),
+                cell_to_beat=(CellMapping(cell=0, beat_id="shot-1"),),
                 video_plan=video_plan,
                 video_settings=video_settings,
                 stages=stages,
                 errors=({"code": "kept"},),
+                source_span_ids=("span-1",),
+                shot_ids=("shot-1",),
+                director_revision_id="rev-active",
             )
         ],
     )
@@ -193,3 +199,95 @@ def test_active_projection_preserves_same_id_legacy_generation_state(
     assert projected.video_settings == video_settings
     assert projected.stages == stages
     assert projected.errors == ({"code": "kept"},)
+
+
+def test_active_new_group_can_advance_and_persist_generation_revision(
+    tmp_path: Path,
+) -> None:
+    _activate(
+        tmp_path,
+        (_group("director-new", 1, ("span-1",), ("shot-1",)),),
+    )
+
+    queued, revision = service.advance_revision(
+        tmp_path, 1, "director-new", "sketch"
+    )
+
+    assert revision == 1
+    assert queued.stages["sketch"].status == "queued"
+    [persisted] = service.load_groups(tmp_path, 1)
+    assert persisted.id == "director-new"
+    assert persisted.shot_ids == ("shot-1",)
+    assert persisted.stages["sketch"].revision == 1
+
+
+def test_active_projection_clears_stale_generation_state_when_structure_changes(
+    tmp_path: Path,
+) -> None:
+    settings = VideoSettings(
+        workflow_id="runninghub:minimax-h3",
+        revision=3,
+        overrides={"resolution": "1080p"},
+    )
+    stale_plan = VideoPlan(
+        revision=4,
+        source="manual",
+        units=(
+            VideoPlanUnit(
+                id="unit-01",
+                beat_ids=("span-1",),
+                mode="i2va",
+                duration_seconds=5,
+                reason="stale",
+            ),
+        ),
+        total_duration_seconds=5,
+    )
+    stale_stages = {
+        "sketch": GroupStageState(
+            status="completed", revision=2, grid_asset="old-grid.png"
+        ),
+        "render": GroupStageState(status="completed", revision=2),
+        "video": GroupStageState(
+            status="completed", revision=4, video_asset="old-video.mp4"
+        ),
+    }
+    service.save_groups(
+        tmp_path,
+        1,
+        [
+            NarrativeGroup(
+                id="director-a",
+                ordinal=1,
+                beat_ids=("span-1",),
+                layout=GridLayout(rows=1, columns=1, capacity=1),
+                cell_to_beat=(CellMapping(cell=0, beat_id="shot-old"),),
+                video_plan=stale_plan,
+                video_settings=settings,
+                stages=stale_stages,
+                errors=({"code": "stale"},),
+                source_span_ids=("span-1",),
+                shot_ids=("shot-old",),
+                director_revision_id="rev-old",
+            )
+        ],
+    )
+    _activate(
+        tmp_path,
+        (_group("director-a", 1, ("span-1", "span-2"), ("shot-new",)),),
+        revision_id="rev-new",
+    )
+
+    [projected] = service.load_effective_groups(tmp_path, 1, [])
+
+    assert projected.video_settings == settings
+    assert projected.video_plan == VideoPlan()
+    assert projected.stages == {
+        "sketch": GroupStageState(),
+        "render": GroupStageState(),
+        "video": GroupStageState(),
+    }
+    assert projected.errors == ()
+    assert projected.source_span_ids == ("span-1", "span-2")
+    assert projected.shot_ids == ("shot-new",)
+    assert projected.director_revision_id == "rev-new"

@@ -358,17 +358,45 @@ def load_effective_groups(
     if active is None:
         return ensure_groups(project_dir, episode, legacy_beats)
 
-    previous_by_id = (
-        {group.id: group for group in load_groups(project_path, episode)}
-        if sidecar_path(project_path, episode).is_file()
-        else {}
+    return _materialize_active_groups(project_path, episode, active)
+
+
+def _empty_stages() -> dict[StageName, GroupStageState]:
+    return {
+        "sketch": GroupStageState(),
+        "render": GroupStageState(),
+        "video": GroupStageState(),
+    }
+
+
+def _same_projection_structure(
+    previous: NarrativeGroup,
+    projected: NarrativeGroup,
+) -> bool:
+    return bool(
+        previous.director_revision_id == projected.director_revision_id
+        and previous.beat_ids == projected.beat_ids
+        and previous.source_span_ids == projected.source_span_ids
+        and previous.shot_ids == projected.shot_ids
+        and previous.layout == projected.layout
+        and previous.cell_to_beat == projected.cell_to_beat
     )
-    projected = []
-    for group in active.groups:
-        shot_ids = tuple(shot.id for shot in group.shots)
-        previous = previous_by_id.get(group.id)
-        projected.append(
-            NarrativeGroup(
+
+
+def _materialize_active_groups(
+    project_path: Path,
+    episode: int,
+    active: Any,
+) -> list[NarrativeGroup]:
+    """Synchronize the active DirectorPlan projection into the mutable sidecar."""
+    with _sidecar_guard(project_path, episode):
+        previous_groups = load_groups(project_path, episode)
+        previous_by_id = {group.id: group for group in previous_groups}
+        projected = []
+        for group in active.groups:
+            shot_ids = tuple(shot.id for shot in group.shots)
+            previous = previous_by_id.get(group.id)
+            base = NarrativeGroup(
                 id=group.id,
                 ordinal=group.ordinal,
                 beat_ids=group.source_span_ids,
@@ -377,28 +405,40 @@ def load_effective_groups(
                     CellMapping(cell=cell, beat_id=shot_id)
                     for cell, shot_id in enumerate(shot_ids)
                 ),
-                video_plan=(previous.video_plan if previous else VideoPlan()),
                 video_settings=(
                     previous.video_settings if previous else VideoSettings()
                 ),
-                stages=(
-                    previous.stages
-                    if previous
-                    else {
-                        "sketch": GroupStageState(),
-                        "render": GroupStageState(),
-                        "video": GroupStageState(),
-                    }
-                ),
-                errors=(previous.errors if previous else ()),
                 source_span_ids=group.source_span_ids,
                 shot_ids=shot_ids,
                 objective=group.objective,
                 visible_turn=group.visible_turn,
                 director_revision_id=active.revision_id,
             )
-        )
-    return projected
+            if previous is not None and _same_projection_structure(previous, base):
+                base = replace(
+                    base,
+                    video_plan=previous.video_plan,
+                    stages=previous.stages,
+                    errors=previous.errors,
+                )
+            else:
+                base = replace(base, stages=_empty_stages())
+            projected.append(base)
+
+        if projected != previous_groups:
+            save_groups(project_path, episode, projected)
+        return projected
+
+
+def _load_groups_for_write(
+    project_dir: str | Path,
+    episode: int,
+) -> list[NarrativeGroup]:
+    project_path = Path(project_dir)
+    active = DirectorPlanStore(project_path).load_active(episode)
+    if active is not None:
+        return _materialize_active_groups(project_path, episode, active)
+    return load_groups(project_path, episode)
 
 
 def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:
@@ -461,7 +501,7 @@ def update_video_settings(
     copied_defaults = _copy_string_mapping(project_defaults, "project_defaults")
 
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         group = next((item for item in groups if item.id == group_id), None)
         if group is None:
             raise KeyError(group_id)
@@ -504,7 +544,7 @@ def update_video_plan(
     source = list(beats)
     beat_by_id = {_beat_id(beat): beat for beat in source}
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         group = next((item for item in groups if item.id == group_id), None)
         if group is None:
             raise KeyError(group_id)
@@ -581,7 +621,7 @@ def advance_revision(
     expected_revision: int | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         original = next((group for group in groups if group.id == group_id), None)
         if original is None:
             raise KeyError(group_id)
@@ -652,7 +692,7 @@ def reserve_video_revision(
     overwriting a later successful reservation.
     """
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         reservation: VideoRevisionReservation | None = None
@@ -707,7 +747,7 @@ def restore_video_reservation(
 ) -> bool:
     """Restore a failed enqueue only if its reservation is still current."""
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         updated: list[NarrativeGroup] = []
         restored = False
         for group in groups:
@@ -761,7 +801,7 @@ def record_stage_result(
 ) -> NarrativeGroup:
     """Atomically merge a runner outcome into the durable group sidecar."""
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         for group in groups:
@@ -903,7 +943,7 @@ def stage_history(
     group_id: str,
     stage: StageName,
 ) -> list[dict[str, Any]]:
-    for group in load_groups(project_dir, episode):
+    for group in _load_groups_for_write(project_dir, episode):
         if group.id == group_id:
             return list(group.stages.get(stage, GroupStageState()).revision_history)
     raise KeyError(group_id)
@@ -918,7 +958,7 @@ def rollback_stage_revision(
     revision: int,
 ) -> NarrativeGroup:
     with _sidecar_guard(project_dir, episode):
-        groups = load_groups(project_dir, episode)
+        groups = _load_groups_for_write(project_dir, episode)
         updated: list[NarrativeGroup] = []
         found = None
         for group in groups:
@@ -973,7 +1013,7 @@ def rollback_stage_revision(
 
 
 def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: StageName) -> dict[str, Any]:
-    for group in load_groups(project_dir, episode):
+    for group in _load_groups_for_write(project_dir, episode):
         if group.id == group_id:
             state = group.stages.get(stage, GroupStageState())
             return {
