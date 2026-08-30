@@ -62,11 +62,10 @@ def build_ffmpeg_filter_complex(
 
     filters: list[str] = []
     video_label = "0:v"
-    audio_label = "0:a"
     visual_overlap = 0.0
+    visual_starts = [0.0]
     for index, rule in enumerate(plan.transitions, start=1):
         next_video = f"v{index}"
-        next_audio = f"a{index}"
         if rule.kind == "dissolve":
             duration = rule.frames / 24
             offset = sum(durations[:index]) - visual_overlap - duration
@@ -75,27 +74,45 @@ def build_ffmpeg_filter_complex(
                 f"duration={duration:.6f}:offset={offset:.6f}[{next_video}]"
             )
             visual_overlap += duration
+            visual_starts.append(offset)
         else:
             filters.append(
                 f"[{video_label}][{index}:v]concat=n=2:v=1:a=0[{next_video}]"
             )
+            visual_starts.append(sum(durations[:index]) - visual_overlap)
+        video_label = next_video
 
-        audio_overlap = (
-            rule.audio_ms / 1000
-            if rule.audio != "none"
-            else (rule.frames / 24 if rule.kind == "dissolve" else 0.0)
+    audio_labels: list[str] = []
+    for index, visual_start in enumerate(visual_starts):
+        incoming = plan.transitions[index - 1] if index else None
+        lead = (
+            incoming.audio_ms / 1000
+            if incoming is not None and incoming.audio == "j_cut"
+            else 0.0
         )
-        if audio_overlap:
-            filters.append(
-                f"[{audio_label}][{index}:a]acrossfade=d={audio_overlap:.6f}:"
-                f"c1=tri:c2=tri[{next_audio}]"
-            )
-        else:
-            filters.append(
-                f"[{audio_label}][{index}:a]concat=n=2:v=0:a=1[{next_audio}]"
-            )
-        video_label, audio_label = next_video, next_audio
-    filters.extend((f"[{video_label}]null[outv]", f"[{audio_label}]apad[outa]"))
+        label = f"j{index}" if lead else f"a{index}"
+        delay_ms = max(0, round((visual_start - lead) * 1000))
+        filters.append(f"[{index}:a]adelay={delay_ms}|{delay_ms}[{label}]")
+        audio_labels.append(label)
+
+        if index < len(plan.transitions):
+            outgoing = plan.transitions[index]
+            if outgoing.audio == "l_cut":
+                tail = outgoing.audio_ms / 1000
+                tail_start = max(0.0, durations[index] - tail)
+                boundary_ms = round(visual_starts[index + 1] * 1000)
+                tail_label = f"l{index + 1}"
+                filters.append(
+                    f"[{index}:a]atrim=start={tail_start:.6f},asetpts=PTS-STARTPTS,"
+                    f"adelay={boundary_ms}|{boundary_ms}[{tail_label}]"
+                )
+                audio_labels.append(tail_label)
+
+    mixed = "".join(f"[{label}]" for label in audio_labels)
+    filters.extend((
+        f"[{video_label}]null[outv]",
+        f"{mixed}amix=inputs={len(audio_labels)}:normalize=0,apad[outa]",
+    ))
     return ";".join(filters)
 
 

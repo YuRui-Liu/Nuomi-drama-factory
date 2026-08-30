@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -22,7 +23,7 @@ from novelvideo.task_backend.runners.narrative_group_video_compose import (
 )
 
 
-def test_compose_filter_applies_dissolve_and_audio_overlap() -> None:
+def test_compose_filter_applies_directional_j_and_l_cuts() -> None:
     graph = build_ffmpeg_filter_complex(
         LocalCompositionPlan(
             paths=("one.mp4", "two.mp4", "three.mp4"),
@@ -35,8 +36,59 @@ def test_compose_filter_applies_dissolve_and_audio_overlap() -> None:
     )
 
     assert "xfade=transition=fade:duration=0.333333:offset=3.666667" in graph
-    assert "acrossfade=d=0.300000" in graph
-    assert "acrossfade=d=0.500000" in graph
+    # J-cut: input 1 audio starts 300ms before its 3.666667s visual boundary.
+    assert "[1:a]adelay=3367|3367[j1]" in graph
+    # L-cut: the final 500ms of input 1 is replayed from the next 8.666667s boundary.
+    assert "[1:a]atrim=start=4.500000" in graph
+    assert "adelay=8667|8667[l2]" in graph
+    assert "acrossfade" not in graph
+
+
+@pytest.mark.asyncio
+async def test_director_input_uses_redirect_style_payload(monkeypatch) -> None:
+    from novelvideo.task_backend.runners import director_plan
+
+    source = SimpleNamespace(
+        episode_number=1, source_revision=7, content_hash="source", content="Hero leaves."
+    )
+    monkeypatch.setattr(
+        director_plan,
+        "_build_episode_source_store",
+        lambda _ctx: _async(SimpleNamespace(list_sources=lambda: _async([source]))),
+    )
+    selected = StyleSnapshot(
+        snapshot_id="selected-snapshot", style_id="selected-style", style_version="2",
+        catalog_hash="catalog", style_hash="selected-hash",
+        projections=StyleProjections(
+            director="selected-director", image="image", video="video", panel_tag="tag"
+        ),
+    )
+    seen = []
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file_from_state_dir",
+        lambda _state_dir: {"visual_style": "project-default"},
+    )
+    monkeypatch.setattr(
+        "novelvideo.services.style_service.StyleService.resolve_style_snapshot",
+        lambda project_style, override=None, **_kwargs: seen.append(
+            (project_style, override)
+        ) or selected,
+    )
+
+    value = await director_plan._build_director_plan_input(
+        {
+            "project_id": "project-1", "episode": 1, "source_revision": 7,
+            "style_id": "selected-style", "style_snapshot_id": "selected-snapshot",
+        },
+        SimpleNamespace(
+            project_id="project-1", state_dir="state", owner_username="owner",
+            project_name="project", output_dir="output",
+        ),
+    )
+
+    assert seen == [("project-default", "selected-style")]
+    assert value.project_style_snapshot_id == "selected-snapshot"
+    assert value.style_director["projection"] == "selected-director"
 
 
 def _active_plan(project_dir) -> None:

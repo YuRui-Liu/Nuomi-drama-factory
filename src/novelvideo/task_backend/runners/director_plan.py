@@ -125,12 +125,17 @@ async def _build_director_plan_input(
 
     config = load_project_config_file_from_state_dir(ctx.state_dir)
     project_style = str(config.get("visual_style") or "chinese_period_drama")
+    style_override = str(payload.get("style_id") or "").strip() or None
     snapshot = StyleService.resolve_style_snapshot(
         project_style,
+        style_override,
         username=ctx.owner_username,
         project=ctx.project_name,
         project_dir=ctx.output_dir,
     )
+    expected_snapshot_id = str(payload.get("style_snapshot_id") or "").strip()
+    if expected_snapshot_id and snapshot.snapshot_id != expected_snapshot_id:
+        raise DirectorPlanTaskError("STYLE_SNAPSHOT_CONFLICT")
     return DirectorPlanInput(
         episode=episode,
         source_script_hash=str(source.content_hash),
