@@ -1,8 +1,10 @@
 # Director Plan v2 smoke tests
 
-The free local smoke validates the Director Plan contract, a one-shot plus a
-two-shot generation batch, deterministic grid splitting, whole-pack H3 prompt
-compilation, and ordered segment composition. It makes no network requests.
+The free local smoke goes through `DirectorPlanService` and its durable store,
+style resolution, active-plan materialization, the production grid split runner,
+`H3EpisodePackOptimizer`, the isolated segment runner, and the deterministic
+composition planner. Local fake providers sit only at the paid transport
+boundaries; application orchestration and validation are not replaced.
 
 ```powershell
 .\.venv\Scripts\python.exe tests\scripts\test_smoke_director_plan_v2.py
@@ -16,12 +18,11 @@ DIRECTOR_PLAN_V2_LOCAL_SMOKE_OK groups=2 batches=2 segments=3
 
 ## Paid real-provider smoke
 
-The real smoke has no mock or fallback path. It sends one minimal plan request
-to DeepSeek, one two-cell 9:16 image request to GRSAI, and one 5-second H3
-segment to RunningHub. It refuses to run unless the operator explicitly accepts
-cost. Configure `DEEPSEEK_API_KEY`, `GRSAI_API_KEY`, and either
-`RUNNINGHUB_API_KEY` or `RUNNINGHUB_KEY`; optional overrides are
-`GRSAI_BASE_URL` and `RUNNINGHUB_H3_WORKFLOW_ID`.
+The real smoke has no mock or fallback path. It resolves the application's
+persisted text/media configuration, then uses `DirectorPlanner` plus
+`DirectorPlanService`, the GRSAI adapter plus production grid splitter, the
+whole-episode H3 optimizer, and the production segment provider path. It refuses
+to run unless the operator explicitly accepts cost.
 
 ```powershell
 .\.venv\Scripts\python.exe tests\scripts\test_smoke_director_plan_v2_providers.py `
