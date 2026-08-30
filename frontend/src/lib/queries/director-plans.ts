@@ -64,7 +64,12 @@ export interface NarrativeGroupPlan {
 }
 
 export type MigrationConfidence = "high" | "medium" | "low";
-export type MigrationDecision = "accepted" | "rejected" | "reference_only" | "review";
+export type MigrationDecision =
+  | "accepted"
+  | "rejected"
+  | "reference_only"
+  | "review"
+  | "unmatched";
 export type MigrationReuseMode = "reuse" | "reference_only";
 
 export interface MigrationEvidence {
@@ -260,7 +265,7 @@ export function useUpdateDirectorPlanMigration(project: string, episode: number)
     mutationFn: ({ revisionId, itemId, decision }: {
       revisionId: string;
       itemId: string;
-      decision: Exclude<MigrationDecision, "review">;
+      decision: Exclude<MigrationDecision, "review" | "unmatched">;
     }) => api.put(`${revisionPath(project, episode, revisionId)}/migration/${encodeURIComponent(itemId)}`, {
       json: { decision },
     }).json<ApiResponse<MigrationItem>>(),

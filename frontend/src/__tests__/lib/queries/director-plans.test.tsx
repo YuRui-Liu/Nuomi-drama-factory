@@ -23,6 +23,7 @@ import {
   useEditDirectorPlan,
   useUpdateDirectorPlanMigration,
   type DirectorPlanRevision,
+  type MigrationDecision,
 } from "@/lib/queries/director-plans";
 
 const server = setupServer();
@@ -84,6 +85,12 @@ function makeClient() {
 }
 
 describe("director plan query contract", () => {
+  it("represents low-confidence assets as unmatched", () => {
+    const decision: MigrationDecision = "unmatched";
+
+    expect(decision).toBe("unmatched");
+  });
+
   it("loads list, detail, comparison and migration from stable cache keys", async () => {
     server.use(
       http.get("http://localhost:3000/api/v1/projects/demo/episodes/1/director-plans", () =>

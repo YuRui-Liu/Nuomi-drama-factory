@@ -8,17 +8,18 @@ const decisionLabels = {
   rejected: "不迁移",
   reference_only: "仅作参考",
   review: "等待确认",
+  unmatched: "未匹配",
 } as const;
 
 export function AssetMigrationPanel({ report, disabled, onDecision }: {
   report: AssetMigrationReport;
   disabled?: boolean;
-  onDecision: (itemId: string, decision: Exclude<MigrationDecision, "review">) => void;
+  onDecision: (itemId: string, decision: Exclude<MigrationDecision, "review" | "unmatched">) => void;
 }) {
   return (
     <section className="rounded-xl border border-white/10 p-4" aria-label="资产迁移审核">
       <h3 className="text-sm font-semibold">资产迁移审核</h3>
-      <p className="mb-3 text-xs text-muted-foreground">高置信度可直接复用；中、低置信度由你决定。风格不同的素材只能作为参考。</p>
+      <p className="mb-3 text-xs text-muted-foreground">高置信度可直接复用；中置信度等待确认；低置信度保持未匹配。风格不同的素材只能作为参考。</p>
       {report.items.length === 0 ? (
         <p className="text-sm text-muted-foreground">没有可迁移素材</p>
       ) : (
