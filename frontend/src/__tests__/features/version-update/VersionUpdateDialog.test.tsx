@@ -118,4 +118,13 @@ describe("VersionUpdateDialog release feed behavior", () => {
 
     expect(await screen.findByText(/Current highlight/)).toBeInTheDocument();
   });
+
+  it("renders the built-in NuomiDrama hero without remote video media", async () => {
+    renderDialog();
+
+    expect(
+      await screen.findByRole("img", { name: "NuomiDrama \u7248\u672c\u66f4\u65b0" }),
+    ).toBeInTheDocument();
+    expect(document.querySelector("video")).not.toBeInTheDocument();
+  });
 });

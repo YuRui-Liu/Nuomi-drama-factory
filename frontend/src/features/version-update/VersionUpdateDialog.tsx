@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { BrandMark } from "@/components/brand/brand-mark";
 import { subscribeOpenVersionUpdateDialog } from "@/features/version-update/version-update-events";
 import {
   ensureReleaseNotifications,
@@ -15,10 +16,6 @@ import {
   markCurrentReleaseSeen,
   shouldAutoShowCurrentRelease,
 } from "@/lib/release-notification-state";
-
-/** 更新弹窗顶部的头图视频。走 CDN 域名（OSS 默认域名会强制下载，播不了）。 */
-const UPDATE_HERO_VIDEO_URL =
-  "https://nfg-web-assets.cdnfg.com/dramaclaw/update/version-update-2026-06-22.mp4";
 
 export function VersionUpdateDialog() {
   const { t, i18n } = useTranslation();
@@ -56,18 +53,25 @@ export function VersionUpdateDialog() {
         className="max-h-[min(84dvh,560px)] w-[min(calc(100vw-32px),360px)] gap-0 overflow-hidden rounded-[14px] border-0 bg-white p-0 text-slate-950 shadow-[0_16px_48px_rgba(0,0,0,0.26)] ring-0 sm:max-w-[360px]"
       >
         <div className="p-2">
-          <div className="relative flex aspect-[2/1] overflow-hidden rounded-[12px] bg-[#b9e7ff]">
-            <video
-              className="absolute inset-0 h-full w-full object-cover"
-              src={UPDATE_HERO_VIDEO_URL}
-              autoPlay
-              muted
-              loop
-              playsInline
-              preload="metadata"
+          <div
+            aria-label={"NuomiDrama \u7248\u672c\u66f4\u65b0"}
+            className="relative flex aspect-[2/1] items-center justify-center overflow-hidden rounded-[12px] bg-[#0D0E10]"
+            role="img"
+          >
+            <div
               aria-hidden="true"
+              className="absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.055)_1px,transparent_1px)] [background-size:24px_24px] [mask-image:linear-gradient(to_bottom,black,transparent)]"
             />
-            <div className="absolute inset-0 bg-white/[0.02]" />
+            <div aria-hidden="true" className="absolute -right-10 -top-20 size-40 rounded-full bg-[#E5FF5C]/20 blur-3xl" />
+            <div aria-hidden="true" className="absolute left-6 top-8 h-0.5 w-[74px] -rotate-[10deg] bg-[#E5FF5C]" />
+            <div aria-hidden="true" className="absolute bottom-8 right-5 h-0.5 w-[102px] -rotate-[10deg] bg-[#E5FF5C]" />
+            <BrandMark className="relative z-10 scale-110 [--brand-accent:#E5FF5C] text-white" />
+            <span
+              aria-hidden="true"
+              className="absolute bottom-3 left-3 text-[9px] font-medium tracking-[0.16em] text-[#9299A5]"
+            >
+              RELEASE NOTES / 2026
+            </span>
           </div>
         </div>
 
