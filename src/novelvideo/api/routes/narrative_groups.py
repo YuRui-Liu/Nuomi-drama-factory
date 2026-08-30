@@ -158,7 +158,7 @@ class NarrativeGroupDialogueSourceRequest(BaseModel):
 
 class NarrativeGroupStyleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    style_id: str = Field(min_length=1)
+    style_id: str | None = Field(default=None, min_length=1)
     action: Literal["restyle", "redirect"] = "restyle"
 
 
@@ -220,6 +220,17 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
     result = []
     for group in groups:
         item = group.to_dict()
+        effective_style = dict(item.get("effective_style_snapshot") or {})
+        snapshot_id = str(effective_style.get("snapshot_id") or "project-default")
+        effective_style.update({
+            "snapshot_id": snapshot_id,
+            "style_id": str(effective_style.get("style_id") or snapshot_id),
+            "style_version": str(effective_style.get("style_version") or "1"),
+            "catalog_hash": str(effective_style.get("catalog_hash") or snapshot_id),
+            "style_hash": str(effective_style.get("style_hash") or snapshot_id),
+            "inherited": effective_style.get("source", "inherited") == "inherited",
+        })
+        item["effective_style_snapshot"] = effective_style
         for stage_name, state in item["stages"].items():
             state.pop("revision_history", None)
             if stage_name == "video":
@@ -1170,9 +1181,17 @@ async def put_group_style(
     if not any(item.id == group_id for item in groups):
         raise HTTPException(status_code=404, detail="Narrative group not found")
     from novelvideo.services.style_service import StyleService
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.project_config import load_project_config_from_state_dir
 
+    config = load_project_config_from_state_dir(
+        getattr(resolved.ctx, "state_dir", resolved.project_dir),
+        username=resolved.ctx.owner_username,
+        project=resolved.ctx.project_name,
+    )
+    project_style = str(config.get("visual_style") or "chinese_period_drama")
     snapshot = StyleService.resolve_style_snapshot(
-        request.style_id, username=resolved.ctx.owner_username,
+        project_style, request.style_id, username=resolved.ctx.owner_username,
         project=resolved.ctx.project_name, project_dir=resolved.project_dir,
     )
     store = DirectorPlanStore(resolved.project_dir)
@@ -1195,10 +1214,46 @@ async def put_group_style(
     store.save(child)
     if request.action == "restyle":
         child = store.activate(episode, child.revision_id)
+    task_data: dict[str, Any] = {}
+    if request.action == "redirect":
+        source_store = EpisodeSourceStore(
+            await make_sqlite_store_for_context(resolved.ctx)
+        )
+        source = next(
+            (
+                item for item in await source_store.list_sources()
+                if int(item.episode_number) == episode
+            ),
+            None,
+        )
+        if source is None:
+            raise HTTPException(status_code=404, detail="Episode source not found")
+        scope = f"style:{snapshot.style_hash}:revision:{source.source_revision}"
+        queued = await get_task_backend().enqueue_project_task(
+            resolved.ctx,
+            task_type="director_plan",
+            queue_kind="default",
+            episode=episode,
+            scope=scope,
+            payload={
+                "project_id": str(resolved.ctx.project_id),
+                "episode": episode,
+                "source_revision": int(source.source_revision),
+                "style_id": snapshot.style_id,
+                "style_snapshot_id": snapshot.snapshot_id,
+            },
+        )
+        task_data = {
+            "task_id": queued.task_state.task_id,
+            "backend": queued.backend,
+            "queue": queued.queue,
+            "scope": scope,
+        }
     return {"ok": True, "data": {
         "revision_id": child.revision_id, "status": child.status,
         "action": request.action,
         "style_snapshot": snapshot.model_dump(mode="json"),
+        **task_data,
     }}
 
 

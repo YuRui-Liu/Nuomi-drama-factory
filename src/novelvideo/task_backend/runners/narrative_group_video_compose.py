@@ -34,6 +34,71 @@ class LocalCompositionPlan:
     transitions: tuple[H3TransitionRule, ...]
 
 
+def _probe_duration(path: str) -> float:
+    completed = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode:
+        raise RuntimeError(f"failed to probe segment duration: {completed.stderr[-500:]}")
+    return float(completed.stdout.strip())
+
+
+def build_ffmpeg_filter_complex(
+    plan: LocalCompositionPlan, *, durations: tuple[float, ...]
+) -> str:
+    """Compile reviewed transition rules into executable FFmpeg filters."""
+    if len(durations) != len(plan.paths):
+        raise ValueError("one duration is required for each composition path")
+    if len(plan.transitions) != max(0, len(plan.paths) - 1):
+        raise ValueError("one transition is required between adjacent paths")
+    if len(plan.paths) == 1:
+        return "[0:v]null[outv];[0:a]anull[outa]"
+
+    filters: list[str] = []
+    video_label = "0:v"
+    audio_label = "0:a"
+    visual_overlap = 0.0
+    for index, rule in enumerate(plan.transitions, start=1):
+        next_video = f"v{index}"
+        next_audio = f"a{index}"
+        if rule.kind == "dissolve":
+            duration = rule.frames / 24
+            offset = sum(durations[:index]) - visual_overlap - duration
+            filters.append(
+                f"[{video_label}][{index}:v]xfade=transition=fade:"
+                f"duration={duration:.6f}:offset={offset:.6f}[{next_video}]"
+            )
+            visual_overlap += duration
+        else:
+            filters.append(
+                f"[{video_label}][{index}:v]concat=n=2:v=1:a=0[{next_video}]"
+            )
+
+        audio_overlap = (
+            rule.audio_ms / 1000
+            if rule.audio != "none"
+            else (rule.frames / 24 if rule.kind == "dissolve" else 0.0)
+        )
+        if audio_overlap:
+            filters.append(
+                f"[{audio_label}][{index}:a]acrossfade=d={audio_overlap:.6f}:"
+                f"c1=tri:c2=tri[{next_audio}]"
+            )
+        else:
+            filters.append(
+                f"[{audio_label}][{index}:a]concat=n=2:v=0:a=1[{next_audio}]"
+            )
+        video_label, audio_label = next_video, next_audio
+    filters.extend((f"[{video_label}]null[outv]", f"[{audio_label}]apad[outa]"))
+    return ";".join(filters)
+
+
 def compose_local_segments(plan: LocalCompositionPlan, output_path: Path) -> Path:
     """Compose provider segment files in the exact reviewed order."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,15 +117,16 @@ def compose_local_segments(plan: LocalCompositionPlan, output_path: Path) -> Pat
     command = ["ffmpeg", "-y"]
     for path in plan.paths:
         command.extend(["-i", path])
-    inputs = "".join(f"[{index}:v][{index}:a]" for index in range(len(plan.paths)))
+    durations = tuple(_probe_duration(path) for path in plan.paths)
     command.extend(
         [
             "-filter_complex",
-            f"{inputs}concat=n={len(plan.paths)}:v=1:a=1[outv][outa]",
+            build_ffmpeg_filter_complex(plan, durations=durations),
             "-map",
             "[outv]",
             "-map",
             "[outa]",
+            "-shortest",
             str(output_path),
         ]
     )
@@ -140,6 +206,7 @@ __all__ = [
     "LocalCompositionPlan",
     "SegmentCompositionItem",
     "build_local_composition_plan",
+    "build_ffmpeg_filter_complex",
     "compose_local_segments",
     "run_narrative_group_video_compose",
 ]
