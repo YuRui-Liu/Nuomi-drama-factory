@@ -133,6 +133,20 @@ async def test_service_does_not_confuse_group_1_with_group_10(tmp_path) -> None:
     )
 
     assert [call.failed_group.id for call in planner.repair_calls] == ["g2", "g11"]
+    repair_issue_locations = [
+        tuple(issue["location"] for issue in call.issues)
+        for call in planner.repair_calls
+    ]
+    assert repair_issue_locations[0]
+    assert all(
+        location == "groups.1" or location.startswith("groups.1.")
+        for location in repair_issue_locations[0]
+    )
+    assert repair_issue_locations[1]
+    assert all(
+        location == "groups.10" or location.startswith("groups.10.")
+        for location in repair_issue_locations[1]
+    )
     assert result.status == "review_required"
     assert result.validation_report.passed is True
 
