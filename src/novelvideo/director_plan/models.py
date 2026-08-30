@@ -121,11 +121,34 @@ class StyleSnapshot(FrozenModel):
     projections: StyleProjections
 
 
+class GenerationBatch(FrozenModel):
+    id: str
+    group_id: str
+    shot_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    layout: Literal["single", "diptych", "triptych", "grid_2x2"]
+    rows: int = Field(gt=0)
+    columns: int = Field(gt=0)
+    capacity: int = Field(gt=0, le=4)
+    style_snapshot_id: str
+
+
+class VideoSegment(FrozenModel):
+    id: str
+    group_id: str
+    shot_ids: tuple[str, ...] = Field(min_length=1)
+    duration_seconds: float = Field(gt=0, le=15)
+    continuity_reason: str
+    audio_mode: Literal["project_default", "external_tts", "h3_original"]
+    style_snapshot_id: str
+
+
 class ShotPlan(FrozenModel):
     id: str
     source_span_ids: tuple[str, ...]
     subject: str
     action: str
+    space_anchor: str = ""
+    continuous_with_next: bool = False
     visible_start_state: str
     visible_end_state: str
     shot_size: str = "medium"
