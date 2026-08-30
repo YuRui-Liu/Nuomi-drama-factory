@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 TextTaskRuntimeName = Literal["codex", "model_api"]
 TextTaskFallback = Literal["stop", "retry", "explicit_backup"]
 TextTaskRouteSource = Literal["global", "project", "task"]
+TextTaskReasoningEffort = Literal[
+    "none", "minimal", "low", "medium", "high", "xhigh"
+]
 
 
 class AgentTaskRoute(BaseModel):
@@ -18,8 +21,9 @@ class AgentTaskRoute(BaseModel):
 
     runtime: TextTaskRuntimeName = "model_api"
     model: str = Field(default="deepseek-v4-flash", min_length=1)
-    reasoning_effort: str | None = None
-    skill: str | None = None
+    reasoning_effort: TextTaskReasoningEffort | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
     fallback: TextTaskFallback = "stop"
     backup_runtime: TextTaskRuntimeName | None = None
     backup_model: str | None = None
@@ -32,8 +36,9 @@ class AgentTaskRouteOverride(BaseModel):
 
     runtime: TextTaskRuntimeName | None = None
     model: str | None = None
-    reasoning_effort: str | None = None
-    skill: str | None = None
+    reasoning_effort: TextTaskReasoningEffort | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
     fallback: TextTaskFallback | None = None
     backup_runtime: TextTaskRuntimeName | None = None
     backup_model: str | None = None
@@ -52,4 +57,3 @@ class AgentTaskRouteSnapshot(AgentTaskRoute):
 
     task_role: str = Field(min_length=1)
     source: TextTaskRouteSource
-

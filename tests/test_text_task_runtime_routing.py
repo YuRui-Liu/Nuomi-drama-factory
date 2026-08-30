@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic import BaseModel
+from pydantic_ai import PromptedOutput
 
 from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from novelvideo.text_task_runtime.runtime import (
@@ -47,14 +49,21 @@ async def test_codex_and_model_api_return_the_same_structured_type():
         ),
         backend=FakeCodexBackend(),
     )
+    captured = {}
+
+    def agent_factory(**kwargs):
+        captured.update(kwargs)
+        return FakeModelApiAgent()
+
     model_api = ModelApiStructuredRuntime(
         AgentTaskRouteSnapshot(
             task_role="director_plan",
             source="task",
             runtime="model_api",
             model="deepseek-v4-flash",
+            reasoning_effort="high",
         ),
-        agent_factory=lambda **kwargs: FakeModelApiAgent(),
+        agent_factory=agent_factory,
     )
 
     assert await codex.run_structured(
@@ -63,6 +72,45 @@ async def test_codex_and_model_api_return_the_same_structured_type():
     assert await model_api.run_structured(
         prompt="prompt", output_type=Answer, system_prompt="system"
     ) == Answer(value="ok")
+    assert isinstance(captured["output_type"], PromptedOutput)
+    assert captured["output_type"].outputs == Answer
+    assert captured["model_settings"] == {"openai_reasoning_effort": "high"}
+    assert "tool_choice" not in captured["model_settings"]
+
+
+def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):
+    runtime = CodexStructuredRuntime(
+        AgentTaskRouteSnapshot(
+            task_role="director_plan",
+            source="task",
+            runtime="codex",
+            model="gpt-5.6-sol",
+            reasoning_effort="high",
+        )
+    )
+
+    argv = runtime._backend.build_argv(
+        cwd=str(tmp_path),
+        output_path=str(tmp_path / "out.txt"),
+        schema_path=None,
+    )
+
+    assert ["-c", 'model_reasoning_effort="high"'] == argv[
+        argv.index("-c") : argv.index("-c") + 2
+    ]
+
+
+def test_model_api_runtime_rejects_direct_snapshot_with_unsupported_skill():
+    snapshot = AgentTaskRouteSnapshot(
+        task_role="director_plan",
+        source="task",
+        runtime="model_api",
+        model="deepseek-v4-flash",
+        skill_id="director-plan",
+    )
+
+    with pytest.raises(ValueError, match="skill_id"):
+        ModelApiStructuredRuntime(snapshot)
 
 
 async def test_runtime_scope_is_concurrency_safe_and_resets():
@@ -100,4 +148,3 @@ def test_runtime_scope_resets_after_exception():
         pass
 
     assert current_text_task_runtime() is None
-

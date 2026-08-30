@@ -60,12 +60,16 @@ def resolve_agent_task_route(
         raise ValueError("task_role is required")
     route = global_route
     source = "global"
-    if project_override is not None:
+    if project_override is not None and project_override.model_dump(exclude_none=True):
         route = _apply_override(route, project_override)
         source = "project"
-    if task_override is not None:
+    if task_override is not None and task_override.model_dump(exclude_none=True):
         route = _apply_override(route, task_override)
         source = "task"
+    if route.skill_id or route.skill_version:
+        raise ValueError(
+            "Task routes do not support skill_id/skill_version with current runtimes"
+        )
     try:
         return AgentTaskRouteSnapshot(
             task_role=clean_role,

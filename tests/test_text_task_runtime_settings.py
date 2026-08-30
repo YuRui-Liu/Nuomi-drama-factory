@@ -38,6 +38,42 @@ def test_route_enums_reject_unsupported_values():
         AgentTaskRoute(runtime="chat", model="gpt-5")
     with pytest.raises(ValidationError):
         AgentTaskRoute(runtime="codex", model="gpt-5", fallback="silent")
+    with pytest.raises(ValidationError):
+        AgentTaskRoute(runtime="codex", model="gpt-5", reasoning_effort="extreme")
+
+
+def test_empty_overrides_do_not_change_source():
+    snapshot = resolve_agent_task_route(
+        task_role="director_plan",
+        global_route=AgentTaskRoute(runtime="model_api", model="deepseek-v4-flash"),
+        project_override=AgentTaskRouteOverride(),
+        task_override=AgentTaskRouteOverride(),
+    )
+
+    assert snapshot.source == "global"
+
+
+@pytest.mark.parametrize(
+    ("runtime", "skill_id", "skill_version"),
+    [
+        ("codex", "director-plan", None),
+        ("codex", None, "v1"),
+        ("model_api", "director-plan", "v1"),
+    ],
+)
+def test_unsupported_skill_fields_are_rejected(
+    runtime, skill_id, skill_version
+):
+    with pytest.raises(ValueError, match="skill_id"):
+        resolve_agent_task_route(
+            task_role="director_plan",
+            global_route=AgentTaskRoute(
+                runtime=runtime,
+                model="gpt-5.6-sol",
+                skill_id=skill_id,
+                skill_version=skill_version,
+            ),
+        )
 
 
 def test_load_global_routes_uses_independent_settings_key(monkeypatch):
