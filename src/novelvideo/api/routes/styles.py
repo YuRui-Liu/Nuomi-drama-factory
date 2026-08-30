@@ -47,6 +47,36 @@ async def list_styles(
     return {"ok": True, "data": styles}
 
 
+@router.get("/styles/catalog-status")
+async def get_style_catalog_status(
+    user: dict = Depends(get_api_user),
+):
+    """Return the active extension catalog generation and safe diagnostics."""
+    from novelvideo.services.style_service import StyleService
+
+    del user
+    return {"ok": True, "data": StyleService.catalog_status()}
+
+
+@router.post("/styles/catalog-reload")
+async def reload_style_catalog(
+    user: dict = Depends(get_api_user),
+):
+    """Reload the process-wide extension catalog for editor/admin users."""
+    from novelvideo.services.style_service import StyleService
+
+    role = str(user.get("role") or user.get("effective_role") or "").lower()
+    if role not in {"editor", "admin", "owner"}:
+        raise HTTPException(
+            status_code=403,
+            detail="style catalog reload requires editor or admin role",
+        )
+    return {
+        "ok": True,
+        "data": StyleService.catalog_status(force_reload=True),
+    }
+
+
 @router.get("/styles/{style_id}")
 async def get_style(
     style_id: str,

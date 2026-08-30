@@ -794,6 +794,27 @@ class StyleService:
         return cls._extension_registry.reload(force=True)
 
     @classmethod
+    def catalog_status(cls, *, force_reload: bool = False) -> dict:
+        """Return public catalog diagnostics without filesystem details."""
+        snapshot = (
+            cls._extension_registry.reload(force=True)
+            if force_reload
+            else cls._extension_registry.snapshot()
+        )
+        diagnostics = snapshot.diagnostics
+        return {
+            "generation": snapshot.generation,
+            "catalog_hash": snapshot.catalog_hash,
+            "discovered": diagnostics.discovered,
+            "loaded": diagnostics.loaded,
+            "failed": diagnostics.failed,
+            "degraded": diagnostics.degraded,
+            "last_attempt_at": diagnostics.last_attempt_at,
+            "last_success_at": diagnostics.last_success_at,
+            "errors": [dict(error) for error in diagnostics.errors],
+        }
+
+    @classmethod
     def is_read_only_style(cls, style_id: str) -> bool:
         return (
             cls.get_preset(style_id) is not None

@@ -145,13 +145,97 @@ def test_style_reference_upload_rejects_empty_file(monkeypatch, tmp_path):
     assert response.json()["detail"] == "No preview image uploaded"
 
 
-def _client():
+def _client(user=None):
     from novelvideo.api.routes import styles
 
     app = FastAPI()
     app.include_router(styles.router)
-    app.dependency_overrides[styles.get_api_user] = lambda: {"username": "alice"}
+    app.dependency_overrides[styles.get_api_user] = lambda: user or {"username": "alice"}
     return TestClient(app)
+
+
+def test_catalog_status_and_reload_are_static_routes_before_style_detail(monkeypatch):
+    from novelvideo.api.routes import styles
+    from novelvideo.services.style_service import StyleService
+
+    status_payload = {
+        "generation": 3,
+        "catalog_hash": "safe-hash",
+        "discovered": 18,
+        "loaded": 18,
+        "failed": 0,
+        "degraded": False,
+        "last_attempt_at": "2026-08-30T00:00:00+00:00",
+        "last_success_at": "2026-08-30T00:00:00+00:00",
+        "errors": [],
+    }
+    monkeypatch.setattr(StyleService, "catalog_status", lambda **kwargs: status_payload)
+
+    viewer_response = _client({"username": "alice", "role": "viewer"}).get(
+        "/styles/catalog-status"
+    )
+    editor_response = _client({"username": "alice", "role": "editor"}).post(
+        "/styles/catalog-reload"
+    )
+    route_paths = [route.path for route in styles.router.routes]
+
+    assert viewer_response.status_code == 200
+    assert viewer_response.json() == {"ok": True, "data": status_payload}
+    assert editor_response.status_code == 200
+    assert editor_response.json() == {"ok": True, "data": status_payload}
+    assert route_paths.index("/styles/catalog-status") < route_paths.index(
+        "/styles/{style_id}"
+    )
+    assert route_paths.index("/styles/catalog-reload") < route_paths.index(
+        "/styles/{style_id}"
+    )
+
+
+def test_catalog_reload_rejects_viewer() -> None:
+    response = _client({"username": "alice", "role": "viewer"}).post(
+        "/styles/catalog-reload"
+    )
+
+    assert response.status_code == 403
+
+
+def test_catalog_reload_diagnostics_never_expose_absolute_paths(monkeypatch) -> None:
+    from novelvideo.services.style_service import StyleService
+
+    payload = {
+        "generation": 4,
+        "catalog_hash": "last-known-good",
+        "discovered": 0,
+        "loaded": 18,
+        "failed": 1,
+        "degraded": True,
+        "last_attempt_at": "2026-08-30T00:01:00+00:00",
+        "last_success_at": "2026-08-30T00:00:00+00:00",
+        "errors": [{"code": "invalid_catalog", "file": "catalog.json"}],
+    }
+    monkeypatch.setattr(StyleService, "catalog_status", lambda **kwargs: payload)
+
+    response = _client({"username": "alice", "role": "admin"}).post(
+        "/styles/catalog-reload"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert set(data) == {
+        "generation",
+        "catalog_hash",
+        "discovered",
+        "loaded",
+        "failed",
+        "degraded",
+        "last_attempt_at",
+        "last_success_at",
+        "errors",
+    }
+    assert data["degraded"] is True
+    serialized = response.text
+    assert "E:\\" not in serialized
+    assert "C:\\" not in serialized
 
 
 def test_snapshot_preview_returns_purpose_projections_without_internal_paths():
