@@ -11,6 +11,11 @@ from novelvideo.narrative_groups.service import (
     load_materialized_groups,
     record_video_segment_result,
 )
+from novelvideo.media_capabilities.video.h3_timeline import (
+    H3DirectorOutputManifest,
+    H3DirectorSegment,
+    H3TimelineEntry,
+)
 
 
 def _legacy_group(group_id: str, ordinal: int) -> NarrativeGroupPlan:
@@ -70,3 +75,38 @@ def test_segment_failure_is_durable_and_does_not_erase_sibling_success(tmp_path)
     assert reloaded[0].video_segments[0]["provider_task_id"] == "provider-1"
     assert reloaded[1].video_segments[0]["status"] == "failed"
     assert reloaded[1].video_segments[0]["error"] == "transport failed"
+
+
+def test_final_manifest_preserves_each_segment_outcome_and_provider_id() -> None:
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _finalize_segment_manifest,
+    )
+
+    def entry(segment_id: str, start: int) -> H3TimelineEntry:
+        return H3TimelineEntry(
+            segment=H3DirectorSegment(
+                segment_id=segment_id, beat_number=start + 1, prompt="move",
+                duration_seconds=1, first_frame=f"{segment_id}.png",
+            ),
+            start_frame=start * 24, frame_count=24, status="submitted",
+        )
+
+    manifest = H3DirectorOutputManifest(
+        entries=(entry("seg-ok", 0), entry("seg-failed", 1)),
+        status="submitted",
+    )
+
+    finalized = _finalize_segment_manifest(
+        manifest,
+        generated={"seg-ok": ("provider-ok", "ok.mp4")},
+        failed_ids={"seg-failed"},
+        physical_video="combined.mp4",
+        provider_parameters={},
+        actual_output={},
+    )
+
+    assert finalized.status == "transport_failed"
+    assert finalized.entries[0].status == "completed"
+    assert finalized.entries[0].provider_task_id == "provider-ok"
+    assert finalized.entries[1].status == "transport_failed"
+    assert finalized.entries[1].provider_task_id is None

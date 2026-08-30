@@ -485,6 +485,44 @@ def _manifest_with_status(
     return H3DirectorOutputManifest.model_validate(payload)
 
 
+def _finalize_segment_manifest(
+    manifest: H3DirectorOutputManifest,
+    *,
+    generated: Mapping[str, tuple[str | None, str]],
+    failed_ids: set[str],
+    physical_video: str,
+    provider_parameters: Mapping[str, object],
+    actual_output: Mapping[str, int],
+    **updates: Any,
+) -> H3DirectorOutputManifest:
+    partial = bool(failed_ids)
+    terminal = "transport_failed" if partial else "completed"
+    finalized = _manifest_with_status(
+        manifest,
+        terminal,
+        physical_video=physical_video,
+        provider_task_id=None if partial else manifest.provider_task_id,
+        provider_parameters=dict(provider_parameters),
+        actual_output=dict(actual_output),
+        **updates,
+    )
+    entries = []
+    for entry in finalized.entries:
+        segment_id = entry.segment.segment_id
+        if segment_id in failed_ids:
+            entries.append(entry.model_copy(update={
+                "status": "transport_failed", "provider_task_id": None,
+                "physical_video": None,
+            }))
+            continue
+        provider_task_id, output_path = generated[segment_id]
+        entries.append(entry.model_copy(update={
+            "status": "completed", "provider_task_id": provider_task_id,
+            "physical_video": output_path,
+        }))
+    return finalized.model_copy(update={"entries": tuple(entries)})
+
+
 def _build_segments(
     payload: Mapping[str, Any], beat_records: list[dict[str, Any]], saved: Mapping[str, Any]
 ) -> list[H3DirectorSegment]:
@@ -1043,11 +1081,17 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             save_h3_director_manifest(manifest_path, manifest)
             raise
 
-        manifest = _manifest_with_status(
+        generated_by_segment = {
+            segment.segment_id: (item.provider_task_id, str(item.output_path))
+            for _, segment, item in generated_segments
+        }
+        manifest = _finalize_segment_manifest(
             manifest,
-            "completed",
+            generated=generated_by_segment,
+            failed_ids={str(item["segment_id"]) for item in segment_errors},
             physical_video=str(generated.output_path),
-            provider_task_id=generated.provider_task_id,
+            provider_parameters=generated.provider_parameters,
+            actual_output=generated.actual_output,
             original_audio_path=stems.get("original_audio_path"),
             original_audio_status=(
                 "succeeded" if stems.get("original_audio_path") else "unavailable"
