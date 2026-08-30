@@ -77,6 +77,7 @@ class VideoSegmentState(_ProductionItemState):
 
 class ProductionExecutionState(FrozenModel):
     schema_version: Literal[1] = 1
+    state_version: int = 0
     revision_id: str
     production_plan_hash: str
     generation_batches: tuple[GenerationBatchState, ...] = ()
