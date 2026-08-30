@@ -23,10 +23,27 @@ from .production_state import (
 _SAFE_REVISION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[tuple[str, int, str], threading.RLock] = {}
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class ProductionStateConflict(RuntimeError):
     """The caller's revision, plan, or CAS version is no longer current."""
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return path.is_symlink() or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _reject_existing_reparse_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if os.path.lexists(current) and _is_reparse_point(current):
+            raise ValueError(f"symlink or reparse point is not allowed: {current}")
 
 
 def _lock_for(project_dir: Path, episode: int, revision_id: str) -> threading.RLock:
@@ -53,7 +70,9 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 class ProductionStore:
     def __init__(self, project_dir: str | Path) -> None:
-        self._project_dir = Path(project_dir).resolve()
+        project = Path(project_dir).absolute()
+        _reject_existing_reparse_components(project)
+        self._project_dir = project.resolve()
 
     def path_for(self, episode: int, revision_id: str) -> Path:
         if episode <= 0:
@@ -62,12 +81,11 @@ class ProductionStore:
             revision_id
         ) is None:
             raise ValueError("revision_id must be a safe basename")
-        revision_root = (
-            self._project_dir / "director_plans" / f"ep{episode:03d}"
-        ).resolve()
-        path = (revision_root / revision_id / "production.json").resolve()
+        revision_root = self._project_dir / "director_plans" / f"ep{episode:03d}"
+        path = revision_root / revision_id / "production.json"
         if not path.is_relative_to(revision_root):
             raise ValueError("revision_id must stay inside the episode directory")
+        _reject_existing_reparse_components(path.parent)
         return path
 
     def initialize(
@@ -77,6 +95,7 @@ class ProductionStore:
         expected_revision_id: str,
         expected_plan_hash: str,
     ) -> ProductionExecutionState:
+        plan = ProductionPlan.model_validate(plan.model_dump(mode="python"))
         if plan.revision_id != expected_revision_id:
             raise ProductionStateConflict("target revision id does not match")
         if plan.production_plan_hash != expected_plan_hash:
@@ -121,6 +140,9 @@ class ProductionStore:
     ) -> ProductionExecutionState:
         with self._guard(episode, state.revision_id):
             current = self._load_unlocked(episode, state.revision_id)
+            candidate = ProductionExecutionState.model_validate(
+                state.model_dump(mode="python")
+            )
             self._validate_cas(
                 current,
                 target_revision_id=state.revision_id,
@@ -128,10 +150,14 @@ class ProductionStore:
                 expected_plan_hash=expected_plan_hash,
                 expected_state_version=expected_state_version,
             )
-            if state.production_plan_hash != current.production_plan_hash:
+            if candidate.production_plan_hash != current.production_plan_hash:
                 raise ProductionStateConflict("candidate production plan hash changed")
-            updated = state.model_copy(
+            self._validate_item_id_sets(current, candidate)
+            updated = candidate.model_copy(
                 update={"state_version": current.state_version + 1}
+            )
+            updated = ProductionExecutionState.model_validate(
+                updated.model_dump(mode="python")
             )
             _atomic_write_json(
                 self.path_for(episode, state.revision_id),
@@ -224,6 +250,7 @@ class ProductionStore:
         path = self.path_for(episode, revision_id)
         with _lock_for(self._project_dir, episode, revision_id):
             path.parent.mkdir(parents=True, exist_ok=True)
+            _reject_existing_reparse_components(path.parent)
             lock_path = path.parent / ".production.lock"
             with portalocker.Lock(str(lock_path), mode="a+", timeout=60):
                 yield
@@ -273,3 +300,20 @@ class ProductionStore:
         )
         if state.state_version != expected_state_version:
             raise ProductionStateConflict("state version does not match")
+
+    @staticmethod
+    def _validate_item_id_sets(
+        current: ProductionExecutionState,
+        candidate: ProductionExecutionState,
+    ) -> None:
+        for collection in ("generation_batches", "video_segments"):
+            current_ids = {
+                item.production_id for item in getattr(current, collection)
+            }
+            candidate_ids = {
+                item.production_id for item in getattr(candidate, collection)
+            }
+            if current_ids != candidate_ids:
+                raise ProductionStateConflict(
+                    f"candidate {collection} id set changed"
+                )

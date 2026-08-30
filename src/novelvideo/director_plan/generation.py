@@ -10,6 +10,7 @@ from .models import (
     ProductionPlan,
     ShotPlan,
     VideoSegmentPlan,
+    canonical_production_plan_hash,
 )
 
 
@@ -180,11 +181,7 @@ def build_production_plan(
         "generation_batches": [item.model_dump(mode="json") for item in batches],
         "video_segments": [item.model_dump(mode="json") for item in segments],
     }
-    production_plan_hash = hashlib.sha256(
-        json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
+    production_plan_hash = canonical_production_plan_hash(payload)
     return ProductionPlan(
         **payload,
         production_plan_hash=production_plan_hash,

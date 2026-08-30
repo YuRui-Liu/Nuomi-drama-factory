@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from math import isfinite
@@ -13,6 +15,7 @@ from pydantic import (
     JsonValue,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from ulid import ULID
 
@@ -137,6 +140,40 @@ class GenerationBatchPlan(FrozenModel):
     reference_image_limit: int = Field(default=10, ge=0, le=14)
     retry_limit: int = Field(default=2, ge=0, le=10)
 
+    @field_validator(
+        "id",
+        "group_id",
+        "style_snapshot_id",
+        "style_snapshot_hash",
+        "model",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_strings(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("value must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_layout(self) -> Self:
+        expected = {
+            "single": (1, 1, 1),
+            "diptych": (1, 2, 2),
+            "triptych": (1, 3, 3),
+            "grid_2x2": (2, 2, 4),
+        }[self.layout]
+        if (self.rows, self.columns, self.capacity) != expected:
+            raise ValueError("batch layout dimensions and capacity must agree")
+        if len(self.shot_ids) != self.capacity:
+            raise ValueError("batch capacity must equal shot count")
+        if len(set(self.shot_ids)) != len(self.shot_ids):
+            raise ValueError("batch shot ids must be unique")
+        if any(not shot_id.strip() for shot_id in self.shot_ids):
+            raise ValueError("batch shot ids must not be blank")
+        return self
+
 
 class VideoSegmentPlan(FrozenModel):
     id: str
@@ -147,6 +184,57 @@ class VideoSegmentPlan(FrozenModel):
     audio_mode: Literal["project_default", "external_tts", "h3_original"]
     style_snapshot_id: str
     style_snapshot_hash: str = Field(min_length=1)
+
+    @field_validator(
+        "id",
+        "group_id",
+        "continuity_reason",
+        "style_snapshot_id",
+        "style_snapshot_hash",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_strings(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("value must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_shot_ids(self) -> Self:
+        if len(set(self.shot_ids)) != len(self.shot_ids):
+            raise ValueError("segment shot ids must be unique")
+        if any(not shot_id.strip() for shot_id in self.shot_ids):
+            raise ValueError("segment shot ids must not be blank")
+        return self
+
+
+def canonical_production_plan_hash(value: Mapping[str, object]) -> str:
+    """Hash the canonical JSON payload, excluding its self-referential hash."""
+    payload = dict(value)
+    payload.pop("production_plan_hash", None)
+    payload.setdefault("model", "gpt-image-2")
+    payload.setdefault("aspect_ratio", "9:16")
+    payload.setdefault("resolution", "2K")
+    payload.setdefault("reference_image_limit", 10)
+    payload.setdefault("retry_limit", 2)
+    payload.setdefault("generation_batches", ())
+    payload.setdefault("video_segments", ())
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_canonical_json_default,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_json_default(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
 
 
 class ProductionPlan(FrozenModel):
@@ -160,7 +248,71 @@ class ProductionPlan(FrozenModel):
     retry_limit: int = Field(default=2, ge=0, le=10)
     generation_batches: tuple[GenerationBatchPlan, ...] = ()
     video_segments: tuple[VideoSegmentPlan, ...] = ()
-    production_plan_hash: str
+    production_plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator(
+        "revision_id", "style_snapshot_hash", "model", mode="before"
+    )
+    @classmethod
+    def normalize_required_strings(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("value must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_consistency_and_hash(self) -> Self:
+        batches = self.generation_batches
+        segments = self.video_segments
+        all_ids = [item.id for item in (*batches, *segments)]
+        if len(set(all_ids)) != len(all_ids):
+            raise ValueError("production ids must be unique")
+
+        for batch in batches:
+            if batch.style_snapshot_hash != self.style_snapshot_hash:
+                raise ValueError("batch style snapshot hash must match plan")
+            if (
+                batch.model,
+                batch.aspect_ratio,
+                batch.resolution,
+                batch.reference_image_limit,
+                batch.retry_limit,
+            ) != (
+                self.model,
+                self.aspect_ratio,
+                self.resolution,
+                self.reference_image_limit,
+                self.retry_limit,
+            ):
+                raise ValueError("batch generation settings must match plan")
+        if any(
+            segment.style_snapshot_hash != self.style_snapshot_hash
+            for segment in segments
+        ):
+            raise ValueError("segment style snapshot hash must match plan")
+
+        batch_shots = {
+            shot_id: batch.group_id
+            for batch in batches
+            for shot_id in batch.shot_ids
+        }
+        segment_shots = {
+            shot_id: segment.group_id
+            for segment in segments
+            for shot_id in segment.shot_ids
+        }
+        batch_count = sum(len(batch.shot_ids) for batch in batches)
+        segment_count = sum(len(segment.shot_ids) for segment in segments)
+        if len(batch_shots) != batch_count or len(segment_shots) != segment_count:
+            raise ValueError("shot ids must be unique within each production collection")
+        if batch_shots != segment_shots:
+            raise ValueError("batch and segment shot coverage must match")
+
+        canonical = canonical_production_plan_hash(self.model_dump(mode="json"))
+        if self.production_plan_hash != canonical:
+            raise ValueError("production plan hash must match canonical payload")
+        return self
 
 
 class ShotPlan(FrozenModel):

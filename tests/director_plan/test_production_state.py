@@ -10,6 +10,8 @@ from novelvideo.director_plan.models import (
     ShotPlan,
     StyleProjections,
     StyleSnapshot,
+    ProductionPlan,
+    canonical_production_plan_hash,
 )
 from novelvideo.director_plan.production_state import (
     GenerationBatchState,
@@ -162,6 +164,49 @@ def test_production_configuration_changes_plan_hash(
     assert getattr(updated.generation_batches[0], setting) == value
 
 
+def test_production_plan_rejects_noncanonical_hash() -> None:
+    plan = build_production_plan(_revision(2))
+    payload = plan.model_dump(mode="json")
+    payload["episode"] = 2
+
+    with pytest.raises(ValidationError, match="canonical"):
+        ProductionPlan.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "style_hash",
+        "batch_settings",
+        "shot_coverage",
+        "duplicate_ids",
+    ],
+)
+def test_production_plan_enforces_cross_field_consistency(mutation: str) -> None:
+    plan = build_production_plan(_revision(2))
+    payload = plan.model_dump(mode="json")
+    if mutation == "style_hash":
+        payload["generation_batches"][0]["style_snapshot_hash"] = "other"
+    elif mutation == "batch_settings":
+        payload["generation_batches"][0]["model"] = "other-model"
+    elif mutation == "shot_coverage":
+        payload["video_segments"] = payload["video_segments"][:-1]
+    else:
+        payload["video_segments"][0]["id"] = payload["generation_batches"][0]["id"]
+    payload["production_plan_hash"] = canonical_production_plan_hash(payload)
+
+    with pytest.raises(ValidationError):
+        ProductionPlan.model_validate(payload)
+
+
+def test_production_plan_hash_is_lowercase_sha256() -> None:
+    plan = build_production_plan(_revision(2))
+
+    assert len(plan.production_plan_hash) == 64
+    assert plan.production_plan_hash == plan.production_plan_hash.lower()
+    assert set(plan.production_plan_hash) <= set("0123456789abcdef")
+
+
 def test_execution_state_rejects_free_form_result_dicts() -> None:
     with pytest.raises(ValidationError):
         GenerationBatchState(
@@ -174,7 +219,7 @@ def test_execution_state_rejects_free_form_result_dicts() -> None:
 def test_execution_state_is_frozen_and_uses_typed_results() -> None:
     state = ProductionExecutionState(
         revision_id="revision-1",
-        production_plan_hash="plan-hash",
+        production_plan_hash="a" * 64,
         generation_batches=(
             GenerationBatchState(
                 production_id="batch-1",
@@ -195,7 +240,7 @@ def test_execution_state_is_frozen_and_uses_typed_results() -> None:
 def test_execution_error_quality_cleanup_and_stage_round_trip() -> None:
     state = ProductionExecutionState(
         revision_id="revision-1",
-        production_plan_hash="plan-hash",
+        production_plan_hash="a" * 64,
         generation_batches=(
             GenerationBatchState(
                 production_id="batch-1",
@@ -222,7 +267,13 @@ def test_execution_error_quality_cleanup_and_stage_round_trip() -> None:
             ),
         ),
         video_segments=(
-            VideoSegmentState(production_id="segment-1", stage="polling"),
+            VideoSegmentState(
+                production_id="segment-1",
+                stage="polling",
+                provider="minimax",
+                request_id="request-segment-1",
+                job_id="job-segment-1",
+            ),
         ),
     )
 
@@ -231,3 +282,66 @@ def test_execution_error_quality_cleanup_and_stage_round_trip() -> None:
     assert restored == state
     assert restored.generation_batches[0].stage == "failed"
     assert restored.video_segments[0].stage == "polling"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"production_id": "batch-1", "stage": "persisted"},
+        {"production_id": "batch-1", "stage": "failed"},
+        {
+            "production_id": "batch-1",
+            "stage": "pending",
+            "result": {"uri": "grid.png"},
+        },
+        {
+            "production_id": "batch-1",
+            "stage": "polling",
+            "provider": "provider",
+            "request_id": "request",
+        },
+    ],
+)
+def test_execution_item_rejects_invalid_stage_payload(item: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        GenerationBatchState.model_validate(item)
+
+
+@pytest.mark.parametrize("sha256", ["", "a" * 63, "A" * 64, "g" * 64])
+def test_artifact_sha256_requires_lowercase_64_hex(sha256: str) -> None:
+    with pytest.raises(ValidationError):
+        ProductionArtifactResult(uri="grid.png", sha256=sha256)
+
+
+def test_execution_state_rejects_duplicate_or_cross_collection_ids() -> None:
+    with pytest.raises(ValidationError, match="unique"):
+        ProductionExecutionState(
+            revision_id="revision-1",
+            production_plan_hash="a" * 64,
+            generation_batches=(GenerationBatchState(production_id="item-1"),),
+            video_segments=(VideoSegmentState(production_id="item-1"),),
+        )
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+def test_production_state_rejects_blank_boundaries(value: str) -> None:
+    with pytest.raises(ValidationError):
+        ProductionExecutionState(
+            revision_id=value,
+            production_plan_hash="a" * 64,
+        )
+    with pytest.raises(ValidationError):
+        ProductionArtifactResult(uri=value)
+
+
+def test_cleanup_report_rejects_blank_uris_and_pre_result_stage() -> None:
+    with pytest.raises(ValidationError):
+        ProductionCleanupReport(source_uri=" ")
+    with pytest.raises(ValidationError):
+        ProductionCleanupReport(source_uri="grid.png", output_uris=(" ",))
+    with pytest.raises(ValidationError):
+        GenerationBatchState(
+            production_id="batch-1",
+            stage="pending",
+            cleanup_report=ProductionCleanupReport(source_uri="grid.png"),
+        )

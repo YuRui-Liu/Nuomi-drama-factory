@@ -1,11 +1,44 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
 
 _DIRECTOR_DATA_NAMES = ("director_plans", ".narrative_groups")
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return path.is_symlink() or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _reject_existing_reparse_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if os.path.lexists(current) and _is_reparse_point(current):
+            raise ValueError(f"symlink or reparse point is not allowed: {current}")
+
+
+def _reject_reparse_tree(root: Path) -> None:
+    if _is_reparse_point(root):
+        raise ValueError(f"symlink or reparse point is not allowed: {root}")
+    if not root.is_dir():
+        return
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(directory)
+        for name in (*dirnames, *filenames):
+            candidate = base / name
+            if _is_reparse_point(candidate):
+                raise ValueError(
+                    f"symlink or reparse point is not allowed: {candidate}"
+                )
 
 
 def reset_test_director_data(
@@ -14,8 +47,12 @@ def reset_test_director_data(
     confirmed_project_dir: str | Path,
 ) -> tuple[Path, ...]:
     """Delete only explicitly confirmed test DirectorPlan data for one project."""
-    project = Path(project_dir).resolve()
-    confirmed = Path(confirmed_project_dir).resolve()
+    raw_project = Path(project_dir).absolute()
+    raw_confirmed = Path(confirmed_project_dir).absolute()
+    _reject_existing_reparse_components(raw_project)
+    _reject_existing_reparse_components(raw_confirmed)
+    project = raw_project.resolve()
+    confirmed = raw_confirmed.resolve()
     if project != confirmed:
         raise ValueError("confirmed project path must exactly match project path")
     if not project.is_dir():
@@ -26,8 +63,9 @@ def reset_test_director_data(
     targets: list[Path] = []
     for name in _DIRECTOR_DATA_NAMES:
         unresolved = project / name
-        if not unresolved.exists():
+        if not os.path.lexists(unresolved):
             continue
+        _reject_reparse_tree(unresolved)
         target = unresolved.resolve()
         if target.parent != project:
             raise ValueError(f"refusing data path outside exact project: {target}")
