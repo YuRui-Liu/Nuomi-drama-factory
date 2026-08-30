@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -127,3 +128,45 @@ def test_concurrent_snapshots_parse_changed_catalog_once(
     assert calls == 1
     assert len({snapshot.generation for snapshot in snapshots}) == 1
     assert len({snapshot.catalog_hash for snapshot in snapshots}) == 1
+
+
+def test_reload_retries_when_file_changes_between_fingerprint_and_parse(
+    monkeypatch: pytest.MonkeyPatch, registry, catalog_path: Path
+) -> None:
+    import novelvideo.extension_styles.registry as registry_module
+
+    original_load = registry_module.load_catalog
+    raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    raw[0]["summary"] += " atomically replaced"
+    replacement = json.dumps(raw, ensure_ascii=False).encode("utf-8")
+    calls = 0
+
+    def replace_then_load(path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            catalog_path.write_bytes(replacement)
+        return original_load(path)
+
+    monkeypatch.setattr(registry_module, "load_catalog", replace_then_load)
+
+    snapshot = registry.snapshot()
+
+    assert calls == 2
+    assert snapshot.catalog_hash == hashlib.sha256(replacement).hexdigest()
+    assert snapshot.fingerprint is not None
+    assert snapshot.fingerprint.size == len(replacement)
+
+
+def test_schema_failure_reports_discovered_entry_count(catalog_path: Path) -> None:
+    from novelvideo.extension_styles.registry import ExtensionStyleRegistry
+
+    raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    raw[0]["category"] = "invalid-category"
+    catalog_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    snapshot = ExtensionStyleRegistry(catalog_path).snapshot()
+
+    assert snapshot.diagnostics.discovered == 18
+    assert snapshot.diagnostics.loaded == 0
+    assert snapshot.diagnostics.failed == 1

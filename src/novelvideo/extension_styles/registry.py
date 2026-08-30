@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,20 +67,49 @@ class ExtensionStyleRegistry:
                     attempted_at,
                     code="catalog_unreadable",
                     fingerprint=None,
+                    discovered=0,
                 )
 
             if not force and fingerprint == self._attempted_fingerprint:
                 return self._snapshot
 
             self._attempted_fingerprint = fingerprint
-            try:
-                styles = load_catalog(self._catalog_path)
-            except (OSError, UnicodeError, ValueError):
-                return self._record_failure(
-                    attempted_at,
-                    code="invalid_catalog",
-                    fingerprint=fingerprint,
-                )
+            for attempt in range(3):
+                try:
+                    styles = load_catalog(self._catalog_path)
+                except (OSError, UnicodeError, ValueError):
+                    current = _safe_fingerprint(self._catalog_path)
+                    if current is not None and current != fingerprint and attempt < 2:
+                        fingerprint = current
+                        self._attempted_fingerprint = current
+                        continue
+                    return self._record_failure(
+                        attempted_at,
+                        code="invalid_catalog",
+                        fingerprint=fingerprint,
+                        discovered=_discovered_count(self._catalog_path),
+                    )
+
+                current = _safe_fingerprint(self._catalog_path)
+                if current is None:
+                    return self._record_failure(
+                        attempted_at,
+                        code="catalog_unreadable",
+                        fingerprint=None,
+                        discovered=0,
+                    )
+                if current != fingerprint:
+                    fingerprint = current
+                    self._attempted_fingerprint = current
+                    if attempt < 2:
+                        continue
+                    return self._record_failure(
+                        attempted_at,
+                        code="catalog_changing",
+                        fingerprint=current,
+                        discovered=len(styles),
+                    )
+                break
 
             generation = self._snapshot.generation + 1
             diagnostics = CatalogDiagnostics(
@@ -106,12 +136,13 @@ class ExtensionStyleRegistry:
         *,
         code: str,
         fingerprint: CatalogFingerprint | None,
+        discovered: int,
     ) -> CatalogSnapshot:
         if fingerprint is not None:
             self._attempted_fingerprint = fingerprint
         previous = self._snapshot
         diagnostics = CatalogDiagnostics(
-            discovered=0,
+            discovered=discovered,
             loaded=len(previous.styles),
             failed=1,
             degraded=True,
@@ -137,6 +168,21 @@ def _fingerprint(path: Path) -> CatalogFingerprint:
         size=stat.st_size,
         sha256=digest,
     )
+
+
+def _safe_fingerprint(path: Path) -> CatalogFingerprint | None:
+    try:
+        return _fingerprint(path)
+    except OSError:
+        return None
+
+
+def _discovered_count(path: Path) -> int:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return 0
+    return len(value) if isinstance(value, list) else 0
 
 
 def _utc_now() -> str:
