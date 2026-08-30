@@ -83,7 +83,9 @@ def _grid_prompt(
             or beat.get("title")
             or "continue the scene"
         )
-        panels.append(f"Panel {index}: {description}")
+        panel_tag = str(payload.get("panel_tag") or "").strip()
+        suffix = f"; panel style: {panel_tag}" if panel_tag else ""
+        panels.append(f"Panel {index}: {description}{suffix}")
     grid_rules = (
         f"Create one clean {layout.get('rows', 1)}x{layout.get('columns', 1)} storyboard grid. "
         f"Every individual cell must be composed at {payload.get('aspect_ratio') or '9:16'} aspect ratio. "
@@ -99,11 +101,67 @@ def _grid_prompt(
             "只允许把草图细化为最终成片画面，并结合后续身份图、场景图和风格信息完善材质、"
             "服装、表情、灯光与细节。\n"
         )
-    parts = [part for part in (style_prompt, grid_rules, "\n".join(panels)) if part]
+    image_projection = str(payload.get("image_projection") or "").strip()
+    parts = [
+        part
+        for part in (image_projection, style_prompt, grid_rules, "\n".join(panels))
+        if part
+    ]
     mapping = _reference_mapping(selected_references, start=2 if strong_lock else 1)
     if mapping:
         parts.append(mapping)
     return "\n".join(parts)
+
+
+def _normalize_generation_batch_payload(
+    raw_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Accept current dict payloads and future GenerationBatch-shaped mappings."""
+    payload = dict(raw_payload)
+    batch = payload.get("generation_batch")
+    if isinstance(batch, Mapping):
+        for key, value in batch.items():
+            payload.setdefault(str(key), value)
+    layout_value = payload.get("layout")
+    if isinstance(layout_value, str):
+        layouts = {
+            "single": (1, 1),
+            "diptych": (1, 2),
+            "triptych": (1, 3),
+            "grid_2x2": (2, 2),
+        }
+        try:
+            rows, columns = layouts[layout_value]
+        except KeyError:
+            raise ValueError(f"unsupported generation batch layout: {layout_value}") from None
+        payload["layout_name"] = layout_value
+        payload["layout"] = {
+            "rows": rows,
+            "columns": columns,
+            "capacity": rows * columns,
+        }
+    shots = [str(value) for value in payload.get("shot_ids") or ()]
+    if shots:
+        layout = payload.get("layout") or {}
+        capacity = int(layout.get("capacity") or 0)
+        if capacity != len(shots):
+            raise ValueError("generation batch capacity must equal shot count")
+        payload["beat_ids"] = shots
+        payload["cell_to_beat"] = [
+            {"cell": index, "beat_id": shot_id}
+            for index, shot_id in enumerate(shots)
+        ]
+    if payload.get("target_cell_aspect"):
+        payload["aspect_ratio"] = str(payload["target_cell_aspect"])
+    snapshot = payload.get("style_snapshot")
+    if isinstance(snapshot, Mapping):
+        projections = snapshot.get("projections")
+        if isinstance(projections, Mapping):
+            payload.setdefault("image_projection", projections.get("image"))
+            payload.setdefault("panel_tag", projections.get("panel_tag"))
+        payload.setdefault("style_hash", snapshot.get("style_hash"))
+        payload.setdefault("style_snapshot_id", snapshot.get("snapshot_id"))
+    return payload
 
 
 def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
@@ -405,6 +463,58 @@ def _split_existing_grid(
     promote_dir = paths.sketches_dir() if stage == "sketch" else paths.frames_dir()
     promote_dir.mkdir(parents=True, exist_ok=True)
     grid_aspect_ratio = _grid_request_aspect_ratio(payload)
+    rows = int(layout["rows"])
+    columns = int(layout["columns"])
+    layout_name = {
+        (1, 1): "single",
+        (1, 2): "diptych",
+        (1, 3): "triptych",
+        (2, 2): "grid_2x2",
+    }.get((rows, columns))
+    if layout_name is not None:
+        from novelvideo.narrative_groups.grid_cleanup import split_and_cleanup
+
+        split_dir = promote_dir / (
+            f".{payload['group_id']}_{payload.get('batch_id') or 'legacy'}_"
+            f"r{int(payload['revision'])}"
+        )
+        raw_paths, cleanup_reports = split_and_cleanup(
+            grid_asset,
+            expected_layout=layout_name,
+            target_aspect=str(payload.get("aspect_ratio") or "9:16"),
+            output_dir=split_dir,
+        )
+        cell_paths: list[str] = []
+        import shutil
+
+        for index, raw_path in enumerate(raw_paths):
+            target = promote_dir / f"beat_{beat_nums[index]:02d}.png"
+            shutil.copy2(raw_path, target)
+            cell_paths.append(str(target))
+        cleaned_cell_size = (
+            "x".join(str(value) for value in cleanup_reports[0]["output_size"])
+            if cleanup_reports
+            else ""
+        )
+        _rebuild_normalized_grid(
+            Path(grid_asset), cell_paths, rows=rows, columns=columns
+        )
+        return {
+            "cell_assets": [
+                {
+                    "cell": index,
+                    "beat_id": mapping[index]["beat_id"],
+                    "shot_id": mapping[index]["beat_id"],
+                    "path": path,
+                    "style_hash": str(payload.get("style_hash") or ""),
+                }
+                for index, path in enumerate(cell_paths)
+                if index < len(mapping)
+            ],
+            "cleanup_reports": cleanup_reports,
+            "cleaned_cell_size": cleaned_cell_size,
+            "errors": [],
+        }
     result = save_grid_and_split(
         grid_image_path=grid_asset,
         episode_grids_dir=output_dir / "grids" / f"ep{episode:03d}",
@@ -459,7 +569,7 @@ def _split_existing_grid(
 
 
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only: bool) -> dict[str, Any]:
-    payload = dict(envelope.get("payload") or {})
+    payload = _normalize_generation_batch_payload(envelope.get("payload") or {})
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     payload["episode"] = episode
     project_dir = _project_dir(payload, ctx)
@@ -493,7 +603,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                     "reference_count", "reference_warnings",
                     "source_sketch_revision", "constraint_mode",
                     "requested_image_size", "requested_pixel_size",
-                    "actual_pixel_size", "resolution_warning",
+                    "actual_pixel_size", "resolution_warning", "cleaned_cell_size",
                 ):
                     if field in generated:
                         generation_metadata[field] = generated[field]
@@ -526,6 +636,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             source_sketch_revision=result.get("source_sketch_revision"),
             constraint_mode=result.get("constraint_mode"),
             cleanup_reports=result.get("cleanup_reports"),
+            provider_parameters={
+                "batch_id": str(payload.get("batch_id") or ""),
+                "style_snapshot_id": str(payload.get("style_snapshot_id") or ""),
+                "style_hash": str(payload.get("style_hash") or ""),
+                "requested_image_size": str(
+                    result.get("requested_image_size") or payload.get("image_size") or ""
+                ),
+                "actual_cell_size": str(result.get("cleaned_cell_size") or ""),
+            },
         )
         return result
     except Exception as exc:

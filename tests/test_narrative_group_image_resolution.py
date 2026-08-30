@@ -47,7 +47,7 @@ def test_standard_logical_ratios_use_the_tier_size_table(
 @pytest.mark.parametrize(
     ("cell_aspect_ratio", "rows", "columns", "logical_ratio", "size"),
     [
-        ("9:16", 1, 2, "9:8", "1008x896"),
+        ("9:16", 1, 2, "9:8", "1440x1280"),
         ("9:16", 2, 3, "27:32", "864x1024"),
         ("16:9", 2, 3, "8:3", "1664x624"),
     ],
@@ -78,7 +78,7 @@ def test_ultrawide_grid_clamps_only_the_provider_request() -> None:
 
     assert resolution.logical_aspect_ratio == "32:9"
     assert resolution.provider_aspect_ratio == "3:1"
-    assert resolution.provider_size == "1728x576"
+    assert resolution.provider_size == "2560x864"
     assert resolution.requires_aspect_normalization is True
     assert resolution.reason is not None
     assert "3:1" in resolution.reason
@@ -93,6 +93,15 @@ def test_custom_4k_resolution_honors_provider_limits() -> None:
     assert resolution.provider_size == "3840x1440"
     assert max(resolution.width, resolution.height) <= 3840
     assert resolution.width * resolution.height <= 8_294_400
+
+
+def test_2k_diptych_meets_the_minimum_pixel_width_per_vertical_cell() -> None:
+    resolution = resolve_grid_image_resolution(
+        "gpt-image-2-vip", "2K", "9:16", rows=1, columns=2
+    )
+
+    assert resolution.width // 2 >= 1080
+    assert resolution.logical_aspect_ratio == "9:8"
 
 
 @pytest.mark.parametrize(

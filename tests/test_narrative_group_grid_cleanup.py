@@ -5,7 +5,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from novelvideo.narrative_groups.grid_cleanup import cleanup_grid_cells
+from novelvideo.narrative_groups.grid_cleanup import (
+    cleanup_grid_cells,
+    split_and_cleanup,
+)
 
 
 def _save(path: Path, pixels: np.ndarray) -> Path:
@@ -85,3 +88,20 @@ def test_center_cover_crop_keeps_geometry_and_unifies_9_16_outputs(
             assert center[1] > 200
             assert center[0] < 40
             assert center[2] < 40
+
+
+def test_splitter_detects_and_removes_white_separator(tmp_path: Path) -> None:
+    pixels = np.zeros((320, 372, 3), dtype=np.uint8)
+    pixels[:, :180] = [35, 90, 180]
+    pixels[:, 192:] = [180, 80, 35]
+    pixels[:, 180:192] = 255
+    grid = _save(tmp_path / "diptych.png", pixels)
+
+    cells, reports = split_and_cleanup(
+        grid, expected_layout="diptych", target_aspect="9:16"
+    )
+
+    assert len(cells) == 2
+    assert all(report["actual_lines"]["vertical"] == [186] for report in reports)
+    assert all(report["remaining_bright_border_ratio"] < 0.01 for report in reports)
+    assert all(report["cleanup_passes"] <= 2 for report in reports)

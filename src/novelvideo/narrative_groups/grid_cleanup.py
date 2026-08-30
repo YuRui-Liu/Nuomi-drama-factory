@@ -8,6 +8,116 @@ import numpy as np
 from PIL import Image, ImageEnhance
 
 
+_LAYOUTS = {
+    "single": (1, 1),
+    "diptych": (1, 2),
+    "triptych": (1, 3),
+    "grid_2x2": (2, 2),
+}
+
+
+def split_and_cleanup(
+    grid_path: str | Path,
+    *,
+    expected_layout: str,
+    target_aspect: str,
+    output_dir: str | Path | None = None,
+) -> tuple[list[Path], list[dict[str, object]]]:
+    """Detect likely separator bands, split, inset, and clean one batch grid."""
+    try:
+        rows, columns = _LAYOUTS[expected_layout]
+    except KeyError:
+        raise ValueError(f"unsupported grid layout: {expected_layout}") from None
+    source_path = Path(grid_path)
+    destination = Path(output_dir) if output_dir else source_path.with_name(
+        f"{source_path.stem}_cells"
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    with Image.open(source_path) as opened:
+        image = opened.convert("RGB")
+    pixels = np.asarray(image, dtype=np.float32)
+    vertical = [
+        _detect_separator(pixels, int(image.width * index / columns), axis=1)
+        for index in range(1, columns)
+    ]
+    horizontal = [
+        _detect_separator(pixels, int(image.height * index / rows), axis=0)
+        for index in range(1, rows)
+    ]
+    x_ranges = _cell_ranges(image.width, vertical)
+    y_ranges = _cell_ranges(image.height, horizontal)
+    paths: list[Path] = []
+    separator_insets = [max(2, width // 2 + 1) for _, width in (*vertical, *horizontal)]
+    for row, (top, bottom) in enumerate(y_ranges):
+        for column, (left, right) in enumerate(x_ranges):
+            cell = image.crop((left, top, right, bottom))
+            path = destination / f"cell_{row * columns + column:02d}.png"
+            cell.save(path, format="PNG")
+            paths.append(path)
+    reports, _ = cleanup_grid_cells(paths, target_aspect)
+    theoretical = {
+        "vertical": [int(image.width * index / columns) for index in range(1, columns)],
+        "horizontal": [int(image.height * index / rows) for index in range(1, rows)],
+    }
+    actual = {
+        "vertical": [center for center, _ in vertical],
+        "horizontal": [center for center, _ in horizontal],
+    }
+    for path, report in zip(paths, reports, strict=True):
+        report["theoretical_lines"] = theoretical
+        report["actual_lines"] = actual
+        report["separator_insets"] = separator_insets
+        with Image.open(path) as cleaned:
+            report["remaining_bright_border_ratio"] = _bright_border_ratio(
+                cleaned.convert("RGB")
+            )
+    return paths, reports
+
+
+def _detect_separator(
+    pixels: np.ndarray, theoretical: int, *, axis: int
+) -> tuple[int, int]:
+    extent = pixels.shape[1] if axis == 1 else pixels.shape[0]
+    radius = max(1, int(extent * 0.03))
+    start = max(0, theoretical - radius)
+    stop = min(extent, theoretical + radius + 1)
+    scores: list[tuple[float, int, bool]] = []
+    for coordinate in range(start, stop):
+        line = pixels[:, coordinate] if axis == 1 else pixels[coordinate]
+        luminance = line.mean(axis=1)
+        mean = float(luminance.mean())
+        variance = float(luminance.var())
+        bright = mean >= 235.0 and variance <= 64.0
+        scores.append((mean - variance * 0.05, coordinate, bright))
+    bright_scores = [item for item in scores if item[2]]
+    bright_coordinates = [coordinate for _, coordinate, _ in bright_scores]
+    if not bright_scores:
+        return theoretical, 0
+    best = max(bright_scores)[1]
+    band_start = best
+    band_end = best
+    bright_set = set(bright_coordinates)
+    while band_start - 1 in bright_set:
+        band_start -= 1
+    while band_end + 1 in bright_set:
+        band_end += 1
+    width = band_end - band_start + 1
+    return (band_start + band_end + 1) // 2, width
+
+
+def _cell_ranges(
+    extent: int, separators: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for center, width in separators:
+        inset = max(2, width // 2 + 1)
+        ranges.append((start, max(start + 1, center - inset)))
+        start = min(extent - 1, center + inset)
+    ranges.append((start, extent))
+    return ranges
+
+
 def cleanup_grid_cells(
     cell_paths: Sequence[str | Path],
     target_aspect_ratio: str,
@@ -58,6 +168,7 @@ def cleanup_grid_cells(
                 fixed.height - adaptive_trim["bottom"],
             )
         )
+        cleaned, cleanup_passes = _remove_bright_edges(cleaned, max_passes=2)
         cleaned, enhanced = _enhance_low_contrast_once(cleaned)
         covered = _center_cover_crop(cleaned, ratio_width, ratio_height)
 
@@ -78,6 +189,8 @@ def cleanup_grid_cells(
             "source_size": [source_size[0], source_size[1]],
             "output_size": None,
             "warnings": warnings,
+            "cleanup_passes": cleanup_passes,
+            "remaining_bright_border_ratio": _bright_border_ratio(cleaned),
         }
         reports.append(report)
         prepared.append((path, covered, report))
@@ -175,6 +288,43 @@ def _enhance_low_contrast_once(image: Image.Image) -> tuple[Image.Image, bool]:
     if luminance.size and 0.0 < float(luminance.std()) < 12.0:
         return ImageEnhance.Contrast(image).enhance(1.08), True
     return image, False
+
+
+def _remove_bright_edges(
+    image: Image.Image, *, max_passes: int
+) -> tuple[Image.Image, int]:
+    passes = 0
+    for _ in range(max_passes):
+        pixels = np.asarray(image.convert("L"), dtype=np.uint8)
+        edges = {
+            "left": float((pixels[:, 0] >= 248).mean()),
+            "right": float((pixels[:, -1] >= 248).mean()),
+            "top": float((pixels[0] >= 248).mean()),
+            "bottom": float((pixels[-1] >= 248).mean()),
+        }
+        trim = {name: int(ratio >= 0.9) for name, ratio in edges.items()}
+        if not any(trim.values()) or image.width <= 4 or image.height <= 4:
+            break
+        image = image.crop(
+            (
+                trim["left"],
+                trim["top"],
+                image.width - trim["right"],
+                image.height - trim["bottom"],
+            )
+        )
+        passes += 1
+    return image, passes
+
+
+def _bright_border_ratio(image: Image.Image) -> float:
+    pixels = np.asarray(image.convert("L"), dtype=np.uint8)
+    if pixels.size == 0:
+        return 0.0
+    border = np.concatenate(
+        (pixels[0], pixels[-1], pixels[1:-1, 0], pixels[1:-1, -1])
+    )
+    return float((border >= 248).mean()) if border.size else 0.0
 
 
 def _center_cover_crop(

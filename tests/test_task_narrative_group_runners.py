@@ -94,6 +94,37 @@ def test_builtin_narrative_group_runners_use_standard_registry_contract():
     assert get_project_task_runner("narrative_group_split") is narrative_group.run_narrative_group_split
 
 
+def test_generation_batch_payload_controls_layout_style_and_panel_tags():
+    from novelvideo.task_backend.runners.narrative_group import (
+        _grid_prompt,
+        _normalize_generation_batch_payload,
+    )
+
+    payload = _normalize_generation_batch_payload(
+        {
+            "batch_id": "batch-1",
+            "shot_ids": ["shot-1", "shot-2"],
+            "layout": "diptych",
+            "target_cell_aspect": "9:16",
+            "style_snapshot_id": "snapshot-1",
+            "style_hash": "style-hash-1",
+            "image_projection": "FULL_IMAGE_STYLE",
+            "panel_tag": "PANEL_STYLE",
+            "stage": "render",
+            "beats": [{"action": "one"}, {"action": "two"}],
+        }
+    )
+    prompt = _grid_prompt(payload)
+
+    assert payload["layout"] == {"rows": 1, "columns": 2, "capacity": 2}
+    assert payload["cell_to_beat"] == [
+        {"cell": 0, "beat_id": "shot-1"},
+        {"cell": 1, "beat_id": "shot-2"},
+    ]
+    assert prompt.count("FULL_IMAGE_STYLE") == 1
+    assert prompt.count("PANEL_STYLE") == 2
+
+
 def test_split_runner_recovers_grid_from_sidecar_without_generator(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

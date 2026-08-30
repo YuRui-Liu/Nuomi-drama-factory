@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from novelvideo.media_capabilities.image.grid_plan import (
     GridPlan,
     GridPlanError,
+    build_grid_plan,
     plan_grid,
 )
 
@@ -40,3 +41,39 @@ def test_grid_plan_is_frozen_and_rejects_extra_fields() -> None:
     payload["unexpected"] = True
     with pytest.raises(ValidationError):
         GridPlan.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("layout", "count", "cells"),
+    [
+        ("single", 1, ((0, 0),)),
+        ("diptych", 2, ((0, 0), (0, 1))),
+        ("triptych", 3, ((0, 0), (0, 1), (0, 2))),
+        ("grid_2x2", 4, ((0, 0), (0, 1), (1, 0), (1, 1))),
+    ],
+)
+def test_build_grid_plan_preserves_variable_batch_structure(
+    layout: str, count: int, cells: tuple[tuple[int, int], ...]
+) -> None:
+    plan = build_grid_plan(
+        layout=layout,
+        cell_aspect="9:16",
+        quality="2K",
+        model="gpt-image-2-vip",
+    )
+
+    assert plan.cell_count == count
+    assert plan.output_cells == cells
+
+
+def test_two_vertical_shots_request_two_cells_with_2k_cell_width() -> None:
+    plan = build_grid_plan(
+        layout="diptych",
+        cell_aspect="9:16",
+        quality="2K",
+        model="gpt-image-2-vip",
+    )
+
+    assert plan.cell_count == 2
+    assert plan.output_cells == ((0, 0), (0, 1))
+    assert plan.cell_pixel_width >= 1080

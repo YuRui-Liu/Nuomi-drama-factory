@@ -135,6 +135,15 @@ def resolve_grid_image_resolution(
     else:
         width, height = standard_size
 
+    width, height = _ensure_cell_minimum(
+        width,
+        height,
+        requested_tier,
+        cell_aspect_ratio,
+        rows,
+        columns,
+    )
+
     return GridImageResolution(
         requested_tier=requested_tier,
         logical_aspect_ratio=logical_ratio,
@@ -209,3 +218,31 @@ def _ceil_sqrt_ratio(numerator: int, denominator: int) -> int:
     while floor * floor * denominator < numerator:
         floor += 1
     return floor
+
+
+def _ensure_cell_minimum(
+    width: int,
+    height: int,
+    tier: ImageSizeTier,
+    cell_aspect_ratio: str,
+    rows: int,
+    columns: int,
+) -> tuple[int, int]:
+    if rows * columns > 4:
+        return width, height
+    cell_ratio = f"{_parse_aspect_ratio(cell_aspect_ratio)[0]}:{_parse_aspect_ratio(cell_aspect_ratio)[1]}"
+    minimum = _STANDARD_SIZES[tier].get(cell_ratio)
+    if minimum is None:
+        return width, height
+    minimum_width = minimum[0] * columns
+    minimum_height = minimum[1] * rows
+    scale = max(minimum_width / width, minimum_height / height, 1.0)
+    candidate_width = int(width * scale + 15) // 16 * 16
+    candidate_height = int(height * scale + 15) // 16 * 16
+    if (
+        candidate_width <= _MAX_EDGE
+        and candidate_height <= _MAX_EDGE
+        and candidate_width * candidate_height <= _MAX_PIXELS
+    ):
+        return candidate_width, candidate_height
+    return width, height
