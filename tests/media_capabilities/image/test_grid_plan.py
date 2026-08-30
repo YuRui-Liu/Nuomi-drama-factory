@@ -77,3 +77,22 @@ def test_two_vertical_shots_request_two_cells_with_2k_cell_width() -> None:
     assert plan.cell_count == 2
     assert plan.output_cells == ((0, 0), (0, 1))
     assert plan.cell_pixel_width >= 1080
+
+
+@pytest.mark.parametrize(
+    ("quality", "minimum"), [("2K", (1152, 2048)), ("4K", (2160, 3840))]
+)
+def test_2x2_vertical_grid_declares_target_cell_upscale(
+    quality: str, minimum: tuple[int, int]
+) -> None:
+    plan = build_grid_plan(
+        layout="grid_2x2",
+        cell_aspect="9:16",
+        quality=quality,
+        model="gpt-image-2-vip",
+    )
+
+    assert plan.cell_count == 4
+    assert (plan.target_cell_width, plan.target_cell_height) == minimum
+    assert plan.requires_cell_upscale is True
+    assert plan.provider_size

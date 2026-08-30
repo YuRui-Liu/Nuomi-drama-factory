@@ -22,6 +22,7 @@ def split_and_cleanup(
     expected_layout: str,
     target_aspect: str,
     output_dir: str | Path | None = None,
+    target_cell_size: tuple[int, int] | None = None,
 ) -> tuple[list[Path], list[dict[str, object]]]:
     """Detect likely separator bands, split, inset, and clean one batch grid."""
     try:
@@ -67,9 +68,32 @@ def split_and_cleanup(
         report["theoretical_lines"] = theoretical
         report["actual_lines"] = actual
         report["separator_insets"] = separator_insets
-        with Image.open(path) as cleaned:
+        with Image.open(path) as opened:
+            cleaned = opened.convert("RGB")
+        provider_cell_size = cleaned.size
+        upscaled = False
+        if target_cell_size is not None and cleaned.size != target_cell_size:
+            upscaled = (
+                cleaned.width < target_cell_size[0]
+                or cleaned.height < target_cell_size[1]
+            )
+            cleaned = cleaned.resize(target_cell_size, Image.Resampling.LANCZOS)
+            cleaned.save(path, format="PNG")
+            report["output_size"] = [target_cell_size[0], target_cell_size[1]]
+        report["provider_cell_size"] = [
+            provider_cell_size[0],
+            provider_cell_size[1],
+        ]
+        report["target_cell_size"] = (
+            [target_cell_size[0], target_cell_size[1]]
+            if target_cell_size is not None
+            else [cleaned.width, cleaned.height]
+        )
+        report["upscaled"] = upscaled
+        report["degraded"] = upscaled
+        with Image.open(path) as cleaned_output:
             report["remaining_bright_border_ratio"] = _bright_border_ratio(
-                cleaned.convert("RGB")
+                cleaned_output.convert("RGB")
             )
     return paths, reports
 

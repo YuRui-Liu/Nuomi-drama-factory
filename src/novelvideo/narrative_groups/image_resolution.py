@@ -19,6 +19,10 @@ class GridImageResolution:
     provider_aspect_ratio: str
     width: int
     height: int
+    target_cell_width: int
+    target_cell_height: int
+    requires_cell_upscale: bool
+    degraded: bool
     requires_aspect_normalization: bool
     reason: str | None
 
@@ -144,12 +148,39 @@ def resolve_grid_image_resolution(
         columns,
     )
 
+    target_cell_width, target_cell_height = _target_cell_size(
+        requested_tier, cell_aspect_ratio
+    )
+    if (
+        rows * columns <= 4
+        and (
+            width // columns < target_cell_width
+            or height // rows < target_cell_height
+        )
+    ):
+        maximum = _STANDARD_SIZES["4K"].get(provider_ratio)
+        if maximum is None:
+            maximum = _custom_size(provider_width, provider_height, "4K")
+        if maximum[0] * maximum[1] > width * height:
+            width, height = maximum
+        ceiling_reason = (
+            f"provider canvas ceiling {width}x{height} cannot meet every "
+            f"{target_cell_width}x{target_cell_height} cell without deterministic upscale"
+        )
+        reason = f"{reason}; {ceiling_reason}" if reason else ceiling_reason
+    requires_cell_upscale = (
+        width // columns < target_cell_width or height // rows < target_cell_height
+    )
     return GridImageResolution(
         requested_tier=requested_tier,
         logical_aspect_ratio=logical_ratio,
         provider_aspect_ratio=provider_ratio,
         width=width,
         height=height,
+        target_cell_width=target_cell_width,
+        target_cell_height=target_cell_height,
+        requires_cell_upscale=requires_cell_upscale,
+        degraded=requires_cell_upscale,
         requires_aspect_normalization=requires_normalization,
         reason=reason,
     )
@@ -246,3 +277,20 @@ def _ensure_cell_minimum(
     ):
         return candidate_width, candidate_height
     return width, height
+
+
+def _target_cell_size(
+    tier: ImageSizeTier, cell_aspect_ratio: str
+) -> tuple[int, int]:
+    width, height = _parse_aspect_ratio(cell_aspect_ratio)
+    ratio = f"{width}:{height}"
+    standard = _STANDARD_SIZES[tier].get(ratio)
+    if standard is not None:
+        return standard
+    target_pixels = _TARGET_PIXELS[tier]
+    target_width = isqrt(target_pixels * width // height)
+    target_height = isqrt(target_pixels * height // width)
+    return (
+        max(16, target_width // 16 * 16),
+        max(16, target_height // 16 * 16),
+    )

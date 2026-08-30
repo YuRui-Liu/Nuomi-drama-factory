@@ -33,6 +33,11 @@ class BatchGridPlan(BaseModel):
     canvas_pixel_height: int
     cell_pixel_width: int
     cell_pixel_height: int
+    provider_size: str
+    target_cell_width: int
+    target_cell_height: int
+    requires_cell_upscale: bool
+    degraded: bool
 
 
 def plan_grid(shots: Sequence[str], *, cell_aspect_ratio: str) -> GridPlan:
@@ -96,6 +101,11 @@ def build_grid_plan(
         canvas_pixel_height=resolution.height,
         cell_pixel_width=resolution.width // columns,
         cell_pixel_height=resolution.height // rows,
+        provider_size=resolution.provider_size,
+        target_cell_width=resolution.target_cell_width,
+        target_cell_height=resolution.target_cell_height,
+        requires_cell_upscale=resolution.requires_cell_upscale,
+        degraded=resolution.degraded,
     )
 
 

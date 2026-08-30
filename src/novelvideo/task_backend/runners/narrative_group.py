@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 from math import gcd
 import os
 import re
@@ -28,7 +29,25 @@ from novelvideo.task_backend.registry import register_project_task_runner
 
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
-    return Path(str(payload.get("project_dir") or ctx.output_dir))
+    return _contained_output_path(
+        ctx, payload.get("project_dir") or ctx.output_dir
+    )
+
+
+def _contained_output_path(ctx: ProjectContext, value: Any) -> Path:
+    root = Path(str(ctx.output_dir)).resolve()
+    candidate = Path(str(value or root))
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError("path must stay inside the project output root")
+    return resolved
+
+
+def _safe_path_slug(value: Any, *, prefix: str) -> str:
+    digest = sha256(str(value or "").encode("utf-8")).hexdigest()[:20]
+    return f"{prefix}-{digest}"
 
 
 def _beat_number(beat: Mapping[str, Any], fallback: int) -> int:
@@ -402,9 +421,14 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         if not url:
             raise RuntimeError("GRSAI grid response has no result URL")
         image_bytes = await client.download(url) if hasattr(client, "download") else (await client.http.get(url)).content
-        output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
+        output_dir = _contained_output_path(
+            ctx, payload.get("output_dir") or ctx.output_dir
+        )
+        group_slug = _safe_path_slug(payload.get("group_id"), prefix="group")
+        batch_slug = _safe_path_slug(payload.get("batch_id"), prefix="batch")
         target = output_dir / "grids" / f"ep{int(payload['episode']):03d}" / "narrative_groups" / (
-            f"{payload['group_id']}_{payload['stage']}_r{int(payload['revision'])}_{os.getpid()}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png"
+            f"{group_slug}_{batch_slug}_{payload['stage']}_r{int(payload['revision'])}_"
+            f"{os.getpid()}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(image_bytes)
@@ -438,6 +462,15 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             "resolution_warning": (
                 resolution.reason if resolution is not None else None
             ),
+            "target_cell_size": (
+                f"{resolution.target_cell_width}x{resolution.target_cell_height}"
+                if resolution is not None
+                else ""
+            ),
+            "cell_upscale_required": (
+                resolution.requires_cell_upscale if resolution is not None else False
+            ),
+            "degraded": resolution.degraded if resolution is not None else False,
         }
     finally:
         await client.http.aclose()
@@ -456,7 +489,12 @@ def _split_existing_grid(
         _beat_number(beats[index], index + 1) if index < len(beats) else _beat_number(item, index + 1)
         for index, item in enumerate(mapping)
     ]
-    output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
+    output_dir = _contained_output_path(
+        ctx, payload.get("output_dir") or ctx.output_dir
+    )
+    grid_path = Path(grid_asset).resolve()
+    if not grid_path.is_relative_to(output_dir) or not grid_path.is_file():
+        raise ValueError("grid asset must stay inside the project output root")
     episode = int(payload["episode"])
     stage = str(payload["stage"])
     paths = PathResolver(str(output_dir), episode)
@@ -474,15 +512,34 @@ def _split_existing_grid(
     if layout_name is not None:
         from novelvideo.narrative_groups.grid_cleanup import split_and_cleanup
 
-        split_dir = promote_dir / (
-            f".{payload['group_id']}_{payload.get('batch_id') or 'legacy'}_"
-            f"r{int(payload['revision'])}"
-        )
+        group_slug = _safe_path_slug(payload.get("group_id"), prefix="group")
+        batch_slug = _safe_path_slug(payload.get("batch_id"), prefix="batch")
+        split_dir = promote_dir / f".{group_slug}_{batch_slug}_r{int(payload['revision'])}"
+        target_cell_size = None
+        model = str(payload.get("model") or "")
+        quality = str(payload.get("image_size") or "1K")
+        if model.startswith("gpt-image"):
+            from novelvideo.narrative_groups.image_resolution import (
+                resolve_grid_image_resolution,
+            )
+
+            resolution = resolve_grid_image_resolution(
+                model,
+                quality,
+                str(payload.get("aspect_ratio") or "9:16"),
+                rows,
+                columns,
+            )
+            target_cell_size = (
+                resolution.target_cell_width,
+                resolution.target_cell_height,
+            )
         raw_paths, cleanup_reports = split_and_cleanup(
-            grid_asset,
+            grid_path,
             expected_layout=layout_name,
             target_aspect=str(payload.get("aspect_ratio") or "9:16"),
             output_dir=split_dir,
+            target_cell_size=target_cell_size,
         )
         cell_paths: list[str] = []
         import shutil
@@ -496,9 +553,7 @@ def _split_existing_grid(
             if cleanup_reports
             else ""
         )
-        _rebuild_normalized_grid(
-            Path(grid_asset), cell_paths, rows=rows, columns=columns
-        )
+        _rebuild_normalized_grid(grid_path, cell_paths, rows=rows, columns=columns)
         return {
             "cell_assets": [
                 {
@@ -513,6 +568,12 @@ def _split_existing_grid(
             ],
             "cleanup_reports": cleanup_reports,
             "cleaned_cell_size": cleaned_cell_size,
+            "upscaled": any(
+                bool(report.get("upscaled")) for report in cleanup_reports
+            ),
+            "degraded": any(
+                bool(report.get("degraded")) for report in cleanup_reports
+            ),
             "errors": [],
         }
     result = save_grid_and_split(
@@ -527,7 +588,10 @@ def _split_existing_grid(
         preset="custom",
         rows=int(layout["rows"]),
         cols=int(layout["columns"]),
-        ts=f"ng{payload['group_id']}_r{int(payload['revision'])}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        ts=(
+            f"{_safe_path_slug(payload.get('group_id'), prefix='group')}_"
+            f"r{int(payload['revision'])}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        ),
         promote_dir=promote_dir,
         force_promote=True,
         beats=beats if stage == "sketch" else None,
@@ -604,6 +668,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                     "source_sketch_revision", "constraint_mode",
                     "requested_image_size", "requested_pixel_size",
                     "actual_pixel_size", "resolution_warning", "cleaned_cell_size",
+                    "target_cell_size", "cell_upscale_required", "degraded",
                 ):
                     if field in generated:
                         generation_metadata[field] = generated[field]
@@ -644,6 +709,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                     result.get("requested_image_size") or payload.get("image_size") or ""
                 ),
                 "actual_cell_size": str(result.get("cleaned_cell_size") or ""),
+                "target_cell_size": str(result.get("target_cell_size") or ""),
+                "upscaled": bool(result.get("upscaled")),
+                "degraded": bool(result.get("degraded")),
             },
         )
         return result

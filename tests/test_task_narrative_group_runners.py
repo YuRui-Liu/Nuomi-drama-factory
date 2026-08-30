@@ -125,6 +125,23 @@ def test_generation_batch_payload_controls_layout_style_and_panel_tags():
     assert prompt.count("PANEL_STYLE") == 2
 
 
+def test_generation_paths_reject_escape_and_hash_untrusted_ids(tmp_path):
+    from types import SimpleNamespace
+
+    from novelvideo.task_backend.runners.narrative_group import (
+        _project_dir,
+        _safe_path_slug,
+    )
+
+    ctx = SimpleNamespace(output_dir=tmp_path)
+    with pytest.raises(ValueError, match="project output root"):
+        _project_dir({"project_dir": tmp_path / ".." / "outside"}, ctx)
+
+    slug = _safe_path_slug("../../escape", prefix="batch")
+    assert slug.startswith("batch-")
+    assert "/" not in slug and "\\" not in slug and ".." not in slug
+
+
 def test_split_runner_recovers_grid_from_sidecar_without_generator(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

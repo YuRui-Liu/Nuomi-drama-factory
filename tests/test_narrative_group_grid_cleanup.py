@@ -105,3 +105,21 @@ def test_splitter_detects_and_removes_white_separator(tmp_path: Path) -> None:
     assert all(report["actual_lines"]["vertical"] == [186] for report in reports)
     assert all(report["remaining_bright_border_ratio"] < 0.01 for report in reports)
     assert all(report["cleanup_passes"] <= 2 for report in reports)
+
+
+def test_splitter_upscales_each_cell_to_quality_minimum(tmp_path: Path) -> None:
+    pixels = np.full((320, 180, 3), [40, 120, 200], dtype=np.uint8)
+    grid = _save(tmp_path / "single.png", pixels)
+
+    cells, reports = split_and_cleanup(
+        grid,
+        expected_layout="single",
+        target_aspect="9:16",
+        target_cell_size=(1152, 2048),
+    )
+
+    with Image.open(cells[0]) as cell:
+        assert cell.size == (1152, 2048)
+    assert reports[0]["upscaled"] is True
+    assert reports[0]["target_cell_size"] == [1152, 2048]
+    assert reports[0]["degraded"] is True
