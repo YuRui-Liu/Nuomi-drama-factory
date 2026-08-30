@@ -77,6 +77,32 @@ class H3PromptOptimizationResult(BaseModel):
     cache_hit: bool = False
 
 
+def compile_and_gate_h3_plan(
+    plan: H3DirectorPlan,
+    *,
+    segment: H3DirectorSegment,
+    context: H3PromptContext,
+    mode: H3Mode,
+    input_hash: str,
+) -> H3PromptOptimizationResult:
+    """Normalize, quality-gate and compile one typed H3 plan."""
+    mode = H3Mode(mode)
+    _validate_dialogue_contract(segment, dialogue_required=context.dialogue_required)
+    if plan.mode is not mode:
+        raise ValueError(
+            f"director plan mode {plan.mode.value!r} does not match {mode.value!r}"
+        )
+    normalized = normalize_h3_action_timeline(plan)
+    report = inspect_h3_plan(normalized, segment=segment, context=context)
+    report.raise_for_failure()
+    return H3PromptOptimizationResult(
+        prompt=compile_h3_director_plan(normalized),
+        plan=normalized,
+        quality_report=report,
+        input_hash=input_hash,
+    )
+
+
 class H3PromptOptimizer:
     def __init__(
         self,
@@ -128,10 +154,11 @@ class H3PromptOptimizer:
                 plan = normalize_h3_action_timeline(plan)
                 report = inspect_h3_plan(plan, segment=segment, context=context)
                 if report.passed:
-                    result = H3PromptOptimizationResult(
-                        prompt=compile_h3_director_plan(plan),
-                        plan=plan,
-                        quality_report=report,
+                    result = compile_and_gate_h3_plan(
+                        plan,
+                        segment=segment,
+                        context=context,
+                        mode=mode,
                         input_hash=input_hash,
                     )
                     _save_cache(cache_path, result)
@@ -383,5 +410,6 @@ __all__ = [
     "H3PromptOptimizationResult",
     "H3PromptOptimizer",
     "H3PromptStructuredOutput",
+    "compile_and_gate_h3_plan",
     "create_h3_prompt_optimizer",
 ]

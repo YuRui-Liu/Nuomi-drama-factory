@@ -404,6 +404,17 @@ def test_h3_task_contains_versioned_director_rules_and_context():
     assert "林默" in task
 
 
+def test_shared_compile_and_quality_gate_rejects_mode_mismatch():
+    with pytest.raises(ValueError, match="does not match"):
+        h3_prompt_optimizer.compile_and_gate_h3_plan(
+            _director_plan(H3Mode.FL2VA),
+            segment=_segment(),
+            context=_context(),
+            mode=H3Mode.I2VA,
+            input_hash="a" * 64,
+        )
+
+
 def _director_plan(
     mode: H3Mode = H3Mode.I2VA,
     *,
