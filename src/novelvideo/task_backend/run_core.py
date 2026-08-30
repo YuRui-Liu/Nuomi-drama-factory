@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -338,6 +339,16 @@ def _project_task_failure_for_exception(exc: BaseException) -> tuple[str, dict[s
 
     if isinstance(exc, NovelImportRequiredError):
         return str(exc), {"error_code": exc.error_code}, True
+
+    structured_error_code = getattr(exc, "error_code", None)
+    if isinstance(structured_error_code, str) and re.fullmatch(
+        r"[A-Z][A-Z0-9_]{2,63}", structured_error_code
+    ):
+        payload: dict[str, Any] = {"error_code": structured_error_code}
+        validation_report = getattr(exc, "validation_report", None)
+        if isinstance(validation_report, dict):
+            payload["validation_report"] = validation_report
+        return structured_error_code, payload, True
 
     if isinstance(exc, TaskTimedOut):
         timeout_seconds = int(getattr(exc, "timeout_seconds", None) or 30 * 60)
