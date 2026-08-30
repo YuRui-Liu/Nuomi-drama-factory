@@ -16,6 +16,7 @@ from novelvideo.narrative_groups.service import (
     retry_split,
     run_group_grid,
     stage_payload,
+    load_materialized_groups,
 )
 from novelvideo.narrative_groups.references import (
     GroupImageReference,
@@ -122,11 +123,12 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
     prompt_references = selection.selected
     warnings = list(selection.warnings)
     if str(payload.get("constraint_mode") or "") == "strong_sketch":
-        from novelvideo.narrative_groups.service import load_groups
-
         group = next(
             (
-                item for item in load_groups(Path(str(payload["project_dir"])), int(payload["episode"]))
+                item
+                for item in load_materialized_groups(
+                    Path(str(payload["project_dir"])), int(payload["episode"])
+                )
                 if item.id == str(payload["group_id"])
             ),
             None,

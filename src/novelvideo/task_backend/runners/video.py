@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
-from novelvideo.narrative_groups.service import load_groups
+from novelvideo.narrative_groups.service import load_materialized_groups
 from novelvideo.utils.path_resolver import PathResolver
 from novelvideo.task_backend.cancel import (
     TaskTimedOut,
@@ -63,7 +63,7 @@ def resolve_episode_composition_sources(
     director_spans: list[tuple[int, int, VideoSpan]] = []
     covered: set[int] = set()
     try:
-        groups = load_groups(root, episode)
+        groups = load_materialized_groups(root, episode)
     except (OSError, ValueError):
         groups = []
     for group in sorted(groups, key=lambda item: int(getattr(item, "ordinal", 0))):

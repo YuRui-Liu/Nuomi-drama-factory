@@ -46,6 +46,7 @@ from novelvideo.narrative_groups.references import (
 )
 from novelvideo.narrative_groups.service import (
     advance_revision,
+    generation_beats_for_group,
     load_effective_groups,
     load_group_video_prompt_manifest,
     rebuild_groups,
@@ -773,6 +774,12 @@ async def _enqueue_group_action(
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     try:
         source_group, selected_beats = _group_beats(groups, beats, group_id)
+        selected_beats = generation_beats_for_group(
+            resolved.project_dir,
+            episode,
+            group_id,
+            selected_beats,
+        )
     except KeyError as exc:
         raise HTTPException(
             status_code=404, detail=f"Narrative group '{group_id}' not found"
@@ -847,10 +854,6 @@ async def _enqueue_group_action(
 
     scope = f"group_{group_id}_{stage}_r{revision}"
     mapping = [item.__dict__ for item in group.cell_to_beat]
-    beat_by_id = {
-        str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number")): beat
-        for beat in beats
-    }
     task_type = "narrative_group_split" if split_only else "narrative_group_grid"
     payload = {
         "episode": episode,
@@ -863,7 +866,7 @@ async def _enqueue_group_action(
         "aspect_ratio": request.aspect_ratio,
         "beat_ids": list(group.beat_ids),
         "cell_to_beat": mapping,
-        "beats": [beat_by_id[beat_id] for beat_id in group.beat_ids if beat_id in beat_by_id],
+        "beats": selected_beats,
         "split_only": split_only,
     }
     if reference_selection is not None:

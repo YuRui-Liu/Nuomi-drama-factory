@@ -430,15 +430,52 @@ def _materialize_active_groups(
         return projected
 
 
-def _load_groups_for_write(
+def load_materialized_groups(
     project_dir: str | Path,
     episode: int,
 ) -> list[NarrativeGroup]:
+    """Load mutable groups after synchronizing any active DirectorPlan."""
     project_path = Path(project_dir)
     active = DirectorPlanStore(project_path).load_active(episode)
     if active is not None:
         return _materialize_active_groups(project_path, episode, active)
     return load_groups(project_path, episode)
+
+
+def generation_beats_for_group(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    legacy_beats: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return ordered visual inputs matching the effective group's cells."""
+    active = DirectorPlanStore(Path(project_dir)).load_active(episode)
+    if active is None:
+        return [dict(beat) for beat in legacy_beats]
+    group = next((item for item in active.groups if item.id == group_id), None)
+    if group is None:
+        raise KeyError(group_id)
+    return [
+        {
+            "id": shot.id,
+            "beat_id": shot.id,
+            "source_span_ids": list(shot.source_span_ids),
+            "visual_description": " ".join(
+                part for part in (shot.subject, shot.action) if part
+            ),
+            "subject": shot.subject,
+            "action": shot.action,
+            "visible_start_state": shot.visible_start_state,
+            "visible_end_state": shot.visible_end_state,
+            "shot_size": shot.shot_size,
+            "camera_angle": shot.camera_angle,
+            "composition": shot.composition,
+            "camera_motion": shot.camera_motion,
+            "dialogue_source_ids": list(shot.dialogue_source_ids),
+            "duration_seconds": shot.duration_seconds,
+        }
+        for shot in group.shots
+    ]
 
 
 def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:
@@ -501,7 +538,7 @@ def update_video_settings(
     copied_defaults = _copy_string_mapping(project_defaults, "project_defaults")
 
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         group = next((item for item in groups if item.id == group_id), None)
         if group is None:
             raise KeyError(group_id)
@@ -544,7 +581,7 @@ def update_video_plan(
     source = list(beats)
     beat_by_id = {_beat_id(beat): beat for beat in source}
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         group = next((item for item in groups if item.id == group_id), None)
         if group is None:
             raise KeyError(group_id)
@@ -621,7 +658,7 @@ def advance_revision(
     expected_revision: int | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         original = next((group for group in groups if group.id == group_id), None)
         if original is None:
             raise KeyError(group_id)
@@ -692,7 +729,7 @@ def reserve_video_revision(
     overwriting a later successful reservation.
     """
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         reservation: VideoRevisionReservation | None = None
@@ -747,7 +784,7 @@ def restore_video_reservation(
 ) -> bool:
     """Restore a failed enqueue only if its reservation is still current."""
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         updated: list[NarrativeGroup] = []
         restored = False
         for group in groups:
@@ -801,7 +838,7 @@ def record_stage_result(
 ) -> NarrativeGroup:
     """Atomically merge a runner outcome into the durable group sidecar."""
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         for group in groups:
@@ -943,7 +980,7 @@ def stage_history(
     group_id: str,
     stage: StageName,
 ) -> list[dict[str, Any]]:
-    for group in _load_groups_for_write(project_dir, episode):
+    for group in load_materialized_groups(project_dir, episode):
         if group.id == group_id:
             return list(group.stages.get(stage, GroupStageState()).revision_history)
     raise KeyError(group_id)
@@ -958,7 +995,7 @@ def rollback_stage_revision(
     revision: int,
 ) -> NarrativeGroup:
     with _sidecar_guard(project_dir, episode):
-        groups = _load_groups_for_write(project_dir, episode)
+        groups = load_materialized_groups(project_dir, episode)
         updated: list[NarrativeGroup] = []
         found = None
         for group in groups:
@@ -1013,7 +1050,7 @@ def rollback_stage_revision(
 
 
 def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: StageName) -> dict[str, Any]:
-    for group in _load_groups_for_write(project_dir, episode):
+    for group in load_materialized_groups(project_dir, episode):
         if group.id == group_id:
             state = group.stages.get(stage, GroupStageState())
             return {
@@ -1045,7 +1082,12 @@ def load_group_video_prompt_manifest(
     """Load the current video manifest without trusting a client-supplied path."""
     root = Path(project_dir).resolve()
     group = next(
-        (item for item in load_groups(root, episode) if item.id == group_id), None
+        (
+            item
+            for item in load_materialized_groups(root, episode)
+            if item.id == group_id
+        ),
+        None,
     )
     if group is None:
         raise KeyError(group_id)
@@ -1120,7 +1162,14 @@ def update_video_manifest_dialogue_source(
     )
 
     with _sidecar_guard(project_dir, episode):
-        group = next((item for item in load_groups(project_dir, episode) if item.id == group_id), None)
+        group = next(
+            (
+                item
+                for item in load_materialized_groups(project_dir, episode)
+                if item.id == group_id
+            ),
+            None,
+        )
         if group is None:
             raise KeyError(group_id)
         state = group.stages.get("video", GroupStageState())
