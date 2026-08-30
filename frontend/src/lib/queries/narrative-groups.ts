@@ -138,6 +138,48 @@ export interface NarrativeGroupVideoPromptManifest {
   [key: string]: unknown;
 }
 
+export interface NarrativeGenerationBatch {
+  id: string;
+  group_id: string;
+  shot_ids: string[];
+  layout: "single" | "diptych" | "triptych" | "grid_2x2";
+  rows: number;
+  columns: number;
+  capacity: number;
+  style_snapshot_id: string;
+  status?: NarrativeStageStatus;
+  provider?: string | null;
+  model?: string | null;
+  requested_resolution?: string | null;
+  actual_resolution?: string | null;
+  style_hash?: string | null;
+  cleanup_reports?: Array<{ remaining_bright_border_ratio?: number | null }>;
+}
+
+export interface NarrativeVideoSegment {
+  id: string;
+  group_id: string;
+  shot_ids: string[];
+  duration_seconds: number;
+  continuity_reason: string;
+  audio_mode: "project_default" | "external_tts" | "h3_original";
+  style_snapshot_id: string;
+  status?: NarrativeStageStatus;
+  provider?: string | null;
+  provider_task_id?: string | null;
+  error?: string | null;
+}
+
+export interface EffectiveStyleSnapshot {
+  snapshot_id: string;
+  style_id: string;
+  style_version: string;
+  catalog_hash: string;
+  style_hash: string;
+  inherited: boolean;
+  projections?: { director: string; image: string; video: string; panel_tag: string };
+}
+
 export function narrativeGroupVideoPromptUnitKey(
   unit: NarrativeGroupVideoPromptUnit,
   index: number,
@@ -169,6 +211,9 @@ export interface NarrativeGroup {
   }>;
   video_plan?: NarrativeGroupVideoPlan;
   video_settings?: NarrativeGroupVideoSettings;
+  generation_batches?: NarrativeGenerationBatch[];
+  video_segments?: NarrativeVideoSegment[];
+  effective_style_snapshot?: EffectiveStyleSnapshot | null;
 }
 
 export interface NarrativeGroupRevision {
@@ -193,6 +238,16 @@ export function narrativeGroupActionPath(
 
 export function narrativeGroupVideoPath(project: string, episode: number, groupId: string) {
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/generate`;
+}
+
+export function narrativeGroupVideoSegmentPath(
+  project: string, episode: number, groupId: string, segmentId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/segments/${segmentId}/generate`;
+}
+
+export function narrativeGroupStylePath(project: string, episode: number, groupId: string) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/style`;
 }
 
 export function narrativeGroupVideoPlanPath(project: string, episode: number, groupId: string) {
@@ -401,6 +456,36 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
       resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
       json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }),
+    }).json<TaskResponse>(),
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+    ]),
+  });
+}
+
+export function useGenerateNarrativeGroupVideoSegment(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, segmentId }: { groupId: string; segmentId: string }) => api.post(
+      narrativeGroupVideoSegmentPath(project, episode, groupId, segmentId),
+      { json: {} },
+    ).json<TaskResponse>(),
+    onSuccess: () => qc.invalidateQueries({
+      queryKey: queryKeys.narrativeGroups(project, episode),
+    }),
+  });
+}
+
+export function useChangeNarrativeGroupStyle(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, styleId, action }: {
+      groupId: string;
+      styleId: string | null;
+      action: "restyle" | "redirect";
+    }) => api.put(narrativeGroupStylePath(project, episode, groupId), {
+      json: { style_id: styleId, action },
     }).json<TaskResponse>(),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
