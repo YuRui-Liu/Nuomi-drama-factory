@@ -7,6 +7,7 @@ from novelvideo.workflows.literal_script_writing import (
     LiteralBeatMetaOutput,
     LiteralScriptWritingWorkflow,
     _content_filter_hint_matches,
+    split_literal_source_text,
 )
 from novelvideo.workflows.script_writing import create_script_writing_workflow
 
@@ -28,6 +29,35 @@ def test_literal_beat_meta_defaults_to_silence_audio_type():
 
     assert beat.audio_type == "silence"
     assert not hasattr(beat, "scene_variant_id")
+
+
+def test_literal_source_ignores_import_metadata_before_first_scene():
+    source = """---
+episode: E001
+title: 不要叫名字
+duration_seconds: 110
+rights_risk: low
+pending_items: none
+---
+# E001 不要叫名字
+
+第 · 不要叫名字
+时长：110s
+
+1-1 广播站灾变夜 日/夜 内/外
+人物：周禾 梁真
+△梁真守在直播台前。
+周禾：声音只能争取时间。
+
+<!-- main_change: 周禾发现感染者停住。; rights_risk: low -->
+"""
+
+    assert split_literal_source_text(source) == [
+        "1-1 广播站灾变夜 日/夜 内/外",
+        "人物：周禾 梁真",
+        "△梁真守在直播台前。",
+        "周禾：声音只能争取时间。",
+    ]
 
 
 def test_scene_ref_exposes_lightweight_variant_id():

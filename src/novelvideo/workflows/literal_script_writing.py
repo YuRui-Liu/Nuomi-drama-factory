@@ -23,6 +23,7 @@ from novelvideo.models import (
 from novelvideo.time_of_day import normalize_time_of_day
 from novelvideo.utils.screenplay_quality import check_screenplay_import_quality
 from novelvideo.utils.screenplay_scene_parser import (
+    is_scene_start_line,
     parse_character_line,
     parse_location_header,
     parse_scene_blocks,
@@ -351,7 +352,41 @@ LITERAL_SCRIPT_PROMPT = """# 你是短剧剧本逐行分镜标注师
 
 
 def split_literal_source_text(source_text: str) -> list[str]:
-    return split_screenplay_lines(source_text)
+    normalized = (source_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"<!--.*?-->", "", normalized, flags=re.DOTALL)
+    raw_lines = normalized.split("\n")
+
+    first_nonempty = next(
+        (index for index, line in enumerate(raw_lines) if line.strip()),
+        None,
+    )
+    if first_nonempty is not None and raw_lines[first_nonempty].lstrip("\ufeff").strip() == "---":
+        closing = next(
+            (
+                index
+                for index in range(first_nonempty + 1, len(raw_lines))
+                if raw_lines[index].strip() == "---"
+            ),
+            None,
+        )
+        if closing is not None:
+            del raw_lines[first_nonempty : closing + 1]
+
+    lines = split_screenplay_lines("\n".join(raw_lines))
+    first_scene = next(
+        (index for index, line in enumerate(lines) if is_scene_start_line(line)),
+        None,
+    )
+    if first_scene is not None:
+        return lines[first_scene:]
+
+    metadata_line = re.compile(
+        r"^(?:#{1,6}\s*(?:E\d+|第\s*\d+\s*集)\b|"
+        r"(?:episode|title|duration_seconds|rights_risk|pending_items)\s*:|"
+        r"时长\s*[：:])",
+        re.IGNORECASE,
+    )
+    return [line for line in lines if line != "---" and not metadata_line.match(line)]
 
 
 def _parse_scene_characters(character_text: str) -> list[str]:

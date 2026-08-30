@@ -74,6 +74,31 @@ async def test_lazy_fallback_confirmation_is_idempotent(repository):
 
 
 @pytest.mark.asyncio
+async def test_existing_numbered_episode_is_preferred_over_ambiguous_novel(repository):
+    from novelvideo.episode_legacy_migration import ensure_legacy_migration
+
+    project, store = repository
+    content = """---
+episode: E001
+title: 不要叫名字
+---
+# E001 不要叫名字
+
+1-1 广播站 夜 内
+△梁真守在直播台前。
+"""
+    await store.sqlite_store.save_episode_content(1, content)
+    (project / "novel.txt").write_text(content, encoding="utf-8")
+
+    result = await ensure_legacy_migration(store)
+
+    assert result.status == "migrated"
+    assert result.episode_numbers == (1,)
+    sources = await store.list_sources()
+    assert [(item.episode_number, item.content) for item in sources] == [(1, content)]
+
+
+@pytest.mark.asyncio
 async def test_migration_is_idempotent(repository):
     project, store = repository
     (project / "novel.txt").write_text("第1集\n正文", encoding="utf-8")

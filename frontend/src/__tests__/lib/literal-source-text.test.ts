@@ -12,4 +12,32 @@ describe("splitLiteralSourceText", () => {
       "第三行",
     ]);
   });
+
+  it("drops imported document metadata and comments outside the screenplay", () => {
+    const source = `---
+episode: E001
+title: 不要叫名字
+duration_seconds: 110
+rights_risk: low
+pending_items: none
+---
+# E001 不要叫名字
+
+第 · 不要叫名字
+时长：110s
+
+1-1 广播站灾变夜 日/夜 内/外
+人物：周禾 梁真
+△梁真守在直播台前。
+周禾：声音只能争取时间。
+
+<!-- main_change: 周禾发现感染者停住。; rights_risk: low -->`;
+
+    expect(splitLiteralSourceText(source)).toEqual([
+      "1-1 广播站灾变夜 日/夜 内/外",
+      "人物：周禾 梁真",
+      "△梁真守在直播台前。",
+      "周禾：声音只能争取时间。",
+    ]);
+  });
 });
