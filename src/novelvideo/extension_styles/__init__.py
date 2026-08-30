@@ -8,6 +8,7 @@ from .schema import (
 )
 from .registry import (
     CatalogDiagnostics,
+    CatalogError,
     CatalogFingerprint,
     CatalogSnapshot,
     ExtensionStyleRegistry,
@@ -17,6 +18,7 @@ __all__ = (
     "ExtensionStyle",
     "ExtensionStyleRegistry",
     "CatalogDiagnostics",
+    "CatalogError",
     "CatalogFingerprint",
     "CatalogSnapshot",
     "compile_prompt_fragment",

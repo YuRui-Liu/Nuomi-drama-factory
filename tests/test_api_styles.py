@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -238,6 +240,57 @@ def test_catalog_reload_diagnostics_never_expose_absolute_paths(monkeypatch) -> 
     assert "C:\\" not in serialized
 
 
+def test_catalog_reload_real_registry_keeps_lkg_then_recovers(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo.extension_styles.registry import ExtensionStyleRegistry
+    from novelvideo.services.style_service import StyleService
+
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "novelvideo"
+        / "extension_styles"
+        / "catalog.json"
+    )
+    catalog_path = tmp_path / "catalog.json"
+    valid_catalog = source.read_bytes()
+    catalog_path.write_bytes(valid_catalog)
+
+    class RecordingRegistry(ExtensionStyleRegistry):
+        def __init__(self, path):
+            super().__init__(path)
+            self.force_values = []
+
+        def reload(self, *, force=True):
+            self.force_values.append(force)
+            return super().reload(force=force)
+
+    registry = RecordingRegistry(catalog_path)
+    monkeypatch.setattr(StyleService, "_extension_registry", registry)
+    client = _client({"username": "alice", "role": "editor"})
+
+    initial = client.get("/styles/catalog-status").json()["data"]
+    catalog_path.write_text("not-json", encoding="utf-8")
+    failed = client.post("/styles/catalog-reload").json()["data"]
+    catalog_path.write_bytes(valid_catalog)
+    recovered = client.post("/styles/catalog-reload").json()["data"]
+
+    assert initial["loaded"] == 18
+    assert failed["generation"] == initial["generation"]
+    assert failed["catalog_hash"] == initial["catalog_hash"]
+    assert failed["loaded"] == 18
+    assert failed["degraded"] is True
+    assert failed["errors"] == [
+        {"code": "invalid_catalog", "file": "catalog.json"}
+    ]
+    assert recovered["generation"] == initial["generation"] + 1
+    assert recovered["loaded"] == 18
+    assert recovered["degraded"] is False
+    assert recovered["errors"] == []
+    assert registry.force_values == [False, True, True]
+
+
 def test_snapshot_preview_returns_purpose_projections_without_internal_paths():
     response = _client().get(
         "/styles/drama_ext.japanese_cel_animation/snapshot-preview"
@@ -272,6 +325,31 @@ def test_style_catalog_keeps_six_presets_and_eighteen_extensions():
     assert extension["source_group"] == "freestylefly/awesome-gpt-image-2"
     assert extension["catalog_generation"] >= 1
     assert extension["preview_url"].startswith("/images/extension-styles/")
+
+
+def test_list_all_styles_orders_real_groups_and_keeps_ids_unique(monkeypatch):
+    from novelvideo.services.style_service import StyleService
+
+    custom_styles = {
+        "custom_z": {"id": "custom_z", "name": "Custom Z"},
+        "custom_a": {"id": "custom_a", "name": "Custom A"},
+    }
+    monkeypatch.setattr(
+        StyleService,
+        "_load_project_custom_style_map",
+        classmethod(lambda cls, *args, **kwargs: custom_styles),
+    )
+
+    styles = StyleService.list_all_styles(username="alice", project="demo")
+    ids = [style["id"] for style in styles]
+    types = [style["type"] for style in styles]
+
+    assert types == ["preset"] * 6 + ["extension"] * 18 + ["custom"] * 2
+    assert [style["order"] for style in styles[:6]] == list(range(6))
+    assert [style["order"] for style in styles[6:24]] == list(range(18))
+    assert [style["id"] for style in styles[24:]] == ["custom_a", "custom_z"]
+    assert [style["order"] for style in styles[24:]] == [0, 1]
+    assert len(ids) == len(set(ids))
 
 
 def test_style_preview_get_returns_image_without_generation():

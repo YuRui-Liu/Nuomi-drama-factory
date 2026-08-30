@@ -811,7 +811,10 @@ class StyleService:
             "degraded": diagnostics.degraded,
             "last_attempt_at": diagnostics.last_attempt_at,
             "last_success_at": diagnostics.last_success_at,
-            "errors": [dict(error) for error in diagnostics.errors],
+            "errors": [
+                {"code": error.code, "file": error.file}
+                for error in diagnostics.errors
+            ],
         }
 
     @classmethod

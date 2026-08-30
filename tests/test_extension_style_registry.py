@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -67,9 +69,9 @@ def test_invalid_reload_keeps_last_known_good(registry, catalog_path: Path) -> N
     assert second.catalog_hash == first.catalog_hash
     assert second.diagnostics.degraded is True
     assert second.diagnostics.failed == 1
-    assert second.diagnostics.errors == (
-        {"code": "invalid_catalog", "file": "catalog.json"},
-    )
+    assert len(second.diagnostics.errors) == 1
+    assert second.diagnostics.errors[0].code == "invalid_catalog"
+    assert second.diagnostics.errors[0].file == "catalog.json"
     assert str(catalog_path.parent) not in repr(second.diagnostics.errors)
 
 
@@ -170,3 +172,41 @@ def test_schema_failure_reports_discovered_entry_count(catalog_path: Path) -> No
     assert snapshot.diagnostics.discovered == 18
     assert snapshot.diagnostics.loaded == 0
     assert snapshot.diagnostics.failed == 1
+
+
+def test_missing_catalog_recovers_without_force_when_same_fingerprint_returns(
+    registry, catalog_path: Path
+) -> None:
+    original = catalog_path.read_bytes()
+    original_stat = catalog_path.stat()
+    first = registry.snapshot()
+    catalog_path.unlink()
+
+    failed = registry.snapshot()
+    catalog_path.write_bytes(original)
+    os.utime(
+        catalog_path,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    recovered = registry.snapshot()
+
+    assert failed.diagnostics.degraded is True
+    assert failed.diagnostics.attempted_status == "unreadable"
+    assert failed.diagnostics.attempted_fingerprint is None
+    assert recovered.diagnostics.degraded is False
+    assert recovered.generation == first.generation + 1
+    assert recovered.catalog_hash == first.catalog_hash
+
+
+def test_catalog_errors_are_deeply_immutable(registry, catalog_path: Path) -> None:
+    catalog_path.write_text("not-json", encoding="utf-8")
+
+    diagnostics = registry.snapshot().diagnostics
+    error = diagnostics.errors[0]
+
+    assert error.code == "invalid_catalog"
+    assert error.file == "catalog.json"
+    with pytest.raises(FrozenInstanceError):
+        error.code = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        diagnostics.errors = ()  # type: ignore[misc]

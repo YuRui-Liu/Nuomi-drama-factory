@@ -69,6 +69,7 @@ def test_parses_valid_style_and_freezes_sequences():
 def test_public_api_is_explicitly_exported():
     assert set(extension_styles.__all__) == {
         "CatalogDiagnostics",
+        "CatalogError",
         "CatalogFingerprint",
         "CatalogSnapshot",
         "ExtensionStyle",

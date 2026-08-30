@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -171,3 +174,35 @@ def test_service_resolve_uses_one_catalog_snapshot(monkeypatch) -> None:
     assert resolved.style_id == catalog[0].id
     assert resolved.catalog_hash == "catalog-11"
     assert registry.calls == 1
+
+
+def test_existing_style_snapshot_stays_frozen_after_catalog_reload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from novelvideo.extension_styles.registry import ExtensionStyleRegistry
+    from novelvideo.services.style_service import StyleService
+
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "novelvideo"
+        / "extension_styles"
+        / "catalog.json"
+    )
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_bytes(source.read_bytes())
+    registry = ExtensionStyleRegistry(catalog_path)
+    monkeypatch.setattr(StyleService, "_extension_registry", registry)
+    style_id = "drama_ext.japanese_cel_animation"
+
+    old_snapshot = StyleService.resolve_style_snapshot(style_id)
+    old_payload = old_snapshot.model_dump(mode="json")
+    raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    raw[0]["prompt_fragment"]["medium"][0] += " refreshed"
+    catalog_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    registry.reload(force=True)
+    new_snapshot = StyleService.resolve_style_snapshot(style_id)
+
+    assert old_snapshot.model_dump(mode="json") == old_payload
+    assert new_snapshot.style_hash != old_snapshot.style_hash
+    assert new_snapshot.projections != old_snapshot.projections

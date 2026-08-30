@@ -11,12 +11,20 @@ from threading import RLock
 
 from .schema import ExtensionStyle, load_catalog
 
+_UNREADABLE_ATTEMPT = object()
+
 
 @dataclass(frozen=True)
 class CatalogFingerprint:
     mtime_ns: int
     size: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class CatalogError:
+    code: str
+    file: str
 
 
 @dataclass(frozen=True)
@@ -27,7 +35,9 @@ class CatalogDiagnostics:
     degraded: bool = False
     last_attempt_at: str | None = None
     last_success_at: str | None = None
-    errors: tuple[dict[str, str], ...] = ()
+    attempted_status: str = "never"
+    attempted_fingerprint: CatalogFingerprint | None = None
+    errors: tuple[CatalogError, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,7 +55,7 @@ class ExtensionStyleRegistry:
     def __init__(self, catalog_path: str | Path) -> None:
         self._catalog_path = Path(catalog_path)
         self._lock = RLock()
-        self._attempted_fingerprint: CatalogFingerprint | None = None
+        self._attempted_fingerprint: CatalogFingerprint | object | None = None
         self._snapshot = CatalogSnapshot(
             styles=(),
             generation=0,
@@ -119,6 +129,8 @@ class ExtensionStyleRegistry:
                 degraded=False,
                 last_attempt_at=attempted_at,
                 last_success_at=attempted_at,
+                attempted_status="success",
+                attempted_fingerprint=fingerprint,
                 errors=(),
             )
             self._snapshot = CatalogSnapshot(
@@ -138,9 +150,15 @@ class ExtensionStyleRegistry:
         fingerprint: CatalogFingerprint | None,
         discovered: int,
     ) -> CatalogSnapshot:
-        if fingerprint is not None:
-            self._attempted_fingerprint = fingerprint
+        self._attempted_fingerprint = (
+            fingerprint if fingerprint is not None else _UNREADABLE_ATTEMPT
+        )
         previous = self._snapshot
+        attempted_status = {
+            "catalog_unreadable": "unreadable",
+            "invalid_catalog": "invalid",
+            "catalog_changing": "changing",
+        }.get(code, "failed")
         diagnostics = CatalogDiagnostics(
             discovered=discovered,
             loaded=len(previous.styles),
@@ -148,7 +166,9 @@ class ExtensionStyleRegistry:
             degraded=True,
             last_attempt_at=attempted_at,
             last_success_at=previous.diagnostics.last_success_at,
-            errors=({"code": code, "file": self._catalog_path.name},),
+            attempted_status=attempted_status,
+            attempted_fingerprint=fingerprint,
+            errors=(CatalogError(code=code, file=self._catalog_path.name),),
         )
         self._snapshot = CatalogSnapshot(
             styles=previous.styles,
