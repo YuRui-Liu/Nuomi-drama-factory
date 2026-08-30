@@ -22,9 +22,14 @@ from novelvideo.task_backend.limits import (
     project_lane_effective_active_limit,
 )
 from novelvideo.task_backend.queues import QUEUE_KINDS, normalize_queue_kind
-from novelvideo.task_backend.run_core import run_project_task_core_sync
+from novelvideo.task_backend.registry import get_project_task_runner_registration
+from novelvideo.task_backend.run_core import (
+    _ensure_builtin_runners_registered,
+    run_project_task_core_sync,
+)
 from novelvideo.task_backend.subprocesses import kill_task_processes
 from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
+from novelvideo.text_task_runtime.settings import resolve_configured_agent_task_route
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +89,24 @@ class InlineTaskBackend:
         manager = get_task_manager()
         payload = payload or {}
         lane_name = normalize_queue_kind(queue_kind)
+        _ensure_builtin_runners_registered()
+        registration = get_project_task_runner_registration(task_type)
+        agent_route_snapshot: dict[str, Any] | None = None
+        if registration is not None and registration.text_task_role is not None:
+            snapshot = resolve_configured_agent_task_route(
+                ctx=ctx,
+                task_role=registration.text_task_role,
+                task_override=payload.get("agent_route_override"),
+            )
+            agent_route_snapshot = snapshot.model_dump(mode="json")
         metadata = {
             "backend": "inline",
             "queue_kind": lane_name,
             "project_id": ctx.project_id,
             **display_metadata_for_task(task_type, payload),
         }
+        if agent_route_snapshot is not None:
+            metadata["agent_route_snapshot"] = agent_route_snapshot
         project_lane_limit = project_lane_effective_active_limit(
             lane_name,
             eligible_user_count=1,
@@ -135,6 +152,8 @@ class InlineTaskBackend:
             "queue_kind": lane_name,
             "payload": payload,
         }
+        if agent_route_snapshot is not None:
+            envelope["agent_route_snapshot"] = agent_route_snapshot
         self._submit_lane_job(
             _InlineLaneJob(
                 envelope=envelope,

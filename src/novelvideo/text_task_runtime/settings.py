@@ -75,3 +75,28 @@ def resolve_agent_task_route(
     except ValidationError:
         raise
 
+
+def resolve_configured_agent_task_route(
+    *,
+    ctx: Any,
+    task_role: str,
+    task_override: AgentTaskRouteOverride | dict[str, Any] | None = None,
+) -> AgentTaskRouteSnapshot:
+    """Resolve persisted routes once, at enqueue time."""
+
+    global_override = load_global_routes().routes.get(task_role)
+    global_route = AgentTaskRoute()
+    if global_override is not None:
+        global_route = _apply_override(global_route, global_override)
+    project_override = load_project_routes(ctx).routes.get(task_role)
+    parsed_task_override = (
+        AgentTaskRouteOverride.model_validate(task_override)
+        if task_override is not None
+        else None
+    )
+    return resolve_agent_task_route(
+        task_role=task_role,
+        global_route=global_route,
+        project_override=project_override,
+        task_override=parsed_task_override,
+    )

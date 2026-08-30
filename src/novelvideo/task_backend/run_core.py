@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import os
 import re
@@ -16,9 +17,11 @@ from novelvideo.shared.billing_errors import (
     is_insufficient_credits_error,
 )
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, is_cancel_requested
-from novelvideo.task_backend.registry import get_project_task_runner
+from novelvideo.task_backend.registry import get_project_task_runner_registration
 from novelvideo.task_backend.subprocesses import project_task_subprocess_context
 from novelvideo.task_state import project_task_run_context
+from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+from novelvideo.text_task_runtime.runtime import text_task_runtime_scope
 
 logger = logging.getLogger(__name__)
 
@@ -528,8 +531,8 @@ def run_project_task_core_sync(
             )
 
             _ensure_builtin_runners_registered()
-            runner = get_project_task_runner(task_type)
-            if runner is None:
+            registration = get_project_task_runner_registration(task_type)
+            if registration is None:
                 error = f"No project task runner registered for task_type={task_type}"
                 asyncio.run(
                     _refund_feature_credit_reservation(
@@ -548,13 +551,34 @@ def run_project_task_core_sync(
                     expected_task_id=run_task_id,
                 )
                 raise RuntimeError(error)
+            runner = registration.runner
 
             try:
                 envelope = {**envelope, "__run_task_id": run_task_id}
                 if deadline_monotonic is not None:
                     envelope["__deadline_monotonic"] = deadline_monotonic
                     envelope["__timeout_seconds"] = timeout_seconds
-                result = runner(envelope, ctx)
+                runtime_scope = nullcontext()
+                if registration.text_task_role is not None:
+                    raw_snapshot = envelope.get("agent_route_snapshot")
+                    if raw_snapshot is None:
+                        raise ValueError(
+                            "agent_route_snapshot is required for routed task "
+                            f"{task_type}"
+                        )
+                    snapshot = AgentTaskRouteSnapshot.model_validate(raw_snapshot)
+                    if snapshot.task_role != registration.text_task_role:
+                        raise ValueError(
+                            "agent_route_snapshot task_role does not match registration"
+                        )
+                    clean_snapshot = snapshot.model_dump(mode="json")
+                    run_metadata = {
+                        **run_metadata,
+                        "agent_route_snapshot": clean_snapshot,
+                    }
+                    runtime_scope = text_task_runtime_scope(snapshot)
+                with runtime_scope:
+                    result = runner(envelope, ctx)
             except BaseException as exc:
                 if isinstance(exc, TaskCancelled):
                     asyncio.run(
