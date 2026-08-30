@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from math import isfinite
-from typing import Literal, NoReturn, Self
+from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import (
     AwareDatetime,
@@ -135,6 +135,52 @@ class NarrativeGroupPlan(FrozenModel):
     style_snapshot_id: str | None = None
 
 
+class SplitGroup(FrozenModel):
+    kind: Literal["split_group"] = "split_group"
+    group_id: str
+    before_shot_id: str
+
+
+class MergeAdjacentGroups(FrozenModel):
+    kind: Literal["merge_adjacent_groups"] = "merge_adjacent_groups"
+    left_group_id: str
+    right_group_id: str
+
+
+class MoveShot(FrozenModel):
+    kind: Literal["move_shot"] = "move_shot"
+    shot_id: str
+    target_group_id: str
+    index: int = Field(ge=0)
+
+
+class ReorderGroups(FrozenModel):
+    kind: Literal["reorder_groups"] = "reorder_groups"
+    group_ids: tuple[str, ...]
+
+
+class UpdateShot(FrozenModel):
+    kind: Literal["update_shot"] = "update_shot"
+    shot_id: str
+    source_span_ids: tuple[str, ...] | None = None
+    subject: str | None = None
+    action: str | None = None
+    visible_start_state: str | None = None
+    visible_end_state: str | None = None
+    shot_size: str | None = None
+    camera_angle: str | None = None
+    composition: str | None = None
+    camera_motion: str | None = None
+    dialogue_source_ids: tuple[str, ...] | None = None
+    duration_seconds: float | None = Field(default=None, gt=0, le=15)
+
+
+DirectorEdit = Annotated[
+    SplitGroup | MergeAdjacentGroups | MoveShot | ReorderGroups | UpdateShot,
+    Field(discriminator="kind"),
+]
+
+
 class DirectorPlanRevision(FrozenModel):
     revision_id: str
     parent_revision_id: str | None = None
@@ -152,6 +198,7 @@ class DirectorPlanRevision(FrozenModel):
     director_model: str
     prompt_version: str
     project_style_snapshot_id: str
+    edit_source: Literal["planner", "human"] = "planner"
     groups: tuple[NarrativeGroupPlan, ...]
     validation_report: ValidationReport = ValidationReport()
     migration_report: AssetMigrationReport = AssetMigrationReport()
