@@ -15,6 +15,8 @@ from .models import (
 from .parser import ParsedScreenplayDocument, parse_screenplay_document
 from .extractor import DramaticBeatDraft, SceneBeatDraft, SceneExtractionFailure, extract_scene_beats
 from .validation import validate_scene_beats
+from .service import ScreenplaySemanticService
+from .store import ScreenplaySemanticActivationConflict, ScreenplaySemanticStore
 
 __all__ = [
     "DramaticBeat",
@@ -36,4 +38,7 @@ __all__ = [
     "SceneExtractionFailure",
     "extract_scene_beats",
     "validate_scene_beats",
+    "ScreenplaySemanticService",
+    "ScreenplaySemanticActivationConflict",
+    "ScreenplaySemanticStore",
 ]
