@@ -71,6 +71,12 @@ SPEAKER_LINE_RE = re.compile(r"^[^\n：:]{1,24}[：:].+$")
 
 
 @dataclass
+class ParsedSourceLine:
+    number: int
+    text: str
+
+
+@dataclass
 class ParsedSceneBlock:
     header_line: str = ""
     location: str = ""
@@ -80,6 +86,8 @@ class ParsedSceneBlock:
     lines: list[str] = field(default_factory=list)
     episode: int = 0
     scene_no: str = ""
+    source_lines: list[ParsedSourceLine] = field(default_factory=list)
+    header_source_lines: list[ParsedSourceLine] = field(default_factory=list)
 
 
 def split_screenplay_lines(text: str) -> list[str]:
@@ -87,11 +95,23 @@ def split_screenplay_lines(text: str) -> list[str]:
     return [line.strip() for line in normalized.split("\n") if line.strip()]
 
 
+def enumerate_screenplay_lines(text: str) -> list[ParsedSourceLine]:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [
+        ParsedSourceLine(number=number, text=line.strip())
+        for number, line in enumerate(normalized.split("\n"), start=1)
+    ]
+
+
 def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]:
     lines = (
-        split_screenplay_lines(text_or_lines)
+        [line for line in enumerate_screenplay_lines(text_or_lines) if line.text]
         if isinstance(text_or_lines, str)
-        else [str(line or "").strip() for line in text_or_lines if str(line or "").strip()]
+        else [
+            ParsedSourceLine(number=number, text=str(line or "").strip())
+            for number, line in enumerate(text_or_lines, start=1)
+            if str(line or "").strip()
+        ]
     )
     blocks: list[ParsedSceneBlock] = []
     current = ParsedSceneBlock()
@@ -105,13 +125,14 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
         current = ParsedSceneBlock()
         collecting_header = False
 
-    def start_block(line: str, *, scene_no: str = "", location_line: str = "", chars: str = "") -> None:
+    def start_block(source_line: ParsedSourceLine, *, scene_no: str = "", location_line: str = "", chars: str = "") -> None:
         nonlocal current, collecting_header, current_episode
         flush_current()
         current = ParsedSceneBlock(
-            header_line=line,
+            header_line=source_line.text,
             episode=current_episode,
             scene_no=scene_no,
+            header_source_lines=[source_line],
         )
         if location_line:
             _apply_location(current, location_line)
@@ -119,8 +140,8 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
             _extend_unique(current.characters, parse_character_line(chars))
         collecting_header = True
 
-    for raw_line in lines:
-        line = raw_line.strip()
+    for source_line in lines:
+        line = source_line.text
         if not line:
             continue
 
@@ -136,7 +157,7 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
             if current_episode <= 0:
                 current_episode = 1
             start_block(
-                line,
+                source_line,
                 scene_no=inline.group("scene_no") or "",
                 location_line=inline.group("location") or "",
                 chars=inline.group("characters") or "",
@@ -149,28 +170,30 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
             if current_episode <= 0 or ep != current_episode:
                 current_episode = ep
             rest = (numbered.group("rest") or "").strip()
-            start_block(line, scene_no=numbered.group("scene") or "", location_line=rest)
+            start_block(source_line, scene_no=numbered.group("scene") or "", location_line=rest)
             continue
 
         marker = SCENE_MARKER_RE.match(line)
         if marker and _looks_like_bare_scene_marker(line):
             if current_episode <= 0:
                 current_episode = 1
-            start_block(line, scene_no=marker.group("scene_no") or "")
+            start_block(source_line, scene_no=marker.group("scene_no") or "")
             continue
 
         labeled_location = LABELED_LOCATION_RE.match(line)
         if labeled_location:
             if current.header_line and (collecting_header or not current.lines):
                 _apply_location(current, labeled_location.group("location") or "")
+                current.header_source_lines.append(source_line)
                 collecting_header = True
             else:
-                start_block(line, location_line=labeled_location.group("location") or "")
+                start_block(source_line, location_line=labeled_location.group("location") or "")
             continue
 
         labeled_chars = LABELED_CHARACTER_RE.match(line)
         if labeled_chars and current.header_line and (collecting_header or not current.lines):
             _extend_unique(current.characters, parse_character_line(labeled_chars.group("characters") or ""))
+            current.header_source_lines.append(source_line)
             collecting_header = True
             continue
 
@@ -178,14 +201,16 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
         if simple_location and not _looks_like_content_line(line):
             if current.header_line and (collecting_header or not current.lines) and not current.location:
                 _apply_location(current, line)
+                current.header_source_lines.append(source_line)
                 collecting_header = True
                 continue
-            start_block(line, location_line=line)
+            start_block(source_line, location_line=line)
             continue
 
         if collecting_header:
             collecting_header = False
         current.lines.append(line)
+        current.source_lines.append(source_line)
 
     flush_current()
     return [block for block in blocks if block.header_line or block.lines]

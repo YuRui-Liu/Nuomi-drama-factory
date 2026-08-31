@@ -1,6 +1,26 @@
 from novelvideo.cognee.script_parser import parse_scenes
 from novelvideo.utils.screenplay_quality import check_screenplay_import_quality
-from novelvideo.utils.screenplay_scene_parser import parse_scene_blocks
+from novelvideo.utils.screenplay_scene_parser import enumerate_screenplay_lines, parse_scene_blocks
+
+
+def test_enumerate_screenplay_lines_preserves_original_blank_line_positions():
+    lines = enumerate_screenplay_lines("标题\n\n1-1 广播站 深夜 内\n△撞门。")
+
+    assert [(line.number, line.text) for line in lines] == [
+        (1, "标题"),
+        (2, ""),
+        (3, "1-1 广播站 深夜 内"),
+        (4, "△撞门。"),
+    ]
+
+
+def test_scene_blocks_expose_header_and_story_source_lines_without_changing_text_api():
+    blocks = parse_scene_blocks("1-1 广播站 深夜 内\n人物：林默\n△林默撞门。")
+
+    assert [line.number for line in blocks[0].header_source_lines] == [1, 2]
+    assert [(line.number, line.text) for line in blocks[0].source_lines] == [
+        (3, "△林默撞门。"),
+    ]
 from novelvideo.workflows.literal_script_writing import LiteralScriptWritingWorkflow
 
 
