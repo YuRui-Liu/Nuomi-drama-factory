@@ -17,6 +17,7 @@ from .extractor import DramaticBeatDraft, SceneBeatDraft, SceneExtractionFailure
 from .validation import validate_scene_beats
 from .service import ScreenplaySemanticService
 from .store import ScreenplaySemanticActivationConflict, ScreenplaySemanticStore
+from .editing import MergeAdjacentBeats, ReorderBeats, SplitBeat, UpdateBeat, apply_semantic_edit
 
 __all__ = [
     "DramaticBeat",
@@ -41,4 +42,9 @@ __all__ = [
     "ScreenplaySemanticService",
     "ScreenplaySemanticActivationConflict",
     "ScreenplaySemanticStore",
+    "MergeAdjacentBeats",
+    "ReorderBeats",
+    "SplitBeat",
+    "UpdateBeat",
+    "apply_semantic_edit",
 ]

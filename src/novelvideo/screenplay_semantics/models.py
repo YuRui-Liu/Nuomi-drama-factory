@@ -180,6 +180,7 @@ class ScreenplaySemanticRevision(FrozenModel):
     scenes: tuple[Scene, ...]
     beats: tuple[DramaticBeat, ...]
     metadata_blocks: tuple[SourceBlock, ...] = ()
+    invalidated_beat_ids: tuple[str, ...] = ()
     validation_report: SemanticValidationReport = SemanticValidationReport()
     created_at: AwareDatetime
     activated_at: AwareDatetime | None = None

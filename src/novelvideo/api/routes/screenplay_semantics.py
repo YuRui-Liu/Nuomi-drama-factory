@@ -9,6 +9,7 @@ from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_s
 from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.ports import get_task_backend
 from novelvideo.screenplay_semantics import ScreenplaySemanticActivationConflict, ScreenplaySemanticStore
+from novelvideo.screenplay_semantics.editing import SemanticEdit, SemanticEditError, apply_semantic_edit
 from novelvideo.task_identity import project_task_state_key
 
 router = APIRouter()
@@ -111,6 +112,27 @@ async def retry_screenplay_semantic_scene(project: str, episode: int, revision_i
     return {"ok": True, "task_type": "screenplay_semantics", "task_id": queued.task_state.task_id,
             "task_key": project_task_state_key("screenplay_semantics", str(ctx.project_id), episode, scope=scope),
             "backend": queued.backend, "queue": queued.queue, "source_revision": source_revision}
+
+
+@router.post("/projects/{project}/episodes/{episode}/screenplay-semantics/{revision_id}/edits")
+async def edit_screenplay_semantics(
+    project: str, episode: int, revision_id: str, body: SemanticEdit,
+    user: dict = Depends(require_scope("tasks:submit")),
+):
+    ctx = await _resolve(project, user, role="editor")
+    store = _store(ctx)
+    revision = store.load(episode, revision_id)
+    if revision is None:
+        raise HTTPException(404, detail={"code": "SCREENPLAY_SEMANTIC_REVISION_NOT_FOUND"})
+    current_source_revision = await _resolve_source_revision(ctx, episode)
+    if current_source_revision != revision.source_revision:
+        raise HTTPException(409, detail={"code": "SOURCE_REVISION_CONFLICT"})
+    try:
+        edited = apply_semantic_edit(revision, body)
+    except SemanticEditError as exc:
+        raise HTTPException(422, detail={"code": "SCREENPLAY_SEMANTIC_EDIT_INVALID", "error": str(exc)}) from exc
+    store.save(edited)
+    return {"ok": True, "data": edited.model_dump(mode="json")}
 
 
 __all__ = ["CreateSemanticRequest", "router"]
