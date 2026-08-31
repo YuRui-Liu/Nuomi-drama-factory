@@ -53,7 +53,10 @@ class ScreenplaySemanticService:
 
         for parsed_scene in parsed.scenes:
             old_scene = previous_by_hash.get(parsed_scene.content_hash)
-            if old_scene is not None and previous is not None:
+            force_selected_retry = (
+                selected_scene_ids is not None and parsed_scene.id in selected_scene_ids
+            )
+            if old_scene is not None and previous is not None and not force_selected_retry:
                 old_beats = previous.beats_for(old_scene.id)
                 reusable[parsed_scene.id] = tuple(
                     beat.model_copy(

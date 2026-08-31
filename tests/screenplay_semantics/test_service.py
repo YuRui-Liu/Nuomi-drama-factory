@@ -59,6 +59,39 @@ async def test_unchanged_scene_is_reused_and_only_changed_scene_is_extracted(tmp
 
 
 @pytest.mark.asyncio
+async def test_selected_scene_retry_forces_extraction_even_when_source_is_unchanged(tmp_path):
+    calls: list[str] = []
+
+    async def extractor(scenes, *, concurrency):
+        calls.extend(item.id for item in scenes)
+        return tuple(
+            SceneBeatDraft(
+                scene_id=item.id,
+                beats=(make_draft(item).model_copy(update={
+                    "script_facts": (item.blocks[0].text.lstrip("△"),),
+                    "must_show": (item.blocks[0].text.lstrip("△"),),
+                }),),
+            )
+            for item in scenes
+        )
+
+    store = ScreenplaySemanticStore(tmp_path)
+    service = ScreenplaySemanticService(store, extractor=extractor)
+    first = await service.build(source(SCRIPT))
+    store.activate(1, first.revision_id, expected_source_revision=1)
+    calls.clear()
+
+    selected_scene_id = first.scenes[0].id
+    retried = await service.build(
+        source(SCRIPT), selected_scene_ids={selected_scene_id}, concurrency=1
+    )
+
+    assert calls == [selected_scene_id]
+    assert retried.scenes[0].status == "validated"
+    assert retried.scenes[1].status == "reused"
+
+
+@pytest.mark.asyncio
 async def test_build_does_not_trigger_paid_media_and_returns_reviewable_failure(tmp_path):
     async def extractor(scenes, *, concurrency):
         from novelvideo.screenplay_semantics.extractor import SceneExtractionFailure

@@ -66,8 +66,12 @@ async def list_screenplay_semantics(project: str, episode: int, user: dict = Dep
     ctx = await _resolve(project, user, role="viewer")
     store = _store(ctx)
     active = store.load_active(episode)
+    revisions = tuple(
+        active if active is not None and item.revision_id == active.revision_id else item
+        for item in store.list_revisions(episode)
+    )
     return {"ok": True, "data": {"active_revision_id": active.revision_id if active else None,
-        "revisions": [item.model_dump(mode="json") for item in store.list_revisions(episode)]}}
+        "revisions": [item.model_dump(mode="json") for item in revisions]}}
 
 
 @router.get("/projects/{project}/episodes/{episode}/screenplay-semantics/{revision_id}")
