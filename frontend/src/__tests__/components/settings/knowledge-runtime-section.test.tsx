@@ -1,21 +1,41 @@
-import { render, screen } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock("@/lib/queries/knowledge-runtime", () => {
-  const runningHubWorkflows = {
+const knowledgeRuntimeMockState = vi.hoisted(() => ({
+  codex: {
+    installed: true,
+    compatible: true,
+    authenticated: true,
+    ready: true,
+    path: "E:\\Tools\\Codex\\codex.exe",
+    version: "codex-cli 1.2.3",
+    message: "Codex CLI 可用",
+    state: "ready",
+  },
+  runningHubWorkflows: {
     image_upscale: "",
     video_minimax_h3: "2087934731806658562",
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
-  };
+  } as {
+    image_upscale: string;
+    video_minimax_h3: string;
+    tts_qwen3_voice_design: string;
+    tts_indextts2_voice_clone: string;
+  } | undefined,
+  recognize: vi.fn(),
+  recognizePending: false,
+}));
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/queries/knowledge-runtime", () => {
   return {
   useKnowledgeRuntimeStatus: () => ({
     data: {
       ready: false,
       state: "unconfigured",
       message: "请选择 Ollama 模型",
-      codex: { installed: true, authenticated: true, version: "codex-cli 1.2.3", message: "ok" },
+      codex: knowledgeRuntimeMockState.codex,
       ollama: {
         provider: "ollama",
         baseUrl: "http://127.0.0.1:11434",
@@ -35,15 +55,47 @@ vi.mock("@/lib/queries/knowledge-runtime", () => {
     refetch: vi.fn(),
   }),
   useSaveKnowledgeRuntimeSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useTestCodex: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRecognizeCodex: () => ({
+    mutate: knowledgeRuntimeMockState.recognize,
+    isPending: knowledgeRuntimeMockState.recognizePending,
+  }),
   useMediaProviderAccounts: () => ({ data: [], isLoading: false }),
   useSaveMediaProviderAccount: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useRunningHubWorkflows: () => ({ data: runningHubWorkflows }),
+  useRunningHubWorkflows: () => ({ data: knowledgeRuntimeMockState.runningHubWorkflows }),
   useSaveRunningHubWorkflows: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
 
 import { KnowledgeRuntimeSection } from "@/components/settings/knowledge-runtime-section";
+
+beforeEach(() => {
+  knowledgeRuntimeMockState.codex = {
+    installed: true,
+    compatible: true,
+    authenticated: true,
+    ready: true,
+    path: "E:\\Tools\\Codex\\codex.exe",
+    version: "codex-cli 1.2.3",
+    message: "Codex CLI 可用",
+    state: "ready",
+  };
+  knowledgeRuntimeMockState.recognize.mockReset().mockResolvedValue(undefined);
+  knowledgeRuntimeMockState.recognizePending = false;
+  knowledgeRuntimeMockState.runningHubWorkflows = {
+    image_upscale: "",
+    video_minimax_h3: "2087934731806658562",
+    tts_qwen3_voice_design: "",
+    tts_indextts2_voice_clone: "",
+  };
+});
+
+it("uses the director MiniMax H3 workflow before saved workflow settings load", () => {
+  knowledgeRuntimeMockState.runningHubWorkflows = undefined;
+
+  render(<KnowledgeRuntimeSection open />);
+
+  expect(screen.getByLabelText("MiniMax H3 图生视频 Workflow ID")).toHaveValue("2089723723468328961");
+});
 
 it("shows the actual local knowledge and media providers", () => {
   render(<KnowledgeRuntimeSection open />);
@@ -60,4 +112,43 @@ it("shows the actual local knowledge and media providers", () => {
   expect(screen.getByRole("button", { name: "测试并保存" })).toBeInTheDocument();
   expect(screen.queryByText(/RelayClaw/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/NewAPI/i)).not.toBeInTheDocument();
+});
+
+it("shows an available Codex runtime with its resolved path, version and message", () => {
+  render(<KnowledgeRuntimeSection open />);
+
+  expect(screen.getByText("可用")).toBeInTheDocument();
+  expect(screen.getByText("codex-cli 1.2.3")).toBeInTheDocument();
+  expect(screen.getByText("E:\\Tools\\Codex\\codex.exe")).toBeInTheDocument();
+  expect(screen.getByText("Codex CLI 可用")).toBeInTheDocument();
+});
+
+it("recognizes Codex again through the non-throwing mutation callback", () => {
+  render(<KnowledgeRuntimeSection open />);
+
+  fireEvent.click(screen.getByRole("button", { name: "重新识别" }));
+
+  expect(knowledgeRuntimeMockState.recognize).toHaveBeenCalledTimes(1);
+});
+
+it("shows the recognition spinner while Codex recognition is pending", () => {
+  knowledgeRuntimeMockState.recognizePending = true;
+
+  render(<KnowledgeRuntimeSection open />);
+
+  expect(screen.getByLabelText("正在识别 Codex")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /重新识别/ })).toBeDisabled();
+});
+
+it.each([
+  ["a missing installation", { installed: false, compatible: false, authenticated: false, ready: false, state: "not_installed" }, "未安装"],
+  ["an incompatible version", { installed: true, compatible: false, authenticated: false, ready: false, state: "version_unsupported" }, "版本过低"],
+  ["an unauthenticated installation", { installed: true, compatible: true, authenticated: false, ready: false, state: "not_authenticated" }, "未登录"],
+  ["a runtime whose version probe failed", { installed: true, compatible: false, authenticated: false, ready: false, state: "exec_failed" }, "无法启动"],
+])("maps %s to the expected status", (_name, codexState, label) => {
+  knowledgeRuntimeMockState.codex = { ...knowledgeRuntimeMockState.codex, ...codexState };
+
+  render(<KnowledgeRuntimeSection open />);
+
+  expect(screen.getByText(label)).toBeInTheDocument();
 });

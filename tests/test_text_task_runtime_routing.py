@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 from pydantic_ai import PromptedOutput
 
+from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from novelvideo.text_task_runtime.runtime import (
     CodexStructuredRuntime,
@@ -101,6 +102,10 @@ def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):
     ]
 
 
+def test_routed_codex_backend_inherits_shared_run_once() -> None:
+    assert "_run_once" not in RoutedCodexCliStructuredBackend.__dict__
+
+
 def test_codex_backend_rejects_shell_metacharacters_before_windows_launcher(tmp_path):
     backend = RoutedCodexCliStructuredBackend(
         model="gpt-5.6-sol&whoami",
@@ -163,3 +168,25 @@ def test_runtime_scope_resets_after_exception():
         pass
 
     assert current_text_task_runtime() is None
+
+
+@pytest.mark.asyncio
+async def test_routed_codex_failure_keeps_actionable_stdout_tail(monkeypatch):
+    class FailedProcess:
+        returncode = 1
+
+        async def communicate(self, _stdin):
+            return b"fatal: output schema rejected", b"startup warning\n" * 100
+
+    async def create_process(*_args, **_kwargs):
+        return FailedProcess()
+
+    from novelvideo.knowledge_runtime import codex as codex_runtime
+
+    monkeypatch.setattr(codex_runtime, "_create_codex_process", create_process)
+    backend = RoutedCodexCliStructuredBackend(model="gpt-5.6-sol")
+
+    with pytest.raises(KnowledgeRuntimeError) as exc_info:
+        await backend._run_once("prompt", schema=None)
+
+    assert "fatal: output schema rejected" in str(exc_info.value)

@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-import json
-from pathlib import Path
-import tempfile
 from typing import Any, Protocol, TypeVar
 
 from pydantic_ai import Agent, PromptedOutput
@@ -75,65 +71,6 @@ class RoutedCodexCliStructuredBackend(_BaseCodexCliStructuredBackend):
                 f'model_reasoning_effort="{self.reasoning_effort}"',
             ]
         return argv
-
-    async def _run_once(
-        self, prompt: str, *, schema: dict[str, Any] | None
-    ) -> str:
-        from novelvideo.knowledge_runtime import codex as codex_runtime
-        from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
-
-        with tempfile.TemporaryDirectory(prefix="dramaclaw-text-task-") as raw_dir:
-            temp_dir = Path(raw_dir)
-            output_path = temp_dir / "result.txt"
-            schema_path: Path | None = None
-            if schema is not None:
-                schema_path = temp_dir / "schema.json"
-                schema_path.write_text(
-                    json.dumps(
-                        codex_runtime.normalize_codex_output_schema(schema),
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-            argv = self.build_argv(
-                cwd=str(temp_dir),
-                output_path=str(output_path),
-                schema_path=str(schema_path) if schema_path else None,
-            )
-            process_argv = codex_runtime.normalize_codex_process_argv(argv)
-            try:
-                process = await codex_runtime._create_codex_process(
-                    process_argv,
-                    stdin=asyncio.subprocess.PIPE,
-                )
-            except OSError as exc:
-                raise KnowledgeRuntimeError(
-                    f"Codex CLI 无法启动: {exc}", code="CODEX_NOT_INSTALLED"
-                ) from exc
-            try:
-                stdout, stderr = await process.communicate(prompt.encode("utf-8"))
-            except asyncio.CancelledError:
-                if process.returncode is None:
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        await process.wait()
-                raise
-            if process.returncode != 0:
-                message = stderr.decode("utf-8", errors="replace").strip()
-                code = (
-                    "CODEX_NOT_AUTHENTICATED"
-                    if "not logged in" in message.lower()
-                    else "CODEX_EXEC_FAILED"
-                )
-                raise KnowledgeRuntimeError(
-                    message[:600] or "Codex 执行失败。", code=code
-                )
-            if output_path.exists():
-                return output_path.read_text(encoding="utf-8")
-            return stdout.decode("utf-8", errors="replace")
 
 
 class CodexStructuredRuntime:

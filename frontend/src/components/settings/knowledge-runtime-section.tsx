@@ -15,7 +15,7 @@ import {
   useRunningHubWorkflows,
   useSaveKnowledgeRuntimeSettings,
   useSaveMediaProviderAccount,
-  useTestCodex,
+  useRecognizeCodex,
   type MediaProviderAccount,
   type RunningHubWorkflowSettings,
 } from "@/lib/queries/knowledge-runtime";
@@ -44,7 +44,7 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
   const [batchSize, setBatchSize] = useState(8);
   const models = useOllamaModels(baseUrl, open);
   const saveRuntime = useSaveKnowledgeRuntimeSettings();
-  const testCodex = useTestCodex();
+  const recognizeCodex = useRecognizeCodex();
 
   useEffect(() => {
     if (!runtime) return;
@@ -96,33 +96,49 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
           {runtime.message}
         </div>
       ) : null}
-
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="bg-white/[0.025]">
           <CardHeader>
             <div className="flex items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2"><Cpu className="size-4" />Codex CLI</CardTitle>
-              <StatusPill ready={runtime?.codex.authenticated === true}>
-                {status.isError
-                  ? "状态不可用"
-                  : runtime?.codex.authenticated
-                    ? "已登录"
-                    : runtime?.codex.installed
-                      ? "未登录"
-                      : "未安装"}
+              <StatusPill ready={runtime?.codex.ready === true}>
+                {status.isLoading
+                  ? "检查中"
+                  : status.isError
+                    ? "状态不可用"
+                    : runtime?.codex.state === "not_installed"
+                      ? "未安装"
+                      : runtime?.codex.state === "version_unsupported"
+                        ? "版本过低"
+                        : runtime?.codex.state === "not_authenticated"
+                          ? "未登录"
+                          : runtime?.codex.state === "ready"
+                            ? "可用"
+                            : "无法启动"}
               </StatusPill>
             </div>
-            <CardDescription>负责 Cognee 的抽取、总结与结构化文本任务，无需填写额外 API Key。</CardDescription>
+            <CardDescription>可用于剧本解析、知识抽取、导演规划和 H3 提示词等结构化任务，无需填写额外 API Key。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-md border border-white/8 bg-black/20 px-3 py-2 text-xs">
               <div className="text-muted-foreground">版本</div>
               <div className="mt-1 font-mono">{runtime?.codex.version || "—"}</div>
             </div>
+            <div className="rounded-md border border-white/8 bg-black/20 px-3 py-2 text-xs">
+              <div className="text-muted-foreground">启动路径</div>
+              <div className="mt-1 break-all font-mono">{runtime?.codex.path || "—"}</div>
+            </div>
+            {runtime?.codex.message ? (
+              <p className="text-xs text-muted-foreground">{runtime.codex.message}</p>
+            ) : null}
             <div className="flex justify-end">
-              <Button type="button" variant="outline" size="sm" onClick={() => testCodex.mutateAsync()} disabled={testCodex.isPending}>
-                {testCodex.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                检查 Codex
+              <Button type="button" variant="outline" size="sm" onClick={() => recognizeCodex.mutate()} disabled={recognizeCodex.isPending}>
+                {recognizeCodex.isPending ? (
+                  <Loader2 aria-label="正在识别 Codex" className="size-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-3.5" />
+                )}
+                重新识别
               </Button>
             </div>
           </CardContent>
@@ -208,7 +224,7 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
   const workflows = useRunningHubWorkflows(open && isRunningHub);
   const [workflowIds, setWorkflowIds] = useState<RunningHubWorkflowSettings>({
     image_upscale: "",
-    video_minimax_h3: "2087934731806658562",
+    video_minimax_h3: "2089723723468328961",
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
   });

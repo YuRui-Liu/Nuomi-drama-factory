@@ -30,10 +30,10 @@ def test_production_profile_is_packaged_and_workflow_can_be_overridden() -> None
     assert profile.outputs["video"]["node_id"] == "7"
 
 
-def test_legacy_single_shot_workflow_id_migrates_to_director_workflow() -> None:
+def test_explicit_single_shot_workflow_id_is_preserved() -> None:
     profile = load_h3_workflow_profile(workflow_id="2087934731806658562")
 
-    assert profile.workflow_id == "2089723723468328961"
+    assert profile.workflow_id == "2087934731806658562"
 
 
 @pytest.mark.asyncio

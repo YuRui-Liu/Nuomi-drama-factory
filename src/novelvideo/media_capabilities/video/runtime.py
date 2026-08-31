@@ -30,7 +30,6 @@ from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
 _PROFILE_PATH = Path(__file__).with_name("profiles") / "minimax_h3.json"
-_LEGACY_SINGLE_SHOT_WORKFLOW_IDS = {"2087934731806658562"}
 _H3_COORDINATORS: dict[str, object] = {}
 
 
@@ -53,8 +52,7 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         normalized = str(workflow_id).strip()
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
-        if normalized not in _LEGACY_SINGLE_SHOT_WORKFLOW_IDS:
-            profile = profile.model_copy(update={"workflow_id": normalized})
+        profile = profile.model_copy(update={"workflow_id": normalized})
     required_bindings = {
         "task_type", "global_prompt", "frame_rate", "width", "height",
         "ref_max_size", "total_frames", "timeline_data",

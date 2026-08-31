@@ -6,9 +6,13 @@ import type { ErrorResponse, OkResponse } from "@/types/api";
 
 export interface CodexRuntimeStatus {
   installed: boolean;
+  compatible: boolean;
   authenticated: boolean;
+  ready: boolean;
+  path: string;
   version: string;
   message: string;
+  state: "not_installed" | "version_unsupported" | "not_authenticated" | "ready" | "exec_failed";
 }
 
 export interface OllamaRuntimeStatus {
@@ -123,7 +127,7 @@ export function useSaveKnowledgeRuntimeSettings() {
   });
 }
 
-export function useTestCodex() {
+export function useRecognizeCodex() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () =>

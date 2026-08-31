@@ -78,11 +78,11 @@ async def get_status() -> Any:
         return _error_response(exc)
 
     ollama = _ollama_data(settings)
-    ready = codex.installed and codex.authenticated and ollama["configured"]
+    ready = codex.ready and ollama["configured"]
     if ready:
         state = "ready"
         message = "Codex 与 Ollama 知识运行时已就绪"
-    elif not codex.installed or (codex.installed and not codex.authenticated):
+    elif not codex.ready:
         state = "unavailable"
         message = codex.message or "Codex CLI 不可用"
     else:
@@ -142,13 +142,19 @@ async def put_settings(
 @router.post("/codex/test")
 async def test_codex() -> dict[str, Any]:
     status = await get_codex_cli_status()
-    if status.installed and status.authenticated:
+    if status.ready:
         return {"ok": True, "data": asdict(status)}
+    if status.state == "not_installed":
+        error_code = "CODEX_NOT_INSTALLED"
+    elif status.state == "version_unsupported":
+        error_code = "CODEX_VERSION_UNSUPPORTED"
+    elif status.state == "not_authenticated":
+        error_code = "CODEX_NOT_AUTHENTICATED"
+    else:
+        error_code = "CODEX_EXEC_FAILED"
     return {
         "ok": False,
-        "errorCode": (
-            "CODEX_NOT_AUTHENTICATED" if status.installed else "CODEX_NOT_INSTALLED"
-        ),
+        "errorCode": error_code,
         "message": status.message,
         "data": asdict(status),
     }

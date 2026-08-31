@@ -23,6 +23,7 @@ from novelvideo.media_capabilities.video.runninghub_h3 import (
 from novelvideo.media_capabilities.video.h3_prompt_profile import (
     H3_GLOBAL_CONTINUITY_PROMPT,
 )
+from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
 
 
 @dataclass
@@ -58,6 +59,11 @@ class FakeClient:
         return b"video-only"
 
 
+def test_explicit_legacy_h3_workflow_id_is_not_silently_replaced() -> None:
+    profile = load_h3_workflow_profile(workflow_id="2087934731806658562")
+
+    assert profile.workflow_id == "2087934731806658562"
+
 def runtime_with() -> RunningHubRuntimeConfiguration:
     return RunningHubRuntimeConfiguration(
         account=ProviderAccount(
@@ -81,9 +87,9 @@ def runtime_with() -> RunningHubRuntimeConfiguration:
         "expected_size",
     ),
     [
-        ("first.png", None, "9:16", "i2v", (416, 736)),
-        ("first.png", "last.png", "9:16", "fl2v", (416, 736)),
-        ("first.png", None, "16:9", "i2v", (736, 416)),
+        ("first.png", None, "9:16", "i2v", (736, 1280)),
+        ("first.png", "last.png", "9:16", "fl2v", (736, 1280)),
+        ("first.png", None, "16:9", "i2v", (1280, 736)),
     ],
 )
 async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
@@ -146,7 +152,7 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
     assert fields["global_prompt"] == H3_GLOBAL_CONTINUITY_PROMPT
     assert fields["frame_rate"] == 24
     assert (fields["width"], fields["height"]) == expected_size
-    assert fields["ref_max_size"] == 736
+    assert fields["ref_max_size"] == 1280
     assert fields["total_frames"] == 124
     import json
     payload = json.loads(fields["timeline_data"])

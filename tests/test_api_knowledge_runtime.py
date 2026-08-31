@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +14,37 @@ from novelvideo.knowledge_runtime import CodexCliStatus, OllamaProbeResult
 
 
 ADMIN_USER = {"id": "local", "username": "local", "role": "owner"}
+
+
+def make_codex_status(
+    *,
+    installed: bool = True,
+    compatible: bool = True,
+    authenticated: bool = True,
+    path: str = "E:/npm-global/codex.cmd",
+    version: str = "codex-cli 0.146.0",
+    message: str = "Logged in using ChatGPT",
+    state: str | None = None,
+) -> CodexCliStatus:
+    resolved_state = state or (
+        "not_installed"
+        if not installed
+        else "version_unsupported"
+        if not compatible
+        else "not_authenticated"
+        if not authenticated
+        else "ready"
+    )
+    return CodexCliStatus(
+        installed=installed,
+        compatible=compatible,
+        authenticated=authenticated,
+        ready=installed and compatible and authenticated,
+        path=path,
+        version=version,
+        message=message,
+        state=resolved_state,
+    )
 
 
 @pytest.fixture
@@ -51,14 +83,14 @@ def test_routes_are_registered_on_main_api_router(runtime_module) -> None:
 def test_status_reports_codex_and_saved_ollama_without_secrets(
     client, monkeypatch, runtime_module
 ) -> None:
-    async def codex_status():
-        return CodexCliStatus(True, True, "codex-cli 1.2.3", "Logged in")
+    async def codex_probe():
+        return make_codex_status()
 
     async def probe(base_url: str, model: str):
         assert base_url == "http://127.0.0.1:11434"
         return OllamaProbeResult(model, 768, "sha256:abc", "2026-08-15T00:00:00Z")
 
-    monkeypatch.setattr(runtime_module, "get_codex_cli_status", codex_status)
+    monkeypatch.setattr(runtime_module, "get_codex_cli_status", codex_probe)
     monkeypatch.setattr(runtime_module, "probe_ollama_embedding", probe)
     saved = client.put(
         "/api/v1/knowledge-runtime/settings",
@@ -93,12 +125,12 @@ def test_models_probe_save_and_codex_test_contracts(
         assert model == "bge-m3:latest"
         return OllamaProbeResult(model, 1024, "sha256:def", "2026-08-15T00:00:00Z")
 
-    async def codex_status():
-        return CodexCliStatus(True, False, "codex-cli 1.2.3", "Not logged in")
+    async def codex_probe():
+        return make_codex_status(authenticated=False, message="Not logged in")
 
     monkeypatch.setattr(runtime_module, "list_ollama_models", models)
     monkeypatch.setattr(runtime_module, "probe_ollama_embedding", probe)
-    monkeypatch.setattr(runtime_module, "get_codex_cli_status", codex_status)
+    monkeypatch.setattr(runtime_module, "get_codex_cli_status", codex_probe)
 
     listed = client.get(
         "/api/v1/knowledge-runtime/ollama/models",
@@ -122,8 +154,48 @@ def test_models_probe_save_and_codex_test_contracts(
         "ok": False,
         "errorCode": "CODEX_NOT_AUTHENTICATED",
         "message": "Not logged in",
-        "data": asdict(CodexCliStatus(True, False, "codex-cli 1.2.3", "Not logged in")),
+        "data": asdict(make_codex_status(authenticated=False, message="Not logged in")),
     }
+
+
+def test_codex_test_returns_version_error_without_exec(
+    client, monkeypatch, runtime_module
+) -> None:
+    probe = AsyncMock(
+        return_value=make_codex_status(
+            compatible=False,
+            authenticated=False,
+            message="Codex CLI 版本过低，需要 >= 0.100.0",
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_codex_cli_status", probe)
+
+    response = client.post("/api/v1/knowledge-runtime/codex/test")
+
+    assert response.status_code == 200
+    assert response.json()["errorCode"] == "CODEX_VERSION_UNSUPPORTED"
+    assert response.json()["data"]["ready"] is False
+    probe.assert_awaited_once_with()
+
+
+def test_codex_test_returns_exec_failed_for_version_probe_failure(
+    client, monkeypatch, runtime_module
+) -> None:
+    probe = AsyncMock(
+        return_value=make_codex_status(
+            compatible=False,
+            authenticated=False,
+            message="Codex CLI 版本检查超时",
+            state="exec_failed",
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_codex_cli_status", probe)
+
+    response = client.post("/api/v1/knowledge-runtime/codex/test")
+
+    assert response.status_code == 200
+    assert response.json()["errorCode"] == "CODEX_EXEC_FAILED"
+    assert response.json()["data"]["state"] == "exec_failed"
 
 
 def test_runtime_errors_use_stable_envelope(client, monkeypatch, runtime_module) -> None:

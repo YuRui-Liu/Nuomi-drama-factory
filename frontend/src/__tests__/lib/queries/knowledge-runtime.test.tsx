@@ -10,9 +10,11 @@ vi.mock("@/lib/api", () => ({
   api: ky.create({ baseUrl: "http://localhost:3000/" }),
 }));
 
+import { api } from "@/lib/api";
 import {
   useKnowledgeRuntimeStatus,
   useMediaProviderAccounts,
+  useRecognizeCodex,
   useRunningHubWorkflows,
   useSaveMediaProviderAccount,
   useSaveRunningHubWorkflows,
@@ -22,7 +24,10 @@ import {
 const server = setupServer();
 
 beforeAll(() => server.listen());
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  server.resetHandlers();
+  vi.restoreAllMocks();
+});
 afterAll(() => server.close());
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -39,7 +44,16 @@ it("loads the independent Codex and Ollama runtime status", async () => {
           ready: true,
           state: "ready",
           message: "ready",
-          codex: { installed: true, authenticated: true, version: "1.2.3", message: "ok" },
+          codex: {
+            installed: true,
+            compatible: true,
+            authenticated: true,
+            ready: true,
+            path: "E:\\Tools\\Codex\\codex.exe",
+            version: "1.2.3",
+            message: "ok",
+            state: "ready",
+          },
           ollama: {
             provider: "ollama",
             baseUrl: "http://127.0.0.1:11434",
@@ -58,6 +72,46 @@ it("loads the independent Codex and Ollama runtime status", async () => {
   const { result } = renderHook(() => useKnowledgeRuntimeStatus(), { wrapper });
   await waitFor(() => expect(result.current.data?.ready).toBe(true));
   expect(result.current.data?.codex.authenticated).toBe(true);
+});
+
+it("recognizes Codex once and invalidates the runtime status query after success", async () => {
+  server.use(
+    http.post("http://localhost:3000/api/v1/knowledge-runtime/codex/test", () => {
+      return HttpResponse.json({
+        ok: true,
+        data: {
+          installed: true,
+          compatible: true,
+          authenticated: true,
+          ready: true,
+          path: "E:\\Tools\\Codex\\codex.exe",
+          version: "1.2.3",
+          message: "Codex CLI 可用",
+          state: "ready",
+        },
+      });
+    }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const post = vi.spyOn(api, "post");
+  const invalidateQueries = vi.spyOn(client, "invalidateQueries");
+  const recognizeWrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+
+  const { result } = renderHook(() => useRecognizeCodex(), { wrapper: recognizeWrapper });
+  result.current.mutate();
+
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith("api/v1/knowledge-runtime/codex/test", {
+    throwHttpErrors: false,
+  });
+  expect(result.current.data).toMatchObject({
+    ok: true,
+    data: { ready: true, path: "E:\\Tools\\Codex\\codex.exe" },
+  });
+  expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["knowledge-runtime"] });
 });
 
 it("saves Ollama settings through the probe-enforcing endpoint", async () => {
