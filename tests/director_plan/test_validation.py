@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from novelvideo.director_plan.models import (
+    AssetRequirement,
+    DirectorShotIntent,
     DirectorPlanRevision,
     NarrativeGroupPlan,
     ShotPlan,
@@ -95,6 +97,24 @@ def test_accepts_a_complete_valid_plan() -> None:
     assert report.passed is True
     assert report.issues == ()
     assert report.version == 1
+
+
+def test_semantic_revision_requires_shot_intent_and_visible_character_state():
+    group = make_group(
+        dramatic_beat_ids=("beat-1",),
+        shots=(make_shot(
+            dramatic_beat_ids=("beat-1",),
+            asset_requirements=(AssetRequirement(
+                kind="character_state", entity_key="character:hero",
+                visible_change="第二天",
+            ),),
+        ),),
+    )
+    revision = make_revision((group,)).model_copy(update={"semantic_revision_id": "sem-1"})
+    report = validate_director_plan(revision, (make_span("span-1", 1),))
+    assert {issue.code for issue in report.issues} == {
+        "missing_director_shot_intent", "non_visual_character_state"
+    }
 
 
 def test_reports_missing_duplicate_and_out_of_order_source_spans() -> None:

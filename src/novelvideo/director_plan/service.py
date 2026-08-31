@@ -69,7 +69,7 @@ class DirectorPlanService:
 
         groups = validating.groups
         try:
-            report = validate_director_plan(validating, input.source_spans)
+            report = validate_director_plan(validating, input.source_spans, input.dramatic_beats)
         except Exception as exc:
             self._raise_planning_error(
                 input, validating, "director_plan_validation_error", "validation", exc
@@ -112,7 +112,7 @@ class DirectorPlanService:
                 groups = groups[:index] + (replacement,) + groups[index + 1 :]
                 candidate = validating.model_copy(update={"groups": groups})
                 try:
-                    report = validate_director_plan(candidate, input.source_spans)
+                    report = validate_director_plan(candidate, input.source_spans, input.dramatic_beats)
                 except Exception as exc:
                     self._raise_planning_error(
                         input,
@@ -167,6 +167,7 @@ class DirectorPlanService:
             prompt_version=input.prompt_version,
             project_style_snapshot_id=input.project_style_snapshot_id,
             project_style_snapshot=input.project_style_snapshot,
+            semantic_revision_id=input.semantic_revision_id,
             groups=groups,
             parent_revision_id=parent_revision_id,
         )

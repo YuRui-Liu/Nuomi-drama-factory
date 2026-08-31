@@ -14,6 +14,7 @@ from novelvideo.director_plan.planner import DirectorPlanInput, DirectorPlanner
 from novelvideo.director_plan.service import DirectorPlanService
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.episode_source_store import EpisodeSourceStore
+from novelvideo.screenplay_semantics import ScreenplaySemanticStore
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -120,6 +121,11 @@ async def _build_director_plan_input(
         raise DirectorPlanTaskError("EPISODE_SOURCE_NOT_FOUND")
     if int(source.source_revision) != source_revision:
         raise DirectorPlanTaskError("SOURCE_REVISION_CONFLICT")
+    semantic = _load_active_semantic_revision(ctx, episode)
+    if semantic is None:
+        raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_REQUIRED")
+    if semantic.source_revision != source_revision:
+        raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_SOURCE_CONFLICT")
     from novelvideo.project_config import load_project_config_file_from_state_dir
     from novelvideo.services.style_service import StyleService
 
@@ -139,7 +145,10 @@ async def _build_director_plan_input(
     return DirectorPlanInput(
         episode=episode,
         source_script_hash=str(source.content_hash),
-        source_spans=_source_spans(episode, str(source.content)),
+        source_spans=_semantic_source_spans(semantic),
+        semantic_revision_id=semantic.revision_id,
+        scenes=semantic.scenes,
+        dramatic_beats=semantic.beats,
         relevant_bible={},
         aspect_ratio="9:16",
         style_director={
@@ -150,6 +159,25 @@ async def _build_director_plan_input(
         project_style_snapshot_id=snapshot.snapshot_id,
         project_style_snapshot=snapshot,
     )
+
+
+def _load_active_semantic_revision(ctx: ProjectContext, episode: int):
+    return ScreenplaySemanticStore(ctx.output_dir).load_active(episode)
+
+
+def _semantic_source_spans(semantic) -> tuple[SourceSpan, ...]:
+    spans: list[SourceSpan] = []
+    for scene in semantic.scenes:
+        for block in scene.blocks:
+            spans.append(SourceSpan(
+                id=block.id, ordinal=len(spans) + 1,
+                scene=scene.location or scene.heading,
+                time=scene.time_of_day or "unspecified", text=block.text,
+                dialogue_text=block.text if block.kind == "dialogue" else "",
+            ))
+    if not spans:
+        raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_EMPTY")
+    return tuple(spans)
 
 
 def _build_director_plan_service(ctx: ProjectContext) -> DirectorPlanService:
@@ -367,4 +395,6 @@ def run_director_plan(
     )
 
 
-register_project_task_runner("director_plan", run_director_plan)
+register_project_task_runner(
+    "director_plan", run_director_plan, text_task_role="director_plan"
+)

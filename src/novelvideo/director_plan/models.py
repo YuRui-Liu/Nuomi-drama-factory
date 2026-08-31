@@ -315,6 +315,22 @@ class ProductionPlan(FrozenModel):
         return self
 
 
+class DirectorShotIntent(FrozenModel):
+    narrative_purpose: str = Field(min_length=1)
+    audience_attention: str = Field(min_length=1)
+    emotional_effect: str = Field(min_length=1)
+    continuity_strategy: str = Field(min_length=1)
+
+
+class AssetRequirement(FrozenModel):
+    kind: Literal["character_identity", "character_state", "scene_base", "scene_state", "prop"]
+    entity_key: str = Field(min_length=1)
+    evidence_source_ids: tuple[str, ...] = ()
+    visible_change: str = ""
+    design_notes: str = ""
+    required: bool = True
+
+
 class ShotPlan(FrozenModel):
     id: str
     source_span_ids: tuple[str, ...]
@@ -329,6 +345,9 @@ class ShotPlan(FrozenModel):
     composition: str = ""
     camera_motion: str = "static"
     dialogue_source_ids: tuple[str, ...] = ()
+    dramatic_beat_ids: tuple[str, ...] = ()
+    intent: DirectorShotIntent | None = None
+    asset_requirements: tuple[AssetRequirement, ...] = ()
     duration_seconds: float = Field(gt=0, le=15)
 
 
@@ -336,6 +355,7 @@ class NarrativeGroupPlan(FrozenModel):
     id: str
     ordinal: int = Field(gt=0)
     source_span_ids: tuple[str, ...]
+    dramatic_beat_ids: tuple[str, ...] = ()
     scene_anchor: str
     time_anchor: str
     objective: str
@@ -343,7 +363,7 @@ class NarrativeGroupPlan(FrozenModel):
     relation_to_previous: Literal[
         "single", "causal", "progressive", "contrast", "montage", "time_jump"
     ]
-    shots: tuple[ShotPlan, ...] = Field(min_length=1, max_length=5)
+    shots: tuple[ShotPlan, ...] = Field(min_length=1, max_length=4)
     style_snapshot_id: str | None = None
 
 
@@ -407,6 +427,7 @@ class DirectorPlanRevision(FrozenModel):
         "failed",
     ]
     source_script_hash: str
+    semantic_revision_id: str | None = None
     director_model: str
     prompt_version: str
     project_style_snapshot_id: str
@@ -434,8 +455,9 @@ class DirectorPlanRevision(FrozenModel):
         director_model: str,
         prompt_version: str,
         project_style_snapshot_id: str,
-        project_style_snapshot: StyleSnapshot | None = None,
         groups: tuple[NarrativeGroupPlan, ...],
+        project_style_snapshot: StyleSnapshot | None = None,
+        semantic_revision_id: str | None = None,
         parent_revision_id: str | None = None,
     ) -> Self:
         return cls(
@@ -444,6 +466,7 @@ class DirectorPlanRevision(FrozenModel):
             episode=episode,
             status="draft",
             source_script_hash=source_script_hash,
+            semantic_revision_id=semantic_revision_id,
             director_model=director_model,
             prompt_version=prompt_version,
             project_style_snapshot_id=project_style_snapshot_id,

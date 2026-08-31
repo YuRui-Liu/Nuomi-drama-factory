@@ -8,6 +8,8 @@ from ulid import ULID
 
 from novelvideo.director_plan.models import (
     AssetMigrationReport,
+    AssetRequirement,
+    DirectorShotIntent,
     DirectorPlanRevision,
     NarrativeGroupPlan,
     ShotPlan,
@@ -78,15 +80,15 @@ def test_models_are_frozen_and_forbid_extra_fields() -> None:
         )
 
 
-@pytest.mark.parametrize("shot_count", [0, 6])
-def test_group_requires_between_one_and_five_shots(shot_count: int) -> None:
+@pytest.mark.parametrize("shot_count", [0, 5])
+def test_group_requires_between_one_and_four_shots(shot_count: int) -> None:
     with pytest.raises(ValidationError) as exc_info:
         make_group(shots=tuple(make_shot(id=f"shot-{index}") for index in range(shot_count)))
 
     assert exc_info.value.errors()[0]["loc"] == ("shots",)
 
 
-@pytest.mark.parametrize("shot_count", [1, 5])
+@pytest.mark.parametrize("shot_count", [1, 4])
 def test_group_accepts_shot_count_boundaries(shot_count: int) -> None:
     group = make_group(
         shots=tuple(make_shot(id=f"shot-{index}") for index in range(shot_count))
@@ -105,6 +107,25 @@ def test_shot_duration_must_be_positive_and_at_most_fifteen(duration: float) -> 
 
 def test_shot_accepts_fifteen_second_duration() -> None:
     assert make_shot(duration_seconds=15).duration_seconds == 15
+
+
+def test_semantic_shot_separates_director_intent_and_asset_requirements():
+    shot = make_shot(
+        dramatic_beat_ids=("beat-1",),
+        intent=DirectorShotIntent(
+            narrative_purpose="表现门锁突然松开",
+            audience_attention="门锁与林默停住的肩膀",
+            emotional_effect="由急迫切换到警惕",
+            continuity_strategy="保持撞门动作轴线",
+        ),
+        asset_requirements=(AssetRequirement(
+            kind="character_state", entity_key="character:lin-mo",
+            evidence_source_ids=("line-8",), visible_change="右袖被雨水浸湿",
+            design_notes="保持身份锚点和原服装版型",
+        ),),
+    )
+    assert shot.asset_requirements[0].visible_change == "右袖被雨水浸湿"
+    assert "face_prompt" not in shot.model_dump(mode="json")
 
 
 def test_asset_migration_items_are_recursively_immutable() -> None:

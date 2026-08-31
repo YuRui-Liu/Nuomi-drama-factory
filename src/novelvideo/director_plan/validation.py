@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+import re
+
+from novelvideo.screenplay_semantics.models import DramaticBeat
 
 from .models import (
     DirectorPlanRevision,
@@ -14,6 +17,7 @@ from .models import (
 def validate_director_plan(
     revision: DirectorPlanRevision,
     source_spans: Sequence[SourceSpan],
+    dramatic_beats: Sequence[DramaticBeat] = (),
 ) -> ValidationReport:
     """Validate a director plan without mutating the plan or its source spans."""
     issues: list[ValidationIssue] = []
@@ -67,6 +71,12 @@ def validate_director_plan(
     seen_group_ids: set[str] = set()
     seen_ordinals: set[int] = set()
     seen_shot_ids: set[str] = set()
+    beat_ids = {beat.id for beat in dramatic_beats}
+    grouped_beat_ids = [beat_id for group in revision.groups for beat_id in group.dramatic_beat_ids]
+    for beat_id in beat_ids:
+        count = grouped_beat_ids.count(beat_id)
+        if count != 1:
+            _add_issue(issues, "invalid_dramatic_beat_grouping", f"Dramatic beat {beat_id!r} must belong to exactly one group.", "groups.0.dramatic_beat_ids")
     for group_index, group in enumerate(revision.groups):
         group_location = f"groups.{group_index}"
         if group.id in seen_group_ids:
@@ -117,6 +127,7 @@ def validate_director_plan(
                 )
 
         group_source_ids = set(group.source_span_ids)
+        group_beat_ids = set(group.dramatic_beat_ids)
         for shot_index, shot in enumerate(group.shots):
             shot_location = f"{group_location}.shots.{shot_index}"
             if shot.id in seen_shot_ids:
@@ -135,6 +146,17 @@ def validate_director_plan(
                     "Shot source spans must belong to their narrative group.",
                     f"{shot_location}.source_span_ids",
                 )
+
+            if revision.semantic_revision_id is not None:
+                if shot.intent is None:
+                    _add_issue(issues, "missing_director_shot_intent", "New semantic director shots require a complete intent.", f"{shot_location}.intent")
+                if not shot.dramatic_beat_ids or any(beat_id not in group_beat_ids for beat_id in shot.dramatic_beat_ids):
+                    _add_issue(issues, "invalid_dramatic_beat_reference", "Shot dramatic beats must belong to its narrative group.", f"{shot_location}.dramatic_beat_ids")
+                for requirement_index, requirement in enumerate(shot.asset_requirements):
+                    if requirement.kind == "character_state":
+                        visible = requirement.visible_change.strip()
+                        if not visible or re.fullmatch(r"(?:广播站时期|第二天|次日|当晚|过去|现在)", visible):
+                            _add_issue(issues, "non_visual_character_state", "Character state requires an explicit visible change.", f"{shot_location}.asset_requirements.{requirement_index}.visible_change")
 
             for field_name in (
                 "subject",

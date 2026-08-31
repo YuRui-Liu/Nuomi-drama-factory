@@ -242,18 +242,17 @@ def test_asset_migration_context_collects_real_project_assets_safely(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_input_assembler_splits_stable_spans_and_carries_scene_time(monkeypatch):
+async def test_input_assembler_uses_active_semantic_revision(monkeypatch):
     from novelvideo.task_backend.runners import director_plan
 
     source = SimpleNamespace(
         episode_number=3,
         source_revision=7,
         content_hash="sha256:episode-3",
-        content="""场景：废弃仓库 内景 夜
-
+        content="""3-1 废弃仓库 夜 内
 林默：别出声。
-脚步声逼近。
-天台 外景 日
+△脚步声逼近。
+3-2 天台 日 外
 苏青：他们来了。""",
     )
 
@@ -266,6 +265,15 @@ async def test_input_assembler_splits_stable_spans_and_carries_scene_time(monkey
         "_build_episode_source_store",
         lambda _ctx: _async(Repository()),
     )
+    from novelvideo.screenplay_semantics import parse_screenplay_document
+    parsed = parse_screenplay_document(source.content)
+    semantic = SimpleNamespace(
+        revision_id="semantic-7", source_revision=7,
+        scenes=parsed.scenes, beats=(),
+    )
+    monkeypatch.setattr(
+        director_plan, "_load_active_semantic_revision", lambda *_args: semantic
+    )
 
     value = await director_plan._build_director_plan_input(
         {"project_id": "project-1", "episode": 3, "source_revision": 7},
@@ -273,21 +281,20 @@ async def test_input_assembler_splits_stable_spans_and_carries_scene_time(monkey
     )
 
     assert [span.id for span in value.source_spans] == [
-        "ep003-line0001",
-        "ep003-line0002",
-        "ep003-line0003",
-        "ep003-line0004",
-        "ep003-line0005",
+        "line-2",
+        "line-3",
+        "line-5",
     ]
     assert len(value.source_spans) > 1
+    assert value.source_spans[0].scene == "废弃仓库"
+    assert value.source_spans[0].time == "夜"
+    assert value.source_spans[0].dialogue_text == "林默：别出声。"
     assert value.source_spans[1].scene == "废弃仓库"
-    assert value.source_spans[1].time == "夜"
-    assert value.source_spans[1].dialogue_text == "别出声。"
-    assert value.source_spans[2].scene == "废弃仓库"
-    assert value.source_spans[3].scene == "天台"
-    assert value.source_spans[3].time == "日"
-    assert value.source_spans[4].dialogue_text == "他们来了。"
+    assert value.source_spans[2].scene == "天台"
+    assert value.source_spans[2].time == "日"
+    assert value.source_spans[2].dialogue_text == "苏青：他们来了。"
     assert value.source_script_hash == "sha256:episode-3"
+    assert value.semantic_revision_id == "semantic-7"
 
 
 @pytest.mark.asyncio

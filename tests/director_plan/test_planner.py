@@ -78,7 +78,7 @@ def test_episode_prompt_isolates_untrusted_data_and_states_contract() -> None:
     assert data["director_model"] == "deepseek-v4-flash"
     assert data["prompt_version"] == "director-plan-v2"
     assert "one DirectorPlanDraft JSON" in before
-    assert "1 to 5 shots" in before
+    assert "1 to 4 shots" in before
     assert "dialogue_source_ids" in before
 
 
