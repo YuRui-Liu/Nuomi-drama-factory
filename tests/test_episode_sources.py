@@ -2,6 +2,8 @@ import hashlib
 from typing import get_type_hints, Literal
 
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
 from novelvideo.episode_sources import (
     EpisodeCandidate,
@@ -15,6 +17,33 @@ from novelvideo.episode_sources import (
     resolve_episode_candidates,
     validate_resolutions,
 )
+
+
+def test_episode_import_route_only_accepts_existing_script_intent():
+    from novelvideo.api.routes import episode_imports
+
+    assert hasattr(episode_imports, "_require_existing_script_intent")
+    require_intent = episode_imports._require_existing_script_intent
+    assert require_intent("existing_script") == "existing_script"
+    with pytest.raises(HTTPException) as caught:
+        require_intent("story_adaptation")
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "WRONG_IMPORT_ENTRY"
+
+
+def test_episode_import_commit_rejects_retransmitted_intent():
+    from novelvideo.api.routes import episode_imports
+
+    from novelvideo.api.schemas import EpisodeImportCommitRequest
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        EpisodeImportCommitRequest(
+            preview_id="preview-1",
+            expected_revision=0,
+            resolutions=[],
+            intent="story_adaptation",
+        )
 
 
 @pytest.mark.parametrize(

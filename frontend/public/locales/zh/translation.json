@@ -1309,8 +1309,9 @@
       "append": "追加单集",
       "batch": "批量导入",
       "accepted": "导入任务已接受",
-      "completed": "分集剧本导入完成",
+      "completed": "剧本已导入，知识图谱后台索引中",
       "title": "导入分集剧本",
+      "intentHint": "已有剧本导入：按原文解析和校对，不改写剧情。小说改编请使用小说导入入口。",
       "selectFiles": "选择分集剧本",
       "overwriteAll": "全部覆盖",
       "skipAll": "全部跳过",
@@ -1508,6 +1509,7 @@
     "types": {
       "build_characters": "构建角色",
       "ingest_fast": "快速导入",
+      "episode_graph_index": "知识图谱后台索引",
       "build_episodes": "规划剧集",
       "character_portrait": "角色肖像",
       "identity_image": "身份图",

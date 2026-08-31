@@ -4,8 +4,9 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.chapter_preview import load_novel_text
@@ -42,6 +43,18 @@ def _conflict(code: str, message: str) -> HTTPException:
     return HTTPException(409, detail={"code": code, "error": message})
 
 
+def _require_existing_script_intent(value: str) -> str:
+    if value != "existing_script":
+        raise HTTPException(
+            422,
+            detail={
+                "code": "WRONG_IMPORT_ENTRY",
+                "error": "分集剧本导入只接收已有剧本；小说改编请使用小说导入入口",
+            },
+        )
+    return value
+
+
 def _read_upload(upload: UploadFile) -> tuple[str, str] | dict:
     original = upload.filename or ""
     safe_name = sanitize_upload_filename(original)
@@ -62,7 +75,13 @@ def _read_upload(upload: UploadFile) -> tuple[str, str] | dict:
 
 
 @router.post("/projects/{project}/episode-imports/preview")
-async def preview_episode_imports(project: str, files: list[UploadFile] = File(...), user: dict = Depends(get_api_user)):
+async def preview_episode_imports(
+    project: str,
+    files: list[UploadFile] = File(...),
+    input_intent: Annotated[str, Form()] = "existing_script",
+    user: dict = Depends(get_api_user),
+):
+    input_intent = _require_existing_script_intent(input_intent)
     store = await _resolve_store(project, user)
     migration = await _ensure_migration(store)
     base_revision = await store.current_revision()
@@ -99,7 +118,12 @@ async def preview_episode_imports(project: str, files: list[UploadFile] = File(.
         elif "status" not in item:
             item["status"] = "new"
     preview = await store.save_preview(base_revision=base_revision, items=candidates)
-    return {"ok": True, "data": {"preview_id": preview.id, "base_revision": base_revision, "expires_at": preview.expires_at, "migration_status": migration.status, "confirmation_required": migration.status == "confirmation_required", "files": response_items}}
+    if hasattr(store, "sqlite_store"):
+        await EpisodeImportRecords(store.sqlite_store).freeze_preview_intent(
+            preview_id=preview.id,
+            intent=input_intent,
+        )
+    return {"ok": True, "data": {"preview_id": preview.id, "input_intent": input_intent, "base_revision": base_revision, "expires_at": preview.expires_at, "migration_status": migration.status, "confirmation_required": migration.status == "confirmation_required", "files": response_items}}
 
 
 @router.post("/projects/{project}/episode-imports/legacy-migration/confirm")
@@ -122,6 +146,13 @@ async def commit_episode_imports(project: str, body: EpisodeImportCommitRequest,
         preview = await store.get_preview(body.preview_id)
         if preview is None:
             raise EpisodeImportPreviewNotFound(body.preview_id)
+        if hasattr(store, "sqlite_store"):
+            frozen_intent = await EpisodeImportRecords(
+                store.sqlite_store
+            ).get_preview_intent(body.preview_id)
+            if frozen_intent is None:
+                raise EpisodeImportPreviewNotFound(body.preview_id)
+            _require_existing_script_intent(frozen_intent)
         if preview.base_revision != body.expected_revision or await store.current_revision() != body.expected_revision:
             raise EpisodeSourceRevisionConflict("project revision changed")
         submitted = {item.file_id: item for item in body.resolutions}
@@ -174,6 +205,7 @@ async def commit_episode_imports(project: str, body: EpisodeImportCommitRequest,
             "target_revision": target_revision,
             "snapshot": {
                 "preview_id": body.preview_id,
+                "input_intent": "existing_script",
                 "expected_revision": body.expected_revision,
                 "resolutions": decisions,
                 "items": [asdict(item) for item in items],

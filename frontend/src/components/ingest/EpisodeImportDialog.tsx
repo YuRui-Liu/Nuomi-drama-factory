@@ -215,6 +215,10 @@ export function EpisodeImportDialog({
           <DialogTitle>{t("ingest.episodeImport.title")}</DialogTitle>
         </DialogHeader>
 
+        <p className="text-sm text-muted-foreground">
+          {t("ingest.episodeImport.intentHint")}
+        </p>
+
         <label className="block text-sm font-medium">
           {t("ingest.episodeImport.selectFiles")}
           <Input

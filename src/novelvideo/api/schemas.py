@@ -137,6 +137,8 @@ class EpisodeImportResolutionRequest(BaseModel):
 
 
 class EpisodeImportCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     preview_id: str = Field(min_length=1)
     expected_revision: int = Field(ge=0)
     resolutions: list[EpisodeImportResolutionRequest] = Field(default_factory=list)

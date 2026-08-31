@@ -2,7 +2,39 @@ from __future__ import annotations
 
 import pytest
 
+from novelvideo import episode_import_records
 from novelvideo.episode_import_records import EpisodeImportRecords
+
+
+@pytest.mark.asyncio
+async def test_preview_intent_is_durable_and_cannot_be_overwritten(tmp_path):
+    from novelvideo.sqlite_store import SQLiteStore
+
+    sqlite = SQLiteStore("alice/demo", str(tmp_path / "project"), str(tmp_path / "state"))
+    await sqlite.initialize()
+    records = EpisodeImportRecords(sqlite)
+
+    await records.freeze_preview_intent(
+        preview_id="preview-1", intent="existing_script"
+    )
+    await records.freeze_preview_intent(
+        preview_id="preview-1", intent="existing_script"
+    )
+    assert await records.get_preview_intent("preview-1") == "existing_script"
+    await sqlite.close()
+
+    reopened = SQLiteStore("alice/demo", str(tmp_path / "project"), str(tmp_path / "state"))
+    await reopened.initialize()
+    again = EpisodeImportRecords(reopened)
+    assert await again.get_preview_intent("preview-1") == "existing_script"
+    with pytest.raises(
+        episode_import_records.EpisodeImportIntentConflict,
+        match="existing_script",
+    ):
+        await again.freeze_preview_intent(
+            preview_id="preview-1", intent="story_adaptation"
+        )
+    await reopened.close()
 
 
 @pytest.mark.asyncio

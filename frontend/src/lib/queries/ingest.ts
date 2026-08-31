@@ -184,6 +184,7 @@ export function usePreviewEpisodeImports(project: string) {
   return useMutation({
     mutationFn: async (files: File[]) => {
       const formData = new FormData();
+      formData.append("input_intent", "existing_script");
       for (const file of files) formData.append("files", file);
       const response = await jsonWithBackendError<
         OkResponse<EpisodeImportPreview> | ErrorResponse

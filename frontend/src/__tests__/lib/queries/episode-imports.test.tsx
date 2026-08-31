@@ -65,6 +65,7 @@ describe("episode import queries", () => {
     expect(response.data.files).toEqual([]);
     const options = postSpy.mock.calls[0][1] as { body: FormData };
     expect(options.body.getAll("files")).toHaveLength(2);
+    expect(options.body.get("input_intent")).toBe("existing_script");
     expect((options.body.getAll("files")[0] as File).name).toBe("E02.md");
     postSpy.mockRestore();
   });

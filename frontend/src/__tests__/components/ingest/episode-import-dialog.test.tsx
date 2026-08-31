@@ -10,6 +10,7 @@ vi.mock("react-i18next", () => ({
     t: (key: string, options?: { filename?: string; number?: number }) => {
       const copy: Record<string, [string, string]> = {
         "ingest.episodeImport.title": ["导入分集剧本", "Import episode scripts"],
+        "ingest.episodeImport.intentHint": ["按原文解析和校对，不改写剧情", "Parse and validate without rewriting the plot"],
         "ingest.episodeImport.selectFiles": ["选择分集剧本", "Select episode scripts"],
         "ingest.episodeImport.overwriteAll": ["全部覆盖", "Overwrite all"],
         "ingest.episodeImport.skipAll": ["全部跳过", "Skip all"],
@@ -85,6 +86,11 @@ function renderDialog(
   );
   return onOpenChange;
 }
+
+it("makes the existing-script import boundary explicit", () => {
+  renderDialog();
+  expect(screen.getByText("按原文解析和校对，不改写剧情")).toBeInTheDocument();
+});
 
 async function upload(files = [new File(["a"], "E01.md")]) {
   await userEvent.upload(screen.getByLabelText("选择分集剧本"), files);

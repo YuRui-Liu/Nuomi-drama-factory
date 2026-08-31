@@ -1309,8 +1309,9 @@
       "append": "Append episode",
       "batch": "Batch import",
       "accepted": "Import task accepted",
-      "completed": "Episode import completed",
+      "completed": "Scripts imported; knowledge graph indexing continues in the background",
       "title": "Import episode scripts",
+      "intentHint": "Existing-script import: parse and validate the source without rewriting its plot. Use Novel Import for adaptation.",
       "selectFiles": "Select episode scripts",
       "overwriteAll": "Overwrite all",
       "skipAll": "Skip all",
@@ -1508,6 +1509,7 @@
     "types": {
       "build_characters": "Build characters",
       "ingest_fast": "Quick ingest",
+      "episode_graph_index": "Knowledge graph indexing",
       "build_episodes": "Plan episodes",
       "character_portrait": "Character portrait",
       "identity_image": "Identity image",

@@ -21,6 +21,7 @@ export interface EpisodeImportPreviewItem {
 
 export interface EpisodeImportPreview {
   preview_id: string;
+  input_intent: "existing_script";
   base_revision: number;
   expires_at?: string;
   files: EpisodeImportPreviewItem[];

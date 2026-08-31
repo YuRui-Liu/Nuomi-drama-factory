@@ -10,6 +10,10 @@ from typing import Any, Iterable
 STALE_STAGES = ("characters", "scenes", "beats", "media")
 
 
+class EpisodeImportIntentConflict(RuntimeError):
+    """A preview's immutable import intent was changed after preview."""
+
+
 class EpisodeImportRecords:
     def __init__(self, sqlite_store: Any) -> None:
         self.sqlite_store = sqlite_store
@@ -32,10 +36,46 @@ class EpisodeImportRecords:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (episode_number, stage)
             );
+            CREATE TABLE IF NOT EXISTS episode_import_preview_intents (
+                preview_id TEXT PRIMARY KEY,
+                intent TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         await db.commit()
         return db
+
+    async def freeze_preview_intent(self, *, preview_id: str, intent: str) -> None:
+        db = await self._db()
+        row = await (
+            await db.execute(
+                "SELECT intent FROM episode_import_preview_intents WHERE preview_id=?",
+                (preview_id,),
+            )
+        ).fetchone()
+        if row is not None:
+            frozen = str(row["intent"])
+            if frozen != intent:
+                raise EpisodeImportIntentConflict(
+                    f"preview {preview_id} is frozen as {frozen}, not {intent}"
+                )
+            return
+        await db.execute(
+            "INSERT INTO episode_import_preview_intents VALUES (?, ?, ?)",
+            (preview_id, intent, datetime.now(timezone.utc).isoformat()),
+        )
+        await db.commit()
+
+    async def get_preview_intent(self, preview_id: str) -> str | None:
+        db = await self._db()
+        row = await (
+            await db.execute(
+                "SELECT intent FROM episode_import_preview_intents WHERE preview_id=?",
+                (preview_id,),
+            )
+        ).fetchone()
+        return None if row is None else str(row["intent"])
 
     async def record_result(
         self, *, import_id: str, target_revision: int, episodes: Iterable[dict[str, Any]]
