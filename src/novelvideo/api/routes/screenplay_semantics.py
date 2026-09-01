@@ -21,6 +21,11 @@ class CreateSemanticRequest(BaseModel):
     concurrency: int = Field(default=5, ge=1, le=20)
 
 
+class RepairSemanticRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    concurrency: int = Field(default=3, ge=1, le=20)
+
+
 async def _resolve(project: str, user: dict, *, role: str):
     resolved = await resolve_project_scope(project, user, required_role=role)
     if resolved.ctx is None:
@@ -83,6 +88,62 @@ async def get_screenplay_semantics(project: str, episode: int, revision_id: str,
     return {"ok": True, "data": revision.model_dump(mode="json")}
 
 
+@router.post(
+    "/projects/{project}/episodes/{episode}/screenplay-semantics/{revision_id}/repair",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def repair_screenplay_semantics(
+    project: str,
+    episode: int,
+    revision_id: str,
+    body: RepairSemanticRequest,
+    user: dict = Depends(require_scope("tasks:submit")),
+):
+    ctx = await _resolve(project, user, role="editor")
+    revision = _store(ctx).load(episode, revision_id)
+    if revision is None:
+        raise HTTPException(
+            404, detail={"code": "SCREENPLAY_SEMANTIC_REVISION_NOT_FOUND"}
+        )
+    if revision.validation_report.passed:
+        raise HTTPException(409, detail={"code": "REPAIR_NOT_REQUIRED"})
+    source_revision = await _resolve_source_revision(ctx, episode)
+    if int(revision.source_revision) != source_revision:
+        raise HTTPException(409, detail={"code": "SOURCE_REVISION_CONFLICT"})
+    scope = f"revision:{source_revision}:semantic:{revision_id}"
+    queued = await get_task_backend().enqueue_project_task(
+        ctx,
+        task_type="screenplay_semantic_repair",
+        queue_kind="default",
+        episode=episode,
+        scope=scope,
+        payload={
+            "project_id": str(ctx.project_id),
+            "episode": episode,
+            "source_revision": source_revision,
+            "semantic_revision_id": revision_id,
+            "max_rounds": 2,
+            "concurrency": body.concurrency,
+        },
+    )
+    return {
+        "ok": True,
+        "task_type": "screenplay_semantic_repair",
+        "task_id": queued.task_state.task_id,
+        "task_key": project_task_state_key(
+            "screenplay_semantic_repair",
+            str(ctx.project_id),
+            episode,
+            scope=scope,
+        ),
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "scope": scope,
+        "source_revision": source_revision,
+        "semantic_revision_id": revision_id,
+    }
+
+
 @router.post("/projects/{project}/episodes/{episode}/screenplay-semantics/{revision_id}/activate")
 async def activate_screenplay_semantics(project: str, episode: int, revision_id: str,
     user: dict = Depends(require_scope("tasks:submit"))):
@@ -139,4 +200,4 @@ async def edit_screenplay_semantics(
     return {"ok": True, "data": edited.model_dump(mode="json")}
 
 
-__all__ = ["CreateSemanticRequest", "router"]
+__all__ = ["CreateSemanticRequest", "RepairSemanticRequest", "router"]

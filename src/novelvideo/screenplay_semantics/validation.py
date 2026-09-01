@@ -7,6 +7,7 @@ import re
 
 from novelvideo.screenplay_semantics.extractor import DramaticBeatDraft
 from novelvideo.screenplay_semantics.models import (
+    DramaticBeat,
     Scene,
     SemanticValidationIssue,
     SemanticValidationReport,
@@ -85,4 +86,27 @@ def validate_scene_beats(
     return SemanticValidationReport.from_issues(tuple(issues))
 
 
-__all__ = ["STORY_KINDS", "validate_scene_beats"]
+def validate_revision_beats(
+    scenes: Sequence[Scene],
+    beats: Sequence[DramaticBeat],
+    *,
+    extra_issues: Sequence[SemanticValidationIssue] = (),
+) -> SemanticValidationReport:
+    """Validate every scene against the current, fully merged beat set."""
+    issues: list[SemanticValidationIssue] = []
+    for scene in sorted(scenes, key=lambda item: item.ordinal):
+        drafts = tuple(
+            DramaticBeatDraft.model_validate(beat.model_dump(exclude={
+                "id", "ordinal", "scene_id", "stale", "stale_reason",
+            }))
+            for beat in sorted(
+                (item for item in beats if item.scene_id == scene.id),
+                key=lambda item: item.ordinal,
+            )
+        )
+        issues.extend(validate_scene_beats(scene, drafts).issues)
+    issues.extend(extra_issues)
+    return SemanticValidationReport.from_issues(tuple(issues))
+
+
+__all__ = ["STORY_KINDS", "validate_revision_beats", "validate_scene_beats"]
