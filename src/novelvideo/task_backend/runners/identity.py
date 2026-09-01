@@ -115,4 +115,8 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
     )
 
 
-register_project_task_runner("identity_planner", run_identity_planner)
+register_project_task_runner(
+    "identity_planner",
+    run_identity_planner,
+    text_task_role="knowledge_extraction",
+)

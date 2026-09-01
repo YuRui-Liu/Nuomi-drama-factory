@@ -26,6 +26,40 @@ if TYPE_CHECKING:
     from novelvideo.cognee import CogneeStore
     from novelvideo.models import NovelEpisode
 
+
+def _create_identity_agent(
+    *,
+    output_type: type[BaseModel],
+    model_env: str,
+    thinking_env: str,
+    default_thinking_level: str,
+    system_prompt: str = "",
+    **agent_kwargs,
+):
+    """Use the frozen text-task runtime, with the legacy API as fallback."""
+    from novelvideo.text_task_runtime.runtime import (
+        StructuredRuntimeAgent,
+        current_text_task_runtime,
+    )
+
+    runtime = current_text_task_runtime()
+    if runtime is not None:
+        return StructuredRuntimeAgent(
+            runtime,
+            output_type=output_type,
+            system_prompt=system_prompt,
+        )
+    return Agent(
+        IdentityPlanner._identity_model(model_env),
+        system_prompt=system_prompt,
+        model_settings=IdentityPlanner._identity_model_settings(
+            thinking_env,
+            default_thinking_level,
+        ),
+        output_type=output_type,
+        **agent_kwargs,
+    )
+
 # =============================================================================
 # Output Schema (AI structured output)
 # =============================================================================
@@ -592,13 +626,11 @@ class IdentityPlanner:
 利用上述图谱信息，将原文中的称谓/别名解析为角色主名。
 """
 
-            cast_agent = Agent(
-                self._identity_model("IDENTITY_PLANNER_CAST_MODEL"),
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_CAST_THINKING_LEVEL",
-                    "low",
-                ),
+            cast_agent = _create_identity_agent(
                 output_type=EpisodeCastList,
+                model_env="IDENTITY_PLANNER_CAST_MODEL",
+                thinking_env="IDENTITY_PLANNER_CAST_THINKING_LEVEL",
+                default_thinking_level="low",
             )
             cast_result = await cast_agent.run(f"""以下是全部已知角色：
 {chr(10).join(all_names)}
@@ -819,14 +851,12 @@ class IdentityPlanner:
   - 如果只是同龄造型分支，可留空
 """
         try:
-            agent = Agent(
-                self._identity_model("IDENTITY_PLANNER_ANALYSIS_MODEL"),
-                system_prompt=DEFAULT_IDENTITY_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
-                    "high",
-                ),
+            agent = _create_identity_agent(
                 output_type=EpisodeDefaultIdentities,
+                model_env="IDENTITY_PLANNER_ANALYSIS_MODEL",
+                thinking_env="IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
+                default_thinking_level="high",
+                system_prompt=DEFAULT_IDENTITY_PROMPT,
             )
             result = await agent.run(task)
             result.output.defaults = self._validate_default_requirements(
@@ -900,14 +930,12 @@ class IdentityPlanner:
 - 如果没有其他身份需求，返回空列表
 """
         try:
-            agent = Agent(
-                self._identity_model("IDENTITY_PLANNER_ANALYSIS_MODEL"),
-                system_prompt=OTHER_IDENTITY_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
-                    "high",
-                ),
+            agent = _create_identity_agent(
                 output_type=EpisodeIdentityRequirements,
+                model_env="IDENTITY_PLANNER_ANALYSIS_MODEL",
+                thinking_env="IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
+                default_thinking_level="high",
+                system_prompt=OTHER_IDENTITY_PROMPT,
             )
             result = await agent.run(task)
             result.output.requirements = self._normalize_other_requirements(
@@ -1336,14 +1364,12 @@ class IdentityPlanner:
 """
 
         try:
-            appearance_agent = Agent(
-                self._identity_model("IDENTITY_PLANNER_APPEARANCE_MODEL"),
-                system_prompt=APPEARANCE_GENERATION_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_APPEARANCE_THINKING_LEVEL",
-                    "high",
-                ),
+            appearance_agent = _create_identity_agent(
                 output_type=AppearanceDescription,
+                model_env="IDENTITY_PLANNER_APPEARANCE_MODEL",
+                thinking_env="IDENTITY_PLANNER_APPEARANCE_THINKING_LEVEL",
+                default_thinking_level="high",
+                system_prompt=APPEARANCE_GENERATION_PROMPT,
                 retries={"output": 2},
                 validation_context={"planned_age_group": planned_age_group},
             )

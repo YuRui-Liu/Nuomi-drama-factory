@@ -153,6 +153,18 @@ def merge_character_candidates(
 def _create_agent(agent: Any = None) -> Any:
     if agent is not None:
         return agent
+    from novelvideo.text_task_runtime.runtime import (
+        StructuredRuntimeAgent,
+        current_text_task_runtime,
+    )
+
+    runtime = current_text_task_runtime()
+    if runtime is not None:
+        return StructuredRuntimeAgent(
+            runtime,
+            output_type=ChunkCharacterOutput,
+            system_prompt=CHARACTER_EXTRACTION_SYSTEM_PROMPT,
+        )
     from pydantic_ai import Agent, PromptedOutput
     from novelvideo.config import (
         get_newapi_text_pydantic_model,

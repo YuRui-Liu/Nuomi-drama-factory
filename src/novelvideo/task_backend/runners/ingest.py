@@ -104,4 +104,8 @@ async def _run_ingest_fast(envelope: dict[str, Any], ctx: ProjectContext) -> dic
             await store.close()
 
 
-register_project_task_runner("ingest_fast", run_ingest_fast)
+register_project_task_runner(
+    "ingest_fast",
+    run_ingest_fast,
+    text_task_role="knowledge_extraction",
+)
