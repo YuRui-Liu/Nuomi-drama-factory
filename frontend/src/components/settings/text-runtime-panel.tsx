@@ -134,6 +134,16 @@ export function TextRuntimePanel({ enabled = true }: { enabled?: boolean }) {
           保存普通文本模型
         </Button>
       </div>
+      <div className="mt-4 rounded-lg border border-white/10 bg-black/15 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">导演拆解修复</p>
+            <p className="font-mono text-[11px] text-muted-foreground">screenplay_semantic_repair</p>
+          </div>
+          <span className="text-xs text-muted-foreground">继承文本任务 Runtime 路由</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">默认并发 3 · 最多修复 2 轮 · 完成后仍需人工激活</p>
+      </div>
     </div>
   );
 }

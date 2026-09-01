@@ -22,6 +22,7 @@ export const TASK_TYPES = {
   SCRIPT_WRITER: "script_writer",
   LITERAL_SCRIPT_WRITER: "literal_script_writer",
   BEAT_VIDEO_PROMPT: "beat_video_prompt",
+  SCREENPLAY_SEMANTIC_REPAIR: "screenplay_semantic_repair",
   // Backend emits `director_notes`; keep the FE key aligned with that exact
   // task_type so the task stream and cancel endpoint target the same task.
   DIRECTOR_NOTES: "director_notes",

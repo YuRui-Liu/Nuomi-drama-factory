@@ -47,6 +47,7 @@ import {
 import { EpisodeSourceEditor } from "@/components/episode/episode-source-editor";
 import { EpisodeHealthSummary } from "@/components/episode/health-bar";
 import { ScriptBeatPreview } from "@/components/episode/script-beat-preview";
+import { ScreenplayWorkbench } from "@/components/episode/screenplay-workbench";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { saveScopes, trackSave } from "@/stores/save-status-store";
@@ -642,6 +643,9 @@ function ScriptTabContent() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-5 pt-5">
+          <ScreenplayWorkbench project={project} episode={epNum} />
+        </div>
         <div className="grid min-h-0 gap-5 px-5 pb-5 pt-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="min-w-0 space-y-5">
             <section>

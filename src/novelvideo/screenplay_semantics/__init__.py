@@ -14,10 +14,16 @@ from .models import (
 )
 from .parser import ParsedScreenplayDocument, parse_screenplay_document
 from .extractor import DramaticBeatDraft, SceneBeatDraft, SceneExtractionFailure, extract_scene_beats
-from .validation import validate_scene_beats
+from .validation import validate_revision_beats, validate_scene_beats
 from .service import ScreenplaySemanticService
 from .store import ScreenplaySemanticActivationConflict, ScreenplaySemanticStore
 from .editing import MergeAdjacentBeats, ReorderBeats, SplitBeat, UpdateBeat, apply_semantic_edit
+from .repair import (
+    RepairProgress,
+    SceneRepairDraft,
+    ScreenplaySemanticRepairRuntimeError,
+    ScreenplaySemanticRepairService,
+)
 
 __all__ = [
     "DramaticBeat",
@@ -39,6 +45,7 @@ __all__ = [
     "SceneExtractionFailure",
     "extract_scene_beats",
     "validate_scene_beats",
+    "validate_revision_beats",
     "ScreenplaySemanticService",
     "ScreenplaySemanticActivationConflict",
     "ScreenplaySemanticStore",
@@ -47,4 +54,8 @@ __all__ = [
     "SplitBeat",
     "UpdateBeat",
     "apply_semantic_edit",
+    "RepairProgress",
+    "SceneRepairDraft",
+    "ScreenplaySemanticRepairService",
+    "ScreenplaySemanticRepairRuntimeError",
 ]

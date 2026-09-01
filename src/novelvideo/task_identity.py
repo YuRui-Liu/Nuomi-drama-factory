@@ -17,6 +17,9 @@ TASK_IDENTITY_SPECS: dict[str, TaskIdentitySpec] = {
     "ingest_fast": TaskIdentitySpec("ingest_fast"),
     "episode_import": TaskIdentitySpec("episode_import"),
     "screenplay_semantics": TaskIdentitySpec("screenplay_semantics", include_episode=True),
+    "screenplay_semantic_repair": TaskIdentitySpec(
+        "screenplay_semantic_repair", include_episode=True, scope_mode="raw"
+    ),
     "build_characters": TaskIdentitySpec("build_chars"),
     "character_portrait": TaskIdentitySpec("character_portrait", scope_mode="raw"),
     "build_episodes": TaskIdentitySpec("build_eps"),
