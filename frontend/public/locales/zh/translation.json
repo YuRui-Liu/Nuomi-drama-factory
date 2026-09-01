@@ -1306,6 +1306,7 @@
     "title": "剧本导入",
     "subtitle": "上传剧本，开启你的创意之旅",
     "episodeImport": {
+      "multiEpisode": "多集导入",
       "append": "追加单集",
       "batch": "批量导入",
       "accepted": "导入任务已接受",

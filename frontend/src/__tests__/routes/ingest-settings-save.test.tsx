@@ -74,6 +74,7 @@ beforeAll(async () => {
             },
             saveSettings: "Save Settings",
             episodeImport: {
+              multiEpisode: "Multi-episode import",
               append: "Append episode",
               batch: "Batch import",
               accepted: "Import task accepted",
@@ -137,7 +138,8 @@ const mocks = vi.hoisted(() => ({
     | {
         ok: true;
         data: {
-          total_chars: number;
+          total_chars?: number;
+          billable_chars?: number;
           count: number;
           preview_only?: boolean;
           chapters: {
@@ -157,7 +159,12 @@ const mocks = vi.hoisted(() => ({
   // stale-cache 竞态用例把它设为 false，表示当前 data 还是挂载前的旧缓存。
   ingestTasksFetchedAfterMount: true,
   refetchKnowledgeGraph: vi.fn(),
-  episodeImports: [] as { episode_number: number }[],
+  episodeImports: [] as {
+    episode_number: number;
+    title?: string;
+    filename?: string;
+    char_count?: number;
+  }[],
   episodeImportHistory: [] as { import_id: string; target_revision: number; created_at: string; episodes: { episode_number: number; result: string }[] }[],
   episodeImportStale: [] as { episode_number: number; stage: string; source_revision: number; consumed_revision: number; stale: boolean }[],
   clearEpisodeImportStale: vi.fn(),
@@ -542,6 +549,29 @@ describe("IngestPage settings save", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 
+  it("opens multi-episode import with no existing episodes for an empty project", async () => {
+    const user = userEvent.setup();
+    mocks.episodeImports = [{ episode_number: 7 }];
+
+    render(
+      <Wrapper>
+        <IngestPageContent project="demo" />
+      </Wrapper>,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Append episode" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Multi-episode import" }),
+    );
+
+    expect(
+      screen.getByRole("dialog", { name: "episode import dialog" }),
+    ).toHaveAttribute("data-existing-episodes", "");
+  });
+
   it("keeps append and batch episode import actions available after episode one exists", async () => {
     const user = userEvent.setup();
     mocks.chaptersData = {
@@ -590,6 +620,169 @@ describe("IngestPage settings save", () => {
     expect(screen.getAllByText((_, element) => element?.textContent === "Episode 1 · Overwritten").length).toBeGreaterThan(0);
     await userEvent.click(screen.getByRole("button", { name: "Mark Beats updated" }));
     expect(mocks.clearEpisodeImportStale).toHaveBeenCalledWith({ episodeNumber: 1, stage: "beats", sourceRevision: 5 });
+  });
+
+  it("shows every imported episode in the structure preview instead of stale legacy chapters", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        total_chars: 10,
+        count: 1,
+        chapters: [{ number: 1, title: "Legacy episode 1", char_count: 10 }],
+      },
+    };
+    mocks.episodeImports = [
+      { episode_number: 1, title: "First episode", filename: "E001.md", char_count: 10 },
+      { episode_number: 2, title: "Second episode", filename: "E002.md", char_count: 20 },
+      { episode_number: 3, title: "Third episode", filename: "E003.md", char_count: 30 },
+    ];
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.getByText("First episode")).toBeInTheDocument();
+    expect(screen.getByText("Second episode")).toBeInTheDocument();
+    expect(screen.getByText("Third episode")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy episode 1")).not.toBeInTheDocument();
+    expect(screen.getAllByText("60").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("falls back from placeholder titles and missing imported character counts", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        total_chars: 1770,
+        billable_chars: 1594,
+        count: 1,
+        chapters: [{ number: 1, title: "Legacy episode 1", char_count: 1770 }],
+      },
+    };
+    mocks.episodeImports = [
+      { episode_number: 1, title: "---", filename: "E001.md" },
+      { episode_number: 2, title: "", filename: "E002.md" },
+      { episode_number: 3, title: "", filename: "E003.md" },
+    ];
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.getByText("E001")).toBeInTheDocument();
+    expect(screen.queryByText("---")).not.toBeInTheDocument();
+    expect(screen.queryByText("NaN")).not.toBeInTheDocument();
+    expect(screen.getByText("1,770")).toBeInTheDocument();
+    expect(screen.getByText("1,594")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("revalidates a complete imported-count aggregate after numeric overflow", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        total_chars: 1770,
+        billable_chars: 1594,
+        count: 1,
+        chapters: [{ number: 1, char_count: 1770 }],
+      },
+    };
+    mocks.episodeImports = [
+      { episode_number: 1, filename: "E001.md", char_count: Number.MAX_VALUE },
+      { episode_number: 2, filename: "E002.md", char_count: Number.MAX_VALUE },
+    ];
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.getByText("1,770")).toBeInTheDocument();
+    expect(screen.queryByText("∞")).not.toBeInTheDocument();
+  });
+
+  it("shows an unknown total when imported-count overflow has no canonical fallback", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        count: 1,
+        chapters: [{ number: 1, char_count: 1 }],
+      },
+    };
+    mocks.episodeImports = [
+      { episode_number: 1, filename: "E001.md", char_count: Number.MAX_VALUE },
+      { episode_number: 2, filename: "E002.md", char_count: Number.MAX_VALUE },
+    ];
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.queryByText("∞")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("prefers canonical billable characters over an uploaded-file value for incomplete imported counts", async () => {
+    const user = userEvent.setup();
+    mocks.uploadNovel.mockResolvedValue({
+      ok: true,
+      data: { filename: "replacement.md", size: 12, billable_chars: 999 },
+    });
+    mocks.episodeImports = [
+      { episode_number: 1, filename: "E001.md" },
+      { episode_number: 2, filename: "E002.md" },
+    ];
+
+    const view = render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+    const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    await user.upload(
+      fileInput!,
+      new File(["episode"], "replacement.md", { type: "text/markdown" }),
+    );
+    await waitFor(() => expect(mocks.uploadNovel).toHaveBeenCalledTimes(1));
+
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        total_chars: 1770,
+        billable_chars: 1594,
+        count: 1,
+        chapters: [{ number: 1, char_count: 1770 }],
+      },
+    };
+    view.rerender(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.getByText("1,594")).toBeInTheDocument();
+    expect(screen.queryByText("999")).not.toBeInTheDocument();
+  });
+
+  it("shows unknown totals for incomplete or invalid legacy chapter counts", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        count: 3,
+        chapters: [
+          { number: 1, char_count: -1 },
+          { number: 2, char_count: Number.POSITIVE_INFINITY },
+          { number: 3 },
+        ],
+      },
+    };
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.queryByText("NaN")).not.toBeInTheDocument();
+    expect(screen.queryByText("∞")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("revalidates the aggregate of individually valid legacy chapter counts", () => {
+    mocks.chaptersData = {
+      ok: true,
+      data: {
+        count: 2,
+        chapters: [
+          { number: 1, char_count: Number.MAX_VALUE },
+          { number: 2, char_count: Number.MAX_VALUE },
+        ],
+      },
+    };
+
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+
+    expect(screen.queryByText("∞")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
   it("shows the knowledge graph result after content is imported", () => {

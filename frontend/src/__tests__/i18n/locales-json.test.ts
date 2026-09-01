@@ -134,6 +134,7 @@ describe("locale translation files", () => {
 
     for (const language of [zh, en]) {
       expect(language.ingest.episodeImport).toMatchObject({
+        multiEpisode: expect.any(String),
         append: expect.any(String),
         batch: expect.any(String),
         accepted: expect.any(String),

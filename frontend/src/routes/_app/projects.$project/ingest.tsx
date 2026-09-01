@@ -189,6 +189,28 @@ function resolveIngestSettings(
   };
 }
 
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function sumCompleteNonNegativeFiniteNumbers(
+  values: Array<number | null>,
+): number | null {
+  if (values.length === 0 || values.some((value) => value === null)) {
+    return null;
+  }
+  return nonNegativeFiniteNumber(
+    values.reduce<number>((sum, value) => sum + (value ?? 0), 0),
+  );
+}
+
+function meaningfulEpisodeTitle(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized && /[\p{L}\p{N}]/u.test(normalized) ? normalized : null;
+}
+
 function toProjectSettingsPayload(
   settings: IngestSettingsValues,
 ): Partial<ProjectConfig> {
@@ -1370,7 +1392,25 @@ export function IngestPageContent({ project }: { project: string }) {
     }
   }, [switchKnowledgePipeline, t]);
   const chapters = chaptersData?.chapters ?? [];
-  const chapterCount = chapters.length;
+  const importedEpisodeItems = episodeImports.data?.data.items ?? [];
+  const previewChapters = importedEpisodeItems.length
+    ? importedEpisodeItems
+        .map((item) => {
+          const filenameStem = item.filename?.replace(/\.[^.]+$/, "");
+          return {
+            number: item.episode_number,
+            title:
+              meaningfulEpisodeTitle(item.title) ??
+              meaningfulEpisodeTitle(filenameStem),
+            char_count:
+              nonNegativeFiniteNumber(item.char_count) ?? undefined,
+            word_count: undefined,
+            content: undefined,
+          };
+        })
+        .sort((a, b) => a.number - b.number)
+    : chapters;
+  const chapterCount = previewChapters.length;
   const shouldRestoreImportedPreview =
     hasImportedContent && !hideImportedPreview;
   const shouldShowPreview = ingestSubmitted || shouldRestoreImportedPreview;
@@ -1381,21 +1421,38 @@ export function IngestPageContent({ project }: { project: string }) {
       : null);
   const previewStatus: IngestFileStatus =
     uploadedFile || ingestSubmitted ? ingestFileStatus : "completed";
-  const totalChars =
-    typeof chaptersData?.total_chars === "number"
-      ? chaptersData.total_chars
-      : chapters.reduce(
-          (sum, ch) =>
-            sum + (ch.word_count ?? ch.char_count ?? ch.content?.length ?? 0),
-          0,
-        );
+  const importedCharCounts = importedEpisodeItems.map((item) =>
+    nonNegativeFiniteNumber(item.char_count),
+  );
+  const importedTotalChars = sumCompleteNonNegativeFiniteNumbers(
+    importedCharCounts,
+  );
+  const chaptersTotalChars = nonNegativeFiniteNumber(
+    chaptersData?.total_chars,
+  );
+  const legacyChapterTotalChars = sumCompleteNonNegativeFiniteNumbers(
+    chapters.map(
+      (chapter) =>
+        nonNegativeFiniteNumber(chapter.word_count) ??
+        nonNegativeFiniteNumber(chapter.char_count) ??
+        (typeof chapter.content === "string" ? chapter.content.length : null),
+    ),
+  );
+  const totalChars = importedEpisodeItems.length
+    ? importedTotalChars ?? chaptersTotalChars
+    : chaptersTotalChars ?? legacyChapterTotalChars;
+  const uploadedBillableChars = nonNegativeFiniteNumber(
+    uploadedFile?.billable_chars,
+  );
+  const canonicalBillableChars = nonNegativeFiniteNumber(
+    chaptersData?.billable_chars,
+  );
   const billableChars =
-    typeof uploadedFile?.billable_chars === "number"
-      ? uploadedFile.billable_chars
-      : typeof chaptersData?.billable_chars === "number"
-        ? chaptersData.billable_chars
-        : totalChars;
-  const totalCharsUnknown = totalChars === 0 && !chaptersData?.total_chars;
+    importedEpisodeItems.length > 0 && importedTotalChars === null
+      ? canonicalBillableChars ?? totalChars
+      : uploadedBillableChars ?? canonicalBillableChars ?? totalChars;
+  const totalCharsUnknown = totalChars === null;
+  const billableCharsUnknown = billableChars === null;
   const isStarting = updateProject.isPending || startIngestMutation.isPending;
 
   // Fallback title for chapters with no title
@@ -1440,7 +1497,7 @@ export function IngestPageContent({ project }: { project: string }) {
             </span>
           </div>
         </div>
-        {hasImportedContent && (
+        {hasImportedContent ? (
           <div className="flex shrink-0 items-center gap-2">
             <Button
               type="button"
@@ -1454,6 +1511,10 @@ export function IngestPageContent({ project }: { project: string }) {
               {t("ingest.episodeImport.batch")}
             </Button>
           </div>
+        ) : (
+          <Button type="button" onClick={() => setEpisodeImportOpen(true)}>
+            {t("ingest.episodeImport.multiEpisode")}
+          </Button>
         )}
       </div>
 
@@ -1955,7 +2016,7 @@ export function IngestPageContent({ project }: { project: string }) {
                     <StatCard
                       label={t("ingest.statBillableChars")}
                       value={
-                        totalCharsUnknown
+                        billableCharsUnknown
                           ? <span className="text-muted-foreground/60">—</span>
                           : billableChars.toLocaleString()
                       }
@@ -2038,7 +2099,7 @@ export function IngestPageContent({ project }: { project: string }) {
                       </span>
                     </div>
                     <div className="divide-y divide-white/[0.05]">
-                      {chapters.slice(0, 20).map((ch) => (
+                      {previewChapters.slice(0, 20).map((ch) => (
                         <div
                           key={ch.number}
                           className="grid grid-cols-[4rem_1fr_5rem] items-center gap-2 px-4 py-2.5 text-xs"
@@ -2052,9 +2113,11 @@ export function IngestPageContent({ project }: { project: string }) {
                           <span className="text-right tabular-nums text-muted-foreground">
                             {(() => {
                               const count =
-                                ch.word_count ??
-                                ch.char_count ??
-                                ch.content?.length;
+                                nonNegativeFiniteNumber(ch.word_count) ??
+                                nonNegativeFiniteNumber(ch.char_count) ??
+                                (typeof ch.content === "string"
+                                  ? ch.content.length
+                                  : null);
                               return count != null
                                 ? count.toLocaleString()
                                 : "—";
@@ -2117,7 +2180,9 @@ export function IngestPageContent({ project }: { project: string }) {
         open={episodeImportOpen}
         onOpenChange={setEpisodeImportOpen}
         existingEpisodeNumbers={
-          episodeImports.data?.data.items.map((item) => item.episode_number) ?? []
+          hasImportedContent
+            ? episodeImports.data?.data.items.map((item) => item.episode_number) ?? []
+            : []
         }
         onCommitted={async (result) => {
           setEpisodeImportTaskResponse(result);

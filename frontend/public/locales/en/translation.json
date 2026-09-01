@@ -1306,6 +1306,7 @@
     "title": "Script Import",
     "subtitle": "Upload a script and start your creative journey.",
     "episodeImport": {
+      "multiEpisode": "Multi-episode import",
       "append": "Append episode",
       "batch": "Batch import",
       "accepted": "Import task accepted",
