@@ -15,13 +15,19 @@ from novelvideo.api.schemas import EpisodeImportCommitRequest
 from novelvideo.episode_source_store import EpisodeImportPreviewNotFound, EpisodeSourceRevisionConflict, EpisodeSourceStore
 from novelvideo.episode_import_records import EpisodeImportRecords
 from novelvideo.episode_legacy_migration import ensure_legacy_migration
-from novelvideo.episode_sources import apply_manual_episode_numbers, build_episode_candidate, resolve_episode_candidates
+from novelvideo.episode_sources import (
+    apply_manual_episode_numbers,
+    resolve_episode_candidates,
+    split_episode_candidates,
+)
 from novelvideo.ports import get_task_backend
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.utils.document_parsers import DocumentParseError, is_supported_novel_path
 from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES, sanitize_upload_filename
 
 router = APIRouter()
+
+_EPISODE_EMPTY_BODY_WARNING = "分集标题后缺少正文"
 
 
 async def _ensure_migration(store: EpisodeSourceStore, *, confirmed: bool = False):
@@ -92,30 +98,56 @@ async def preview_episode_imports(
         if isinstance(parsed, dict):
             response_items.append(parsed)
             continue
-        candidate = build_episode_candidate(*parsed)
-        candidates.append(candidate)
-        response_items.append({
-            "file_id": candidate.file_id,
-            "filename": candidate.source_filename,
-            "title": candidate.title or None,
-            "episode_number": candidate.episode_number,
-            "number_source": candidate.number_source,
-            "warnings": list(candidate.warnings),
-        })
+        source_filename, content = parsed
+        split_candidates = split_episode_candidates(source_filename, content)
+        for index, candidate in enumerate(split_candidates):
+            is_bundle = len(split_candidates) > 1
+            if is_bundle and candidate.episode_number is not None:
+                display_name = (
+                    f"{candidate.source_filename} · 第 {candidate.episode_number} 集"
+                )
+            elif is_bundle:
+                display_name = f"{candidate.source_filename} · 分段 {index + 1}"
+            else:
+                display_name = candidate.source_filename
+            item = {
+                "file_id": candidate.file_id,
+                "filename": candidate.source_filename,
+                "display_name": display_name,
+                "title": candidate.title or None,
+                "episode_number": candidate.episode_number,
+                "number_source": candidate.number_source,
+                "warnings": [
+                    warning
+                    for warning in candidate.warnings
+                    if warning != _EPISODE_EMPTY_BODY_WARNING
+                ],
+            }
+            if _EPISODE_EMPTY_BODY_WARNING in candidate.warnings:
+                item.update(
+                    status="invalid",
+                    error=_EPISODE_EMPTY_BODY_WARNING,
+                )
+                response_items.append(item)
+                continue
+            candidates.append(candidate)
+            response_items.append(item)
     counts: dict[int, int] = {}
     for candidate in candidates:
         if candidate.episode_number is not None:
             counts[candidate.episode_number] = counts.get(candidate.episode_number, 0) + 1
     for item in response_items:
+        if "status" in item:
+            continue
         number = item.get("episode_number")
-        if number is None and "status" not in item:
+        if number is None:
             item["status"] = "needs_episode_number"
         elif number is not None and counts.get(number, 0) > 1:
             item["status"] = "conflict"
             item.setdefault("warnings", []).append("批次内部集号重复")
         elif number in existing:
             item.update(status="conflict", existing_revision=existing[number].source_revision)
-        elif "status" not in item:
+        else:
             item["status"] = "new"
     preview = await store.save_preview(base_revision=base_revision, items=candidates)
     if hasattr(store, "sqlite_store"):
@@ -225,7 +257,8 @@ async def list_episode_imports(project: str, user: dict = Depends(get_api_user))
         item = asdict(source)
         item["revision"] = item.pop("source_revision")
         item["filename"] = item.pop("source_filename")
-        item.pop("content", None)
+        content = item.pop("content", "")
+        item["char_count"] = len(content)
         items.append(item)
     imports, stale = [], []
     if hasattr(store, "sqlite_store"):
