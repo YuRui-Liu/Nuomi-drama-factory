@@ -35,7 +35,7 @@ _FILENAME_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])e\s*[-_]?\s*0*([1-9][0-9]*)(?:$|[^0-9])", re.IGNORECASE),
 )
 _EPISODE_HEADING_PATTERN = re.compile(
-    rf"^[ \t]*(?:#{{1,6}}[ \t]*)?(?:"
+    rf"^(?:\A\ufeff)?[ \t]*(?:#{{1,6}}[ \t]*)?(?:"
     rf"第\s*(?P<chinese>{_NUMBER_TOKEN})\s*集"
     r"|episode\s*[-_:#]?\s*0*(?P<english>[1-9][0-9]*)\b"
     r")[^\r\n]*(?:\r?\n|$)",
@@ -181,7 +181,9 @@ def split_episode_candidates(
             else len(content)
         )
         heading_segment = content[boundary.start() : next_start]
-        candidate = build_episode_candidate(filename, boundary.group())
+        candidate = build_episode_candidate(
+            filename, boundary.group().removeprefix("\ufeff")
+        )
         candidate_content = (
             f"{preface}{heading_segment}" if index == 0 else heading_segment
         )

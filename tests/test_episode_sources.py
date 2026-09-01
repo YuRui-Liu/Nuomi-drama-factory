@@ -19,6 +19,7 @@ from novelvideo.episode_sources import (
     resolve_episode_candidates,
     validate_resolutions,
 )
+from novelvideo.utils.document_parsers import decode_novel_bytes
 
 
 def test_episode_import_route_only_accepts_existing_script_intent():
@@ -35,8 +36,6 @@ def test_episode_import_route_only_accepts_existing_script_intent():
 
 
 def test_episode_import_commit_rejects_retransmitted_intent():
-    from novelvideo.api.routes import episode_imports
-
     from novelvideo.api.schemas import EpisodeImportCommitRequest
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
@@ -106,6 +105,31 @@ def test_split_episode_candidates_supports_chinese_and_english_heading_boundarie
         "# 第十二集 失踪\n甲\n\n",
         "## ePiSoDe 7: Return\nBody 提到第99集",
     ]
+
+
+def test_split_episode_candidates_accepts_only_a_document_start_utf8_bom():
+    raw = b"\xef\xbb\xbf" + (
+        "# 第1集 开端\n"
+        "甲\n"
+        "\ufeff第2集 不是边界\n"
+        "仍属首集\n"
+        "Episode 3 终章\n"
+        "乙"
+    ).encode("utf-8")
+    content = decode_novel_bytes(raw)
+
+    candidates = episode_sources.split_episode_candidates("collection.md", content)
+
+    assert [item.episode_number for item in candidates] == [1, 3]
+    assert [item.title for item in candidates] == ["开端", "终章"]
+    assert candidates[0].content == (
+        "\ufeff# 第1集 开端\n"
+        "甲\n"
+        "\ufeff第2集 不是边界\n"
+        "仍属首集\n"
+    )
+    assert candidates[0].warnings == ()
+    assert candidates[1].content == "Episode 3 终章\n乙"
 
 
 def test_split_episode_candidates_preserves_preface_without_polluting_heading_number():
