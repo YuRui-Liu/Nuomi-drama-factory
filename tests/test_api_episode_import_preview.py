@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import UploadFile
 
+import novelvideo.episode_sources as episode_sources
+
 
 class PreviewStore:
     def __init__(self) -> None:
@@ -131,7 +133,7 @@ async def test_preview_keeps_valid_candidates_when_one_split_episode_is_empty(
 
     items = response["data"]["files"]
     assert [item["status"] for item in items] == ["invalid", "conflict", "new"]
-    assert items[0]["error"] == "分集标题后缺少正文"
+    assert items[0]["error"] == episode_sources.EPISODE_EMPTY_BODY_WARNING
     assert [item.episode_number for item in store.saved["items"]] == [2, 3]
 
 

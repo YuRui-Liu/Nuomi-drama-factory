@@ -212,9 +212,10 @@ def test_split_episode_candidates_keeps_source_order_warns_empty_body_and_uses_u
         "第2集 Two\n正文\n",
         "第1集 One\n   \n",
     ]
-    assert candidates[0].warnings == ("分集标题后缺少正文",)
+    assert episode_sources.EPISODE_EMPTY_BODY_WARNING == "分集标题后缺少正文"
+    assert candidates[0].warnings == (episode_sources.EPISODE_EMPTY_BODY_WARNING,)
     assert candidates[1].warnings == ()
-    assert candidates[2].warnings == ("分集标题后缺少正文",)
+    assert candidates[2].warnings == (episode_sources.EPISODE_EMPTY_BODY_WARNING,)
     assert {item.source_filename for item in candidates} == {"mixed.md"}
     assert len({item.file_id for item in candidates}) == 3
 

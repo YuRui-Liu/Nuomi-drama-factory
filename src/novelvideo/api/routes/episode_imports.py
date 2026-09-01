@@ -16,6 +16,7 @@ from novelvideo.episode_source_store import EpisodeImportPreviewNotFound, Episod
 from novelvideo.episode_import_records import EpisodeImportRecords
 from novelvideo.episode_legacy_migration import ensure_legacy_migration
 from novelvideo.episode_sources import (
+    EPISODE_EMPTY_BODY_WARNING,
     apply_manual_episode_numbers,
     resolve_episode_candidates,
     split_episode_candidates,
@@ -26,8 +27,6 @@ from novelvideo.utils.document_parsers import DocumentParseError, is_supported_n
 from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES, sanitize_upload_filename
 
 router = APIRouter()
-
-_EPISODE_EMPTY_BODY_WARNING = "分集标题后缺少正文"
 
 
 async def _ensure_migration(store: EpisodeSourceStore, *, confirmed: bool = False):
@@ -120,13 +119,13 @@ async def preview_episode_imports(
                 "warnings": [
                     warning
                     for warning in candidate.warnings
-                    if warning != _EPISODE_EMPTY_BODY_WARNING
+                    if warning != EPISODE_EMPTY_BODY_WARNING
                 ],
             }
-            if _EPISODE_EMPTY_BODY_WARNING in candidate.warnings:
+            if EPISODE_EMPTY_BODY_WARNING in candidate.warnings:
                 item.update(
                     status="invalid",
-                    error=_EPISODE_EMPTY_BODY_WARNING,
+                    error=EPISODE_EMPTY_BODY_WARNING,
                 )
                 response_items.append(item)
                 continue

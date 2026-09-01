@@ -10,6 +10,8 @@ from typing import Literal, Mapping, Sequence
 from uuid import uuid4
 
 
+EPISODE_EMPTY_BODY_WARNING = "分集标题后缺少正文"
+
 _CHINESE_DIGITS = {
     "零": 0,
     "〇": 0,
@@ -191,7 +193,7 @@ def split_episode_candidates(
         if index == 0 and preface.strip():
             warnings.append("首集包含合集前言")
         if not content[boundary.end() : next_start].strip():
-            warnings.append("分集标题后缺少正文")
+            warnings.append(EPISODE_EMPTY_BODY_WARNING)
         candidates.append(
             replace(
                 candidate,
