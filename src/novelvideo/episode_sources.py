@@ -37,10 +37,13 @@ _FILENAME_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])e\s*[-_]?\s*0*([1-9][0-9]*)(?:$|[^0-9])", re.IGNORECASE),
 )
 _EPISODE_HEADING_PATTERN = re.compile(
-    rf"^(?:\A\ufeff)?[ \t]*(?:#{{1,6}}[ \t]*)?(?:"
-    rf"第\s*(?P<chinese>{_NUMBER_TOKEN})\s*集"
-    r"|episode\s*[-_:#]?\s*0*(?P<english>[1-9][0-9]*)\b"
-    r")[^\r\n]*(?:\r?\n|$)",
+    rf"^(?:\A\ufeff)?[ \t]*(?:"
+    rf"#{{1,6}}[ \t]*第\s*(?P<markdown_chinese>{_NUMBER_TOKEN})\s*集[^\r\n]*"
+    rf"|第\s*(?P<bare_chinese>{_NUMBER_TOKEN})\s*集"
+    r"(?:[ \t:：_\-—–]+[^\r\n]*)?"
+    r"|(?:#{1,6}[ \t]*)?episode\s*[-_:#]?\s*"
+    r"0*(?P<english>[1-9][0-9]*)\b[^\r\n]*"
+    r")(?:\r?\n|$)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -115,6 +118,15 @@ def _first_number(text: str, patterns: Sequence[re.Pattern[str]]) -> int | None:
     return None
 
 
+def _heading_number(match: re.Match[str]) -> int | None:
+    token = (
+        match.group("markdown_chinese")
+        or match.group("bare_chinese")
+        or match.group("english")
+    )
+    return _parse_number(token)
+
+
 def detect_episode_number(content: str, filename: str) -> EpisodeNumberDetection:
     """Detect the content number first, falling back to the source filename."""
     content_number = _first_number(content, _CONTENT_PATTERNS)
@@ -168,8 +180,7 @@ def split_episode_candidates(
     boundaries = tuple(
         match
         for match in _EPISODE_HEADING_PATTERN.finditer(content)
-        if _parse_number(match.group("chinese") or match.group("english"))
-        is not None
+        if _heading_number(match) is not None
     )
     if len(boundaries) < 2:
         return (build_episode_candidate(filename, content),)

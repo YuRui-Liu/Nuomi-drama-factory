@@ -90,7 +90,7 @@ def test_same_filename_candidates_have_distinct_file_ids():
 
 def test_split_episode_candidates_supports_chinese_and_english_heading_boundaries():
     content = (
-        "# 第十二集 失踪\n"
+        "# 第十二集失踪\n"
         "甲\n\n"
         "## ePiSoDe 7: Return\n"
         "Body 提到第99集"
@@ -102,9 +102,29 @@ def test_split_episode_candidates_supports_chinese_and_english_heading_boundarie
     assert [item.number_source for item in candidates] == ["body", "body"]
     assert [item.title for item in candidates] == ["失踪", "Return"]
     assert [item.content for item in candidates] == [
-        "# 第十二集 失踪\n甲\n\n",
+        "# 第十二集失踪\n甲\n\n",
         "## ePiSoDe 7: Return\nBody 提到第99集",
     ]
+
+
+def test_split_episode_candidates_does_not_treat_bare_body_lines_as_headings():
+    content = (
+        "# 第1集 起点\n"
+        "第一集正文\n"
+        "Episode 2: 转折\n"
+        "第二集正文\n"
+        "第3集 空集"
+    )
+
+    candidates = episode_sources.split_episode_candidates("collection.md", content)
+
+    assert [item.episode_number for item in candidates] == [1, 2, 3]
+    assert [item.content for item in candidates] == [
+        "# 第1集 起点\n第一集正文\n",
+        "Episode 2: 转折\n第二集正文\n",
+        "第3集 空集",
+    ]
+    assert candidates[2].warnings == ("分集标题后缺少正文",)
 
 
 def test_split_episode_candidates_accepts_only_a_document_start_utf8_bom():
