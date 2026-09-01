@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api", () => ({ api: ky.create({ baseUrl: "http://localhost:3000/" }) }));
-import { useRepairScreenplaySemantics } from "@/lib/queries/screenplay-semantics";
+import { useRepairScreenplaySemantics, useRetrySemanticScene } from "@/lib/queries/screenplay-semantics";
 
 const server = setupServer();
 beforeAll(() => server.listen());
@@ -28,5 +28,18 @@ describe("screenplay semantic repair query contract", () => {
     const { result } = renderHook(() => useRepairScreenplaySemantics("demo", 1), { wrapper });
     await result.current.mutateAsync({ revisionId: "sem-1" });
     expect(received).toEqual({ concurrency: 3 });
+  });
+});
+
+describe("screenplay semantic scene query contract", () => {
+  it("posts a scene-scoped retry without regenerating the whole episode", async () => {
+    let path = "";
+    server.use(http.post("http://localhost:3000/api/v1/projects/demo/episodes/1/screenplay-semantics/sem-1/scenes/scene-2/retry", ({ request }) => {
+      path = new URL(request.url).pathname;
+      return HttpResponse.json({ ok: true, task_id: "task-1" });
+    }));
+    const { result } = renderHook(() => useRetrySemanticScene("demo", 1), { wrapper });
+    await result.current.mutateAsync({ revisionId: "sem-1", sceneId: "scene-2" });
+    expect(path).toBe("/api/v1/projects/demo/episodes/1/screenplay-semantics/sem-1/scenes/scene-2/retry");
   });
 });
