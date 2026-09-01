@@ -60,7 +60,7 @@ function reducer(state: State, action: Action): State {
           .sort((a, b) =>
             (a.episode_number ?? Number.MAX_SAFE_INTEGER) -
               (b.episode_number ?? Number.MAX_SAFE_INTEGER) ||
-            a.filename.localeCompare(b.filename),
+            itemLabel(a).localeCompare(itemLabel(b)),
           ),
       };
     case "episode":
@@ -103,6 +103,10 @@ function parsedEpisode(item: EditableItem): number | null {
   if (!/^\d+$/.test(item.editedEpisodeNumber)) return null;
   const episode = Number(item.editedEpisodeNumber);
   return Number.isSafeInteger(episode) && episode > 0 ? episode : null;
+}
+
+function itemLabel(item: EpisodeImportPreviewItem): string {
+  return item.display_name?.trim() || item.filename;
 }
 
 export function EpisodeImportDialog({
@@ -205,7 +209,15 @@ export function EpisodeImportDialog({
     const next = current === "overwrite" ? "skip" : "overwrite";
     dispatch({ type: "action", fileId: item.file_id, value: next });
     const group = event.currentTarget.parentElement;
-    (group?.querySelector(`[aria-label="${t(next === "overwrite" ? "ingest.episodeImport.overwriteFile" : "ingest.episodeImport.skipFile", { filename: item.filename })}"]`) as HTMLElement | null)?.focus();
+    const targetLabel = t(
+      next === "overwrite"
+        ? "ingest.episodeImport.overwriteFile"
+        : "ingest.episodeImport.skipFile",
+      { filename: itemLabel(item) },
+    );
+    Array.from(group?.querySelectorAll<HTMLElement>(`[role="radio"]`) ?? [])
+      .find((button) => button.getAttribute("aria-label") === targetLabel)
+      ?.focus();
   }
 
   return (
@@ -245,13 +257,13 @@ export function EpisodeImportDialog({
             {state.items.map((item) => (
               <div key={item.file_id} data-testid="episode-import-row" className="grid grid-cols-[minmax(0,1fr)_7rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border p-3">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{item.filename}</p>
+                  <p className="truncate text-sm font-medium">{itemLabel(item)}</p>
                   <p className="truncate text-xs text-muted-foreground">{item.title ?? "—"}</p>
                 </div>
 
                 {item.editableEpisodeNumber ? (
                   <label className="text-xs">
-                    <span className="sr-only">{t("ingest.episodeImport.episodeNumberFor", { filename: item.filename })}</span>
+                    <span className="sr-only">{t("ingest.episodeImport.episodeNumberFor", { filename: itemLabel(item) })}</span>
                     <Input
                       inputMode="numeric"
                       value={item.editedEpisodeNumber}
@@ -280,9 +292,9 @@ export function EpisodeImportDialog({
                 </span>
 
                 {item.status === "conflict" && (
-                  <div className="flex gap-1" role="radiogroup" aria-label={`${item.filename} 冲突处理`}>
-                    {!item.batchDuplicate && <Button role="radio" type="button" size="sm" tabIndex={item.action === null || item.action === "overwrite" ? 0 : -1} variant={item.action === "overwrite" ? "default" : "outline"} aria-label={t("ingest.episodeImport.overwriteFile", { filename: item.filename })} aria-checked={item.action === "overwrite"} onKeyDown={(event) => chooseConflictAction(event, item, "overwrite")} onClick={() => dispatch({ type: "action", fileId: item.file_id, value: "overwrite" })}>{t("ingest.episodeImport.overwrite")}</Button>}
-                    <Button role="radio" type="button" size="sm" tabIndex={item.action === "skip" || item.batchDuplicate ? 0 : -1} variant={item.action === "skip" ? "default" : "outline"} aria-label={t("ingest.episodeImport.skipFile", { filename: item.filename })} aria-checked={item.action === "skip"} onKeyDown={(event) => chooseConflictAction(event, item, "skip")} onClick={() => dispatch({ type: "action", fileId: item.file_id, value: "skip" })}>{t("ingest.episodeImport.skip")}</Button>
+                  <div className="flex gap-1" role="radiogroup" aria-label={`${itemLabel(item)} 冲突处理`}>
+                    {!item.batchDuplicate && <Button role="radio" type="button" size="sm" tabIndex={item.action === null || item.action === "overwrite" ? 0 : -1} variant={item.action === "overwrite" ? "default" : "outline"} aria-label={t("ingest.episodeImport.overwriteFile", { filename: itemLabel(item) })} aria-checked={item.action === "overwrite"} onKeyDown={(event) => chooseConflictAction(event, item, "overwrite")} onClick={() => dispatch({ type: "action", fileId: item.file_id, value: "overwrite" })}>{t("ingest.episodeImport.overwrite")}</Button>}
+                    <Button role="radio" type="button" size="sm" tabIndex={item.action === "skip" || item.batchDuplicate ? 0 : -1} variant={item.action === "skip" ? "default" : "outline"} aria-label={t("ingest.episodeImport.skipFile", { filename: itemLabel(item) })} aria-checked={item.action === "skip"} onKeyDown={(event) => chooseConflictAction(event, item, "skip")} onClick={() => dispatch({ type: "action", fileId: item.file_id, value: "skip" })}>{t("ingest.episodeImport.skip")}</Button>
                   </div>
                 )}
               </div>

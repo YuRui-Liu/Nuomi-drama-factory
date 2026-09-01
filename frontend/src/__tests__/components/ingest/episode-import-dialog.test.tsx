@@ -127,6 +127,126 @@ describe("EpisodeImportDialog", () => {
     expect(within(rows[1]).getByText("E10.md")).toBeInTheDocument();
   });
 
+  it("sorts equal and missing episode numbers by display name with filename fallback", async () => {
+    preview.mutateAsync.mockResolvedValue({
+      ok: true,
+      data: {
+        ...base,
+        files: [
+          item({
+            file_id: "missing-b",
+            filename: "z-missing.md",
+            display_name: "B-空集",
+            episode_number: null,
+            status: "needs_episode_number",
+          }),
+          item({
+            file_id: "equal-b",
+            filename: "z-equal.md",
+            display_name: "B-同集",
+            episode_number: 3,
+          }),
+          item({
+            file_id: "missing-a",
+            filename: "A-空集.md",
+            display_name: "  ",
+            episode_number: null,
+            status: "needs_episode_number",
+          }),
+          item({
+            file_id: "equal-a",
+            filename: "A-同集.md",
+            episode_number: 3,
+          }),
+        ],
+      },
+    });
+    renderDialog();
+    await upload();
+
+    const rows = await screen.findAllByTestId("episode-import-row");
+    expect(within(rows[0]).getByText("A-同集.md")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("B-同集")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("A-空集.md")).toBeInTheDocument();
+    expect(within(rows[3]).getByText("B-空集")).toBeInTheDocument();
+  });
+
+  it("distinguishes split candidates by display name and commits their unique file ids", async () => {
+    preview.mutateAsync.mockResolvedValue({
+      ok: true,
+      data: {
+        ...base,
+        files: [
+          item({
+            file_id: "split-2",
+            filename: "合集.docx",
+            display_name: "合集.docx · 第 2 集",
+            episode_number: 2,
+          }),
+          item({
+            file_id: "split-1",
+            filename: "合集.docx",
+            display_name: "合集.docx · 第 1 集",
+            episode_number: 1,
+          }),
+        ],
+      },
+    });
+    commit.mutateAsync.mockResolvedValue({ ok: true, task_type: "episode_import" });
+    renderDialog();
+    await upload();
+
+    const rows = await screen.findAllByTestId("episode-import-row");
+    expect(within(rows[0]).getByText("合集.docx · 第 1 集")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("合集.docx · 第 2 集")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    expect(commit.mutateAsync).toHaveBeenCalledWith({
+      preview_id: "preview-1",
+      expected_revision: 7,
+      resolutions: [
+        { file_id: "split-1", episode_number: 1, action: "import" },
+        { file_id: "split-2", episode_number: 2, action: "import" },
+      ],
+    });
+  });
+
+  it("uses split display names for conflict controls and manual episode labels", async () => {
+    const user = userEvent.setup();
+    preview.mutateAsync.mockResolvedValue({
+      ok: true,
+      data: {
+        ...base,
+        files: [
+          item({
+            file_id: "split-conflict",
+            filename: "合集.docx",
+            display_name: "合集.docx · 第 1 集",
+            status: "conflict",
+          }),
+          item({
+            file_id: "split-manual",
+            filename: "合集.docx",
+            display_name: "合集.docx · 待识别分集",
+            episode_number: null,
+            status: "needs_episode_number",
+          }),
+        ],
+      },
+    });
+    renderDialog();
+    await upload();
+
+    expect(screen.getByRole("radiogroup", { name: "合集.docx · 第 1 集 冲突处理" })).toBeInTheDocument();
+    expect(screen.getByLabelText("合集.docx · 待识别分集 集号")).toBeInTheDocument();
+
+    const overwrite = screen.getByRole("radio", { name: "覆盖 合集.docx · 第 1 集" });
+    overwrite.focus();
+    await user.keyboard("{ArrowRight}");
+
+    expect(screen.getByRole("radio", { name: "跳过 合集.docx · 第 1 集" })).toHaveFocus();
+  });
+
   it("requires a valid episode number for an unrecognized file", async () => {
     preview.mutateAsync.mockResolvedValue({
       ok: true,
@@ -198,6 +318,26 @@ describe("EpisodeImportDialog", () => {
     expect(skip).toHaveAttribute("aria-checked", "true");
     expect(overwrite).toHaveAttribute("tabindex", "-1");
     expect(skip).toHaveAttribute("tabindex", "0");
+  });
+
+  it("supports arrow-key selection when the display name contains selector characters", async () => {
+    const user = userEvent.setup();
+    const displayName = "合集\"终稿\"\\拆分.docx · 第 1 集";
+    preview.mutateAsync.mockResolvedValue({
+      ok: true,
+      data: {
+        ...base,
+        files: [item({ display_name: displayName, status: "conflict" })],
+      },
+    });
+    renderDialog();
+    await upload();
+
+    const overwrite = await screen.findByRole("radio", { name: `覆盖 ${displayName}` });
+    overwrite.focus();
+    await user.keyboard("{ArrowRight}");
+
+    expect(screen.getByRole("radio", { name: `跳过 ${displayName}` })).toHaveFocus();
   });
 
   it("supports batch overwrite and skip actions", async () => {

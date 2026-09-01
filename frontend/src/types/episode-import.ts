@@ -10,6 +10,7 @@ export type EpisodeImportPreviewStatus =
 export interface EpisodeImportPreviewItem {
   file_id: string;
   filename: string;
+  display_name?: string;
   content_hash?: string;
   episode_number: number | null;
   title: string | null;
@@ -58,6 +59,7 @@ export interface EpisodeImportResult {
 export interface EpisodeImportRecord {
   episode_number: number;
   title: string;
+  char_count: number;
   content_hash: string;
   filename: string;
   imported_at: string;
