@@ -34,6 +34,13 @@ _FILENAME_PATTERNS = (
     *_CONTENT_PATTERNS,
     re.compile(r"(?:^|[^a-z0-9])e\s*[-_]?\s*0*([1-9][0-9]*)(?:$|[^0-9])", re.IGNORECASE),
 )
+_EPISODE_HEADING_PATTERN = re.compile(
+    rf"^[ \t]*(?:#{{1,6}}[ \t]*)?(?:"
+    rf"第\s*(?P<chinese>{_NUMBER_TOKEN})\s*集"
+    r"|episode\s*[-_:#]?\s*0*(?P<english>[1-9][0-9]*)\b"
+    r")[^\r\n]*(?:\r?\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +157,48 @@ def build_episode_candidate(filename: str, content: str) -> EpisodeCandidate:
         content_hash=content_sha256(content),
         warnings=warnings,
     )
+
+
+def split_episode_candidates(
+    filename: str, content: str
+) -> tuple[EpisodeCandidate, ...]:
+    """Split a collection document on dedicated episode heading lines."""
+    boundaries = tuple(
+        match
+        for match in _EPISODE_HEADING_PATTERN.finditer(content)
+        if _parse_number(match.group("chinese") or match.group("english"))
+        is not None
+    )
+    if len(boundaries) < 2:
+        return (build_episode_candidate(filename, content),)
+
+    preface = content[: boundaries[0].start()]
+    candidates: list[EpisodeCandidate] = []
+    for index, boundary in enumerate(boundaries):
+        next_start = (
+            boundaries[index + 1].start()
+            if index + 1 < len(boundaries)
+            else len(content)
+        )
+        heading_segment = content[boundary.start() : next_start]
+        candidate = build_episode_candidate(filename, boundary.group())
+        candidate_content = (
+            f"{preface}{heading_segment}" if index == 0 else heading_segment
+        )
+        warnings = list(candidate.warnings)
+        if index == 0 and preface.strip():
+            warnings.append("首集包含合集前言")
+        if not content[boundary.end() : next_start].strip():
+            warnings.append("分集标题后缺少正文")
+        candidates.append(
+            replace(
+                candidate,
+                content=candidate_content,
+                content_hash=content_sha256(candidate_content),
+                warnings=tuple(warnings),
+            )
+        )
+    return tuple(candidates)
 
 
 def inspect_episode_source(filename: str, content: str) -> EpisodeSourceCandidate:

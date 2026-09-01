@@ -5,6 +5,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+import novelvideo.episode_sources as episode_sources
+
 from novelvideo.episode_sources import (
     EpisodeCandidate,
     EpisodeSourceCandidate,
@@ -85,6 +87,112 @@ def test_same_filename_candidates_have_distinct_file_ids():
 
     assert first.file_id != second.file_id
     assert first.source_filename == second.source_filename == "episode.md"
+
+
+def test_split_episode_candidates_supports_chinese_and_english_heading_boundaries():
+    content = (
+        "# 第十二集 失踪\n"
+        "甲\n\n"
+        "## ePiSoDe 7: Return\n"
+        "Body 提到第99集"
+    )
+
+    candidates = episode_sources.split_episode_candidates("collection.md", content)
+
+    assert [item.episode_number for item in candidates] == [12, 7]
+    assert [item.number_source for item in candidates] == ["body", "body"]
+    assert [item.title for item in candidates] == ["失踪", "Return"]
+    assert [item.content for item in candidates] == [
+        "# 第十二集 失踪\n甲\n\n",
+        "## ePiSoDe 7: Return\nBody 提到第99集",
+    ]
+
+
+def test_split_episode_candidates_preserves_preface_without_polluting_heading_number():
+    content = (
+        "企划说明：正文曾提到第99集。\r\n"
+        "保留此行\r\n"
+        "# 第2集 开端\r\n"
+        "正文\r\n"
+        "Episode 5 End\r\n"
+        "尾声"
+    )
+
+    candidates = episode_sources.split_episode_candidates("E09.md", content)
+
+    assert [item.episode_number for item in candidates] == [2, 5]
+    assert candidates[0].content == (
+        "企划说明：正文曾提到第99集。\r\n"
+        "保留此行\r\n"
+        "# 第2集 开端\r\n"
+        "正文\r\n"
+    )
+    assert candidates[0].warnings == (
+        "正文集号 2 与文件名集号 9 不一致",
+        "首集包含合集前言",
+    )
+    assert candidates[1].warnings == ("正文集号 5 与文件名集号 9 不一致",)
+
+
+def test_split_episode_candidates_ignores_episode_mentions_inside_body_sentences():
+    content = (
+        "# 第1集 起点\n"
+        "正文提到 Episode 2 会更精彩。\n"
+        "角色还说第3集会反转。\n"
+        "仍是第一集正文。\n"
+        "# 第4集 终点\n"
+        "结尾"
+    )
+
+    candidates = episode_sources.split_episode_candidates("collection.md", content)
+
+    assert [item.episode_number for item in candidates] == [1, 4]
+    assert "Episode 2" in candidates[0].content
+    assert "第3集" in candidates[0].content
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "expected_number", "expected_title"),
+    [
+        ("E03.md", "正文提到第2集，但不是标题。", 2, ""),
+        ("single.md", "# 第8集 单篇\n正文", 8, "单篇"),
+    ],
+)
+def test_split_episode_candidates_keeps_single_candidate_behavior_with_fewer_than_two_boundaries(
+    filename, content, expected_number, expected_title
+):
+    candidates = episode_sources.split_episode_candidates(filename, content)
+
+    assert len(candidates) == 1
+    assert candidates[0].source_filename == filename
+    assert candidates[0].content == content
+    assert candidates[0].episode_number == expected_number
+    assert candidates[0].title == expected_title
+
+
+def test_split_episode_candidates_keeps_source_order_warns_empty_body_and_uses_unique_ids():
+    content = (
+        "Episode 10 Ten\n"
+        "\n"
+        "第2集 Two\n"
+        "正文\n"
+        "第1集 One\n"
+        "   \n"
+    )
+
+    candidates = episode_sources.split_episode_candidates("mixed.md", content)
+
+    assert [item.episode_number for item in candidates] == [10, 2, 1]
+    assert [item.content for item in candidates] == [
+        "Episode 10 Ten\n\n",
+        "第2集 Two\n正文\n",
+        "第1集 One\n   \n",
+    ]
+    assert candidates[0].warnings == ("分集标题后缺少正文",)
+    assert candidates[1].warnings == ()
+    assert candidates[2].warnings == ("分集标题后缺少正文",)
+    assert {item.source_filename for item in candidates} == {"mixed.md"}
+    assert len({item.file_id for item in candidates}) == 3
 
 
 def test_number_source_type_only_allows_supported_detection_sources():
