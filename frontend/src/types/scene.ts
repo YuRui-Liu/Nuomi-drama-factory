@@ -22,8 +22,11 @@ export interface SceneAsset {
   pano_url?: string | null;
   custom_scene_path?: string | null;
   custom_scene_url?: string | null;
+  stale_reference_kinds?: SceneReferenceKind[];
   stage_3gs?: SceneStage3gsStatus;
 }
+
+export type SceneReferenceKind = "master" | "reverse_master" | "pano";
 
 export type ScenePanoSource = "master" | "text";
 

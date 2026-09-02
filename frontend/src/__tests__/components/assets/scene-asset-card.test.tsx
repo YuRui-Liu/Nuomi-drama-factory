@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18next from "i18next";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -243,5 +243,41 @@ describe("SceneAssetCard", () => {
 
     expect(screen.getByText("室外")).toBeInTheDocument();
     expect(screen.queryByText("exterior")).not.toBeInTheDocument();
+  });
+
+  it("marks only stale reference slots that already have an image", () => {
+    renderCard({
+      name: "\u65e7\u63d0\u793a\u8bcd\u573a\u666f",
+      master_url: "/static/master.png",
+      pano_url: "/static/pano.png",
+      stale_reference_kinds: ["master", "reverse_master"],
+    });
+
+    const masterSlot = screen.getByRole("img", { name: "\u6e90\u56fe" }).closest(".min-w-0");
+    const panoSlot = screen.getByRole("img", { name: "360 \u5168\u666f" }).closest(".min-w-0");
+
+    expect(masterSlot).not.toBeNull();
+    expect(panoSlot).not.toBeNull();
+    expect(within(masterSlot as HTMLElement).getByText("\u9700\u91cd\u751f")).toBeInTheDocument();
+    expect(screen.getByText("\u672a\u751f\u6210 reverse_master.png").parentElement).not.toHaveTextContent("\u9700\u91cd\u751f");
+    expect(within(panoSlot as HTMLElement).queryByText("\u9700\u91cd\u751f")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("\u63d0\u793a\u8bcd\u5df2\u66f4\u65b0\uff0c\u73b0\u6709\u53c2\u8003\u56fe\u6765\u81ea\u65e7\u63d0\u793a\u8bcd\uff0c\u8bf7\u91cd\u65b0\u751f\u6210"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not report stale references for an empty stale list", () => {
+    renderCard({
+      name: "\u6700\u65b0\u573a\u666f",
+      master_url: "/static/master.png",
+      reverse_master_url: "/static/reverse.png",
+      pano_url: "/static/pano.png",
+      stale_reference_kinds: [],
+    });
+
+    expect(screen.queryByText("\u9700\u91cd\u751f")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("\u63d0\u793a\u8bcd\u5df2\u66f4\u65b0\uff0c\u73b0\u6709\u53c2\u8003\u56fe\u6765\u81ea\u65e7\u63d0\u793a\u8bcd\uff0c\u8bf7\u91cd\u65b0\u751f\u6210"),
+    ).not.toBeInTheDocument();
   });
 });

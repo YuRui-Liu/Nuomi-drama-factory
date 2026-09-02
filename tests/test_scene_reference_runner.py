@@ -25,6 +25,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
         async def update_scene(self, *_args, **_kwargs):
             pass
 
+        async def clear_scene_stale_reference_kind(self, name, kind):
+            calls["clear_stale"] = (name, kind)
+            return True
+
         async def close(self):
             calls["sqlite_closed"] = True
 

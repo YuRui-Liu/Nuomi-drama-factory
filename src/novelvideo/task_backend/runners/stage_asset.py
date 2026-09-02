@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,31 @@ def _publish_freezone_splat_result(
         result["sog_path"] = output_url
     result["splat_format"] = _splat_format_for_path(ply_path)
     result["media_type"] = "file"
+
+
+def _clear_scene_stale_reference_kind(
+    ctx: ProjectContext,
+    project_dir: Path,
+    scene_name: str,
+    kind: str,
+) -> None:
+    """Clear prompt-stale state after a canonical stage asset is replaced."""
+
+    async def clear() -> None:
+        from novelvideo.sqlite_store import SQLiteStore
+
+        store = SQLiteStore(
+            ctx.owner_project_label,
+            output_dir=str(project_dir),
+            state_dir=str(ctx.state_dir),
+        )
+        await store.initialize()
+        try:
+            await store.clear_scene_stale_reference_kind(scene_name, kind)
+        finally:
+            await store.close()
+
+    asyncio.run(clear())
 
 
 def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
@@ -173,6 +199,12 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
         raise ValueError(f"unknown stage_asset step: {step}")
 
     check_cancel()
+    if step in {"pano_from_master", "pano_from_text"} and bool(
+        params.get("update_manifest", True)
+    ):
+        pano_path_text = result.get("pano_path") if isinstance(result, dict) else ""
+        if pano_path_text and Path(str(pano_path_text)).is_file():
+            _clear_scene_stale_reference_kind(ctx, project_dir, scene_name, "pano")
     if isinstance(result, dict):
         pano_path_text = result.get("pano_path") or result.get("output_path")
         if pano_path_text:

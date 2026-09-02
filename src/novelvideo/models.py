@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1462,6 +1462,10 @@ class NovelScene(BaseModel):
     variant_prompt: str = Field(default="", description="派生场景相对基础场景的增量视觉描述")
     description: str = Field(default="", description="场景叙述性描述")
     spatial_layout_image: str = Field(default="", description="场景级空间布局参考图路径")
+    stale_reference_kinds: List[Literal["master", "reverse_master", "pano"]] = Field(
+        default_factory=list,
+        description="因场景内容变化而需要重新生成的参考图类型",
+    )
     notes: str = Field(default="")
     updated_at: str = Field(default="", description="场景资产最后一次内容变化时间 ISO 字符串")
 

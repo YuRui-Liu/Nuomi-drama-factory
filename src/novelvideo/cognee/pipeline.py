@@ -670,7 +670,153 @@ class SceneEnrichmentList(BaseModel):
     scenes: List[SceneEnrichment]
 
 
-SCENE_ENVIRONMENT_REQUIRED_HEADINGS = ("正面", "左侧", "右侧", "背面")
+SCENE_ENVIRONMENT_REQUIRED_HEADINGS = (
+    "正面",
+    "左侧",
+    "右侧",
+    "背面",
+    "光源",
+    "材质/风格",
+    "禁止元素",
+)
+
+
+class ScenePromptQualityError(RuntimeError):
+    """Raised when scene enrichment cannot produce a usable spatial contract."""
+
+
+_LEGACY_SCENE_PROMPT_MARKER_GROUPS = (
+    ("最能代表地点身份", "作为正面"),
+    ("根据原文证据", "确定固定结构"),
+    ("不要复制正面主体", "合理连续补全"),
+    ("完整 360 度闭合空间",),
+    ("中性默认状态的稳定环境光",),
+    ("保持 interior 场景的固定建筑风格",),
+)
+
+_SCENE_PROMPT_META_INSTRUCTIONS = (
+    "最能代表地点身份",
+    "根据原文证据",
+    "布置与",
+    "功能一致",
+    "合理补全",
+    "合理连续补全",
+    "可为入口",
+    "必须构成完整360度",
+    "中性默认状态",
+    "保持interior场景",
+    "保持exterior场景",
+    "保持nature场景",
+    "不要复制正面主体",
+)
+_SCENE_DIRECTION_RELATION_TOKENS = (
+    "居中",
+    "连接",
+    "延伸",
+    "沿",
+    "嵌入",
+    "相接",
+    "尽头",
+    "旁侧",
+    "两侧",
+    "下方",
+    "上方",
+    "转角",
+    "入口",
+    "后方",
+    "前方",
+    "通向",
+    "围合",
+    "闭合",
+)
+_SCENE_LIGHT_SOURCE_TOKENS = (
+    "顶灯",
+    "吊灯",
+    "壁灯",
+    "条形灯",
+    "灯带",
+    "灯管",
+    "筒灯",
+    "射灯",
+    "天光",
+    "窗光",
+    "采光窗",
+)
+_SCENE_MATERIAL_GROUPS = (
+    ("地坪", "地砖", "木地板", "石材地面", "水泥地面", "地面"),
+    ("墙面", "墙体", "吸音板", "乳胶漆", "混凝土墙", "砖墙"),
+    ("吊顶", "顶棚", "天花板", "矿棉板"),
+    ("门框", "门板", "玻璃门", "木门", "金属门", "窗框", "玻璃窗"),
+    ("金属", "木质", "玻璃", "石材", "瓷砖", "混凝土"),
+)
+
+
+def _parse_scene_environment_sections(prompt: str) -> dict[str, str]:
+    text = str(prompt or "").strip()
+    label_pattern = "|".join(
+        re.escape(label) for label in SCENE_ENVIRONMENT_REQUIRED_HEADINGS
+    )
+    matches = list(
+        re.finditer(rf"(?m)^\s*({label_pattern})\s*[:：]\s*", text)
+    )
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections[match.group(1)] = text[match.end() : end].strip()
+    return sections
+
+
+def is_legacy_meta_scene_prompt(prompt: str) -> bool:
+    """Detect the former instruction-like fallback using stable marker combinations."""
+    text = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    if not text:
+        return False
+    matched_groups = sum(
+        all(marker in text for marker in marker_group)
+        for marker_group in _LEGACY_SCENE_PROMPT_MARKER_GROUPS
+    )
+    return matched_groups >= 2
+
+
+def scene_environment_prompt_issues(prompt: str) -> list[str]:
+    """Return deterministic quality issues for a seven-section scene prompt."""
+    text = str(prompt or "").strip()
+    sections = _parse_scene_environment_sections(text)
+    issues = [
+        f"missing_section:{label}"
+        for label in SCENE_ENVIRONMENT_REQUIRED_HEADINGS
+        if not sections.get(label)
+    ]
+    compact = re.sub(r"\s+", "", text)
+    for marker in _SCENE_PROMPT_META_INSTRUCTIONS:
+        if marker in compact:
+            issues.append(f"meta_instruction:{marker}")
+
+    for label in ("正面", "左侧", "右侧", "背面"):
+        content = sections.get(label, "")
+        if content and (
+            len(re.sub(r"\s+", "", content)) < 12
+            or not any(token in content for token in _SCENE_DIRECTION_RELATION_TOKENS)
+        ):
+            issues.append(f"direction_not_concrete:{label}")
+
+    light = sections.get("光源", "")
+    if light and not any(token in light for token in _SCENE_LIGHT_SOURCE_TOKENS):
+        issues.append("light_source_not_concrete")
+
+    material = sections.get("材质/风格", "")
+    material_groups = sum(
+        any(token in material for token in group) for group in _SCENE_MATERIAL_GROUPS
+    )
+    if material and material_groups < 2:
+        issues.append("material_not_concrete")
+
+    forbidden = sections.get("禁止元素", "")
+    if forbidden and "人物" not in forbidden:
+        issues.append("forbidden_elements_missing:人物")
+    if forbidden and not any(token in forbidden for token in ("文字", "字幕", "水印")):
+        issues.append("forbidden_elements_missing:文字水印")
+    return issues
 
 
 SCENE_ENRICHMENT_SYSTEM_PROMPT = """你是场景环境设计专家。
@@ -845,40 +991,42 @@ async def enrich_scene_environment_from_context(
 以下是该场景在剧本中的原文段落：
 {context}{synopsis_section}"""
 
-    try:
-        result = (await agent.run(user_text)).output
-        if result.scenes:
-            enriched = result.scenes[0]
-            resolved_type = enriched.scene_type or scene_type
-            return NovelScene(
-                name=scene_name,
-                aliases=_clean_aliases(scene_name, aliases),
-                scene_type=resolved_type,
-                environment_prompt=_ensure_directional_environment_prompt(
-                    prompt=enriched.environment_prompt,
-                    scene_name=scene_name,
+    request_text = user_text
+    final_issues: list[str] = []
+    rejected_prompt = ""
+    for attempt in range(2):
+        try:
+            result = (await agent.run(request_text)).output
+            enriched = result.scenes[0] if result.scenes else None
+            prompt = enriched.environment_prompt if enriched is not None else ""
+            rejected_prompt = str(prompt or "").strip()
+            final_issues = scene_environment_prompt_issues(prompt)
+            if not final_issues and enriched is not None:
+                resolved_type = enriched.scene_type or scene_type
+                return NovelScene(
+                    name=scene_name,
+                    aliases=_clean_aliases(scene_name, aliases),
                     scene_type=resolved_type,
-                    time_of_day="",
-                    context_lines=context_lines,
-                ),
-                description=enriched.description,
+                    environment_prompt=prompt.strip(),
+                    description=enriched.description,
+                )
+        except Exception as exc:
+            final_issues = [f"model_error:{type(exc).__name__}"]
+
+        if attempt == 0:
+            request_text = (
+                f"{user_text}\n\n"
+                "【质量修正】\n"
+                "上一次输出未通过质量检查："
+                f"{', '.join(final_issues)}。\n"
+                "【被拒绝的 environment_prompt】\n"
+                f"{rejected_prompt or '未产生有效输出'}\n"
+                "请重新生成，严格输出七个固定标题，并把每一段写成具体、可见、可复用的环境事实；"
+                "不要输出规则解释、占位语或如何补全场景的元指令。"
             )
-    except Exception as exc:
-        import logging
 
-        logging.error(f"LLM 场景描述生成失败 ({scene_name}): {exc}")
-
-    return NovelScene(
-        name=scene_name,
-        aliases=_clean_aliases(scene_name, aliases),
-        scene_type=scene_type,
-        environment_prompt=_ensure_directional_environment_prompt(
-            prompt="",
-            scene_name=scene_name,
-            scene_type=scene_type,
-            time_of_day="",
-            context_lines=context_lines,
-        ),
+    raise ScenePromptQualityError(
+        f"SCENE_PROMPT_QUALITY_FAILED: {scene_name}: {', '.join(final_issues)}"
     )
 
 

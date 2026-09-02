@@ -115,6 +115,8 @@ async def _run_scene_reference_asset(
             avoid_instructions=avoid_instructions,
             base_scene=base_scene,
         )
+        if Path(output_path).is_file() and kind in {"master", "reverse_master"}:
+            await store.clear_scene_stale_reference_kind(scene_name, kind)
         if kind == "spatial_layout":
             rel_path = str(Path(output_path).relative_to(output_dir))
             await store.update_scene(scene_name, spatial_layout_image=rel_path)

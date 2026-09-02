@@ -369,6 +369,9 @@ def _scene_payload(
         "description": scene.description,
         "derived_from_scene": derived_from_scene,
         "spatial_layout_image": scene.spatial_layout_image,
+        "stale_reference_kinds": list(
+            getattr(scene, "stale_reference_kinds", []) or []
+        ),
         "notes": scene.notes,
         "updated_at": newest_updated_at(
             getattr(scene, "updated_at", ""),
@@ -956,6 +959,14 @@ async def upload_scene_master(
     if master_path.exists():
         master_path.replace(master_path.parent / f"master_{int(time.time())}.png")
     img.save(master_path, format="PNG")
+    clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
+    if callable(clear_stale):
+        await clear_stale(scene.name, "master")
+    scene.stale_reference_kinds = [
+        kind
+        for kind in (getattr(scene, "stale_reference_kinds", []) or [])
+        if kind != "master"
+    ]
 
     return {
         "ok": True,
@@ -1120,6 +1131,14 @@ async def upload_scene_pano(
         pano_path=pano_path.name,
         source="uploaded_360",
     )
+    clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
+    if callable(clear_stale):
+        await clear_stale(scene.name, "pano")
+    scene.stale_reference_kinds = [
+        kind
+        for kind in (getattr(scene, "stale_reference_kinds", []) or [])
+        if kind != "pano"
+    ]
 
     return {
         "ok": True,

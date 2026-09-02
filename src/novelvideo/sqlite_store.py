@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     variant_prompt     TEXT DEFAULT '',
     description        TEXT DEFAULT '',
     spatial_layout_image TEXT DEFAULT '',
+    stale_reference_kinds_json TEXT DEFAULT '[]',
     notes              TEXT DEFAULT '',
     created_at         TEXT DEFAULT (datetime('now')),
     updated_at         TEXT DEFAULT (datetime('now'))
@@ -481,6 +482,12 @@ class SQLiteStore:
         )
         for name in ("base_scene_id", "variant_id", "time_of_day", "variant_prompt"):
             await _add_column_if_missing(db, "scenes", name, "TEXT DEFAULT ''")
+        await _add_column_if_missing(
+            db,
+            "scenes",
+            "stale_reference_kinds_json",
+            "TEXT DEFAULT '[]'",
+        )
 
     async def _ensure_indextts2_columns(self, db: aiosqlite.Connection) -> None:
         """Add IndexTTS2 / Seedance 2.0 voice columns introduced in Stage A."""
@@ -851,8 +858,9 @@ class SQLiteStore:
         await db.execute(
             """INSERT INTO scenes (name, aliases_json, scene_type,
                base_scene_id, variant_id, time_of_day,
-               environment_prompt, variant_prompt, description, spatial_layout_image, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               environment_prompt, variant_prompt, description, spatial_layout_image,
+               stale_reference_kinds_json, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                aliases_json=excluded.aliases_json,
                scene_type=excluded.scene_type,
@@ -863,6 +871,7 @@ class SQLiteStore:
                variant_prompt=excluded.variant_prompt,
                description=excluded.description,
                spatial_layout_image=excluded.spatial_layout_image,
+               stale_reference_kinds_json=excluded.stale_reference_kinds_json,
                notes=excluded.notes,
                updated_at=datetime('now')""",
             (
@@ -876,6 +885,7 @@ class SQLiteStore:
                 scene.variant_prompt,
                 scene.description,
                 scene.spatial_layout_image,
+                json.dumps(scene.stale_reference_kinds, ensure_ascii=False),
                 scene.notes,
             ),
         )
@@ -917,6 +927,7 @@ class SQLiteStore:
             "variant_prompt",
             "description",
             "spatial_layout_image",
+            "stale_reference_kinds",
             "notes",
         }
         set_parts = []
@@ -924,8 +935,9 @@ class SQLiteStore:
         for key, value in updates.items():
             if key not in allowed:
                 continue
-            if key == "aliases":
-                set_parts.append("aliases_json = ?")
+            if key in {"aliases", "stale_reference_kinds"}:
+                column = "aliases_json" if key == "aliases" else "stale_reference_kinds_json"
+                set_parts.append(f"{column} = ?")
                 values.append(json.dumps(value, ensure_ascii=False))
             else:
                 set_parts.append(f"{key} = ?")
@@ -941,6 +953,16 @@ class SQLiteStore:
         )
         await db.commit()
         return (cursor.rowcount or 0) > 0
+
+    async def clear_scene_stale_reference_kind(self, name: str, kind: str) -> bool:
+        """Clear one persisted stale marker without changing the other kinds."""
+        if kind not in {"master", "reverse_master", "pano"}:
+            raise ValueError(f"Unsupported scene reference kind: {kind}")
+        scene = await self.get_scene(name)
+        if scene is None or kind not in scene.stale_reference_kinds:
+            return False
+        remaining = [item for item in scene.stale_reference_kinds if item != kind]
+        return await self.update_scene(name, stale_reference_kinds=remaining)
 
     async def rename_scene(self, old_name: str, new_name: str) -> bool:
         """重命名场景记录。资源目录迁移由调用方处理。"""
@@ -981,6 +1003,11 @@ class SQLiteStore:
                 row["spatial_layout_image"] if "spatial_layout_image" in row.keys() else ""
             )
             or "",
+            stale_reference_kinds=json.loads(
+                (row["stale_reference_kinds_json"]
+                 if "stale_reference_kinds_json" in row.keys() else "[]")
+                or "[]"
+            ),
             notes=row["notes"] or "",
             updated_at=row["updated_at"] if "updated_at" in row.keys() else "",
         )
@@ -2549,13 +2576,16 @@ class SQLiteStore:
                     "DO UPDATE SET aliases_json=excluded.aliases_json, "
                     "scene_type=excluded.scene_type, time_of_day=excluded.time_of_day, "
                     "environment_prompt=excluded.environment_prompt, "
-                    "description=excluded.description, updated_at=datetime('now')"
+                    "description=excluded.description, "
+                    "stale_reference_kinds_json=excluded.stale_reference_kinds_json, "
+                    "updated_at=datetime('now')"
                 )
                 cursor = await db.execute(
                     "INSERT INTO scenes "
                     "(name, aliases_json, scene_type, base_scene_id, variant_id, time_of_day, "
-                    "environment_prompt, variant_prompt, description, spatial_layout_image, notes) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "environment_prompt, variant_prompt, description, spatial_layout_image, "
+                    "stale_reference_kinds_json, notes) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     f"ON CONFLICT(name) {clause}",
                     (
                         scene.name,
@@ -2568,6 +2598,7 @@ class SQLiteStore:
                         scene.variant_prompt,
                         scene.description,
                         scene.spatial_layout_image,
+                        json.dumps(scene.stale_reference_kinds, ensure_ascii=False),
                         scene.notes,
                     ),
                 )

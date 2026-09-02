@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
@@ -20,7 +21,12 @@ from novelvideo.models import (
     SceneMenuItem,
 )
 from novelvideo.cognee.screenplay_normalizer import normalize_time_of_day
+from novelvideo.director_world import stage_manifest
 from novelvideo.utils.derived_scenes import compose_derived_scene_name
+from novelvideo.utils.path_resolver import (
+    compute_scene_master_path,
+    compute_scene_reverse_master_path,
+)
 from novelvideo.workflows.literal_script_writing import (
     LiteralScriptWritingWorkflow,
     SceneBlock,
@@ -351,6 +357,12 @@ async def enrich_scene_environment_from_context(**kwargs) -> NovelScene:
     return await enrich(**kwargs)
 
 
+def is_legacy_meta_scene_prompt(prompt: str) -> bool:
+    from novelvideo.cognee.pipeline import is_legacy_meta_scene_prompt as detect
+
+    return detect(prompt)
+
+
 INTERACTION_VERBS = (
     "拿",
     "递",
@@ -601,13 +613,14 @@ class AssetCompiler:
         episode: Any,
         log: Callable[[str], None],
     ) -> list[str]:
-        created: list[str] = []
+        prepared: list[NovelScene] = []
+        prepared_names: set[str] = set()
         generic_names = {"室内", "外景", "内景", "路边", "街边", "本集主场景", "主场景"}
         for decision in output.scenes:
             if decision.action != "create":
                 continue
             scene_name = str(decision.scene_name or "").strip()
-            if not scene_name or scene_name in generic_names:
+            if not scene_name or scene_name in generic_names or scene_name in prepared_names:
                 continue
             if await self._find_existing_base_scene_by_name_or_alias(
                 [scene_name, decision.matched_existing_name, *(decision.aliases or [])]
@@ -637,10 +650,29 @@ class AssetCompiler:
             if decision.description and not str(scene.description or "").strip():
                 scene.description = decision.description
             scene.notes = f"由 AssetCompiler AI 校对创建 (ep{episode.number})"
+            prepared.append(scene)
+            prepared_names.add(scene.name)
+
+        created: list[str] = []
+        for scene in prepared:
             await self.cognee_store.sqlite_store.add_scene(scene)
             created.append(scene.name)
             log(f"  AI补全基础场景: {scene.name}")
         return created
+
+    def _existing_scene_reference_kinds(self, scene_name: str) -> list[str]:
+        project_dir_text = str(getattr(self.cognee_store, "project_dir", "") or "").strip()
+        if not project_dir_text:
+            return []
+        project_dir = Path(project_dir_text)
+        kinds: list[str] = []
+        if compute_scene_master_path(project_dir, scene_name):
+            kinds.append("master")
+        if compute_scene_reverse_master_path(project_dir, scene_name):
+            kinds.append("reverse_master")
+        if stage_manifest.resolve_pano_path(project_dir, scene_name) is not None:
+            kinds.append("pano")
+        return kinds
 
     async def _find_existing_base_scene_by_name_or_alias(
         self,
@@ -798,14 +830,41 @@ class AssetCompiler:
             canonical_name = scene_name
             if existing:
                 canonical_name = existing.name
-                if not str(getattr(existing, "environment_prompt", "") or "").strip():
+                existing_prompt = str(
+                    getattr(existing, "environment_prompt", "") or ""
+                ).strip()
+                repairing_legacy_prompt = is_legacy_meta_scene_prompt(existing_prompt)
+                if not existing_prompt or repairing_legacy_prompt:
+                    updates: dict[str, Any] = {
+                        "scene_type": scene.scene_type or existing.scene_type,
+                        "environment_prompt": scene.environment_prompt,
+                        "description": scene.description or existing.description,
+                    }
+                    if repairing_legacy_prompt:
+                        stale_reference_kinds = list(
+                            dict.fromkeys(
+                                [
+                                    *(getattr(existing, "stale_reference_kinds", []) or []),
+                                    *self._existing_scene_reference_kinds(existing.name),
+                                ]
+                            )
+                        )
+                        updates["stale_reference_kinds"] = stale_reference_kinds
                     await self.cognee_store.sqlite_store.update_scene(
                         existing.name,
-                        scene_type=scene.scene_type or existing.scene_type,
-                        environment_prompt=scene.environment_prompt,
-                        description=scene.description or existing.description,
+                        **updates,
                     )
-                    log(f"  补齐解说场景环境描述: {existing.name}")
+                    existing.scene_type = str(updates["scene_type"])
+                    existing.environment_prompt = str(updates["environment_prompt"])
+                    existing.description = str(updates["description"])
+                    if repairing_legacy_prompt:
+                        existing.stale_reference_kinds = stale_reference_kinds
+                    action = (
+                        "修复历史解说场景环境描述"
+                        if repairing_legacy_prompt
+                        else "补齐解说场景环境描述"
+                    )
+                    log(f"  {action}: {existing.name}")
             else:
                 pending_scenes.append(scene)
                 pending_scene_map[scene.name] = scene
@@ -920,7 +979,9 @@ class AssetCompiler:
         persist: bool,
         log: Callable[[str], None],
     ) -> NovelScene:
-        if str(scene.environment_prompt or "").strip():
+        current_prompt = str(scene.environment_prompt or "").strip()
+        repairing_legacy_prompt = is_legacy_meta_scene_prompt(current_prompt)
+        if current_prompt and not repairing_legacy_prompt:
             return scene
 
         enriched = await enrich_scene_environment_from_context(
@@ -938,14 +999,31 @@ class AssetCompiler:
         if str(enriched.description or "").strip():
             scene.description = enriched.description
 
-        if persist:
-            await self.cognee_store.sqlite_store.update_scene(
-                scene.name,
-                scene_type=scene.scene_type,
-                environment_prompt=scene.environment_prompt,
-                description=scene.description,
+        stale_reference_kinds = list(
+            dict.fromkeys(
+                [
+                    *(getattr(scene, "stale_reference_kinds", []) or []),
+                    *(
+                        self._existing_scene_reference_kinds(scene.name)
+                        if repairing_legacy_prompt
+                        else []
+                    ),
+                ]
             )
-            log(f"  补齐场景环境描述: {scene.name}")
+        )
+        scene.stale_reference_kinds = stale_reference_kinds
+
+        if persist:
+            updates: dict[str, Any] = {
+                "scene_type": scene.scene_type,
+                "environment_prompt": scene.environment_prompt,
+                "description": scene.description,
+            }
+            if repairing_legacy_prompt:
+                updates["stale_reference_kinds"] = stale_reference_kinds
+            await self.cognee_store.sqlite_store.update_scene(scene.name, **updates)
+            action = "修复历史场景环境描述" if repairing_legacy_prompt else "补齐场景环境描述"
+            log(f"  {action}: {scene.name}")
 
         return scene
 

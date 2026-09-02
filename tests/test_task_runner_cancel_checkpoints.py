@@ -137,6 +137,51 @@ def test_stage_asset_caps_local_runner_timeout_to_task_deadline(tmp_path, monkey
     assert 1 <= captured["timeout_seconds"] <= 120
 
 
+def test_stage_asset_pano_generation_clears_stale_prompt_reference(tmp_path, monkeypatch):
+    from novelvideo.task_backend.runners import stage_asset
+
+    pano = tmp_path / "director_worlds" / "Hall" / "v1" / "pano_360.png"
+    pano.parent.mkdir(parents=True)
+    pano.write_bytes(b"pano")
+    cleared: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(stage_asset, "get_task_manager", lambda: _FakeTaskManager())
+    monkeypatch.setattr(
+        stage_asset,
+        "raise_if_envelope_cancel_requested",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "novelvideo.stage_asset_tasks.run_scene_360",
+        lambda *_args, **_kwargs: {"pano_path": str(pano)},
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.make_static_url_for_context",
+        lambda _ctx, rel: f"/static/{rel}",
+    )
+    monkeypatch.setattr(
+        stage_asset,
+        "_clear_scene_stale_reference_kind",
+        lambda _ctx, _project_dir, name, kind: cleared.append((name, kind)),
+    )
+
+    stage_asset.run_stage_asset(
+        {
+            "project_id": "proj_cancel",
+            "scope": "pano",
+            "payload": {
+                "scene_name": "Hall",
+                "step": "pano_from_text",
+                "params": {},
+                "project_dir": str(tmp_path),
+            },
+        },
+        _ctx(tmp_path),
+    )
+
+    assert cleared == [("Hall", "pano")]
+
+
 def test_compose_episode_checks_cancel_after_final_ffmpeg_returns(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import video
 

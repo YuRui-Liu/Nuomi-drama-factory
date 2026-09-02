@@ -74,6 +74,7 @@ function AssetImageSlot({
   label,
   src,
   emptyLabel,
+  stale = false,
   fit = "cover",
   actions,
   onPreview,
@@ -81,6 +82,7 @@ function AssetImageSlot({
   label: string;
   src?: string | null;
   emptyLabel: string;
+  stale?: boolean;
   fit?: "cover" | "contain";
   actions?: React.ReactNode;
   onPreview?: () => void;
@@ -131,6 +133,11 @@ function AssetImageSlot({
         <span className="absolute left-2 top-2 z-20 rounded-[6px] border border-white/10 bg-black/50 px-1.5 py-0.5 text-[11px] text-white/80 backdrop-blur-sm">
           {label}
         </span>
+        {stale && (
+          <span className="absolute bottom-2 left-2 z-20 rounded-[6px] border border-amber-400/30 bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-black">
+            需重生
+          </span>
+        )}
         {/* Top-right actions */}
         {actions && (
           <div className="absolute right-1.5 top-1.5 z-20 flex items-center gap-1">
@@ -195,6 +202,11 @@ export function SceneAssetCard({
   const hasMaster = Boolean(resolveMediaUrl(scene.master_url));
   const hasReverse = Boolean(resolveMediaUrl(scene.reverse_master_url));
   const hasPano = Boolean(resolveMediaUrl(scene.pano_url));
+  const staleReferenceKinds = new Set(scene.stale_reference_kinds ?? []);
+  const staleMaster = hasMaster && staleReferenceKinds.has("master");
+  const staleReverse = hasReverse && staleReferenceKinds.has("reverse_master");
+  const stalePano = hasPano && staleReferenceKinds.has("pano");
+  const hasStaleReference = staleMaster || staleReverse || stalePano;
   const description =
     scene.variant_prompt?.trim() ||
     scene.environment_prompt?.trim() ||
@@ -293,6 +305,11 @@ export function SceneAssetCard({
               {description}
             </p>
           )}
+          {hasStaleReference && (
+            <p className="text-xs leading-5 text-amber-600 dark:text-amber-300">
+              提示词已更新，现有参考图来自旧提示词，请重新生成
+            </p>
+          )}
         </CardHeader>
 
         {/* Image + actions merged into single columns */}
@@ -303,6 +320,7 @@ export function SceneAssetCard({
               label={t("assets.scenes.master")}
               src={scene.master_url}
               emptyLabel={t("assets.scenes.noMaster")}
+              stale={staleMaster}
               fit="cover"
               onPreview={masterResolved ? () => { setPreviewSrc(masterResolved); setPreviewLabel(t("assets.scenes.master")); } : undefined}
               actions={
@@ -357,6 +375,7 @@ export function SceneAssetCard({
               label={t("assets.scenes.reverse")}
               src={scene.reverse_master_url}
               emptyLabel={t("assets.scenes.noReverse")}
+              stale={staleReverse}
               fit="cover"
               onPreview={reverseResolved ? () => { setPreviewSrc(reverseResolved); setPreviewLabel(t("assets.scenes.reverse")); } : undefined}
             />
@@ -388,6 +407,7 @@ export function SceneAssetCard({
               label={t("assets.scenes.pano")}
               src={scene.pano_url}
               emptyLabel={t("assets.scenes.noPano")}
+              stale={stalePano}
               fit="contain"
               onPreview={panoResolved ? () => { setPreviewSrc(panoResolved); setPreviewLabel(t("assets.scenes.pano")); } : undefined}
               actions={

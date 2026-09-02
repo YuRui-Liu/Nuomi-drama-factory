@@ -7,6 +7,13 @@ import pytest
 from novelvideo.models import NovelScene
 
 ENRICHED_ENVIRONMENT_PROMPT = "正面：临街玻璃窗\n左侧：咖啡吧台\n右侧：木质书架\n背面：入口木门"
+LEGACY_META_PROMPT = """正面：以“咖啡馆”最能代表地点身份的主入口作为正面；根据原文证据确定固定结构。
+左侧：从正面视角向左延伸，布置与场景功能一致的侧墙和通道。
+右侧：不要复制正面主体，只做合理连续补全。
+背面：可为入口反向；必须和正面/左右侧构成完整 360 度闭合空间。
+光源：使用中性默认状态的稳定环境光。
+材质/风格：保持 interior 场景的固定建筑风格。
+禁止元素：不出现人物、字幕、水印。"""
 
 
 class _FakeSQLiteStore:
@@ -218,6 +225,111 @@ async def test_compile_episode_scenes_keeps_existing_prompt(monkeypatch):
     assert store.sqlite_store.updated == []
     assert enrich_calls == []
     assert existing.environment_prompt == "已有完整空间合同"
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_scenes_repairs_legacy_meta_prompt_and_marks_existing_master_stale(
+    monkeypatch, tmp_path
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    existing = NovelScene(
+        name="咖啡馆",
+        scene_type="interior",
+        environment_prompt=LEGACY_META_PROMPT,
+        description="旧描述",
+    )
+    master = tmp_path / "assets" / "scenes" / "咖啡馆" / "master.png"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"old")
+
+    async def fake_enrich(**kwargs):
+        return NovelScene(
+            name=kwargs["scene_name"],
+            scene_type="interior",
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+            description="新描述",
+        )
+
+    async def fake_derived(self, scene_name, block):
+        return []
+
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
+
+    store = _FakeCogneeStore([existing], project_dir=str(tmp_path))
+    compiler = asset_compiler.AssetCompiler(store)
+
+    _scene_menu, pending_scenes = await compiler._compile_scenes(
+        [_block()],
+        SimpleNamespace(number=1),
+        lambda _message: None,
+    )
+
+    assert pending_scenes == []
+    assert existing.environment_prompt == ENRICHED_ENVIRONMENT_PROMPT
+    assert store.sqlite_store.updated == [
+        (
+            "咖啡馆",
+            {
+                "scene_type": "interior",
+                "environment_prompt": ENRICHED_ENVIRONMENT_PROMPT,
+                "description": "新描述",
+                "stale_reference_kinds": ["master"],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_base_scene_reconcile_does_not_partially_persist_when_enrichment_fails(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.cognee.pipeline import ScenePromptQualityError
+
+    calls = 0
+
+    async def fake_enrich(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ScenePromptQualityError(
+                "SCENE_PROMPT_QUALITY_FAILED: 设备间: meta_instruction:合理补全"
+            )
+        return NovelScene(
+            name=kwargs["scene_name"],
+            scene_type=kwargs["scene_type"],
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    store = _FakeCogneeStore()
+    compiler = asset_compiler.AssetCompiler(store)
+    output = asset_compiler.EpisodeBaseSceneReconcileOutput(
+        scenes=[
+            asset_compiler.BaseSceneReconcileDecision(
+                action="create",
+                scene_name="直播间",
+                evidence_lines=["直播间连接设备间。"],
+            ),
+            asset_compiler.BaseSceneReconcileDecision(
+                action="create",
+                scene_name="设备间",
+                evidence_lines=["直播间连接设备间。"],
+            ),
+        ]
+    )
+
+    with pytest.raises(ScenePromptQualityError):
+        await compiler._apply_base_scene_reconcile_output(
+            output,
+            "直播间连接设备间。",
+            SimpleNamespace(number=1),
+            lambda _message: None,
+        )
+
+    assert store.sqlite_store.added == []
 
 
 @pytest.mark.asyncio
