@@ -20,8 +20,11 @@ const taskStatusLabel: Record<NonNullable<NarrativeGroup["stages"]["video"]["sta
 export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, taskStatus = "pending", inherited = true, available = true, unavailableReason, onGenerate }: {
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
+  plan?: NarrativeGroup["video_plan"];
+  planSaving?: boolean;
   taskStatus?: NarrativeGroup["stages"]["video"]["status"];
   inherited?: boolean; available?: boolean; unavailableReason?: string | null;
+  onPlanSave?: (units: Array<{ beatIds: string[] }>) => void | Promise<void>;
   onGenerate?: (request: { video_model: string; h3_mode: VideoModelMode }) => void;
 }) {
   const actualMode = effectiveVideoMode(mode, hasFirstFrame, hasLastFrame);

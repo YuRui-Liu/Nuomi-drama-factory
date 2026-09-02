@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Self
-
 from pydantic import Field
 
 from novelvideo.screenplay_semantics.models import FrozenModel, Scene, SourceRange

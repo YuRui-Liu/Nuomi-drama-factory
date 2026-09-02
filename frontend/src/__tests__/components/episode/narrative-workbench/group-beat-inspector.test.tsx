@@ -32,4 +32,16 @@ describe("GroupBeatInspector", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "单 Beat 修复" })[1]);
     expect(repair).toHaveBeenCalledWith("2");
   });
+
+  it("opens a rendered cell image in the lightbox", () => {
+    render(<GroupBeatInspector group={group} onRepairBeat={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Beat 1 渲染格位" }));
+
+    expect(screen.getByRole("link", { name: "Download image" })).toHaveAttribute(
+      "href",
+      "/static/demo/render/cell-1.png",
+    );
+    expect(screen.getAllByAltText("Beat 1 渲染格位")).toHaveLength(2);
+  });
 });

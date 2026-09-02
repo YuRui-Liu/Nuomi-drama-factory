@@ -13,11 +13,11 @@ vi.mock("@/lib/queries/director-plans", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/queries/director-plans")>();
   return {
     ...actual,
-    useDirectorPlans: () => ({ data: { data: revisions }, isLoading: false }),
+    useDirectorPlans: () => ({ data: { ok: true, data: revisions }, isLoading: false }),
     useDirectorPlanComparison: () => ({
-      data: { data: { base: revisions[0], candidate: revisions[1] } },
+      data: { ok: true, data: { base: revisions[0], candidate: revisions[1] } },
     }),
-    useDirectorPlanMigration: () => ({ data: { data: revisions[1].migration_report } }),
+    useDirectorPlanMigration: () => ({ data: { ok: true, data: revisions[1].migration_report } }),
     useCreateDirectorPlan: () => ({ mutate: mocks.create, isPending: false }),
     useEditDirectorPlan: () => ({ mutate: mocks.edit, isPending: false }),
     useActivateDirectorPlan: () => ({ mutate: mocks.activate, isPending: false }),
@@ -134,7 +134,7 @@ describe("DirectorReviewWorkbench", () => {
   it("shows revision history, real stages and old/new narrative structures", () => {
     render(<DirectorReviewWorkbench project="demo" episode={1} onClose={vi.fn()} />);
 
-    expect(screen.getByText("重新导演分镜")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新导演分镜" })).toBeInTheDocument();
     expect(screen.getByText("当前生效")).toBeInTheDocument();
     expect(screen.getAllByText("待人工审核")).not.toHaveLength(0);
     expect(screen.getByText("旧版 · rev-1")).toBeInTheDocument();

@@ -19,6 +19,7 @@ from novelvideo.task_backend.runners.sketch import (
     _ensure_scene_refs_for_beats,
     _scene_refs_override_from_config,
 )
+from novelvideo.task_state import get_task_manager
 
 
 async def run_group_render_grid(payload, *, generator, splitter):
@@ -28,7 +29,6 @@ async def run_group_render_grid(payload, *, generator, splitter):
     from novelvideo.narrative_groups.service import run_group_grid
 
     return await run_group_grid(payload, generator=generator, splitter=splitter)
-from novelvideo.task_state import get_task_manager
 
 
 def _identity_character(identity_id: str) -> str:

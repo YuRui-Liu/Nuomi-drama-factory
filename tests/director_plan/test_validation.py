@@ -4,7 +4,6 @@ import pytest
 
 from novelvideo.director_plan.models import (
     AssetRequirement,
-    DirectorShotIntent,
     DirectorPlanRevision,
     NarrativeGroupPlan,
     ShotPlan,

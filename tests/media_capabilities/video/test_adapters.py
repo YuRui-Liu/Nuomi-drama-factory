@@ -25,7 +25,6 @@ def test_h3_adapter_delegates_to_injected_director_generator():
     from novelvideo.media_capabilities.video.adapters import (
         H3WorkflowAdapter,
         NarrativeGroupVideoRequest,
-        NarrativeGroupVideoResult,
     )
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 

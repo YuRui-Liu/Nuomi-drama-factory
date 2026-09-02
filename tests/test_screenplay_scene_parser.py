@@ -1,6 +1,7 @@
 from novelvideo.cognee.script_parser import parse_scenes
 from novelvideo.utils.screenplay_quality import check_screenplay_import_quality
 from novelvideo.utils.screenplay_scene_parser import enumerate_screenplay_lines, parse_scene_blocks
+from novelvideo.workflows.literal_script_writing import LiteralScriptWritingWorkflow
 
 
 def test_enumerate_screenplay_lines_preserves_original_blank_line_positions():
@@ -21,9 +22,6 @@ def test_scene_blocks_expose_header_and_story_source_lines_without_changing_text
     assert [(line.number, line.text) for line in blocks[0].source_lines] == [
         (3, "△林默撞门。"),
     ]
-from novelvideo.workflows.literal_script_writing import LiteralScriptWritingWorkflow
-
-
 def test_parse_one_line_scene_block_header():
     text = """
 场次（1）地点：兰州拉面馆，夜，内；出场人物：杜晨，面馆男青年，面馆女青年

@@ -29,6 +29,8 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
+ useGenerateNarrativeGroupVideoSegment:()=>({mutateAsync:vi.fn()}),
+ useChangeNarrativeGroupStyle:()=>({mutateAsync:vi.fn(),isPending:false}),
  useNarrativeGroupVideoPrompts:(...args:any[])=>m.promptsQuery(...args),
  useUpdateNarrativeGroupVideoDialogueSource:()=>({mutateAsync:vi.fn()}),
  narrativeGroupTaskScope:()=>"grid-scope",
@@ -46,6 +48,7 @@ vi.mock("@/lib/queries/media-models",()=>({
  resolveVideoMode:(saved:string,item:any)=>item.supported_modes.includes(saved)?saved:item.default_mode,
 }));
 vi.mock("@/lib/queries/projects",()=>({useUpdateProject:()=>({isPending:false,mutateAsync:m.updateProject})}));
+vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}));
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
 vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({

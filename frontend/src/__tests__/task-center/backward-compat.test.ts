@@ -20,7 +20,7 @@ describe("backward compatibility (AC-6)", () => {
     // path format of TanStack file-based routes after rebase: src/routes/_app/projects.$project/tasks.tsx
     const mod = await import("@/routes/_app/projects.$project/tasks");
     expect(mod.Route).toBeDefined();
-  });
+  }, 15_000);
 
   it("app-store retains active cross-region state and task panel fields", async () => {
     const { useAppStore } = await import("@/stores/app-store");

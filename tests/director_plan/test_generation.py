@@ -61,7 +61,6 @@ def group_with_shots(count: int, **shot_updates: object) -> NarrativeGroupPlan:
         (2, ("diptych",)),
         (3, ("triptych",)),
         (4, ("grid_2x2",)),
-        (5, ("triptych", "diptych")),
     ],
 )
 def test_generation_batches_never_have_blank_cells(
@@ -74,15 +73,6 @@ def test_generation_batches_never_have_blank_cells(
     assert all(batch.capacity == len(batch.shot_ids) for batch in batches)
     assert all(batch.group_id == "ng-01" for batch in batches)
     assert all(batch.style_snapshot_id == "style-snapshot-1" for batch in batches)
-
-
-def test_five_shots_use_three_plus_two_in_original_order() -> None:
-    batches = generation_batches(group_with_shots(5))
-
-    assert [batch.shot_ids for batch in batches] == [
-        ("shot-1", "shot-2", "shot-3"),
-        ("shot-4", "shot-5"),
-    ]
 
 
 def test_video_segments_default_to_one_shot_and_merge_only_continuous_action() -> None:

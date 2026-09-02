@@ -413,6 +413,11 @@ def _materialize_active_groups(
             )
             group = raw_group.model_copy(update={"style_snapshot_id": snapshot_id})
             shot_ids = tuple(shot.id for shot in group.shots)
+            style_snapshot_hash = (
+                active.project_style_snapshot.style_hash
+                if active.project_style_snapshot is not None
+                else active.project_style_snapshot_id
+            )
             previous = previous_by_id.get(group.id)
             base = NarrativeGroup(
                 id=group.id,
@@ -438,13 +443,14 @@ def _materialize_active_groups(
                         "model": "",
                         "requested_resolution": "",
                         "actual_resolution": "",
-                        "style_hash": (
-                            active.project_style_snapshot.style_hash
-                            if active.project_style_snapshot is not None else ""
-                        ),
+                        "style_hash": style_snapshot_hash,
                         "cleanup_reports": [],
                     }
-                    for item in plan_generation_batches(group)
+                    for item in plan_generation_batches(
+                        group,
+                        revision_id=active.revision_id,
+                        style_snapshot_hash=style_snapshot_hash,
+                    )
                 ),
                 video_segments=tuple(
                     {
@@ -454,7 +460,11 @@ def _materialize_active_groups(
                         "provider_task_id": None,
                         "result": {},
                     }
-                    for item in plan_video_segments(group)
+                    for item in plan_video_segments(
+                        group,
+                        revision_id=active.revision_id,
+                        style_snapshot_hash=style_snapshot_hash,
+                    )
                 ),
                 effective_style_snapshot=(
                     {
@@ -468,8 +478,16 @@ def _materialize_active_groups(
                     }
                 ),
             )
-            generation_batches = plan_generation_batches(group)
-            video_segments = plan_video_segments(group)
+            generation_batches = plan_generation_batches(
+                group,
+                revision_id=active.revision_id,
+                style_snapshot_hash=style_snapshot_hash,
+            )
+            video_segments = plan_video_segments(
+                group,
+                revision_id=active.revision_id,
+                style_snapshot_hash=style_snapshot_hash,
+            )
             base = replace(
                 base,
                 video_plan=VideoPlan(

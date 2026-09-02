@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 
 from novelvideo.episode_source_store import EpisodeSource
 from novelvideo.screenplay_semantics.extractor import (

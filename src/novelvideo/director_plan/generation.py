@@ -39,7 +39,7 @@ def plan_generation_batches(
         style_snapshot_hash, "style_snapshot_hash"
     )
     revision_id = _require_nonempty(revision_id, "revision_id")
-    counts = (3, 2) if len(group.shots) == 5 else (len(group.shots),)
+    counts = (len(group.shots),)
     batches: list[GenerationBatchPlan] = []
     offset = 0
     for batch_index, count in enumerate(counts, start=1):

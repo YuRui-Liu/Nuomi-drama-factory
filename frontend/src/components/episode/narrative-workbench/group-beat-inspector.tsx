@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { Button } from "@/components/ui/button";
+import { LightboxImage } from "@/components/lightbox-image";
 import type { NarrativeGroup } from "@/lib/queries/narrative-groups";
 
 export function GroupBeatInspector({ group, onRepairBeat }: { group: NarrativeGroup; onRepairBeat: (beatId: string) => void }) {
@@ -9,7 +10,7 @@ export function GroupBeatInspector({ group, onRepairBeat }: { group: NarrativeGr
     {group.cell_to_beat.map((mapping) => {
       const asset = renderAssets.get(mapping.cell) ?? sketchAssets.get(mapping.cell);
       return <div key={mapping.cell} className="overflow-hidden rounded-lg border border-white/10 bg-black/20">
-        {asset?.url ? <img className="aspect-video w-full object-cover" src={asset.url} alt={`Beat ${mapping.beat_id} 渲染格位`} /> : <div className="flex aspect-video items-center justify-center bg-white/[0.025] text-xs text-muted-foreground">暂无切分图</div>}
+        {asset?.url ? <LightboxImage className="aspect-video w-full rounded-none border-0" fit="cover" src={asset.url} alt={`Beat ${mapping.beat_id} 渲染格位`} /> : <div className="flex aspect-video items-center justify-center bg-white/[0.025] text-xs text-muted-foreground">暂无切分图</div>}
         <div className="p-3"><div className="text-xs text-muted-foreground">格位 {mapping.cell + 1}</div><div className="mt-1 font-mono text-sm">Beat {mapping.beat_id}</div>{asset?.error && <p className="mt-1 text-xs text-destructive">{asset.error}</p>}<Button className="mt-2" size="sm" variant="ghost" onClick={() => onRepairBeat(mapping.beat_id)}>单 Beat 修复</Button></div>
       </div>;
     })}
