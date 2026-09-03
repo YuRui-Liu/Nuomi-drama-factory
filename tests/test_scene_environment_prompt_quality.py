@@ -68,6 +68,125 @@ def test_quality_gate_rejects_vague_directions_and_materials():
     assert "material_not_concrete" in issues
 
 
+@pytest.mark.parametrize(
+    ("replacement", "expected_prefix"),
+    [
+        ("正面：男人站在玻璃双开门旁挥手，门内连接三米宽直走廊。", "story_contamination:person:"),
+        ("正面：玻璃双开门居中，人物正在争吵并推开大门。", "story_contamination:person:"),
+        ("正面：玻璃双开门居中，本场出现临时摆放的手机和桌椅。", "story_contamination:transient:"),
+        ("正面：深夜暴雨中的玻璃双开门居中，夕阳照进直走廊。", "story_contamination:time_weather:"),
+    ],
+)
+def test_quality_gate_rejects_story_contamination(replacement, expected_prefix):
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    issues = scene_environment_prompt_issues(
+        VALID_PROMPT.replace(VALID_PROMPT.splitlines()[0], replacement)
+    )
+
+    assert any(item.startswith(expected_prefix) for item in issues)
+
+
+def test_quality_gate_rejects_abstract_direction_contract_and_meta_commands():
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT
+    for label in ("正面", "左侧", "右侧", "背面"):
+        original = next(line for line in prompt.splitlines() if line.startswith(f"{label}："))
+        prompt = prompt.replace(original, f"{label}：该空间沿区域延伸并连接相邻区域，需要合理补全。")
+
+    issues = scene_environment_prompt_issues(prompt)
+
+    assert all(f"direction_not_concrete:{label}" in issues for label in ("正面", "左侧", "右侧", "背面"))
+    assert "meta_instruction:需要" in issues
+
+
+def test_quality_gate_keeps_static_compounds_that_contain_weather_or_request_words():
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT.replace(
+        "磨砂玻璃双开门居中，门内连接三米宽直走廊，墙上固定电子时钟。",
+        "防暴雨玻璃双开门居中，门内连接三米宽直走廊，墙上固定紧急请求按钮。",
+    ).replace(
+        "白色矿棉板吊顶内嵌冷白条形灯，沿走廊中轴连续布置。",
+        "白色矿棉板吊顶内嵌月光灯，沿走廊中轴连续布置。",
+    )
+
+    assert scene_environment_prompt_issues(prompt) == []
+
+
+def test_quality_gate_rejects_actual_character_names_from_scene_context():
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT.replace(
+        VALID_PROMPT.splitlines()[0],
+        "正面：王五倚靠在磨砂玻璃双开门旁，门内连接三米宽直走廊。",
+    )
+
+    issues = scene_environment_prompt_issues(prompt, characters=["王五"])
+
+    assert "story_contamination:character:王五" in issues
+
+
+@pytest.mark.parametrize("marker", ["白天", "夜晚", "雨夜", "晴天", "雪夜"])
+def test_quality_gate_rejects_time_and_weather_variants(marker):
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT.replace(
+        VALID_PROMPT.splitlines()[0],
+        f"正面：{marker}的磨砂玻璃双开门居中，门内连接三米宽直走廊。",
+    )
+
+    issues = scene_environment_prompt_issues(prompt)
+
+    assert f"story_contamination:time_weather:{marker}" in issues
+
+
+@pytest.mark.parametrize(
+    ("phrase", "marker"),
+    [
+        ("暴雨笼罩玻璃门", "暴雨"),
+        ("夕阳照进走廊", "夕阳"),
+        ("月光洒在地面", "月光"),
+        ("夜晚灯火映亮大厅", "夜晚"),
+        ("晴天映照窗面", "晴天"),
+    ],
+)
+def test_quality_gate_rejects_time_weather_followed_by_natural_predicates(
+    phrase, marker
+):
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT.replace(
+        VALID_PROMPT.splitlines()[0],
+        f"正面：{phrase}，门内连接三米宽直走廊。",
+    )
+
+    issues = scene_environment_prompt_issues(prompt)
+
+    assert f"story_contamination:time_weather:{marker}" in issues
+
+
+def test_quality_gate_keeps_static_place_names_that_contain_person_words():
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+
+    prompt = VALID_PROMPT.replace(
+        "磨砂玻璃双开门居中，门内连接三米宽直走廊，墙上固定电子时钟。",
+        "白天鹅宾馆入口的磨砂玻璃双开门居中，门内连接三米宽直走廊。",
+    ).replace(
+        "吸音板墙面沿通道连续延伸，靠近入口设固定消防柜。",
+        "老人活动中心左侧吸音板墙面连续延伸，靠近入口设固定消防柜。",
+    ).replace(
+        "观察窗嵌在墙面中段，下方固定金属设备柜，与正面门框齐平。",
+        "行人天桥观察窗嵌在墙面中段，下方固定金属设备柜。",
+    ).replace(
+        "灰色防火门位于通道末端，门旁固定配电箱和疏散指示灯。",
+        "演员通道末端设置灰色防火门，门旁固定配电箱和疏散指示灯。",
+    )
+
+    assert scene_environment_prompt_issues(prompt) == []
+
+
 def test_quality_gate_rejects_missing_sections():
     from novelvideo.cognee.pipeline import scene_environment_prompt_issues
 

@@ -21,6 +21,7 @@ class _FakeSQLiteStore:
         self.scenes = {scene.name: scene for scene in scenes or []}
         self.added: list[NovelScene] = []
         self.updated: list[tuple[str, dict]] = []
+        self.atomic_calls: list[tuple[list[str], bool]] = []
 
     async def get_scene(self, name: str):
         return self.scenes.get(name)
@@ -31,6 +32,15 @@ class _FakeSQLiteStore:
     async def add_scene(self, scene: NovelScene):
         self.added.append(scene)
         self.scenes[scene.name] = scene
+
+    async def add_scenes_atomic(
+        self, scenes: list[NovelScene], *, skip_existing: bool = True
+    ):
+        self.atomic_calls.append(([scene.name for scene in scenes], skip_existing))
+        for scene in scenes:
+            self.added.append(scene)
+            self.scenes[scene.name] = scene
+        return [scene.name for scene in scenes]
 
     async def update_scene(self, name: str, **updates):
         self.updated.append((name, updates))
@@ -330,6 +340,95 @@ async def test_base_scene_reconcile_does_not_partially_persist_when_enrichment_f
         )
 
     assert store.sqlite_store.added == []
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_scenes_does_not_partially_write_when_second_prompt_fails(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.cognee.pipeline import ScenePromptQualityError
+
+    scenes = [
+        NovelScene(name="直播间", scene_type="interior", environment_prompt=""),
+        NovelScene(name="设备间", scene_type="interior", environment_prompt=""),
+    ]
+    calls = 0
+
+    async def fake_load_scene_blocks(self, episode):
+        return [_block("直播间"), _block("设备间")]
+
+    async def fake_enrich(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ScenePromptQualityError(
+                "SCENE_PROMPT_QUALITY_FAILED: 设备间: meta_instruction:合理补全"
+            )
+        return NovelScene(
+            name=kwargs["scene_name"],
+            scene_type="interior",
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+
+    async def fake_derived(self, scene_name, block):
+        return []
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
+
+    store = _FakeCogneeStore(scenes, raw_content="直播间连接设备间。")
+    compiler = asset_compiler.AssetCompiler(store)
+
+    with pytest.raises(ScenePromptQualityError):
+        await compiler.compile_episode_scenes(SimpleNamespace(number=1), lambda _message: None)
+
+    assert store.sqlite_store.atomic_calls == []
+    assert store.sqlite_store.added == []
+    assert store.sqlite_store.updated == []
+    assert [scene.environment_prompt for scene in scenes] == ["", ""]
+    assert store.updated == []
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_scenes_writes_all_prompt_repairs_once_atomically(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    scenes = [
+        NovelScene(name="直播间", scene_type="interior", environment_prompt=""),
+        NovelScene(name="设备间", scene_type="interior", environment_prompt=""),
+    ]
+
+    async def fake_load_scene_blocks(self, episode):
+        return [_block("直播间"), _block("设备间")]
+
+    async def fake_enrich(**kwargs):
+        return NovelScene(
+            name=kwargs["scene_name"],
+            scene_type="interior",
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+
+    async def fake_derived(self, scene_name, block):
+        return []
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
+
+    store = _FakeCogneeStore(scenes, raw_content="直播间连接设备间。")
+    compiler = asset_compiler.AssetCompiler(store)
+
+    scene_menu, new_count = await compiler.compile_episode_scenes(
+        SimpleNamespace(number=1), lambda _message: None
+    )
+
+    assert [item.scene_id for item in scene_menu] == ["直播间", "设备间"]
+    assert new_count == 0
+    assert store.sqlite_store.atomic_calls == [(["直播间", "设备间"], False)]
+    assert store.sqlite_store.updated == []
+    assert store.updated == [(1, {"scene_menu": scene_menu})]
 
 
 @pytest.mark.asyncio

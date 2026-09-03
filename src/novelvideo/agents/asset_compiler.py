@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -27,11 +29,37 @@ from novelvideo.utils.path_resolver import (
     compute_scene_master_path,
     compute_scene_reverse_master_path,
 )
-from novelvideo.workflows.literal_script_writing import (
-    LiteralScriptWritingWorkflow,
-    SceneBlock,
-    split_literal_source_text,
+from novelvideo.utils.screenplay_scene_parser import (
+    parse_scene_blocks,
+    split_screenplay_lines,
 )
+
+
+@dataclass
+class SceneBlock:
+    """Asset-facing projection of a parsed screenplay Scene."""
+
+    header_line: str = ""
+    location: str = ""
+    time_of_day: str = ""
+    interior_exterior: str = ""
+    characters: list[str] = field(default_factory=list)
+    lines: list[str] = field(default_factory=list)
+
+
+def _build_scene_blocks(text_or_lines: str | list[str]) -> list[SceneBlock]:
+    return [
+        SceneBlock(
+            header_line=item.header_line,
+            location=item.location,
+            time_of_day=normalize_time_of_day(item.time_of_day),
+            interior_exterior=item.interior_exterior,
+            characters=list(item.characters),
+            lines=list(item.lines),
+        )
+        for item in parse_scene_blocks(text_or_lines)
+        if item.header_line or item.lines
+    ]
 
 
 class DerivedSceneRequirement(BaseModel):
@@ -400,8 +428,44 @@ INTERACTION_VERBS = (
 class AssetCompiler:
     """以 SceneBlock 为单位编译本集场景和道具资产。"""
 
-    def __init__(self, cognee_store: Any):
+    def __init__(self, cognee_store: Any, *, director_plan: Any | None = None):
         self.cognee_store = cognee_store
+        self.director_plan = director_plan
+
+    def _director_scene_blocks(self) -> list[SceneBlock]:
+        if self.director_plan is None:
+            return []
+        blocks: list[SceneBlock] = []
+        for group in getattr(self.director_plan, "groups", ()) or ():
+            lines: list[str] = []
+            characters: list[str] = []
+            for shot in getattr(group, "shots", ()) or ():
+                subject = str(getattr(shot, "subject", "") or "").strip()
+                action = str(getattr(shot, "action", "") or "").strip()
+                if subject and subject not in characters:
+                    characters.append(subject)
+                if subject or action:
+                    lines.append(" ".join(item for item in (subject, action) if item))
+                for requirement in getattr(shot, "asset_requirements", ()) or ():
+                    description = " ".join(
+                        item for item in (
+                            str(getattr(requirement, "entity_key", "") or "").strip(),
+                            str(getattr(requirement, "visible_change", "") or "").strip(),
+                            str(getattr(requirement, "design_notes", "") or "").strip(),
+                        ) if item
+                    )
+                    if description:
+                        lines.append(description)
+            location = str(getattr(group, "scene_anchor", "") or "").strip()
+            time_of_day = str(getattr(group, "time_anchor", "") or "").strip()
+            blocks.append(SceneBlock(
+                header_line=" ".join(item for item in (location, time_of_day) if item),
+                location=location,
+                time_of_day=normalize_time_of_day(time_of_day),
+                characters=characters,
+                lines=lines,
+            ))
+        return blocks
 
     async def compile_single_episode(
         self,
@@ -423,11 +487,7 @@ class AssetCompiler:
         if not source_text.strip():
             raise ValueError("当前集原文为空，无法编译资产")
 
-        lines = split_literal_source_text(source_text)
-        if not lines:
-            raise ValueError("原文无法切分出有效行")
-
-        scene_blocks = LiteralScriptWritingWorkflow._build_scene_blocks(lines)
+        scene_blocks = self._director_scene_blocks() or _build_scene_blocks(source_text)
         if not scene_blocks:
             raise ValueError("原文无法切分出有效场景块")
 
@@ -435,14 +495,24 @@ class AssetCompiler:
         log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
 
         report(0.12, "AI校对基础场景...")
-        await self._reconcile_base_scenes_from_text(source_text, episode, log)
+        planned_scene_writes = await self._reconcile_base_scenes_from_text(
+            source_text, episode, log
+        )
 
         report(0.2, "编译场景资产...")
-        scene_menu, pending_scenes = await self._compile_scenes(scene_blocks, episode, log)
+        scene_menu, pending_scenes = await self._compile_scenes(
+            scene_blocks,
+            episode,
+            log,
+            planned_scene_writes=planned_scene_writes,
+        )
         if not scene_menu:
             report(0.3, "从解说稿规划场景资产...")
             scene_menu, pending_scenes = await self._compile_narrated_scenes(
-                source_text, episode, log
+                source_text,
+                episode,
+                log,
+                planned_scene_writes=planned_scene_writes,
             )
         if not scene_menu:
             raise ValueError("未识别到任何场景，请先生成逐行解说工作稿或补充场次地点")
@@ -451,8 +521,9 @@ class AssetCompiler:
         prop_menu = await self._compile_props(scene_blocks, episode, log)
 
         report(0.9, "写入本集资产...")
-        for scene in pending_scenes:
-            await self.cognee_store.sqlite_store.add_scene(scene)
+        await self._persist_scene_plan_atomic(
+            [*planned_scene_writes, *pending_scenes]
+        )
         await self.cognee_store.update_episode(
             episode.number,
             scene_menu=scene_menu,
@@ -484,28 +555,52 @@ class AssetCompiler:
 
         source_text = await self._load_source_text(episode)
         report(0.18, "AI校对基础场景...")
+        planned_scene_writes: list[NovelScene] = []
         if not await self._all_scene_blocks_have_existing_base(scene_blocks):
-            await self._reconcile_base_scenes_from_text(source_text, episode, log)
+            reconciled = await self._reconcile_base_scenes_from_text(
+                source_text, episode, log
+            )
+            planned_scene_writes.extend(
+                scene for scene in reconciled if isinstance(scene, NovelScene)
+            )
         else:
             log("[AssetCompiler] 基础场景均已存在，跳过 AI 校对")
 
         report(0.25, "编译场景资产...")
-        scene_menu, pending_scenes = await self._compile_scenes(scene_blocks, episode, log)
+        scene_menu, pending_scenes = await self._compile_scenes(
+            scene_blocks,
+            episode,
+            log,
+            planned_scene_writes=planned_scene_writes,
+        )
         if not scene_menu:
             report(0.45, "从解说稿规划场景资产...")
             scene_menu, pending_scenes = await self._compile_narrated_scenes(
-                source_text, episode, log
+                source_text,
+                episode,
+                log,
+                planned_scene_writes=planned_scene_writes,
             )
         if not scene_menu:
             raise ValueError("未识别到任何场景，请先生成逐行解说工作稿或补充场次地点")
 
         report(0.85, "写入本集场景规划...")
-        for scene in pending_scenes:
-            await self.cognee_store.sqlite_store.add_scene(scene)
+        await self._persist_scene_plan_atomic(
+            [*planned_scene_writes, *pending_scenes]
+        )
         await self.cognee_store.update_episode(episode.number, scene_menu=scene_menu)
 
         report(1.0, "完成")
         return scene_menu, len(pending_scenes)
+
+    async def _persist_scene_plan_atomic(self, scenes: list[NovelScene]) -> None:
+        if not scenes:
+            return
+        unique_scenes = list({scene.name: scene for scene in scenes}.values())
+        await self.cognee_store.sqlite_store.add_scenes_atomic(
+            unique_scenes,
+            skip_existing=False,
+        )
 
     async def _all_scene_blocks_have_existing_base(
         self, scene_blocks: list[SceneBlock]
@@ -556,7 +651,7 @@ class AssetCompiler:
         source_text: str,
         episode: Any,
         log: Callable[[str], None],
-    ) -> list[str]:
+    ) -> list[NovelScene]:
         source_text = str(source_text or "").strip()
         if not source_text:
             return []
@@ -653,12 +748,9 @@ class AssetCompiler:
             prepared.append(scene)
             prepared_names.add(scene.name)
 
-        created: list[str] = []
         for scene in prepared:
-            await self.cognee_store.sqlite_store.add_scene(scene)
-            created.append(scene.name)
-            log(f"  AI补全基础场景: {scene.name}")
-        return created
+            log(f"  已准备基础场景: {scene.name}")
+        return prepared
 
     def _existing_scene_reference_kinds(self, scene_name: str) -> list[str]:
         project_dir_text = str(getattr(self.cognee_store, "project_dir", "") or "").strip()
@@ -707,15 +799,18 @@ class AssetCompiler:
         return None
 
     async def _load_scene_blocks(self, episode: Any) -> list[SceneBlock]:
+        director_blocks = self._director_scene_blocks()
+        if director_blocks:
+            return director_blocks
         source_text = await self._load_source_text(episode)
         if not source_text.strip():
             raise ValueError("当前集原文为空，无法编译资产")
 
-        lines = split_literal_source_text(source_text)
+        lines = split_screenplay_lines(source_text)
         if not lines:
             raise ValueError("原文无法切分出有效行")
 
-        scene_blocks = LiteralScriptWritingWorkflow._build_scene_blocks(lines)
+        scene_blocks = _build_scene_blocks(lines)
         if not scene_blocks:
             raise ValueError("原文无法切分出有效场景块")
 
@@ -743,11 +838,16 @@ class AssetCompiler:
         scene_blocks: list[SceneBlock],
         episode: Any,
         log: Callable[[str], None],
+        *,
+        planned_scene_writes: list[NovelScene] | None = None,
     ) -> tuple[list[SceneMenuItem], list[NovelScene]]:
         scene_menu: list[SceneMenuItem] = []
         seen_scene_ids: set[str] = set()
         pending_scenes: list[NovelScene] = []
-        pending_scene_map: dict[str, NovelScene] = {}
+        transactional = planned_scene_writes is not None
+        pending_scene_map: dict[str, NovelScene] = {
+            scene.name: scene for scene in planned_scene_writes or []
+        }
         time_plate_counts = self._time_plate_counts(scene_blocks)
 
         for block in scene_blocks:
@@ -755,18 +855,38 @@ class AssetCompiler:
             if not location:
                 continue
 
-            existing = pending_scene_map.get(location) or await self._find_matching_scene(location)
+            existing = pending_scene_map.get(location)
+            if existing is None:
+                existing = next(
+                    (
+                        scene
+                        for scene in planned_scene_writes or []
+                        if location in {scene.name, *(scene.aliases or [])}
+                    ),
+                    None,
+                )
+            if existing is None:
+                stored_scene = await self._find_matching_scene(location)
+                existing = deepcopy(stored_scene) if transactional and stored_scene else stored_scene
             if not existing:
                 log(f"  跳过缺失基础场景: {location}（AI校对未创建或未复用）")
                 continue
             else:
+                previous_prompt = str(existing.environment_prompt or "").strip()
+                needs_prompt_write = not previous_prompt or is_legacy_meta_scene_prompt(
+                    previous_prompt
+                )
                 existing = await self._enrich_scene_prompt_from_block(
                     existing,
                     block,
                     episode,
-                    persist=True,
+                    persist=not transactional,
                     log=log,
                 )
+                if transactional and needs_prompt_write:
+                    if existing.name not in pending_scene_map:
+                        planned_scene_writes.append(existing)
+                    pending_scene_map[existing.name] = existing
 
             derived_requirements = await self._analyze_derived_scenes(existing.name, block)
             normalized_derived = self._build_derived_scene_specs(derived_requirements)
@@ -813,20 +933,26 @@ class AssetCompiler:
         source_text: str,
         episode: Any,
         log: Callable[[str], None],
+        *,
+        planned_scene_writes: list[NovelScene] | None = None,
     ) -> tuple[list[SceneMenuItem], list[NovelScene]]:
         scene_menu: list[SceneMenuItem] = []
         seen_scene_ids: set[str] = set()
         pending_scenes: list[NovelScene] = []
-        pending_scene_map: dict[str, NovelScene] = {}
+        transactional = planned_scene_writes is not None
+        pending_scene_map: dict[str, NovelScene] = {
+            scene.name: scene for scene in planned_scene_writes or []
+        }
 
         scenes = await self._extract_narrated_episode_scenes(source_text, episode, log)
         for scene in scenes:
             scene_name = str(getattr(scene, "name", "") or "").strip()
             if not scene_name:
                 continue
-            existing = pending_scene_map.get(scene_name) or await self._find_matching_scene(
-                scene_name
-            )
+            existing = pending_scene_map.get(scene_name)
+            if existing is None:
+                stored_scene = await self._find_matching_scene(scene_name)
+                existing = deepcopy(stored_scene) if transactional and stored_scene else stored_scene
             canonical_name = scene_name
             if existing:
                 canonical_name = existing.name
@@ -850,15 +976,20 @@ class AssetCompiler:
                             )
                         )
                         updates["stale_reference_kinds"] = stale_reference_kinds
-                    await self.cognee_store.sqlite_store.update_scene(
-                        existing.name,
-                        **updates,
-                    )
                     existing.scene_type = str(updates["scene_type"])
                     existing.environment_prompt = str(updates["environment_prompt"])
                     existing.description = str(updates["description"])
                     if repairing_legacy_prompt:
                         existing.stale_reference_kinds = stale_reference_kinds
+                    if transactional:
+                        if existing.name not in pending_scene_map:
+                            planned_scene_writes.append(existing)
+                        pending_scene_map[existing.name] = existing
+                    else:
+                        await self.cognee_store.sqlite_store.update_scene(
+                            existing.name,
+                            **updates,
+                        )
                     action = (
                         "修复历史解说场景环境描述"
                         if repairing_legacy_prompt
@@ -890,7 +1021,7 @@ class AssetCompiler:
         if not requirements:
             return []
 
-        source_lines = split_literal_source_text(source_text)
+        source_lines = split_screenplay_lines(source_text)
         scenes: list[NovelScene] = []
         seen: set[str] = set()
         for req in requirements[:8]:
@@ -1159,7 +1290,7 @@ class AssetCompiler:
                 continue
             tokens = [name, *(prop.aliases or [])]
             if any(
-                LiteralScriptWritingWorkflow._contains_text(block_text, token)
+                self._contains_text(block_text, token)
                 for token in tokens
                 if str(token or "").strip()
             ):
@@ -1294,7 +1425,15 @@ class AssetCompiler:
 
     @staticmethod
     def _contains_text(haystack: str, needle: str) -> bool:
-        return LiteralScriptWritingWorkflow._contains_text(haystack, needle)
+        normalized_needle = re.sub(
+            r"[\s\u3000·•．。,:：，、／/（）()\\\-_\[\]{}]+", "", str(needle or "").strip()
+        ).lower()
+        if not normalized_needle:
+            return False
+        normalized_haystack = re.sub(
+            r"[\s\u3000·•．。,:：，、／/（）()\\\-_\[\]{}]+", "", str(haystack or "").strip()
+        ).lower()
+        return normalized_needle in normalized_haystack
 
     @staticmethod
     def _normalize_scene_type(value: str) -> str:
@@ -1362,7 +1501,7 @@ class AssetCompiler:
         pattern = re.compile(rf"[\u4e00-\u9fff]{{1,10}}(?:{suffix_pattern})")
         seen: set[str] = set()
         requirements: list[NarratedSceneRequirement] = []
-        for line in split_literal_source_text(source_text):
+        for line in split_screenplay_lines(source_text):
             text = str(line or "").strip()
             if not text:
                 continue

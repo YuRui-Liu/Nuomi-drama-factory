@@ -708,6 +708,9 @@ _SCENE_PROMPT_META_INSTRUCTIONS = (
     "保持exterior场景",
     "保持nature场景",
     "不要复制正面主体",
+    "应当",
+    "需要",
+    "不要复制",
 )
 _SCENE_DIRECTION_RELATION_TOKENS = (
     "居中",
@@ -741,6 +744,7 @@ _SCENE_LIGHT_SOURCE_TOKENS = (
     "天光",
     "窗光",
     "采光窗",
+    "月光灯",
 )
 _SCENE_MATERIAL_GROUPS = (
     ("地坪", "地砖", "木地板", "石材地面", "水泥地面", "地面"),
@@ -748,6 +752,41 @@ _SCENE_MATERIAL_GROUPS = (
     ("吊顶", "顶棚", "天花板", "矿棉板"),
     ("门框", "门板", "玻璃门", "木门", "金属门", "窗框", "玻璃窗"),
     ("金属", "木质", "玻璃", "石材", "瓷砖", "混凝土"),
+)
+_SCENE_VISIBLE_ENTITY_TOKENS = (
+    "墙面", "墙体", "房门", "门框", "门板", "玻璃门", "防火门",
+    "窗口", "窗框", "观察窗", "走廊", "通道", "楼梯", "地面", "地坪",
+    "吊顶", "顶棚", "柜体", "书架", "货架", "吧台", "工作台", "桌面",
+    "座椅", "灯具", "灯带", "灯管", "管线", "配电箱", "立柱", "护栏",
+    "道路", "街道", "桥梁", "河道", "树木", "岩壁", "建筑", "入口",
+    "出口", "房间", "大厅", "庭院", "广场", "设备", "装置",
+)
+_SCENE_STORY_CONTAMINATION = {
+    "person": (
+        "人物", "角色", "男人", "女人", "男孩", "女孩", "老人", "儿童",
+        "人群", "行人", "演员",
+    ),
+    "action": (
+        "站在", "坐在", "走进", "跑过", "奔跑", "挥手", "交谈", "争吵",
+        "手持", "拿着", "推开", "躺在", "跪在", "回头", "注视",
+        "倚靠",
+    ),
+    "transient": (
+        "临时摆放", "临时放置", "本场使用", "本场出现", "这一幕", "此时",
+        "正在发生", "单次事件",
+    ),
+    "time_weather": (
+        "白天", "夜晚", "深夜", "雨夜", "雪夜", "黄昏", "黎明", "清晨",
+        "正午", "晴天", "暴雨", "大雨", "雷雨", "下雨", "大雪", "降雪",
+        "夕阳", "月光",
+    ),
+}
+_SCENE_STORY_CONTAMINATION_EXEMPTIONS = (
+    "防暴雨", "防雨", "月光灯", "白天鹅", "紧急请求按钮",
+)
+_SCENE_PERSON_PLACE_SUFFIXES = (
+    "院", "中心", "活动中心", "通道", "天桥", "休息室", "入口", "出口",
+    "广场", "公园", "雕像", "画像", "标识", "区域", "设施", "专用区",
 )
 
 
@@ -778,7 +817,20 @@ def is_legacy_meta_scene_prompt(prompt: str) -> bool:
     return matched_groups >= 2
 
 
-def scene_environment_prompt_issues(prompt: str) -> list[str]:
+def _contains_unqualified_person_marker(text: str, marker: str) -> bool:
+    for match in re.finditer(re.escape(marker), text):
+        suffix = text[match.end() : match.end() + 8]
+        if any(suffix.startswith(item) for item in _SCENE_PERSON_PLACE_SUFFIXES):
+            continue
+        return True
+    return False
+
+
+def scene_environment_prompt_issues(
+    prompt: str,
+    *,
+    characters: list[str] | None = None,
+) -> list[str]:
     """Return deterministic quality issues for a seven-section scene prompt."""
     text = str(prompt or "").strip()
     sections = _parse_scene_environment_sections(text)
@@ -791,14 +843,38 @@ def scene_environment_prompt_issues(prompt: str) -> list[str]:
     for marker in _SCENE_PROMPT_META_INSTRUCTIONS:
         if marker in compact:
             issues.append(f"meta_instruction:{marker}")
+    if re.search(r"(?:^|[：:；;。.!！？，,])\s*请(?!求)", text):
+        issues.append("meta_instruction:请")
 
     for label in ("正面", "左侧", "右侧", "背面"):
         content = sections.get(label, "")
         if content and (
             len(re.sub(r"\s+", "", content)) < 12
             or not any(token in content for token in _SCENE_DIRECTION_RELATION_TOKENS)
+            or not any(token in content for token in _SCENE_VISIBLE_ENTITY_TOKENS)
         ):
             issues.append(f"direction_not_concrete:{label}")
+
+    visible_contract = "\n".join(
+        sections.get(label, "")
+        for label in ("正面", "左侧", "右侧", "背面", "光源", "材质/风格")
+    )
+    for exemption in _SCENE_STORY_CONTAMINATION_EXEMPTIONS:
+        visible_contract = visible_contract.replace(exemption, "")
+    for character in characters or []:
+        character_name = str(character or "").strip()
+        if character_name and character_name in visible_contract:
+            issues.append(f"story_contamination:character:{character_name}")
+    for group, markers in _SCENE_STORY_CONTAMINATION.items():
+        for marker in markers:
+            if group == "person":
+                contaminated = _contains_unqualified_person_marker(
+                    visible_contract, marker
+                )
+            else:
+                contaminated = marker in visible_contract
+            if contaminated:
+                issues.append(f"story_contamination:{group}:{marker}")
 
     light = sections.get("光源", "")
     if light and not any(token in light for token in _SCENE_LIGHT_SOURCE_TOKENS):
@@ -1000,7 +1076,10 @@ async def enrich_scene_environment_from_context(
             enriched = result.scenes[0] if result.scenes else None
             prompt = enriched.environment_prompt if enriched is not None else ""
             rejected_prompt = str(prompt or "").strip()
-            final_issues = scene_environment_prompt_issues(prompt)
+            final_issues = scene_environment_prompt_issues(
+                prompt,
+                characters=characters,
+            )
             if not final_issues and enriched is not None:
                 resolved_type = enriched.scene_type or scene_type
                 return NovelScene(
