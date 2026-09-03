@@ -327,6 +327,18 @@ def test_style_catalog_keeps_six_presets_and_eighteen_extensions():
     assert extension["preview_url"].startswith("/images/extension-styles/")
 
 
+def test_extension_style_detail_keeps_extension_metadata_and_preview_url():
+    response = _client().get("/styles/drama_ext.shonen_manga")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["type"] == "extension"
+    assert payload["read_only"] is True
+    assert payload["preview_url"] == (
+        "/images/extension-styles/shonen-manga.webp"
+    )
+
+
 def test_list_all_styles_orders_real_groups_and_keeps_ids_unique(monkeypatch):
     from novelvideo.services.style_service import StyleService
 

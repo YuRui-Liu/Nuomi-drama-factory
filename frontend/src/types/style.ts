@@ -14,8 +14,9 @@ export interface Style {
   id: string;
   name: string;
   label?: string;
-  type?: "preset" | "custom";
+  type?: "preset" | "extension" | "custom";
   is_preset?: boolean;
+  read_only?: boolean;
   base?: string | null;
   // Top-level config fields (returned by single GET).
   style_instructions?: string;

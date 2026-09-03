@@ -97,7 +97,17 @@ async def get_style(
         return {"ok": False, "error": f"Style '{style_id}' not found"}
 
     payload = style.model_dump() if hasattr(style, "model_dump") else style.__dict__
-    if not payload.get("is_preset"):
+    extension = StyleService.get_extension_style(style_id)
+    if extension is not None:
+        payload.update(
+            {
+                "type": "extension",
+                "group": "extension",
+                "read_only": True,
+                "preview_url": extension.preview_asset,
+            }
+        )
+    elif not payload.get("is_preset"):
         payload["preview_url"] = _custom_preview_url(project, payload.get("preview_path"))
     return {"ok": True, "data": payload}
 

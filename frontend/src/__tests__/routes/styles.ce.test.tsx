@@ -364,4 +364,39 @@ describe("styles page CE generation credit gating", () => {
     const images = await screen.findAllByRole("img");
     expect(images.filter((image) => image.getAttribute("src") === previewUrl)).toHaveLength(2);
   });
+
+  it("renders the extension preview in both list and detail when legacy is_preset is true", async () => {
+    const previewUrl = "/images/extension-styles/shonen-manga.webp";
+    styleQueryState.list = [
+      {
+        id: "drama_ext.shonen_manga",
+        name: "Shonen manga",
+        label: "Shonen manga",
+        type: "extension",
+        preview_url: previewUrl,
+        read_only: true,
+      },
+    ];
+    styleQueryState.detail = {
+      id: "drama_ext.shonen_manga",
+      name: "Shonen manga",
+      label: "Shonen manga",
+      type: "extension",
+      is_preset: true,
+      preview_url: previewUrl,
+      read_only: true,
+    };
+    const Component = Route.options.component as ComponentType;
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nextProvider i18n={i18n}>
+          <Component />
+        </I18nextProvider>
+      </QueryClientProvider>,
+    );
+
+    const images = await screen.findAllByRole("img");
+    expect(images.filter((image) => image.getAttribute("src") === previewUrl)).toHaveLength(2);
+  });
 });

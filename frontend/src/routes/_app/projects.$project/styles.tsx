@@ -139,6 +139,11 @@ function isPreset(style: Style | null | undefined): boolean {
   return style.type === "preset" || style.is_preset === true;
 }
 
+function stylePreviewSource(style: Style): string | null {
+  if (style.type === "extension") return style.preview_url ?? null;
+  return isPreset(style) ? stylePreviewUrl(style.id) : style.preview_url ?? null;
+}
+
 // ─── small components ───────────────────────────────────────────────────────
 
 function Field({
@@ -271,8 +276,9 @@ function StyleListItem({
 }) {
   const { t } = useTranslation();
   const preset = isPreset(style);
+  const extension = style.type === "extension";
   const display = style.label || style.name;
-  const previewSrc = preset ? stylePreviewUrl(style.id) : style.preview_url;
+  const previewSrc = stylePreviewSource(style);
   return (
     <button
       type="button"
@@ -311,7 +317,12 @@ function StyleListItem({
           )}
         </div>
         <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-          {style.id} · {preset ? t("styles.preset") : t("styles.custom")}
+          {style.id} ·{" "}
+          {extension
+            ? t("styles.extension", "扩展")
+            : preset
+              ? t("styles.preset")
+              : t("styles.custom")}
         </p>
       </div>
     </button>
@@ -323,14 +334,14 @@ function StyleListItem({
 function PreviewBox({ style }: { style: Style }) {
   const { t } = useTranslation();
   const [hasError, setHasError] = useState(false);
-  const preset = isPreset(style);
+  const previewSrc = stylePreviewSource(style);
 
   // Reset error state when style switches.
   useEffect(() => {
     setHasError(false);
   }, [style.id]);
 
-  if (!preset && !style.preview_url) {
+  if (!previewSrc) {
     return (
       <div className="flex aspect-video items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background/40 px-4 text-center">
         <Info className="size-4 shrink-0 text-muted-foreground/60" />
@@ -351,7 +362,7 @@ function PreviewBox({ style }: { style: Style }) {
 
   return (
     <img
-      src={preset ? stylePreviewUrl(style.id) : style.preview_url ?? undefined}
+      src={previewSrc}
       alt={`${style.name} preview`}
       loading="lazy"
       decoding="async"
