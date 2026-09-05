@@ -43,6 +43,8 @@ beforeAll(async () => {
               noMaster: "未生成 master.png",
               noReverse: "未生成 reverse_master.png",
               noPano: "未生成 pano_360.png",
+              staleBadge: "需重生",
+              stalePromptWarning: "提示词已更新，现有参考图来自旧提示词，请重新生成",
               stage: {
                 title: "导演世界",
                 customWorld: "自定义导演世界 ✅",

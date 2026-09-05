@@ -7,8 +7,11 @@ from typing import AbstractSet, TypeAlias
 from pydantic import JsonValue
 
 from novelvideo.media_capabilities.models import (
+    CapabilityProfile,
+    CapabilityRequirement,
     CapabilityImplementation,
     MediaCapability,
+    RoutingPolicy,
 )
 
 
@@ -21,6 +24,40 @@ AvailableImplementations: TypeAlias = (
 
 class ConfigurationError(ValueError):
     """Raised when media routing configuration cannot produce a valid route."""
+
+
+def resolve_policy_route(
+    policy: RoutingPolicy,
+    *,
+    profiles: Mapping[str, CapabilityProfile],
+    requirement: CapabilityRequirement,
+    user_selection: str | None = None,
+    project_default: str | None = None,
+) -> tuple[str, ...]:
+    """Resolve task > project > stage > explicitly approved equivalent fallback."""
+    if policy.capability != requirement.capability:
+        raise ConfigurationError("routing policy capability does not match requirement")
+    ordered: list[str] = []
+    for implementation_id in (
+        user_selection,
+        project_default,
+        policy.default_implementation,
+        *policy.fallback_chain,
+    ):
+        if implementation_id and implementation_id not in ordered:
+            ordered.append(implementation_id)
+
+    compatible = tuple(
+        implementation_id
+        for implementation_id in ordered
+        if implementation_id in profiles
+        and profiles[implementation_id].satisfies(requirement)
+    )
+    if compatible:
+        return compatible
+    raise ConfigurationError(
+        f"no approved equivalent implementation satisfies {requirement.capability.value}"
+    )
 
 
 def merge_parameters(

@@ -39,3 +39,20 @@ def test_quality_accepts_matching_candidate() -> None:
         request(),
         first_frame_similarity=0.95,
     ) == ()
+
+
+def test_quality_accepts_one_h3_alignment_block_when_enabled() -> None:
+    assert validate_video(
+        VideoProbe(duration=5.2, width=704, height=1248, fps=24, has_audio=True),
+        request(resolution="736x1280"),
+        resolution_tolerance_px=32,
+    ) == ()
+
+
+def test_quality_rejects_more_than_one_h3_alignment_block() -> None:
+    issues = validate_video(
+        VideoProbe(duration=5.2, width=672, height=1248, fps=24, has_audio=True),
+        request(resolution="736x1280"),
+        resolution_tolerance_px=32,
+    )
+    assert {issue.code for issue in issues} == {"video.resolution_mismatch"}

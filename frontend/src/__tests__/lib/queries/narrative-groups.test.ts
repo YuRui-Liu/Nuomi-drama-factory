@@ -14,6 +14,8 @@ import {
   narrativeGroupActionPath,
   narrativeGroupActionPayload,
   narrativeGroupVideoPath,
+  narrativeGroupVideoPlanPath,
+  narrativeGroupVideoPlanPayload,
   narrativeGroupVideoDialogueSourcePath,
   narrativeGroupVideoDialogueSourcePayload,
   narrativeGroupVideoPayload,
@@ -24,6 +26,7 @@ import {
   narrativeGroupRollbackPath,
   useNarrativeGroupAction,
   useNarrativeGroupReferences,
+  useUpdateNarrativeGroupVideoPlan,
 } from "@/lib/queries/narrative-groups";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -40,10 +43,22 @@ describe("narrative group query contract", () => {
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
     expect(narrativeGroupVideoPayload({
       model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
-      aspectRatio: "16:9", resolution: "720p",
+      planRevision: 7, aspectRatio: "16:9", resolution: "720p",
     })).toEqual({
       model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
-      aspect_ratio: "16:9", resolution: "720p",
+      plan_revision: 7, aspect_ratio: "16:9", resolution: "720p",
+    });
+  });
+
+  it("builds the video-plan endpoint and serializes only ordered Beat groups", () => {
+    expect(narrativeGroupVideoPlanPath("demo project", 2, "组 一"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/%E7%BB%84%20%E4%B8%80/video/plan");
+    expect(narrativeGroupVideoPlanPayload({
+      expectedRevision: 3,
+      units: [{ beatIds: ["beat-8", "beat-9"] }, { beatIds: ["beat-10"] }],
+    })).toEqual({
+      expected_revision: 3,
+      units: [{ beat_ids: ["beat-8", "beat-9"] }, { beat_ids: ["beat-10"] }],
     });
   });
 
@@ -116,6 +131,30 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("narrative group reference hooks", () => {
+  it("puts a manual video plan and returns the updated group", async () => {
+    let body: unknown;
+    server.use(http.put(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/plan",
+      async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ok: true, data: { id: "ng-1", video_plan: { revision: 5 } } });
+      },
+    ));
+
+    const { result } = renderHook(() => useUpdateNarrativeGroupVideoPlan("demo", 2), { wrapper });
+    const response = await result.current.mutateAsync({
+      groupId: "ng-1",
+      expectedRevision: 4,
+      units: [{ beatIds: ["8", "9"] }, { beatIds: ["10"] }],
+    });
+
+    expect(body).toEqual({
+      expected_revision: 4,
+      units: [{ beat_ids: ["8", "9"] }, { beat_ids: ["10"] }],
+    });
+    expect(response).toMatchObject({ ok: true, data: { id: "ng-1", video_plan: { revision: 5 } } });
+  });
+
   it("requests references only when enabled", async () => {
     let requests = 0;
     server.use(http.get(

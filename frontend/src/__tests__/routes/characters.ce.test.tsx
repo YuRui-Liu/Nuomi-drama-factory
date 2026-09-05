@@ -13,6 +13,13 @@ const toastErrorMock = vi.hoisted(() => vi.fn());
 const mutation = vi.hoisted(() => () => ({ mutateAsync: vi.fn(), isPending: false }));
 const buildCharactersMutationMock = vi.hoisted(() => vi.fn());
 const taskStreamOptionsMock = vi.hoisted(() => vi.fn());
+const extractionLockMutationMock = vi.hoisted(() => vi.fn());
+const visualWorkspaceMutationMock = vi.hoisted(() => vi.fn());
+const confirmVisualBibleMutationMock = vi.hoisted(() => vi.fn());
+const characterVisualState = vi.hoisted(() => ({
+  extractionLocked: false,
+  visualBibleStatus: "draft" as "draft" | "confirmed" | "superseded",
+}));
 
 vi.mock("@/lib/runtime-config", () => ({
   isCeRuntime: () => runtimeState.isCeRuntime,
@@ -115,6 +122,11 @@ vi.mock("@/lib/queries/generation-credit-cost", () => ({
   }),
 }));
 
+vi.mock("@/lib/queries/production-assets", () => ({
+  useProductionAssetSlot: () => ({ data: undefined, isLoading: false }),
+  useAdoptProductionAssetVersion: mutation,
+}));
+
 vi.mock("@/lib/queries/asset-references", () => ({
   useAssetReferences: () => ({
     referencesFor: () => [],
@@ -124,6 +136,68 @@ vi.mock("@/lib/queries/asset-references", () => ({
 }));
 
 vi.mock("@/lib/queries/characters", () => ({
+  useCharacterVisualWorkspace: () => ({
+    data: {
+      ok: true,
+      data: {
+        character_id: "Li Qing",
+        profile: { character_id: "Li Qing", name: "Li Qing", biography: "Lead character", facts: [] },
+        design_proposals: [
+          {
+            proposal_id: "proposal-a",
+            title: "Cold realism",
+            rationale: "Keep the tired eyes",
+            recommended: true,
+            identity_anchors: ["left brow scar"],
+            asymmetry_detail: "left mouth corner lower",
+            quality_issues: [],
+          },
+          {
+            proposal_id: "proposal-b",
+            title: "Urban sharpness",
+            rationale: "Emphasize authority",
+            recommended: false,
+            identity_anchors: ["shoulder-length hair"],
+            asymmetry_detail: "",
+            quality_issues: [],
+          },
+          {
+            proposal_id: "proposal-c",
+            title: "Restrained realism",
+            rationale: "Keep an ordinary silhouette",
+            recommended: false,
+            identity_anchors: ["slim frame"],
+            asymmetry_detail: "right eye smaller",
+            quality_issues: [],
+          },
+        ],
+        selected_proposal_id: "proposal-a",
+        visual_bible: {
+          revision_id: "vb-1",
+          status: characterVisualState.visualBibleStatus,
+          face_shape: "narrow",
+          facial_features: [],
+          hair_style: "shoulder-length",
+          body_type: "slim",
+          distinctive_features: [],
+          outfit_states: {},
+        },
+        legacy_fields: [],
+      },
+    },
+  }),
+  useUpdateCharacterExtractionLock: () => ({
+    mutateAsync: extractionLockMutationMock,
+    isPending: false,
+  }),
+  useUpdateCharacterVisualWorkspace: () => ({
+    mutateAsync: visualWorkspaceMutationMock,
+    isPending: false,
+  }),
+  useConfirmCharacterVisualBible: () => ({
+    mutateAsync: confirmVisualBibleMutationMock,
+    isPending: false,
+  }),
   useCharacters: () => ({
     isLoading: false,
     data: {
@@ -140,6 +214,7 @@ vi.mock("@/lib/queries/characters", () => ({
           face_prompt: "sharp eyes",
           body_type: "slim",
           portrait_url: "",
+          extraction_locked: characterVisualState.extractionLocked,
         },
       ],
     },
@@ -250,6 +325,14 @@ describe("characters page CE generation credit gating", () => {
     toastErrorMock.mockClear();
     buildCharactersMutationMock.mockReset();
     taskStreamOptionsMock.mockClear();
+    extractionLockMutationMock.mockReset();
+    extractionLockMutationMock.mockResolvedValue({ ok: true, data: {} });
+    visualWorkspaceMutationMock.mockReset();
+    visualWorkspaceMutationMock.mockResolvedValue({ ok: true, data: {} });
+    confirmVisualBibleMutationMock.mockReset();
+    confirmVisualBibleMutationMock.mockResolvedValue({ ok: true, data: {} });
+    characterVisualState.extractionLocked = false;
+    characterVisualState.visualBibleStatus = "draft";
     Element.prototype.scrollTo = vi.fn();
     window.localStorage.clear();
   });
@@ -324,4 +407,51 @@ describe("characters page CE generation credit gating", () => {
       ).toBe(false);
     },
   );
+
+  it("locks character extraction and selects one of three visual proposals", async () => {
+    const user = userEvent.setup();
+    const firstRender = renderCharactersPage();
+
+    await user.click(await screen.findByRole("button", { name: "锁定角色" }));
+    expect(extractionLockMutationMock).toHaveBeenCalledWith(true);
+
+    await user.click(screen.getByRole("button", { name: /Urban sharpness/ }));
+    expect(visualWorkspaceMutationMock).toHaveBeenCalledWith({
+      selected_proposal_id: "proposal-b",
+    });
+    expect(screen.getByText("推荐")).toBeInTheDocument();
+
+    firstRender.unmount();
+    characterVisualState.extractionLocked = true;
+    renderCharactersPage();
+    await user.click(await screen.findByRole("button", { name: "解锁角色" }));
+    expect(extractionLockMutationMock).toHaveBeenLastCalledWith(false);
+  });
+
+  it("disables portrait generation until the VisualBible is confirmed", async () => {
+    renderCharactersPage();
+
+    expect(
+      await screen.findByRole("button", { name: "characters.summary.generateNew" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "确认 VisualBible" })).toBeInTheDocument();
+  });
+
+  it("enables portrait generation after the VisualBible is confirmed", async () => {
+    characterVisualState.visualBibleStatus = "confirmed";
+    renderCharactersPage();
+
+    expect(
+      await screen.findByRole("button", { name: "characters.summary.generateNew" }),
+    ).toBeEnabled();
+    expect(screen.getByText("VisualBible 已确认")).toBeInTheDocument();
+  });
+
+  it("confirms a draft VisualBible from the visual profile", async () => {
+    const user = userEvent.setup();
+    renderCharactersPage();
+
+    await user.click(await screen.findByRole("button", { name: "确认 VisualBible" }));
+    expect(confirmVisualBibleMutationMock).toHaveBeenCalledTimes(1);
+  });
 });

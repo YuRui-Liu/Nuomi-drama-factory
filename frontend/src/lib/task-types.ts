@@ -14,13 +14,14 @@ export const TASK_TYPES = {
   // Project-level
   BUILD_CHARACTERS: "build_characters",
   INGEST_FAST: "ingest_fast",
+  EPISODE_GRAPH_INDEX: "episode_graph_index",
   BUILD_EPISODES: "build_episodes",
   CHARACTER_PORTRAIT: "character_portrait",
   IDENTITY_IMAGE: "identity_image",
   IDENTITY_PORTRAIT: "identity_portrait",
   // Script
-  SCRIPT_WRITER: "script_writer",
-  LITERAL_SCRIPT_WRITER: "literal_script_writer",
+  SCREENPLAY_SEMANTICS: "screenplay_semantics",
+  DIRECTOR_PLAN: "director_plan",
   BEAT_VIDEO_PROMPT: "beat_video_prompt",
   SCREENPLAY_SEMANTIC_REPAIR: "screenplay_semantic_repair",
   // Backend emits `director_notes`; keep the FE key aligned with that exact

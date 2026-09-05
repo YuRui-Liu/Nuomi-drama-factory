@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import BaseModel
 
+from novelvideo.episode_graph.models import EpisodeGraphExtraction
 from novelvideo.knowledge_runtime.codex import (
     CodexCliStructuredBackend,
     MIN_CODEX_VERSION,
@@ -55,6 +56,23 @@ def test_normalize_codex_output_schema_makes_nested_objects_strict() -> None:
     assert node_schema["required"] == ["id", "name"]
     assert "default" not in node_schema["properties"]["name"]
 
+
+def test_episode_graph_schema_closes_attribute_objects_for_codex() -> None:
+    normalized = normalize_codex_output_schema(
+        EpisodeGraphExtraction.model_json_schema()
+    )
+
+    attribute_schema = normalized["$defs"]["GraphAttributes"]
+    assert attribute_schema["additionalProperties"] is False
+    assert "description" in attribute_schema["properties"]
+    serialized = str(normalized)
+    for unsupported in (
+        "uniqueItems",
+        "minLength",
+        "minItems",
+        "exclusiveMinimum",
+    ):
+        assert unsupported not in serialized
 
 
 def test_build_codex_exec_argv_is_ephemeral_read_only() -> None:

@@ -279,53 +279,17 @@ async def generate_script(
     body: ScriptGenerateRequest | None = None,
     user: dict = Depends(get_api_user),
 ):
-    """生成指定集数的剧本。"""
-    logger.info("[%s] EP%d generate_script", project, episode_num)
-    resolved = await resolve_project_scope(project, user, required_role="editor")
-    ctx = resolved.ctx
-    username = resolved.username
-    project_name = resolved.project_name
-    output_dir = resolved.output_dir
-    store = (
-        await make_sqlite_store_for_context(ctx)
-        if ctx
-        else await make_sqlite_store(username, project_name)
+    """Compatibility tombstone for the retired line-Beat generator."""
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "LEGACY_SCRIPT_GENERATION_RETIRED",
+            "message": "旧脚本生成入口已退役；请解析并激活剧本语义版本，再生成导演镜头方案。",
+            "replacement": (
+                f"/api/v1/projects/{project}/episodes/{episode_num}/screenplay-semantics"
+            ),
+        },
     )
-    episode = store.get_episode(episode_num)
-    if not getattr(episode, "identity_ids", None):
-        return {
-            "ok": False,
-            "code": "identity_plan_required",
-            "error": f"第 {episode_num} 集尚未规划角色身份，请先规划身份",
-        }
-
-    config = {}
-
-    # 启动前清理旧 sketch 展示文件，确保即使任务失败画廊也不展示旧草图
-    from novelvideo.utils.path_resolver import PathResolver
-
-    paths = PathResolver(output_dir, episode_num)
-    paths.clean_sketches()
-
-    if ctx is not None:
-        queued = await get_task_backend().enqueue_project_task(
-            ctx,
-            task_type="script_writer",
-            queue_kind="default",
-            episode=episode_num,
-            payload={"episode": episode_num, "config": config, "output_dir": output_dir},
-        )
-        return {
-            "ok": True,
-            "task_type": "script_writer",
-            "task_id": queued.task_state.task_id,
-            "task_key": project_task_state_key("script_writer", ctx.project_id, episode_num),
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "message": f"第 {episode_num} 集剧本生成任务已进入队列",
-        }
-
-    return {"ok": False, "error": "剧本生成需要 project context"}
 
 
 @router.patch("/projects/{project}/episodes/{episode_num}/beats/{beat_num}")

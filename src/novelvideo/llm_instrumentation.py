@@ -307,7 +307,6 @@ def _normalize_recorded_model_name(model: str) -> str:
         "IDENTITY_PLANNER_APPEARANCE_MODEL",
         "EPISODE_SCENE_PLANNER_MODEL",
         "EPISODE_PROP_PLANNER_MODEL",
-        "LITERAL_BEAT_META_MODEL",
         "SCENE_BUILD_MODEL",
         "NARRATED_SCENE_ASSET_MODEL",
         "GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL",

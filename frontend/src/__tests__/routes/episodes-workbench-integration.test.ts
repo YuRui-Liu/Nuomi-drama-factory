@@ -10,6 +10,14 @@ const routeSource = readFileSync(
 );
 
 describe("episodes workbench integration", () => {
+  it("provides the route-level task registry before EpisodesPage uses task hooks", () => {
+    expect(routeSource).toContain("function EpisodesRoutePage()");
+    expect(routeSource).toMatch(
+      /function EpisodesRoutePage\(\)[\s\S]*<TaskControllerProvider project=\{project\} episode=\{0\}>[\s\S]*<EpisodesPage \/>[\s\S]*<\/TaskControllerProvider>/,
+    );
+    expect(routeSource).toContain("component: EpisodesRoutePage");
+  });
+
   it("wires NiceGUI-style stats and manual refresh into the episode list", () => {
     expect(routeSource).toContain("deriveEpisodeStats");
     expect(routeSource).toContain("EpisodeStatsStrip");

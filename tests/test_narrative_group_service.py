@@ -14,12 +14,24 @@ from novelvideo.narrative_groups.service import (
     rebuild_groups,
     save_groups,
     reserve_video_revision,
+    sidecar_path,
+    ensure_groups,
+    update_video_plan,
 )
 
 
 @pytest.mark.parametrize(
     ("count", "shape"),
-    [(1, (2, 2)), (4, (2, 2)), (5, (2, 3)), (6, (2, 3)), (7, (3, 3)), (9, (3, 3))],
+    [
+        (1, (1, 1)),
+        (2, (1, 2)),
+        (3, (2, 2)),
+        (4, (2, 2)),
+        (5, (2, 3)),
+        (6, (2, 3)),
+        (7, (3, 3)),
+        (9, (3, 3)),
+    ],
 )
 def test_layout_for_group_uses_supported_shapes(count, shape):
     assert layout_for_group(count).shape == shape
@@ -53,7 +65,7 @@ def test_group_beats_accepts_mapping_ids_without_creating_padding_cells():
         (0, "beat-a"),
         (1, "beat-b"),
     ]
-    assert groups[0].layout.capacity == 4
+    assert groups[0].layout.capacity == 2
 
 
 def test_group_beats_respects_scene_and_time_continuity():
@@ -201,3 +213,259 @@ def test_stage_result_persists_provider_mode_frames_and_history(tmp_path):
     assert restored.stages["render"].grid_asset == "grid-r1.png"
     assert restored.stages["render"].actual_provider == "grsai"
     assert restored.stages["render"].cell_assets[0]["first_frame"] is True
+
+
+def test_ensure_groups_persists_deterministic_recommended_video_plan(tmp_path):
+    beats = [
+        {"id": "beat-1", "duration_seconds": 4},
+        {"id": "beat-2", "video_duration": 5},
+        {"id": "beat-3", "duration": 2},
+        {"id": "beat-4", "duration_seconds": 3},
+        {"id": "beat-5", "duration_seconds": 4},
+    ]
+
+    group = ensure_groups(tmp_path, 1, beats)[0]
+
+    assert group.video_plan.to_dict() == {
+        "revision": 1,
+        "source": "recommended",
+        "units": [
+            {
+                "id": "unit-01",
+                "beat_ids": ["beat-1", "beat-2"],
+                "mode": "fl2va",
+                "duration_seconds": 9.0,
+                "reason": "recommended_adjacent_pair",
+            },
+            {
+                "id": "unit-02",
+                "beat_ids": ["beat-3"],
+                "mode": "i2va",
+                "duration_seconds": 2.0,
+                "reason": "recommended_singleton",
+            },
+            {
+                "id": "unit-03",
+                "beat_ids": ["beat-4", "beat-5"],
+                "mode": "fl2va",
+                "duration_seconds": 7.0,
+                "reason": "recommended_adjacent_pair",
+            },
+        ],
+        "total_duration_seconds": 18.0,
+    }
+    assert load_groups(tmp_path, 1)[0].video_plan == group.video_plan
+
+
+def test_ensure_groups_migrates_legacy_sidecar_without_video_plan(tmp_path):
+    import json
+
+    beats = [{"id": "beat-1"}, {"id": "beat-2"}]
+    save_groups(tmp_path, 1, group_beats(beats))
+    payload = json.loads(sidecar_path(tmp_path, 1).read_text("utf-8"))
+    for item in payload["groups"]:
+        item.pop("video_plan", None)
+    sidecar_path(tmp_path, 1).write_text(json.dumps(payload), encoding="utf-8")
+
+    group = ensure_groups(tmp_path, 1, beats)[0]
+
+    assert group.video_plan.revision == 1
+    assert group.video_plan.units[0].beat_ids == ("beat-1", "beat-2")
+    assert "video_plan" in sidecar_path(tmp_path, 1).read_text("utf-8")
+
+
+def test_ensure_groups_migrates_missing_plan_when_canonical_beat_is_missing(tmp_path):
+    import json
+
+    original_beats = [
+        {"id": "beat-1", "duration_seconds": 6},
+        {"id": "beat-2", "duration_seconds": 2},
+        {"id": "beat-3", "duration_seconds": 4},
+    ]
+    save_groups(tmp_path, 1, group_beats(original_beats))
+    payload = json.loads(sidecar_path(tmp_path, 1).read_text("utf-8"))
+    payload["groups"][0].pop("video_plan")
+    sidecar_path(tmp_path, 1).write_text(json.dumps(payload), encoding="utf-8")
+
+    group = ensure_groups(
+        tmp_path,
+        1,
+        [original_beats[0], original_beats[2]],
+    )[0]
+
+    assert group.beat_ids == ("beat-1", "beat-2", "beat-3")
+    assert tuple(
+        beat_id for unit in group.video_plan.units for beat_id in unit.beat_ids
+    ) == group.beat_ids
+    assert group.video_plan.total_duration_seconds == 15.0
+    assert load_groups(tmp_path, 1)[0].video_plan == group.video_plan
+
+
+def test_ensure_groups_recommends_and_saves_invalid_nonempty_video_plan(tmp_path):
+    import json
+
+    beats = [{"id": "beat-1"}, {"id": "beat-2"}, {"id": "beat-3"}]
+    save_groups(tmp_path, 1, group_beats(beats))
+    payload = json.loads(sidecar_path(tmp_path, 1).read_text("utf-8"))
+    payload["groups"][0]["video_plan"] = {
+        "revision": 7,
+        "source": "manual",
+        "units": [
+            {
+                "id": "unit-01",
+                "beat_ids": ["beat-2", "beat-1"],
+                "mode": "fl2va",
+                "duration_seconds": 10,
+                "reason": "manual_adjacent_pair",
+            },
+            {
+                "id": "unit-02",
+                "beat_ids": ["beat-3"],
+                "mode": "i2va",
+                "duration_seconds": 5,
+                "reason": "manual_singleton",
+            },
+        ],
+        "total_duration_seconds": 15,
+    }
+    sidecar_path(tmp_path, 1).write_text(json.dumps(payload), encoding="utf-8")
+
+    group = ensure_groups(tmp_path, 1, beats)[0]
+
+    assert group.video_plan.revision == 1
+    assert group.video_plan.source == "recommended"
+    assert tuple(
+        beat_id for unit in group.video_plan.units for beat_id in unit.beat_ids
+    ) == group.beat_ids
+    assert load_groups(tmp_path, 1)[0].video_plan == group.video_plan
+
+
+def test_update_video_plan_validates_partition_and_invalidates_video_assets(tmp_path):
+    beats = [{"id": f"beat-{index}"} for index in range(1, 4)]
+    group = ensure_groups(tmp_path, 1, beats)[0]
+    advance_revision(tmp_path, 1, group.id, "video")
+    record_stage_result(
+        tmp_path,
+        1,
+        group.id,
+        "video",
+        expected_revision=1,
+        status="completed",
+        video_asset="old.mp4",
+        manifest_asset="old.json",
+    )
+
+    updated = update_video_plan(
+        tmp_path,
+        1,
+        group.id,
+        beats,
+        expected_revision=1,
+        units=[{"beat_ids": ["beat-1"]}, {"beat_ids": ["beat-2", "beat-3"]}],
+    )
+
+    assert updated.video_plan.revision == 2
+    assert updated.video_plan.source == "manual"
+    assert [unit.mode for unit in updated.video_plan.units] == ["i2va", "fl2va"]
+    assert updated.stages["video"].revision == 1
+    assert updated.stages["video"].status == "pending"
+    assert updated.stages["video"].video_asset == ""
+    with pytest.raises(RuntimeError, match="video plan revision is stale"):
+        update_video_plan(
+            tmp_path,
+            1,
+            group.id,
+            beats,
+            expected_revision=1,
+            units=[{"beat_ids": ["beat-1", "beat-2"]}, {"beat_ids": ["beat-3"]}],
+        )
+    with pytest.raises(ValueError, match="complete ordered partition"):
+        update_video_plan(
+            tmp_path,
+            1,
+            group.id,
+            beats,
+            expected_revision=2,
+            units=[{"beat_ids": ["beat-1", "beat-3"]}, {"beat_ids": ["beat-2"]}],
+        )
+
+
+def test_update_video_plan_uses_safe_duration_for_missing_canonical_beat(tmp_path):
+    original_beats = [{"id": "beat-1", "duration_seconds": 3}, {"id": "beat-2"}]
+    group = ensure_groups(tmp_path, 1, original_beats)[0]
+
+    updated = update_video_plan(
+        tmp_path,
+        1,
+        group.id,
+        [original_beats[0]],
+        expected_revision=1,
+        units=[{"beat_ids": ["beat-1"]}, {"beat_ids": ["beat-2"]}],
+    )
+
+    assert [unit.duration_seconds for unit in updated.video_plan.units] == [3.0, 5.0]
+    assert updated.video_plan.total_duration_seconds == 8.0
+
+
+def test_video_plan_update_before_reservation_rejects_old_plan_task(tmp_path):
+    beats = [{"id": "beat-1"}, {"id": "beat-2"}]
+    group = ensure_groups(tmp_path, 1, beats)[0]
+
+    updated = update_video_plan(
+        tmp_path,
+        1,
+        group.id,
+        beats,
+        expected_revision=1,
+        units=[{"beat_ids": ["beat-1"]}, {"beat_ids": ["beat-2"]}],
+    )
+
+    with pytest.raises(RuntimeError, match="video plan revision is stale"):
+        reserve_video_revision(
+            tmp_path,
+            1,
+            group.id,
+            expected_revision=0,
+            expected_plan_revision=1,
+        )
+    persisted = load_groups(tmp_path, 1)[0]
+    assert persisted.video_plan == updated.video_plan
+    assert persisted.stages["video"].status == "pending"
+    assert persisted.stages["video"].revision == 0
+
+
+@pytest.mark.parametrize("task_status", ["queued", "running"])
+def test_video_reservation_before_plan_update_rejects_update(tmp_path, task_status):
+    beats = [{"id": "beat-1"}, {"id": "beat-2"}]
+    group = ensure_groups(tmp_path, 1, beats)[0]
+    reserved, _ = reserve_video_revision(
+        tmp_path,
+        1,
+        group.id,
+        expected_revision=0,
+        expected_plan_revision=1,
+    )
+    if task_status == "running":
+        record_stage_result(
+            tmp_path,
+            1,
+            group.id,
+            "video",
+            expected_revision=1,
+            status="running",
+        )
+
+    with pytest.raises(RuntimeError, match=f"video stage is {task_status}"):
+        update_video_plan(
+            tmp_path,
+            1,
+            group.id,
+            beats,
+            expected_revision=1,
+            units=[{"beat_ids": ["beat-1"]}, {"beat_ids": ["beat-2"]}],
+        )
+
+    persisted = load_groups(tmp_path, 1)[0]
+    assert persisted.video_plan == reserved.video_plan
+    assert persisted.stages["video"].status == task_status
+    assert persisted.stages["video"].revision == 1

@@ -226,18 +226,32 @@ def create_h3_episode_pack_optimizer(
         _non_negative_int_env,
     )
 
+    from novelvideo.text_task_runtime.runtime import (
+        StructuredRuntimeAgent,
+        current_text_task_runtime,
+    )
+
+    routed_runtime = current_text_task_runtime() if director_model_factory is None else None
     factory = director_model_factory or _default_director_model_factory
     settings = model_settings if model_settings is not None else _default_model_settings()
     kwargs: dict[str, Any] = {}
     if settings is not None:
         kwargs["model_settings"] = settings
-    agent = Agent(
-        factory(),
-        system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
-        output_type=PromptedOutput(H3EpisodePromptPack),
-        name="MiniMax H3 Episode Director Planner",
-        retries={"tools": 1, "output": 3},
-        **kwargs,
+    agent = (
+        StructuredRuntimeAgent(
+            routed_runtime,
+            output_type=H3EpisodePromptPack,
+            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+        )
+        if routed_runtime is not None
+        else Agent(
+            factory(),
+            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+            output_type=PromptedOutput(H3EpisodePromptPack),
+            name="MiniMax H3 Episode Director Planner",
+            retries={"tools": 1, "output": 3},
+            **kwargs,
+        )
     )
     return H3EpisodePackOptimizer(
         agent,

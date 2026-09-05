@@ -10,7 +10,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     from novelvideo.task_backend.runners import scene_reference
 
     scene = NovelScene(name="大厅", description="地下大厅")
-    calls: dict[str, object] = {}
+    calls: dict[str, object] = {"clear_stale": []}
 
     class FakeSQLiteStore:
         def __init__(self, project_name, *, output_dir, state_dir):
@@ -26,7 +26,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
             pass
 
         async def clear_scene_stale_reference_kind(self, name, kind):
-            calls["clear_stale"] = (name, kind)
+            calls["clear_stale"].append((name, kind))
             return True
 
         async def close(self):
@@ -34,7 +34,8 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
 
     async def fake_generate(**kwargs):
         calls["generate"] = kwargs
-        output = Path(tmp_path) / "master.png"
+        output = Path(kwargs["output_path_override"])
+        output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"png")
         return output
 
@@ -90,8 +91,45 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
         ctx,
     )
 
-    assert result["path"].endswith("master.png")
+    assert result["path"].endswith(".png")
+    assert result["slot_id"] == "scene:大厅:base:master"
+    assert result["adoption_status"] == "provisional"
+    assert (tmp_path / "assets" / "scenes" / "大厅" / "master.png").read_bytes() == b"png"
     assert calls["sqlite_initialized"] is True
     assert calls["sqlite_closed"] is True
     assert calls["generate"]["provider"] == "grsai"
     assert calls["generate"]["model"] == "gpt-image-2"
+    assert "versions" in str(calls["generate"]["output_path_override"])
+    assert calls["clear_stale"] == [("大厅", "master")]
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    slot, versions = ProductionWorkflowStore(
+        tmp_path / "production_workflow.json"
+    ).get_slot("scene:大厅:base:master")
+    assert slot.current_version_id == result["version_id"]
+    version = versions[result["version_id"]]
+    assert version.asset_path == Path(result["path"]).relative_to(tmp_path).as_posix()
+    assert version.generation_metadata["anchor_kind"] == "master"
+    assert version.generation_metadata["canonical_path"] == (
+        "assets/scenes/大厅/master.png"
+    )
+
+    second = await scene_reference._run_scene_reference_asset(
+        {
+            "payload": {
+                "scene_name": scene.name,
+                "kind": "master",
+                "output_dir": str(tmp_path),
+            }
+        },
+        ctx,
+    )
+    second_slot, _second_versions = ProductionWorkflowStore(
+        tmp_path / "production_workflow.json"
+    ).get_slot("scene:大厅:base:master")
+
+    assert second["adoption_status"] == "candidate"
+    assert second["version_id"] != result["version_id"]
+    assert second_slot.current_version_id == result["version_id"]
+    assert calls["clear_stale"] == [("大厅", "master")]

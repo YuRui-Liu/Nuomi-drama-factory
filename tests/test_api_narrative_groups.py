@@ -1300,3 +1300,23 @@ def test_get_video_prompts_rejects_non_scalar_dto_fields_and_unsafe_frame_paths(
         "file://", "c:/private", "server\\share",
     ):
         assert forbidden not in serialized
+
+def test_put_video_plan_uses_active_director_shot_ids(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
+    [group] = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).json()["data"]
+
+    response = client.put(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/director-group/video/plan",
+        json={
+            "expected_revision": group["video_plan"]["revision"],
+            "units": [{"beat_ids": ["shot-1"]}],
+        },
+    )
+
+    assert response.status_code == 200
+    plan = response.json()["data"]["video_plan"]
+    assert plan["units"][0]["beat_ids"] == ["shot-1"]
+    assert plan["units"][0]["duration_seconds"] == 3.0

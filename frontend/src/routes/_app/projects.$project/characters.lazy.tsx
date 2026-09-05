@@ -13,6 +13,8 @@ import {
   History,
   ImageIcon,
   Loader2,
+  Lock,
+  LockOpen,
   Map,
   Mars,
   Mic2,
@@ -38,6 +40,8 @@ import {
   useBuildCharacters,
   useCharacterAssetHistory,
   useCharacterIdentities,
+  useCharacterVisualWorkspace,
+  useConfirmCharacterVisualBible,
   useCharacters,
   useCreateCharacter,
   useCreateIdentity,
@@ -52,6 +56,8 @@ import {
   useGeneratePortraitAsync,
   useRestoreCharacterAsset,
   useUpdateCharacter,
+  useUpdateCharacterExtractionLock,
+  useUpdateCharacterVisualWorkspace,
   useUpdateIdentity,
   useUploadCostumeImage,
   useUploadIdentityImage,
@@ -76,6 +82,8 @@ import { CharacterSearch, filterCharacters } from "@/components/assets/character
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { CharacterStatsStrip } from "@/components/assets/character-stats-strip";
 import { CharacterVoicePanel } from "@/components/assets/character-voice-panel";
+import { CharacterVisualProfile } from "@/components/assets/character-visual-profile";
+import { CharacterStateVersions } from "@/components/assets/character-state-versions";
 import { NarratorVoicePanel } from "@/components/assets/narrator-voice-panel";
 import { ProjectStyleChip } from "@/components/assets/project-style-chip";
 import { ScenesPanel } from "@/components/assets/scenes-panel";
@@ -113,6 +121,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { SaveStatus } from "@/components/save-status";
 import { saveScopes, trackSave } from "@/stores/save-status-store";
+import { useAuthStore } from "@/stores/auth-store";
 import { SidebarListSkeleton } from "@/components/skeletons";
 import {
   AlertDialog,
@@ -210,7 +219,6 @@ const addCharacterSchema = z.object({
   role: z.string().optional(),
   gender: z.string().optional(),
   description: z.string().optional(),
-  face_prompt: z.string().optional(),
 });
 
 type AddCharacterForm = z.infer<typeof addCharacterSchema>;
@@ -750,6 +758,10 @@ function CharacterHeaderRow({
 }) {
   const { t } = useTranslation();
   const updateChar = useUpdateCharacter(project, character.name);
+  const updateExtractionLock = useUpdateCharacterExtractionLock(
+    project,
+    character.name,
+  );
   const deleteChar = useDeleteCharacter(project);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [freezonePending, setFreezonePending] = useState(false);
@@ -765,6 +777,15 @@ function CharacterHeaderRow({
       );
     } catch {
       toast.error(t("common.error"));
+    }
+  };
+
+  const handleToggleExtractionLock = async () => {
+    try {
+      await updateExtractionLock.mutateAsync(!character.extraction_locked);
+      toast.success(character.extraction_locked ? "角色已解锁" : "角色已锁定");
+    } catch (err) {
+      toast.error(backendErrorToastMessage(err, t));
     }
   };
 
@@ -829,6 +850,24 @@ function CharacterHeaderRow({
         <div className="flex h-8 min-w-[112px] items-center justify-end">
           <SaveStatus scope={detailsScope} variant="inline" />
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleToggleExtractionLock}
+          disabled={updateExtractionLock.isPending}
+          aria-label={character.extraction_locked ? "解锁角色" : "锁定角色"}
+          className={cn(
+            "gap-1.5",
+            character.extraction_locked && "text-amber-600 dark:text-amber-300",
+          )}
+        >
+          {character.extraction_locked ? (
+            <Lock className="size-3.5" />
+          ) : (
+            <LockOpen className="size-3.5" />
+          )}
+          {character.extraction_locked ? "解锁角色" : "锁定角色"}
+        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -903,12 +942,14 @@ function PortraitBlock({
   imageModel,
   attemptCount,
   onAttempt,
+  canGeneratePortrait,
 }: {
   character: Character;
   project: string;
   imageModel?: string;
   attemptCount: number;
   onAttempt: () => void;
+  canGeneratePortrait: boolean;
 }) {
   const { t } = useTranslation();
   const genPortrait = useGeneratePortraitAsync(project, character.name);
@@ -936,6 +977,10 @@ function PortraitBlock({
   });
 
   const handleGenerate = async () => {
+    if (!canGeneratePortrait) {
+      toast.error("请先确认 VisualBible");
+      return;
+    }
     onAttempt();
     try {
       const res = await genPortrait.mutateAsync({
@@ -975,7 +1020,8 @@ function PortraitBlock({
           size="sm"
           variant="outline"
           onClick={() => setGenConfirm(true)}
-          disabled={genBusy}
+          disabled={genBusy || !canGeneratePortrait}
+          title={canGeneratePortrait ? undefined : "请先确认 VisualBible"}
           className="relative h-7 w-full gap-1 rounded-[8px] px-2 text-xs"
         >
           {genBusy ? (
@@ -1083,7 +1129,6 @@ function DetailsFormCard({
   const [bodyType, setBodyType] = useState(character.body_type ?? "");
   const [aliases, setAliases] = useState((character.aliases ?? []).join(", "));
   const [desc, setDesc] = useState(character.description ?? "");
-  const [facePrompt, setFacePrompt] = useState(character.face_prompt ?? "");
 
   useEffect(() => {
     setDisplayName(character.name);
@@ -1091,14 +1136,12 @@ function DetailsFormCard({
     setBodyType(character.body_type ?? "");
     setAliases((character.aliases ?? []).join(", "));
     setDesc(character.description ?? "");
-    setFacePrompt(character.face_prompt ?? "");
   }, [
     character.name,
     character.role,
     character.body_type,
     character.aliases,
     character.description,
-    character.face_prompt,
   ]);
 
   const handleInstantSelect = async (
@@ -1164,10 +1207,6 @@ function DetailsFormCard({
   const handleBlurDesc = () => {
     if (desc !== (character.description ?? ""))
       saveField({ description: desc || undefined });
-  };
-  const handleBlurFacePrompt = () => {
-    if (facePrompt !== (character.face_prompt ?? ""))
-      saveField({ face_prompt: facePrompt || undefined });
   };
 
   return (
@@ -1281,16 +1320,6 @@ function DetailsFormCard({
               onBlur={handleBlurDesc}
             />
           </Field>
-          <Field label={t("characters.basics.facePrompt")}>
-            <textarea
-              className={cn(CHARACTER_TEXTAREA_CLASS, "min-h-[96px]")}
-              rows={3}
-              value={facePrompt}
-              onChange={(e) => setFacePrompt(e.target.value)}
-              onBlur={handleBlurFacePrompt}
-              placeholder="oval face, big eyes…"
-            />
-          </Field>
         </div>
       </div>
     </div>
@@ -1309,6 +1338,7 @@ function IdentityCard({
   referenceCount = 0,
   references = [],
   onAttempt,
+  canGeneratePortrait,
 }: {
   identity: Identity;
   project: string;
@@ -1320,6 +1350,7 @@ function IdentityCard({
   referenceCount?: number;
   references?: BeatReference[];
   onAttempt: () => void;
+  canGeneratePortrait: boolean;
 }) {
   const { t } = useTranslation();
   const updateIdentity = useUpdateIdentity(project, characterName);
@@ -1370,7 +1401,6 @@ function IdentityCard({
   const [appearance, setAppearance] = useState(
     identity.appearance_details ?? "",
   );
-  const [facePrompt, setFacePrompt] = useState(identity.face_prompt ?? "");
   const [bodyType, setBodyType] = useState(identity.body_type ?? "");
 
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -1402,23 +1432,19 @@ function IdentityCard({
 
   useEffect(() => {
     setAppearance(identity.appearance_details ?? "");
-    setFacePrompt(identity.face_prompt ?? "");
     setBodyType(identity.body_type ?? "");
     setRenameValue(identity.identity_name);
   }, [
     identity.identity_id,
     identity.identity_name,
     identity.appearance_details,
-    identity.face_prompt,
     identity.body_type,
     identity.age_group,
     identity.portrait_image_url,
   ]);
 
   const appearanceDirty = appearance !== (identity.appearance_details ?? "");
-  const refsDirty =
-    facePrompt !== (identity.face_prompt ?? "") ||
-    bodyType !== (identity.body_type ?? "");
+  const refsDirty = bodyType !== (identity.body_type ?? "");
 
   const bumpAttempt = () => {
     onAttempt();
@@ -1442,7 +1468,6 @@ function IdentityCard({
       await updateIdentity.mutateAsync({
         identityId: identity.identity_id,
         data: {
-          face_prompt: facePrompt,
           body_type: bodyType,
         },
       });
@@ -1516,12 +1541,12 @@ function IdentityCard({
   };
 
   const handleGenPortrait = () => {
-    if (!isAgeVariant) {
-      toast.error(t("characters.identities.variantOnly"));
+    if (!canGeneratePortrait) {
+      toast.error("请先确认 VisualBible");
       return;
     }
-    if (!facePrompt.trim()) {
-      toast.error(t("characters.identities.portraitNeedsFacePrompt"));
+    if (!isAgeVariant) {
+      toast.error(t("characters.identities.variantOnly"));
       return;
     }
     setConfirmGenPortraitOpen(true);
@@ -1768,6 +1793,13 @@ function IdentityCard({
         </div>
       </div>
 
+      <CharacterStateVersions
+        project={project}
+        characterName={characterName}
+        identityId={identity.identity_id}
+        legacyAssetPath={identity.image_path}
+      />
+
       {/* Refs: costume reference + age variant fields (always visible) */}
       <div className="border-t border-white/[0.06] pt-4">
         <div className="mb-4 flex items-center gap-2 text-xs font-medium leading-4 text-muted-foreground">
@@ -1917,22 +1949,6 @@ function IdentityCard({
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">
-                  {t("characters.basics.facePrompt")}
-                </Label>
-                <textarea
-                  className={CHARACTER_TEXTAREA_CLASS}
-                  rows={2}
-                  value={facePrompt}
-                  onChange={(e) => setFacePrompt(e.target.value)}
-                  onBlur={() => {
-                    if (refsDirty) handleSaveRefs();
-                  }}
-                  placeholder={t("characters.basics.facePromptHint")}
-                />
-              </div>
-
               {/* Identity-level face portrait */}
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground">
@@ -1962,11 +1978,8 @@ function IdentityCard({
                           ? t("characters.identities.variantOnly")
                           : identity.portrait_image_url
                             ? t("characters.identities.portraitReady")
-                            : facePrompt.trim()
-                              ? t("characters.identities.portraitMissing")
-                              : t(
-                                  "characters.identities.portraitNeedsFacePrompt",
-                                )}
+                            : t("characters.identities.portraitMissing")
+                        }
                       </span>
                       <div className="flex flex-wrap gap-1.5">
                         <Tooltip>
@@ -1981,7 +1994,7 @@ function IdentityCard({
                                   genPortrait.isPending ||
                                   identityPortraitTask.started ||
                                   !isAgeVariant ||
-                                  !facePrompt.trim()
+                                  !canGeneratePortrait
                                 }
                               >
                                 {genPortrait.isPending ||
@@ -2000,13 +2013,9 @@ function IdentityCard({
                           <TooltipContent>
                             {!isAgeVariant
                               ? t("characters.identities.variantOnly")
-                              : !facePrompt.trim()
-                                ? t(
-                                    "characters.identities.portraitNeedsFacePrompt",
-                                  )
-                                : t(
-                                    "characters.identities.generatePortraitTip",
-                                  )}
+                              : !canGeneratePortrait
+                                ? "请先确认 VisualBible"
+                                : t("characters.identities.generatePortraitTip")}
                           </TooltipContent>
                         </Tooltip>
                         <Tooltip>
@@ -2218,6 +2227,7 @@ function IdentityCard({
                 setConfirmGenPortraitOpen(false);
                 runGenPortrait();
               }}
+              disabled={!canGeneratePortrait}
               className={identityCreditDialogActionClass}
             >
               {t("characters.identities.generate")}
@@ -2312,11 +2322,13 @@ function IdentitiesGridSection({
   project,
   imageModel,
   onAttempt,
+  canGeneratePortrait,
 }: {
   character: Character;
   project: string;
   imageModel?: string;
   onAttempt: () => void;
+  canGeneratePortrait: boolean;
 }) {
   const { t } = useTranslation();
   const { data: identitiesRes } = useCharacterIdentities(
@@ -2437,6 +2449,7 @@ function IdentitiesGridSection({
                 referenceCount={refDetail.isError ? undefined : refDetail.referencesFor("identity", id.identity_id).length}
                 references={refDetail.isError ? [] : refDetail.referencesFor("identity", id.identity_id)}
                 onAttempt={onAttempt}
+                canGeneratePortrait={canGeneratePortrait}
               />
             </div>
           ))}
@@ -2573,6 +2586,18 @@ function DetailPanel({
   onRenamed: (nextName: string) => void;
 }) {
   const { t } = useTranslation();
+  const visualWorkspaceRes = useCharacterVisualWorkspace(
+    project,
+    character?.name ?? "",
+  );
+  const updateVisualWorkspace = useUpdateCharacterVisualWorkspace(
+    project,
+    character?.name ?? "",
+  );
+  const confirmVisualBible = useConfirmCharacterVisualBible(
+    project,
+    character?.name ?? "",
+  );
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Reset scroll position when selected character changes
@@ -2594,6 +2619,55 @@ function DetailPanel({
   }
 
   const detailsScope = saveScopes.characterDetails(project, character.name);
+  const visualWorkspace = isOkResponse(visualWorkspaceRes.data)
+    ? visualWorkspaceRes.data.data
+    : undefined;
+  const selectedProposal = visualWorkspace?.design_proposals.find(
+    (proposal) => proposal.proposal_id === visualWorkspace.selected_proposal_id,
+  );
+  const visualBible = visualWorkspace?.visual_bible;
+  const canGeneratePortrait = visualBible?.status === "confirmed";
+  const visualFacts = [
+    ...(visualWorkspace?.profile.facts ?? []).map((fact) => ({
+      id: fact.fact_id,
+      field: fact.field,
+      value: fact.value,
+      evidence: fact.evidence,
+      sourceSpan: `${fact.source_span.start_line}-${fact.source_span.end_line} 行`,
+      assertion: fact.assertion,
+      trust: fact.trust,
+    })),
+    ...(visualWorkspace?.legacy_fields ?? []).map((field, index) => ({
+      id: `legacy-${index}`,
+      field: field.field,
+      value: field.value,
+      evidence: "旧项目字段，无可核验剧本来源",
+      sourceSpan: "legacy",
+      assertion: "inferred" as const,
+      trust: "legacy_untrusted" as const,
+    })),
+  ];
+
+  const handleSelectProposal = async (proposalId: string) => {
+    try {
+      await updateVisualWorkspace.mutateAsync({
+        selected_proposal_id: proposalId,
+      });
+      toast.success("视觉提案已选择");
+    } catch (err) {
+      toast.error(backendErrorToastMessage(err, t));
+    }
+  };
+
+  const handleConfirmVisualBible = async () => {
+    try {
+      const confirmedBy = useAuthStore.getState().username?.trim() || "local-user";
+      await confirmVisualBible.mutateAsync(confirmedBy);
+      toast.success("VisualBible 已确认");
+    } catch (err) {
+      toast.error(backendErrorToastMessage(err, t));
+    }
+  };
 
   return (
     <aside className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -2617,6 +2691,7 @@ function DetailPanel({
                 imageModel={imageModel}
                 attemptCount={attemptCount}
                 onAttempt={onAttempt}
+                canGeneratePortrait={canGeneratePortrait}
               />
             </div>
             <div className="min-w-0">
@@ -2628,12 +2703,49 @@ function DetailPanel({
             </div>
           </div>
         </section>
+        <CharacterVisualProfile
+          biography={visualWorkspace?.profile.biography ?? character.description ?? ""}
+          facts={visualFacts}
+          visualProposal={
+            selectedProposal
+              ? `${selectedProposal.title}：${selectedProposal.rationale}`
+              : ""
+          }
+          proposals={(visualWorkspace?.design_proposals ?? []).map((proposal) => ({
+            proposalId: proposal.proposal_id,
+            title: proposal.title,
+            rationale: proposal.rationale,
+            recommended: proposal.recommended ?? false,
+            identityAnchors: proposal.identity_anchors ?? [],
+            asymmetryDetail: proposal.asymmetry_detail ?? undefined,
+            qualityIssues: proposal.quality_issues ?? [],
+          }))}
+          selectedProposalId={visualWorkspace?.selected_proposal_id}
+          onSelectProposal={handleSelectProposal}
+          isSelectingProposal={updateVisualWorkspace.isPending}
+          visualBibleStatus={visualBible?.status}
+          onConfirmVisualBible={handleConfirmVisualBible}
+          isConfirmingVisualBible={confirmVisualBible.isPending}
+          visualIdentity={{
+            face: visualBible?.face_shape ?? undefined,
+            hair: visualBible?.hair_style ?? undefined,
+            body: visualBible?.body_type ?? undefined,
+            signatureFeatures: [
+              ...(visualBible?.facial_features ?? []),
+              ...(visualBible?.distinctive_features ?? []),
+            ],
+          }}
+          outfitsAndStates={Object.entries(visualBible?.outfit_states ?? {}).map(
+            ([state, description]) => `${state}：${description}`,
+          )}
+        />
         <CharacterVoicePanel character={character} project={project} />
         <IdentitiesGridSection
           character={character}
           project={project}
           imageModel={imageModel}
           onAttempt={onAttempt}
+          canGeneratePortrait={canGeneratePortrait}
         />
       </div>
     </aside>
@@ -2833,16 +2945,6 @@ function AddCharacterDialog({
               {t("characters.basics.description")}
             </Label>
             <Input {...register("description")} className={inputClass} />
-          </div>
-          <div className="space-y-1.5">
-            <Label className={labelClass}>
-              {t("characters.basics.facePrompt")}
-            </Label>
-            <Input
-              placeholder="oval face, big eyes"
-              className={inputClass}
-              {...register("face_prompt")}
-            />
           </div>
           <DialogFooter className={CHARACTER_DIALOG_FOOTER_CLASS}>
             <Button

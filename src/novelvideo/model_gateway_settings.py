@@ -501,6 +501,15 @@ def get_model_gateway_settings() -> dict[str, str]:
     return data
 
 
+def save_model_gateway_setting(key: str, value: str) -> None:
+    """Persist one non-secret runtime setting in the CE settings store."""
+
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("setting key is required")
+    _write_many({clean_key: str(value or "")})
+
+
 def get_effective_newapi_config(
     *,
     official_base_url: str | None = None,

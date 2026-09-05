@@ -41,6 +41,9 @@ export interface ShotPlan {
   composition: string;
   camera_motion: string;
   dialogue_source_ids: string[];
+  dramatic_beat_ids?: string[];
+  intent?: { narrative_purpose: string; audience_attention: string; emotional_effect: string; continuity_strategy: string } | null;
+  asset_requirements?: Array<{ kind: "character_identity" | "character_state" | "scene_base" | "scene_state" | "prop"; entity_key: string; evidence_source_ids: string[]; visible_change: string; design_notes: string; required: boolean }>;
   duration_seconds: number;
 }
 
@@ -48,6 +51,7 @@ export interface NarrativeGroupPlan {
   id: string;
   ordinal: number;
   source_span_ids: string[];
+  dramatic_beat_ids?: string[];
   scene_anchor: string;
   time_anchor: string;
   objective: string;
@@ -68,6 +72,7 @@ export type MigrationDecision =
   | "accepted"
   | "rejected"
   | "reference_only"
+  | "legacy_unbound"
   | "review"
   | "unmatched";
 export type MigrationReuseMode = "reuse" | "reference_only";
@@ -86,6 +91,8 @@ export interface MigrationItem {
   old_asset_id?: string | null;
   old_shot_id?: string | null;
   new_shot_id: string;
+  suggested_shot_id?: string | null;
+  adopted_shot_id?: string | null;
   confidence: MigrationConfidence;
   score: number;
   reuse_mode: MigrationReuseMode;
@@ -104,6 +111,7 @@ export interface DirectorPlanRevision {
   episode: number;
   status: DirectorPlanStatus;
   source_script_hash: string;
+  semantic_revision_id?: string | null;
   director_model: string;
   prompt_version: string;
   project_style_snapshot_id: string;
@@ -265,7 +273,7 @@ export function useUpdateDirectorPlanMigration(project: string, episode: number)
     mutationFn: ({ revisionId, itemId, decision }: {
       revisionId: string;
       itemId: string;
-      decision: Exclude<MigrationDecision, "review" | "unmatched">;
+      decision: Exclude<MigrationDecision, "review" | "unmatched" | "legacy_unbound">;
     }) => api.put(`${revisionPath(project, episode, revisionId)}/migration/${encodeURIComponent(itemId)}`, {
       json: { decision },
     }).json<ApiResponse<MigrationItem>>(),

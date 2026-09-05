@@ -13,6 +13,49 @@ class _FakeCompletedPipelineStatus:
     value = "COMPLETED"
 
 
+def test_large_cognee_ingest_content_is_split_on_paragraph_boundaries():
+    from novelvideo.cognee.store import _split_cognee_ingest_content
+
+    content = "第一段。\n\n" + ("第二段内容。" * 20) + "\n\n第三段。"
+    chunks = _split_cognee_ingest_content(content, max_chars=40)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 40 for chunk in chunks)
+    assert "".join(chunks) == content
+
+
+@pytest.mark.asyncio
+async def test_large_ingest_adds_bounded_data_items(tmp_path, monkeypatch):
+    from novelvideo.cognee import store as store_module
+    from novelvideo.cognee.store import CogneeStore
+
+    text = ("段落内容。" * 4000) + "\n"
+    novel = tmp_path / "large.txt"
+    novel.write_text(text, encoding="utf-8")
+    store = object.__new__(CogneeStore)
+    store.dataset_name = "test_ds"
+    store._novel_content = None
+    monkeypatch.setattr(store, "save_novel_content", lambda _content: None)
+    monkeypatch.setattr(store, "_set_cognee_context", lambda: None)
+    monkeypatch.setattr("novelvideo.cognee.config.init_cognee", lambda: None)
+    added: list[str] = []
+
+    async def fake_add(content, **_kwargs):
+        added.append(content)
+
+    async def ok_graph(**_kwargs):
+        return None
+
+    monkeypatch.setattr(store_module.cognee, "add", fake_add)
+    monkeypatch.setattr(store, "_run_cognee_pipeline_with_retry", ok_graph)
+
+    await store.ingest_novel_fast(str(novel), persist_novel_content=False)
+
+    assert len(added) > 1
+    assert all(len(item) <= 16_000 for item in added)
+    assert "".join(added) == text
+
+
 def test_cognee_pipeline_error_result_raises_runtime_error():
     from novelvideo.cognee.store import CogneeStore
 

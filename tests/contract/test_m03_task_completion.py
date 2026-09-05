@@ -126,41 +126,6 @@ def m03_completion_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         finally:
             await store.close()
 
-    async def write_beats() -> int:
-        from novelvideo.api.deps import make_sqlite_store_for_context
-        from novelvideo.models import NovelVisualBeat
-
-        store = await make_sqlite_store_for_context(ctx)
-        try:
-            await store.add_visual_beats(
-                [
-                    NovelVisualBeat(
-                        episode_number=1,
-                        beat_number=3,
-                        shot_order=20,
-                        narration="旁白三",
-                        visual_description="画面三",
-                    ),
-                    NovelVisualBeat(
-                        episode_number=1,
-                        beat_number=1,
-                        shot_order=10,
-                        narration="旁白一",
-                        visual_description="画面一",
-                    ),
-                    NovelVisualBeat(
-                        episode_number=1,
-                        beat_number=2,
-                        shot_order=20,
-                        narration="旁白二",
-                        visual_description="画面二",
-                    ),
-                ]
-            )
-            return len(await store.get_beats_as_dicts(1))
-        finally:
-            await store.close()
-
     async def write_video_prompt() -> dict:
         from novelvideo.api.deps import make_sqlite_store_for_context
 
@@ -178,9 +143,6 @@ def m03_completion_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def fake_build_episodes(envelope, task_ctx):
         return {"episodes": asyncio.run(write_episode())}
-
-    def fake_script_writer(envelope, task_ctx):
-        return {"episode": 1, "beats": asyncio.run(write_beats()), "review_passed": True}
 
     def fake_beat_video_prompt(envelope, task_ctx):
         beat = asyncio.run(write_video_prompt())
@@ -202,7 +164,6 @@ def m03_completion_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
 
     register_project_task_runner("build_episodes", fake_build_episodes)
-    register_project_task_runner("script_writer", fake_script_writer)
     register_project_task_runner("beat_video_prompt", fake_beat_video_prompt)
     monkeypatch.setattr(episodes, "resolve_project_scope", resolve_project_scope)
     monkeypatch.setattr(scripts, "resolve_project_scope", resolve_project_scope)
@@ -273,6 +234,47 @@ async def _load_beats(ctx):
         await store.close()
 
 
+async def _seed_legacy_beats_for_prompt_contract(ctx) -> int:
+    """Seed stored Beat rows only for APIs that still edit existing media metadata.
+
+    New production flows create shots from screenplay semantics; this fixture must not
+    resurrect the retired line-Beat generator just to test prompt persistence.
+    """
+    from novelvideo.api.deps import make_sqlite_store_for_context
+    from novelvideo.models import NovelVisualBeat
+
+    store = await make_sqlite_store_for_context(ctx)
+    try:
+        await store.add_visual_beats(
+            [
+                NovelVisualBeat(
+                    episode_number=1,
+                    beat_number=3,
+                    shot_order=20,
+                    narration="旁白三",
+                    visual_description="画面三",
+                ),
+                NovelVisualBeat(
+                    episode_number=1,
+                    beat_number=1,
+                    shot_order=10,
+                    narration="旁白一",
+                    visual_description="画面一",
+                ),
+                NovelVisualBeat(
+                    episode_number=1,
+                    beat_number=2,
+                    shot_order=20,
+                    narration="旁白二",
+                    visual_description="画面二",
+                ),
+            ]
+        )
+        return len(await store.get_beats_as_dicts(1))
+    finally:
+        await store.close()
+
+
 def _task_payload(
     client: TestClient,
     task_type: str,
@@ -330,7 +332,7 @@ def test_plan_task_completion_writes_episodes_and_task_envelope(m03_completion_c
     assert payload["metadata"]["backend"] == "inline"
 
 
-def test_script_and_video_prompt_tasks_complete_with_sorted_persisted_beats(m03_completion_client):
+def test_retired_script_generation_and_video_prompt_for_existing_rows(m03_completion_client):
     client, ctx = m03_completion_client
     client.post(
         "/api/v1/projects/proj_m03_completion/episodes/plan",
@@ -338,17 +340,14 @@ def test_script_and_video_prompt_tasks_complete_with_sorted_persisted_beats(m03_
     )
     assert _wait_for_task(ctx, "build_episodes").status == "completed"
 
-    script_response = client.post(
+    retired = client.post(
         "/api/v1/projects/proj_m03_completion/episodes/1/script/generate",
         json={},
     )
-    assert script_response.status_code == 200
-    assert script_response.json()["task_type"] == "script_writer"
-    script_state = _wait_for_task(ctx, "script_writer", 1)
-    assert script_state.status == "completed"
-    assert script_state.result["beats"] > 0
-    assert script_state.logs
-    assert script_state.metadata["backend"] == "inline"
+    assert retired.status_code == 410
+    assert retired.json()["detail"]["code"] == "LEGACY_SCRIPT_GENERATION_RETIRED"
+
+    assert asyncio.run(_seed_legacy_beats_for_prompt_contract(ctx)) == 3
 
     beats = asyncio.run(_load_beats(ctx))
     assert [beat["beat_number"] for beat in beats] == [1, 2, 3]
@@ -382,8 +381,7 @@ def test_negative_manual_shot_delete_rejects_regular_beat(m03_completion_client)
         json={"planning_mode": "chapters", "target_episodes": 1},
     )
     assert _wait_for_task(ctx, "build_episodes").status == "completed"
-    client.post("/api/v1/projects/proj_m03_completion/episodes/1/script/generate", json={})
-    assert _wait_for_task(ctx, "script_writer", 1).status == "completed"
+    assert asyncio.run(_seed_legacy_beats_for_prompt_contract(ctx)) == 3
 
     response = client.delete(
         "/api/v1/projects/proj_m03_completion/episodes/1/beats/1/manual-shot"
@@ -403,8 +401,7 @@ def test_seedance2_prompt_does_not_create_media_side_effects(m03_completion_clie
         json={"planning_mode": "chapters", "target_episodes": 1},
     )
     assert _wait_for_task(ctx, "build_episodes").status == "completed"
-    client.post("/api/v1/projects/proj_m03_completion/episodes/1/script/generate", json={})
-    assert _wait_for_task(ctx, "script_writer", 1).status == "completed"
+    assert asyncio.run(_seed_legacy_beats_for_prompt_contract(ctx)) == 3
 
     before_media = {
         path.relative_to(ctx.output_dir)

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
 from novelvideo.project_context import ProjectContext
@@ -82,45 +80,4 @@ async def test_beat_video_prompt_runner_closes_sqlite_store(monkeypatch, tmp_pat
     )
 
     assert result["prompt"] == "camera move"
-    assert store.closed is True
-
-
-@pytest.mark.asyncio
-async def test_script_writer_runner_closes_cognee_store(monkeypatch, tmp_path):
-    import novelvideo.cognee as cognee
-    from novelvideo import project_config
-    from novelvideo.task_backend.runners import script as runner
-    from novelvideo.workflows import script_writing
-
-    store = _ClosableStore()
-
-    class FakeCogneeStore:
-        def __new__(cls, *args, **kwargs):
-            return store
-
-    class FakeWorkflow:
-        last_review_passed = True
-        last_review_summary = "ok"
-
-        async def run(self, **kwargs):
-            return SimpleNamespace(beats=[])
-
-    def fake_create_script_writing_workflow(*args, **kwargs):
-        return FakeWorkflow()
-
-    monkeypatch.setattr(runner, "get_task_manager", lambda: _Manager())
-    monkeypatch.setattr(cognee, "CogneeStore", FakeCogneeStore)
-    monkeypatch.setattr(project_config, "load_project_config", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        script_writing,
-        "create_script_writing_workflow",
-        fake_create_script_writing_workflow,
-    )
-
-    result = await runner._run_script_writer(
-        {"episode": 1, "payload": {"output_dir": str(tmp_path)}},
-        _ctx(tmp_path),
-    )
-
-    assert result["beats"] == 0
     assert store.closed is True

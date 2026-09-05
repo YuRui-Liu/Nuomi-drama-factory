@@ -2,10 +2,9 @@
 // Copyright (c) 2026 ClaymoreLab
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
-import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
+import type { ErrorResponse, OkResponse } from "@/types/api";
 import type { Script, BeatUpdate } from "@/types/script";
 import type { Beat } from "@/types/episode";
 
@@ -17,19 +16,6 @@ export function useScript(project: string, episode: number) {
         .get(p`api/v1/projects/${project}/episodes/${episode}/script`, { signal })
         .json<OkResponse<Script | null>>(),
     enabled: !!project && episode > 0,
-  });
-}
-
-export function useGenerateScript(project: string, episode: number) {
-  return useMutation({
-    mutationFn: (params?: { target_duration_total?: number; rhythm?: string }) =>
-      jsonWithBackendError<TaskResponse | ErrorResponse>(
-        api.post(p`api/v1/projects/${project}/episodes/${episode}/script/generate`, {
-          json: params ?? {},
-          throwHttpErrors: false,
-          timeout: false,
-        }),
-      ),
   });
 }
 

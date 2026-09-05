@@ -91,4 +91,6 @@ def test_persisted_grsai_key_feeds_image_runtime(tmp_path) -> None:
     assert runtime.api_key == "grsai-key"
     assert runtime.account.base_url == "https://grsai.example"
     assert runtime.model == "gpt-image-2"
-    assert runtime.create_client().default_model == "gpt-image-2"
+    client = runtime.create_client()
+    assert client.default_model == "gpt-image-2"
+    assert client.http._trust_env is True

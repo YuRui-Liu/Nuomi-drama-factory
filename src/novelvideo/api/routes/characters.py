@@ -30,6 +30,9 @@ from novelvideo.api.schemas import (
     PortraitGenRequest,
     CharacterCreate,
     CharacterUpdate,
+    CharacterExtractionLockUpdate,
+    CharacterVisualWorkspaceUpdate,
+    CharacterVisualBibleConfirmRequest,
     CharacterImageSelectionRequest,
     CharacterAssetRestoreRequest,
     IdentityCreate,
@@ -38,6 +41,13 @@ from novelvideo.api.schemas import (
     CharacterVoiceRecordRequest,
     CharacterVoiceDesignRequest,
     CharacterVoiceTrimRequest,
+)
+from novelvideo.character_visual import (
+    CharacterNarrativeProfile,
+    CharacterVisualBible,
+    CharacterVisualWorkspace,
+    CharacterVisualWorkspaceStore,
+    classify_legacy_visual_field,
 )
 from novelvideo.config import (
     image_generation_selection_options,
@@ -521,6 +531,7 @@ async def list_characters(
             "body_type": getattr(c, "body_type", ""),
             "face_prompt": getattr(c, "face_prompt", ""),
             "is_main": c.is_main if hasattr(c, "is_main") else False,
+            "extraction_locked": bool(getattr(c, "extraction_locked", False)),
             "portrait_path": abs_portrait,
             "portrait_url": _asset_url(ctx, project_dir, abs_portrait) if abs_portrait else "",
             "updated_at": newest_updated_at(
@@ -567,6 +578,7 @@ async def add_character(
         name=body.name,
         role=body.role,
         is_main=body.is_main,
+        extraction_locked=body.extraction_locked,
         gender=body.gender,
         age_group=body.age_group,
         description=body.description,
@@ -618,6 +630,35 @@ async def build_characters(project: str, user: dict = Depends(get_api_user)):
         }
 
     return {"ok": False, "error": "角色补充需要 project context"}
+
+
+@router.patch("/projects/{project}/characters/{name}/extraction-lock")
+async def update_character_extraction_lock(
+    project: str,
+    name: str,
+    body: CharacterExtractionLockUpdate,
+    user: dict = Depends(get_api_user),
+):
+    """Idempotently include or exclude a character from automatic extraction updates."""
+    _ctx, _username, _project_name, _project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user)
+    )
+    character = store.get_character(name)
+    if character is None:
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": f"Character '{name}' not found"},
+        )
+
+    canonical_name = character.name
+    await store.set_character_extraction_locked(canonical_name, body.locked)
+    return {
+        "ok": True,
+        "data": {
+            "name": canonical_name,
+            "extraction_locked": body.locked,
+        },
+    }
 
 
 @router.get("/projects/{project}/character-image-selection")
@@ -976,6 +1017,146 @@ async def update_character(
     if renamed_from:
         data["renamed_from"] = renamed_from
     return {"ok": True, "data": data}
+
+
+def _default_character_visual_workspace(character) -> CharacterVisualWorkspace:
+    legacy_fields = []
+    legacy_face_prompt = str(getattr(character, "face_prompt", "") or "").strip()
+    if legacy_face_prompt:
+        legacy_fields.append(
+            classify_legacy_visual_field(
+                field="face_prompt",
+                value=legacy_face_prompt,
+                source="legacy_character_record",
+            )
+        )
+    return CharacterVisualWorkspace(
+        character_id=character.name,
+        profile=CharacterNarrativeProfile(
+            character_id=character.name,
+            name=character.name,
+            aliases=list(getattr(character, "aliases", []) or []),
+            biography=str(getattr(character, "description", "") or ""),
+            occupation=str(getattr(character, "role", "") or ""),
+        ),
+        legacy_fields=legacy_fields,
+    )
+
+
+@router.get("/projects/{project}/characters/{name}/visual-workspace")
+async def get_character_visual_workspace(
+    project: str,
+    name: str,
+    user: dict = Depends(get_api_user),
+):
+    """Return narrative facts, creative proposals and confirmed visual identity separately."""
+    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user, required_role="viewer")
+    )
+    character = store.get_character(name)
+    if character is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get(name) or _default_character_visual_workspace(character)
+    return {"ok": True, "data": workspace.model_dump(mode="json")}
+
+
+@router.patch("/projects/{project}/characters/{name}/visual-workspace")
+async def update_character_visual_workspace(
+    project: str,
+    name: str,
+    body: CharacterVisualWorkspaceUpdate,
+    user: dict = Depends(get_api_user),
+):
+    """Save an editable draft without promoting legacy prompt text to trusted identity."""
+    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user)
+    )
+    character = store.get_character(name)
+    if character is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    current = visual_store.get(name) or _default_character_visual_workspace(character)
+    patch = body.model_dump(exclude_none=True)
+    payload = current.model_dump(mode="json")
+    payload.update(patch)
+    payload["character_id"] = name
+    if "profile" in patch:
+        payload["profile"]["character_id"] = name
+        payload["profile"]["name"] = name
+    if "visual_bible" in patch:
+        payload["visual_bible"]["character_id"] = name
+        payload["visual_bible"]["status"] = "draft"
+        payload["visual_bible"]["confirmed_by"] = None
+    if "selected_proposal_id" in patch:
+        selected_id = str(patch["selected_proposal_id"] or "").strip()
+        selected = next(
+            (
+                proposal
+                for proposal in payload.get("design_proposals", [])
+                if str(proposal.get("proposal_id") or "") == selected_id
+            ),
+            None,
+        )
+        if selected is None:
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": "Selected design proposal not found"},
+            )
+        payload["visual_bible"] = {
+            "character_id": name,
+            "revision_id": f"proposal:{selected_id}",
+            "status": "draft",
+            "face_shape": selected.get("face_shape"),
+            "facial_features": list(selected.get("facial_features") or []),
+            "hair_style": selected.get("hair_style"),
+            "body_type": selected.get("body_type"),
+            "distinctive_features": list(selected.get("distinctive_features") or []),
+            "outfit_states": dict(selected.get("outfit_states") or {}),
+            "identity_anchors": list(selected.get("identity_anchors") or []),
+            "source_fact_ids": [],
+            "confirmed_by": None,
+        }
+    workspace = CharacterVisualWorkspace.model_validate(payload)
+    visual_store.save(workspace)
+    return {"ok": True, "data": workspace.model_dump(mode="json")}
+
+
+@router.post("/projects/{project}/characters/{name}/visual-workspace/confirm")
+async def confirm_character_visual_bible(
+    project: str,
+    name: str,
+    body: CharacterVisualBibleConfirmRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Human confirmation gate before a VisualBible can drive paid generation."""
+    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user)
+    )
+    if store.get_character(name) is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get(name)
+    if workspace is None or workspace.visual_bible is None:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "error": "Create a visual bible draft before confirmation"},
+        )
+    bible_payload = workspace.visual_bible.model_dump(mode="json")
+    bible_payload.update(status="confirmed", confirmed_by=body.confirmed_by.strip())
+    try:
+        workspace.visual_bible = CharacterVisualBible.model_validate(bible_payload)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "CHARACTER_VISUAL_BIBLE_INCOMPLETE",
+                "error": str(exc),
+            },
+        )
+    visual_store.save(workspace)
+    return {"ok": True, "data": workspace.model_dump(mode="json")}
 
 
 @router.post("/projects/{project}/characters/{name}/delete")

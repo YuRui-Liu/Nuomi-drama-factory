@@ -20,6 +20,7 @@ vi.mock("@/lib/api", () => ({
 import { server } from "@/__mocks__/msw/server";
 import { sampleTask } from "@/__mocks__/msw/handlers/tasks";
 import { queryKeys } from "@/lib/query-keys";
+import { directorPlanKeys } from "@/lib/queries/director-plans";
 import { useTasks } from "@/lib/queries/tasks";
 import { TaskCenterProvider } from "@/task-center/provider";
 import { useTaskCenterStore } from "@/task-center/store";
@@ -131,6 +132,33 @@ describe("TaskCenterProvider", () => {
       expect(MockEventSource.instances.length).toBe(1);
     });
     expect(useTaskCenterStore.getState().tasks.size).toBe(1);
+  });
+
+  it("bypasses a fresh cached task snapshot during authoritative hydration", async () => {
+    let calls = 0;
+    server.use(
+      http.get("*/api/v1/projects/demo/tasks", () => {
+        calls += 1;
+        return HttpResponse.json({
+          ok: true,
+          data: [sampleTask({ task_key: "server-current", status: "running" })],
+        });
+      }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    queryClient.setQueryData(queryKeys.tasks("demo"), {
+      ok: true,
+      data: [sampleTask({ task_key: "cached-old", status: "failed" })],
+    });
+
+    render(<Harness queryClient={queryClient} />);
+
+    await vi.waitFor(() => expect(useTaskCenterStore.getState().isHydrated).toBe(true));
+    expect(calls).toBe(1);
+    expect(useTaskCenterStore.getState().tasks.has("server-current")).toBe(true);
+    expect(useTaskCenterStore.getState().tasks.has("cached-old")).toBe(false);
   });
 
   it("shares the initial /tasks request with legacy useTasks consumers", async () => {
@@ -411,9 +439,54 @@ describe("TaskCenterProvider", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.beats("demo", 1) });
   });
 
-  it.each(["script_writer", "literal_script_writer"])(
-    "invalidates script data when a %s task completes",
-    async (taskType) => {
+  it("invalidates director plan data when a director plan task completes", async () => {
+    server.use(
+      http.get("*/api/v1/projects/demo/tasks", () =>
+        HttpResponse.json({
+          ok: true,
+          data: [
+            sampleTask({
+              task_id: "director-plan-run-1",
+              task_key: "task:director_plan:project:demo:1",
+              task_type: "director_plan",
+              episode: 1,
+              status: "running",
+            }),
+          ],
+        }),
+      ),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    render(<Harness queryClient={queryClient} />);
+    await vi.waitFor(() => expect(MockEventSource.instances.length).toBe(1));
+
+    act(() => {
+      MockEventSource.instances[0].dispatch(
+        "task_updated",
+        sampleTask({
+          task_id: "director-plan-run-1",
+          task_key: "task:director_plan:project:demo:1",
+          task_type: "director_plan",
+          episode: 1,
+          status: "completed",
+          completed_at: new Date().toISOString(),
+        }),
+      );
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: directorPlanKeys.all("demo", 1),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.narrativeGroups("demo", 1),
+    });
+  });
+
+  it("invalidates script data when screenplay semantics completes", async () => {
+      const taskType = "screenplay_semantics";
       server.use(
         http.get("*/api/v1/projects/demo/tasks", () =>
           HttpResponse.json({
@@ -460,8 +533,7 @@ describe("TaskCenterProvider", () => {
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: queryKeys.pipelineStatus("demo"),
       });
-    },
-  );
+  });
 
   it("does not invalidate script data for old completed script task replays", async () => {
     const oldCompletedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -508,9 +580,9 @@ describe("TaskCenterProvider", () => {
   it("does not repeatedly invalidate script data for duplicate completed task events", async () => {
     const completedAt = new Date().toISOString();
     const completedTask = sampleTask({
-      task_id: "script-run-duplicate",
-      task_key: "task:script_writer:project:demo:1",
-      task_type: "script_writer",
+      task_id: "semantics-run-duplicate",
+      task_key: "task:screenplay_semantics:project:demo:1",
+      task_type: "screenplay_semantics",
       episode: 1,
       status: "completed",
       completed_at: completedAt,
@@ -521,9 +593,9 @@ describe("TaskCenterProvider", () => {
           ok: true,
           data: [
             sampleTask({
-              task_id: "script-run-duplicate",
-              task_key: "task:script_writer:project:demo:1",
-              task_type: "script_writer",
+              task_id: "semantics-run-duplicate",
+              task_key: "task:screenplay_semantics:project:demo:1",
+              task_type: "screenplay_semantics",
               episode: 1,
               status: "running",
             }),

@@ -156,12 +156,13 @@ def _recommended_video_plan(
     group: NarrativeGroup, beat_by_id: Mapping[str, Any]
 ) -> VideoPlan:
     partitions: list[tuple[str, ...]] = []
+    ordered_ids = group.production_beat_ids
     index = 0
     pair_turn = True
-    while index < len(group.beat_ids):
-        current = group.beat_ids[index]
-        if pair_turn and index + 1 < len(group.beat_ids):
-            following = group.beat_ids[index + 1]
+    while index < len(ordered_ids):
+        current = ordered_ids[index]
+        if pair_turn and index + 1 < len(ordered_ids):
+            following = ordered_ids[index + 1]
             if (
                 _beat_duration(beat_by_id.get(current))
                 + _beat_duration(beat_by_id.get(following))
@@ -192,7 +193,7 @@ def _has_valid_video_plan(group: NarrativeGroup) -> bool:
         and tuple(
             beat_id for unit in plan.units for beat_id in unit.beat_ids
         )
-        == group.beat_ids
+        == group.production_beat_ids
     )
 
 
@@ -410,6 +411,11 @@ def _materialize_active_groups(
                 raw_group.style_snapshot_id
                 or active.project_style_snapshot_id
                 or "legacy-default"
+            )
+            style_snapshot_hash = (
+                active.project_style_snapshot.style_hash
+                if active.project_style_snapshot is not None
+                else snapshot_id
             )
             group = raw_group.model_copy(update={"style_snapshot_id": snapshot_id})
             shot_ids = tuple(shot.id for shot in group.shots)
@@ -781,11 +787,13 @@ def update_video_plan(
                 raise ValueError("each video plan unit must contain one or two beats")
             partitions.append(beat_ids)
         flattened = tuple(beat_id for unit in partitions for beat_id in unit)
-        if flattened != group.beat_ids:
+        if flattened != group.production_beat_ids:
             raise ValueError(
                 "video plan units must form a complete ordered partition"
             )
-        positions = {beat_id: index for index, beat_id in enumerate(group.beat_ids)}
+        positions = {
+            beat_id: index for index, beat_id in enumerate(group.production_beat_ids)
+        }
         if any(
             len(unit) == 2 and positions[unit[1]] != positions[unit[0]] + 1
             for unit in partitions
@@ -1250,7 +1258,7 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
                 "provider_parameters": dict(state.provider_parameters),
                 "actual_output": dict(state.actual_output),
                 "cell_to_beat": [item.__dict__ for item in group.cell_to_beat],
-                "beat_ids": list(group.beat_ids),
+                "beat_ids": list(group.production_beat_ids),
                 "layout": group.layout.__dict__,
                 "video_plan": group.video_plan.to_dict(),
             }

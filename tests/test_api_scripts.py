@@ -60,36 +60,34 @@ def _script_client(monkeypatch, tmp_path, identity_ids: list[str]):
     return TestClient(app), store, clean_calls
 
 
-def test_script_generate_requires_identity_plan_before_side_effects(monkeypatch, tmp_path):
+def test_script_generate_is_retired_without_side_effects(monkeypatch, tmp_path):
     client, store, clean_calls = _script_client(monkeypatch, tmp_path, [])
 
     response = client.post("/api/v1/projects/demo/episodes/2/script/generate", json={})
 
-    assert response.status_code == 200
+    assert response.status_code == 410
     body = response.json()
-    assert body["ok"] is False
-    assert body["code"] == "identity_plan_required"
-    assert body["error"]
-    assert store.get_episode_calls == [2]
+    assert body["detail"]["code"] == "LEGACY_SCRIPT_GENERATION_RETIRED"
+    assert "screenplay-semantics" in body["detail"]["replacement"]
+    assert store.get_episode_calls == []
     assert clean_calls == []
 
 
-def test_script_generate_starts_script_writer_when_identity_plan_exists(
+def test_script_generate_stays_retired_when_identity_plan_exists(
     monkeypatch, tmp_path
 ):
     client, store, clean_calls = _script_client(monkeypatch, tmp_path, ["秦_幼年"])
 
     response = client.post("/api/v1/projects/demo/episodes/2/script/generate", json={})
 
-    assert response.status_code == 200
+    assert response.status_code == 410
     body = response.json()
-    assert body["ok"] is False
-    assert "project context" in body["error"]
-    assert store.get_episode_calls == [2]
-    assert len(clean_calls) == 1
+    assert body["detail"]["code"] == "LEGACY_SCRIPT_GENERATION_RETIRED"
+    assert store.get_episode_calls == []
+    assert clean_calls == []
 
 
-def test_pipeline_script_step_uses_script_writer_task_type():
+def test_pipeline_script_step_uses_screenplay_semantics_task_type():
     from novelvideo.api.routes.pipeline import _STEP_MAP
 
-    assert _STEP_MAP["script"][0] == "script_writer"
+    assert _STEP_MAP["script"][0] == "screenplay_semantics"

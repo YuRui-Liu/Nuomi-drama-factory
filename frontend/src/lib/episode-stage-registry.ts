@@ -26,8 +26,8 @@ export const EPISODE_STAGE_REGISTRY: readonly StageDef[] = [
     routeSegment: "/script",
     icon: ScrollText,
     taskTypes: [
-      TASK_TYPES.SCRIPT_WRITER,
-      TASK_TYPES.LITERAL_SCRIPT_WRITER,
+      TASK_TYPES.SCREENPLAY_SEMANTICS,
+      TASK_TYPES.DIRECTOR_PLAN,
       TASK_TYPES.DIRECTOR_NOTES,
       TASK_TYPES.IDENTITY_PLANNER,
     ],

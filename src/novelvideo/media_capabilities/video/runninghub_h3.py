@@ -123,7 +123,7 @@ async def generate_minimax_h3_video(
         profile = load_h3_workflow_profile(workflow_id=workflow_id)
         node_info = compile_node_info(
             profile,
-            {**_director_semantic_values(timeline_data), "timeline_data": timeline_data},
+            {"timeline_data": timeline_data},
         )
 
         task_id = await client.submit(workflow_id, node_info)

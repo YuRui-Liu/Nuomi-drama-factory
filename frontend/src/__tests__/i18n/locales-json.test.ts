@@ -47,6 +47,15 @@ function collectPlaceholders(
 }
 
 describe("locale translation files", () => {
+  it("waits for translation resources before mounting React", () => {
+    const main = readFileSync("src/main.tsx", "utf8");
+    const i18nEntry = readFileSync("src/i18n/index.ts", "utf8");
+
+    expect(i18nEntry).toContain("export const i18nReady");
+    expect(main).toContain('import { i18nReady } from "./i18n"');
+    expect(main).toMatch(/Promise\.all\(\[[^\]]*i18nReady[^\]]*\]\)/s);
+  });
+
   it.each(["en", "zh"])("%s translation JSON is valid", (language) => {
     const content = readFileSync(`public/locales/${language}/translation.json`, "utf8");
 

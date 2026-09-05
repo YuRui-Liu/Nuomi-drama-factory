@@ -26,7 +26,6 @@ DEFAULT_TEXT_MODEL_BY_ENV = {
     "IDENTITY_PLANNER_CAST_MODEL": "DC-identity-cast-planner-LLM",
     "IDENTITY_PLANNER_ANALYSIS_MODEL": "DC-identity-analysis-planner-LLM",
     "IDENTITY_PLANNER_APPEARANCE_MODEL": "DC-identity-appearance-writer-LLM",
-    "LITERAL_BEAT_META_MODEL": "DC-literal-beat-meta-LLM",
     "SCENE_BUILD_MODEL": "DC-scene-builder-LLM",
     "EPISODE_SCENE_PLANNER_MODEL": "DC-episode-scene-planner-LLM",
     "EPISODE_PROP_PLANNER_MODEL": "DC-episode-prop-planner-LLM",

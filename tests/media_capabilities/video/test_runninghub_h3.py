@@ -141,21 +141,20 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
     assert client.submitted is not None
     workflow_id, node_info = client.submitted
     assert workflow_id == "2089723723468328961"
-    assert node_info and len(node_info) == 8
+    assert node_info and len(node_info) == 1
     assert {item["nodeId"] for item in node_info} == {"12"}
     fields = {item["fieldName"]: item["fieldValue"] for item in node_info}
-    assert fields["task_type"] == (
+    assert set(fields) == {"timeline_data"}
+    import json
+    payload = json.loads(fields["timeline_data"])
+    assert payload["global"]["taskType"] == (
         "fl2v — 首尾帧生视频(First-Last Frame)"
         if last_frame
         else "i2v — 首帧生视频(Image-to-Video)"
     )
-    assert fields["global_prompt"] == H3_GLOBAL_CONTINUITY_PROMPT
-    assert fields["frame_rate"] == 24
-    assert (fields["width"], fields["height"]) == expected_size
-    assert fields["ref_max_size"] == 1280
-    assert fields["total_frames"] == 124
-    import json
-    payload = json.loads(fields["timeline_data"])
+    assert payload["global"]["prompt"] == H3_GLOBAL_CONTINUITY_PROMPT
+    assert (payload["width"], payload["height"]) == expected_size
+    assert payload["refMaxSize"] == 1280
     assert payload["timelineMode"] == expected_mode
     assert payload["frameRate"] == 24
     assert payload["totalFrames"] == 124

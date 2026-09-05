@@ -75,6 +75,7 @@ function AssetImageSlot({
   src,
   emptyLabel,
   stale = false,
+  staleLabel,
   fit = "cover",
   actions,
   onPreview,
@@ -83,6 +84,7 @@ function AssetImageSlot({
   src?: string | null;
   emptyLabel: string;
   stale?: boolean;
+  staleLabel: string;
   fit?: "cover" | "contain";
   actions?: React.ReactNode;
   onPreview?: () => void;
@@ -135,7 +137,7 @@ function AssetImageSlot({
         </span>
         {stale && (
           <span className="absolute bottom-2 left-2 z-20 rounded-[6px] border border-amber-400/30 bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-black">
-            需重生
+            {staleLabel}
           </span>
         )}
         {/* Top-right actions */}
@@ -307,7 +309,7 @@ export function SceneAssetCard({
           )}
           {hasStaleReference && (
             <p className="text-xs leading-5 text-amber-600 dark:text-amber-300">
-              提示词已更新，现有参考图来自旧提示词，请重新生成
+              {t("assets.scenes.stalePromptWarning")}
             </p>
           )}
         </CardHeader>
@@ -321,6 +323,7 @@ export function SceneAssetCard({
               src={scene.master_url}
               emptyLabel={t("assets.scenes.noMaster")}
               stale={staleMaster}
+              staleLabel={t("assets.scenes.staleBadge")}
               fit="cover"
               onPreview={masterResolved ? () => { setPreviewSrc(masterResolved); setPreviewLabel(t("assets.scenes.master")); } : undefined}
               actions={
@@ -376,6 +379,7 @@ export function SceneAssetCard({
               src={scene.reverse_master_url}
               emptyLabel={t("assets.scenes.noReverse")}
               stale={staleReverse}
+              staleLabel={t("assets.scenes.staleBadge")}
               fit="cover"
               onPreview={reverseResolved ? () => { setPreviewSrc(reverseResolved); setPreviewLabel(t("assets.scenes.reverse")); } : undefined}
             />
@@ -408,6 +412,7 @@ export function SceneAssetCard({
               src={scene.pano_url}
               emptyLabel={t("assets.scenes.noPano")}
               stale={stalePano}
+              staleLabel={t("assets.scenes.staleBadge")}
               fit="contain"
               onPreview={panoResolved ? () => { setPreviewSrc(panoResolved); setPreviewLabel(t("assets.scenes.pano")); } : undefined}
               actions={

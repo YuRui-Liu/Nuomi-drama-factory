@@ -129,7 +129,25 @@ def dialogue_emotion_prompt(beat: dict) -> str:
     for pattern in QUOTE_DIALOGUE_PATTERNS:
         emotion_text = pattern.sub(" ", emotion_text)
     emotion_text = re.sub(r"\s+", " ", emotion_text).strip(" ：:，,。.;；、 \t\r\n")
-    return emotion_text
+    if not emotion_text:
+        return ""
+
+    # IndexTTS2 expects a natural emotional exemplar, not a stage direction.
+    # Keep this mapping deterministic so repeated renders of the same beat use
+    # the same emotion prompt and therefore the same RunningHub workflow input.
+    emotion_examples = (
+        (("哭", "哭着", "哽咽", "抽泣", "悲伤", "难过", "绝望"), "我真的已经撑不住了。"),
+        (("恐惧", "害怕", "惊恐", "颤抖", "哆嗦", "紧张"), "求你了，别再靠近我。"),
+        (("愤怒", "怒吼", "暴怒", "咬牙", "厉声"), "你再说一遍试试！"),
+        (("惊讶", "震惊", "错愕", "难以置信"), "怎么会这样？这不可能！"),
+        (("温柔", "宠溺", "轻声", "柔声"), "别怕，我会一直陪着你。"),
+        (("压低声音", "低声", "小声", "耳语"), "别出声，听我说。"),
+        (("平静", "冷静", "淡淡"), "先别急，我们慢慢说。"),
+    )
+    for keywords, exemplar in emotion_examples:
+        if any(keyword in emotion_text for keyword in keywords):
+            return exemplar
+    return ""
 
 
 def dialogue_voice_key(beat: dict) -> str:
@@ -358,22 +376,18 @@ async def generate_seedance2_narration_audio(
         )
 
     if generator is None:
-        from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
+        generator = _default_indextts2_generator()
 
-        generator = IndexTTS2FalClient()
-
-    builder = audio_url_builder or build_reference_audio_url
     output_path = beat_audio_path(project_dir, episode, beat_num)
-    resolved_emotion = str(emotion_prompt or "").strip() or narration_style_prompt(narration_style)
-    maybe_result = generator.generate(
+    resolved_emotion = str(emotion_prompt or "").strip()
+    return await _generate_with_reference_audio(
+        generator=generator,
         prompt=text,
-        audio_url=builder(narrator_audio_path),
+        reference_path=narrator_audio_path,
         output_path=output_path,
         emotion_prompt=resolved_emotion,
+        audio_url_builder=audio_url_builder,
     )
-    if inspect.isawaitable(maybe_result):
-        return await maybe_result
-    return maybe_result
 
 
 MAX_REFERENCE_AUDIO_BYTES = 5_000_000
@@ -395,6 +409,55 @@ def build_reference_audio_url(audio_path: Path) -> str:
             f"(> {MAX_REFERENCE_AUDIO_BYTES}). Re-encode to mono/16k MP3 before use."
         )
     return local_file_to_data_url(str(audio_path))
+
+
+def _default_indextts2_generator():
+    from novelvideo.api.deps import (
+        get_media_capability_store,
+        get_media_credential_resolver,
+    )
+    from novelvideo.media_capabilities.runtime.configuration import (
+        load_runninghub_runtime_configuration,
+    )
+    from novelvideo.media_capabilities.tts.runninghub_indextts2 import (
+        RunningHubIndexTTS2Generator,
+    )
+
+    runtime = load_runninghub_runtime_configuration(
+        get_media_capability_store(), get_media_credential_resolver()
+    )
+    return RunningHubIndexTTS2Generator(runtime)
+
+
+async def _generate_with_reference_audio(
+    *,
+    generator,
+    prompt: str,
+    reference_path: Path,
+    output_path: Path,
+    emotion_prompt: str,
+    audio_url_builder: AudioUrlBuilder | None,
+) -> TTSResult:
+    generate = generator.generate
+    parameters = inspect.signature(generate).parameters
+    if "reference_audio_path" in parameters:
+        maybe_result = generate(
+            prompt=prompt,
+            reference_audio_path=reference_path,
+            output_path=output_path,
+            emotion_prompt=emotion_prompt,
+        )
+    else:
+        builder = audio_url_builder or build_reference_audio_url
+        maybe_result = generate(
+            prompt=prompt,
+            audio_url=builder(reference_path),
+            output_path=output_path,
+            emotion_prompt=emotion_prompt,
+        )
+    if inspect.isawaitable(maybe_result):
+        return await maybe_result
+    return maybe_result
 
 
 VoiceTier = Literal["identity_override", "age_group_preset", "character_default"]
@@ -538,22 +601,18 @@ async def generate_seedance2_dialogue_audio(
         return TTSResult(success=False, error=f"Reference audio not found: {reference_path}")
 
     if generator is None:
-        from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
+        generator = _default_indextts2_generator()
 
-        generator = IndexTTS2FalClient()
-
-    builder = audio_url_builder or build_reference_audio_url
     output_path = beat_audio_path(store.project_dir, episode, beat_num)
     resolved_emotion_prompt = str(emotion_prompt or "").strip() or dialogue_emotion_prompt(beat)
-    maybe_result = generator.generate(
+    return await _generate_with_reference_audio(
+        generator=generator,
         prompt=narration,
-        audio_url=builder(reference_path),
+        reference_path=reference_path,
         output_path=output_path,
         emotion_prompt=resolved_emotion_prompt,
+        audio_url_builder=audio_url_builder,
     )
-    if inspect.isawaitable(maybe_result):
-        return await maybe_result
-    return maybe_result
 
 
 async def generate_seedance2_dialogue_audio_for_voice(
@@ -575,9 +634,7 @@ async def generate_seedance2_dialogue_audio_for_voice(
         return result
 
     if generator is None:
-        from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
-
-        generator = IndexTTS2FalClient()
+        generator = _default_indextts2_generator()
 
     for beat_num, beat in targets:
         output_path = beat_audio_path(store.project_dir, episode, beat_num)

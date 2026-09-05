@@ -187,6 +187,11 @@ class NarrativeGroup:
     effective_style_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def production_beat_ids(self) -> tuple[str, ...]:
+        """Logical image/video unit ids; DirectorPlan shots supersede source spans."""
+        return self.shot_ids or self.beat_ids
+
+    @property
     def video_inputs(self) -> tuple[dict[str, Any], ...]:
         render = self.stages.get("render", GroupStageState())
         by_beat = {str(item.get("beat_id")): item for item in render.cell_assets}
@@ -214,7 +219,7 @@ class NarrativeGroup:
                     or None
                 ),
             }
-            for beat_id in self.beat_ids
+            for beat_id in self.production_beat_ids
         )
 
     def to_dict(self) -> dict:

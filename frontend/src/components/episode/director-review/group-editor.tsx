@@ -57,8 +57,8 @@ export function GroupEditor({ revision, disabled, onCommand }: {
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               {group.shots.map((shot, shotIndex) => (
-                <div key={shot.id} className="flex items-center gap-1 rounded-md border border-white/8 px-2 py-1 text-xs">
-                  <span>{shot.id} · {shot.action}</span>
+                <div key={shot.id} className="rounded-md border border-white/8 px-2 py-1 text-xs">
+                  <div className="flex items-center gap-1"><span>{shot.id} · {shot.action}</span>
                   {shotIndex > 0 && (
                     <Button
                       size="sm"
@@ -85,7 +85,9 @@ export function GroupEditor({ revision, disabled, onCommand }: {
                         index: 0,
                       })}
                     >移至下一组</Button>
-                  )}
+                  )}</div>
+                  {shot.intent && <p className="mt-1 text-muted-foreground">意图：{shot.intent.narrative_purpose} · 观众注意：{shot.intent.audience_attention}</p>}
+                  {(shot.asset_requirements?.length ?? 0) > 0 && <p className="mt-1 text-muted-foreground">资产需求：{shot.asset_requirements?.map((item) => `${item.kind}:${item.visible_change || item.entity_key}`).join("；")}</p>}
                 </div>
               ))}
             </div>

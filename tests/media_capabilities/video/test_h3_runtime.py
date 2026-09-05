@@ -22,10 +22,11 @@ def test_production_profile_is_packaged_and_workflow_can_be_overridden() -> None
 
     assert profile.id == "minimax-h3-video"
     assert profile.workflow_id == "9001"
-    assert set(profile.bindings) == {
-        "task_type", "global_prompt", "frame_rate", "width", "height",
-        "ref_max_size", "total_frames", "timeline_data",
-    }
+    assert profile.provider == "runninghub"
+    assert profile.workflow_revision == "director-v5"
+    assert profile.api_schema_sha256 == "7787e72203d1a653e2f3ad7702fc5d0d73b18a366a37ea8ffccf37861a581b27"
+    assert profile.health_status == "healthy"
+    assert set(profile.bindings) == {"timeline_data"}
     assert all(binding["node_id"] == "12" for binding in profile.bindings.values())
     assert profile.outputs["video"]["node_id"] == "7"
 

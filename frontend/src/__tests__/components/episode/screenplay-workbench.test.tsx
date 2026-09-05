@@ -8,6 +8,7 @@ const edit = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }));
 const idle = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }));
 const repairTask = vi.hoisted(() => ({ started: false, start: vi.fn(), stream: { status: "idle", currentTask: "", error: null } }));
 const state = vi.hoisted(() => ({ passed: false, activeRevisionId: null as string | null, mode: "repair" as "repair" | "evidence" }));
+const directorState = vi.hoisted(() => ({ revisions: [] as Array<Record<string, unknown>> }));
 const revision = {
   revision_id: "sem-1", parent_revision_id: null, episode: 1, source_revision: 1,
   source_hash: "hash", version: 1, status: "review_required" as const,
@@ -37,13 +38,22 @@ vi.mock("@/lib/queries/screenplay-semantics", () => ({
   useRepairScreenplaySemantics: () => repair,
   useActivateScreenplaySemantics: () => activate,
 }));
-vi.mock("@/lib/queries/director-plans", () => ({ useCreateDirectorPlan: () => idle }));
+vi.mock("@/lib/queries/director-plans", () => ({
+  useCreateDirectorPlan: () => idle,
+  useDirectorPlans: () => ({
+    isLoading: false,
+    data: { ok: true, data: directorState.revisions },
+  }),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children?: React.ReactNode; to?: string }) => <a href={to}>{children}</a>,
+}));
 vi.mock("@/hooks/use-task-controller", () => ({ useTaskController: () => repairTask }));
 
 import { ScreenplayWorkbench } from "@/components/episode/screenplay-workbench";
 
 describe("ScreenplayWorkbench runtime repair gate", () => {
-  beforeEach(() => { state.passed = false; state.activeRevisionId = null; state.mode = "repair"; vi.clearAllMocks(); });
+  beforeEach(() => { state.passed = false; state.activeRevisionId = null; state.mode = "repair"; directorState.revisions = []; vi.clearAllMocks(); });
 
   it("offers repair for a failed revision and preserves the required action order", async () => {
     render(<ScreenplayWorkbench project="demo" episode={1} />);
@@ -62,10 +72,27 @@ describe("ScreenplayWorkbench runtime repair gate", () => {
     await userEvent.click(screen.getByRole("button", { name: "激活拆解" }));
     expect(activate.mutate).toHaveBeenCalledWith({ revisionId: "sem-1" });
   });
+
+  it("surfaces a completed director plan that requires review", () => {
+    directorState.revisions = [{
+      revision_id: "director-1",
+      status: "review_required",
+      groups: [
+        { id: "group-1", shots: [{ id: "shot-1" }, { id: "shot-2" }] },
+        { id: "group-2", shots: [{ id: "shot-3" }] },
+      ],
+    }];
+
+    render(<ScreenplayWorkbench project="demo" episode={1} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("镜头方案已生成，待人工审核");
+    expect(screen.getByRole("status")).toHaveTextContent("2 个叙事组 · 3 个镜头");
+    expect(screen.getByRole("link", { name: "审核镜头方案" })).toBeInTheDocument();
+  });
 });
 
 describe("ScreenplayWorkbench evidence editing", () => {
-  beforeEach(() => { state.mode = "evidence"; state.activeRevisionId = null; vi.clearAllMocks(); });
+  beforeEach(() => { state.mode = "evidence"; state.activeRevisionId = null; directorState.revisions = []; vi.clearAllMocks(); });
 
   it("shows only selected beat evidence and keeps frontmatter out", () => {
     render(<ScreenplayWorkbench project="demo" episode={1} />);

@@ -46,3 +46,37 @@ def test_merge_and_reorder_are_scene_local():
         ReorderBeats(scene_id="scene-1", beat_ids=("beat-scene-1-02", "beat-scene-1-01")),
     )
     assert [item.id for item in reordered.beats] == ["beat-scene-1-02", "beat-scene-1-01"]
+
+
+def test_merge_after_reorder_keeps_evidence_ranges_reloadable():
+    original = revision(
+        beats=(
+            beat(),
+            beat(
+                beat_id="beat-scene-1-02",
+                ordinal=2,
+                source_ranges=(SourceRange(start_line=13, end_line=14),),
+            ),
+        )
+    )
+    reordered = apply_semantic_edit(
+        original,
+        ReorderBeats(
+            scene_id="scene-1",
+            beat_ids=("beat-scene-1-02", "beat-scene-1-01"),
+        ),
+    )
+
+    merged = apply_semantic_edit(
+        reordered,
+        MergeAdjacentBeats(
+            first_beat_id="beat-scene-1-02",
+            second_beat_id="beat-scene-1-01",
+        ),
+    )
+
+    assert merged.beats[0].source_ranges == (
+        SourceRange(start_line=8, end_line=12),
+        SourceRange(start_line=13, end_line=14),
+    )
+    type(merged).model_validate(merged.model_dump(mode="python"))

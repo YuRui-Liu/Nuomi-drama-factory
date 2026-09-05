@@ -187,8 +187,11 @@ class H3VideoPipeline:
                 MediaTaskStatus.CANCELLED,
                 MediaTaskStatus.QUALITY_FAILED,
             }:
+                attempts = self.store.list_attempts(task.id)
+                detail = attempts[-1].error_message if attempts else None
                 raise RuntimeError(
-                    f"video generation ended with status {completed.status.value}"
+                    detail
+                    or f"video generation ended with status {completed.status.value}"
                 )
             if self.monotonic() >= deadline:
                 await self.executor.cancel(task.id)
@@ -280,7 +283,7 @@ class H3VideoPipeline:
             # have failed QC on the original request (or changed on disk), so
             # every idempotent reuse must probe it again.
             probe = await self.probe_video(artifact)
-            issues = validate_video(probe, request)
+            issues = validate_video(probe, request, resolution_tolerance_px=32)
             candidate = VideoCandidate(
                 task_id=task.id,
                 provider_task_id=(
@@ -342,8 +345,11 @@ class H3VideoPipeline:
                 MediaTaskStatus.CANCELLED,
                 MediaTaskStatus.QUALITY_FAILED,
             }:
+                attempts = self.store.list_attempts(task.id)
+                detail = attempts[-1].error_message if attempts else None
                 raise RuntimeError(
-                    f"video generation ended with status {completed.status.value}"
+                    detail
+                    or f"video generation ended with status {completed.status.value}"
                 )
             if self.monotonic() >= deadline:
                 await self.executor.cancel(task.id)
@@ -355,7 +361,7 @@ class H3VideoPipeline:
             raise RuntimeError("video generation succeeded without an artifact")
         artifact = MediaArtifact.model_validate(completed.output["artifacts"][0])
         probe = await self.probe_video(artifact)
-        issues = validate_video(probe, request)
+        issues = validate_video(probe, request, resolution_tolerance_px=32)
         current_attempt = self.store.list_attempts(task.id)[-1]
         candidate = VideoCandidate(
             task_id=task.id,

@@ -20,6 +20,7 @@ import {
   type RunningHubWorkflowSettings,
 } from "@/lib/queries/knowledge-runtime";
 import { cn } from "@/lib/utils";
+import { TextTaskRoutingPanel } from "@/components/settings/text-task-routing-panel";
 
 function StatusPill({ ready, children }: { ready: boolean; children: React.ReactNode }) {
   return (
@@ -77,7 +78,7 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
         <div>
           <h3 className="font-heading text-base font-medium">运行时与媒体</h3>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Cognee 文本任务使用当前机器的 Codex；向量使用本地 Ollama。媒体生产由 GRSAI 与 RunningHub 执行。
+            文本与规划任务按下方路由选择 Codex 或模型 API；向量使用本地 Ollama，媒体生产仍由 GRSAI 与 RunningHub 执行。
           </p>
         </div>
         <StatusPill ready={runtime?.ready === true}>
@@ -96,6 +97,9 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
           {runtime.message}
         </div>
       ) : null}
+
+      <TextTaskRoutingPanel open={open} />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="bg-white/[0.025]">
           <CardHeader>

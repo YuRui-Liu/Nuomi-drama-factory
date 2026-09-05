@@ -359,6 +359,12 @@ class EpisodeSourceStore:
                     """,
                     (target_revision, migrated_at),
                 )
+                await db.execute(
+                    """INSERT INTO episode_graph_outbox VALUES (?, ?, ?)
+                    ON CONFLICT(target_revision) DO UPDATE SET
+                      changed_episode_numbers_json=excluded.changed_episode_numbers_json""",
+                    (target_revision, json.dumps(sorted(item.episode_number for item in items)), now),
+                )
             if preview_id is not None:
                 await db.execute(
                     "DELETE FROM episode_import_previews WHERE preview_id=?",
@@ -425,6 +431,21 @@ class EpisodeSourceStore:
             overwritten=tuple(sorted(overwritten)),
             skipped=tuple(sorted(skipped)),
         )
+
+    async def list_graph_outbox(self) -> list[dict[str, Any]]:
+        db = await self._db()
+        rows = await (await db.execute(
+            "SELECT target_revision, changed_episode_numbers_json FROM episode_graph_outbox ORDER BY target_revision"
+        )).fetchall()
+        return [{
+            "target_revision": int(row[0]),
+            "changed_episode_numbers": [int(value) for value in json.loads(row[1])],
+        } for row in rows]
+
+    async def delete_graph_outbox(self, target_revision: int) -> None:
+        db = await self._db()
+        await db.execute("DELETE FROM episode_graph_outbox WHERE target_revision=?", (target_revision,))
+        await db.commit()
 
     async def prepare_import(self, batch: object):
         snapshot_items = self._batch_value(batch, "snapshot_items")

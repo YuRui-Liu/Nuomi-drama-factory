@@ -14,7 +14,7 @@ from novelvideo.utils.screenplay_scene_parser import (
     enumerate_screenplay_lines,
     is_scene_start_line,
     parse_character_line,
-    parse_location_header,
+    parse_location_header_relaxed,
 )
 
 
@@ -109,6 +109,9 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
 
     for line in lines:
         value = line.text
+        if re.fullmatch(r"<!--.*-->", value):
+            metadata.append(_block(line, len(metadata) + 1, "formatting"))
+            continue
         if current_header is None and value == "---":
             kind = "frontmatter"
             metadata.append(_block(line, len(metadata) + 1, kind))
@@ -122,10 +125,13 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
         if value and is_scene_start_line(value):
             flush_scene()
             current_header = line
-            parsed_location = parse_location_header(value)
+            parsed_location = parse_location_header_relaxed(value)
             if parsed_location:
                 current_location, current_time, marker = parsed_location
-                current_interior = "interior" if marker == "内" else "exterior"
+                current_interior = {
+                    "内": "interior",
+                    "外": "exterior",
+                }.get(marker, "unspecified")
             last_scene_line = line.number
             continue
         if current_header is None:

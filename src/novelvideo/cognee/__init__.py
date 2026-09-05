@@ -12,7 +12,7 @@
 
     # 查询角色（支持别名）
     char = store.get_character("皇后")  # 返回姜裳宁
-    prompt = char.face_prompt  # 直接获取面部 Prompt
+    # 剧本人物事实不直接提供 face_prompt；视觉身份由 CharacterVisualBible 管理。
 """
 
 # 重要：必须先导入 config，在 cognee 被导入之前设置环境变量
@@ -33,7 +33,7 @@ from .pipeline import (
     extract_scenes_from_script,
     extract_props_from_graph,
 )
-from .tools import create_script_writer_tools, create_episode_planner_tools
+from .tools import create_episode_planner_tools
 
 __all__ = [
     # 存储
@@ -55,7 +55,6 @@ __all__ = [
     "extract_props_from_graph",
 
     # Tools
-    "create_script_writer_tools",
     "create_episode_planner_tools",
 
     # 配置

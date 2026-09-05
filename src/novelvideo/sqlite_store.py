@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS characters (
     aliases_json      TEXT DEFAULT '[]',
     role              TEXT DEFAULT '',
     is_main           INTEGER DEFAULT 0,
+    extraction_locked INTEGER NOT NULL DEFAULT 0,
     gender            TEXT DEFAULT '',
     age_group         TEXT DEFAULT 'youth',
     body_type         TEXT DEFAULT '',
@@ -463,6 +464,7 @@ class SQLiteStore:
             await self._ensure_beat_current_columns(self._db)
             await self._ensure_scene_columns(self._db)
             await self._ensure_indextts2_columns(self._db)
+            await self._ensure_character_extraction_columns(self._db)
             await self._db.commit()
             # Phase 2 DB split: failure-mode *definitions* live in the
             # user-shared verification.db (not this project DB). They are
@@ -506,6 +508,15 @@ class SQLiteStore:
         }
         for name, definition in char_columns.items():
             await _add_column_if_missing(db, "characters", name, definition)
+
+    async def _ensure_character_extraction_columns(self, db: aiosqlite.Connection) -> None:
+        """Add user-controlled character extraction state to existing projects."""
+        await _add_column_if_missing(
+            db,
+            "characters",
+            "extraction_locked",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
 
     async def _ensure_episode_planning_columns(self, db: aiosqlite.Connection) -> None:
         """Add episode columns introduced after early project databases were created."""
@@ -729,14 +740,16 @@ class SQLiteStore:
     async def add_character(self, character: NovelCharacter) -> None:
         db = await self._ensure_db()
         await db.execute(
-            """INSERT INTO characters (name, aliases_json, role, is_main, gender, age_group,
+            """INSERT INTO characters (name, aliases_json, role, is_main, extraction_locked,
+               gender, age_group,
                body_type, fish_voice_id, description, face_prompt, appearance_details, identities_json,
                reference_audio_path, reference_audio_sha256, reference_audio_updated_at,
                voice_samples_by_age_group_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                aliases_json=excluded.aliases_json, role=excluded.role,
-               is_main=excluded.is_main, gender=excluded.gender,
+               is_main=excluded.is_main, extraction_locked=excluded.extraction_locked,
+               gender=excluded.gender,
                age_group=excluded.age_group, body_type=excluded.body_type,
                fish_voice_id=excluded.fish_voice_id, description=excluded.description,
                face_prompt=excluded.face_prompt, appearance_details=excluded.appearance_details,
@@ -751,6 +764,7 @@ class SQLiteStore:
                 json.dumps(character.aliases, ensure_ascii=False),
                 character.role,
                 1 if character.is_main else 0,
+                1 if character.extraction_locked else 0,
                 character.gender,
                 character.age_group,
                 character.body_type,
@@ -772,6 +786,21 @@ class SQLiteStore:
         self._alias_index.update(updated_alias_index)
         for alias in character.aliases:
             self._alias_index[alias] = character.name
+
+    async def set_character_extraction_locked(self, name: str, locked: bool) -> bool:
+        """Persist extraction lock without rewriting any character asset fields."""
+        db = await self._ensure_db()
+        value = 1 if locked else 0
+        cursor = await db.execute(
+            "UPDATE characters SET extraction_locked = ?, updated_at = datetime('now') "
+            "WHERE name = ? AND extraction_locked != ?",
+            (value, name, value),
+        )
+        await db.commit()
+        character = self._characters.get(name)
+        if character is not None:
+            character.extraction_locked = bool(locked)
+        return bool(cursor.rowcount)
 
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
@@ -1420,6 +1449,9 @@ class SQLiteStore:
                 aliases=json.loads(row["aliases_json"] or "[]"),
                 role=row["role"] or "",
                 is_main=bool(row["is_main"]),
+                extraction_locked=bool(
+                    row["extraction_locked"] if "extraction_locked" in row.keys() else 0
+                ),
                 gender=row["gender"] or "",
                 age_group=row["age_group"] if "age_group" in row.keys() else "youth",
                 body_type=row["body_type"] or "",
@@ -2435,48 +2467,118 @@ class SQLiteStore:
         run_id: str,
         characters: List[NovelCharacter],
         evidence_by_entity: dict[str, list[dict]],
-    ) -> list[str]:
+    ) -> dict[str, list[str]]:
         """Publish a character analysis as one active, auditable transaction.
 
-        Existing character rows are user assets and are never overwritten.
+        Locked character rows are never overwritten. Unlocked rows update only
+        extraction-owned fields; identities, media, voice, and user-owned fields
+        remain untouched.
         Evidence from earlier runs remains stored for audit, while the active-run
         pointer makes ordinary reads expose only the newly published analysis.
         """
 
         db = await self._ensure_db()
         added: list[str] = []
+        updated: list[str] = []
+        locked_skipped: list[str] = []
+        publishable_names: set[str] = set()
+        candidate_names = {character.name for character in characters}
         try:
             await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT run_id FROM active_evidence_runs WHERE entity_type = 'character'"
+            ) as cursor:
+                active_run = await cursor.fetchone()
+            previous_evidence: list[aiosqlite.Row] = []
+            if active_run is not None:
+                async with db.execute(
+                    "SELECT entity_id, chunk_id, source_start, source_end, "
+                    "evidence_kind, evidence_text FROM entity_evidence "
+                    "WHERE run_id = ? AND entity_type = 'character'",
+                    (str(active_run["run_id"]),),
+                ) as cursor:
+                    previous_evidence = await cursor.fetchall()
+            async with db.execute("SELECT name FROM characters") as cursor:
+                existing_names = {str(row["name"]) for row in await cursor.fetchall()}
+            preserved = sorted(existing_names - candidate_names)
             for character in characters:
-                cursor = await db.execute(
-                    "INSERT INTO characters "
-                    "(name, aliases_json, role, is_main, gender, age_group, body_type, "
-                    "description, face_prompt, appearance_details, identities_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(name) DO NOTHING",
-                    (
-                        character.name,
-                        json.dumps(character.aliases, ensure_ascii=False),
-                        character.role,
-                        int(character.is_main),
-                        character.gender,
-                        character.age_group,
-                        character.body_type,
-                        character.description,
-                        character.face_prompt,
-                        character.appearance_details,
-                        character.identities_json,
-                    ),
-                )
-                if (cursor.rowcount or 0) > 0:
+                async with db.execute(
+                    "SELECT extraction_locked FROM characters WHERE name = ?",
+                    (character.name,),
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                if existing is not None and bool(existing["extraction_locked"]):
+                    locked_skipped.append(character.name)
+                    continue
+
+                if existing is None:
+                    await db.execute(
+                        "INSERT INTO characters "
+                        "(name, aliases_json, role, is_main, extraction_locked, gender, "
+                        "age_group, body_type, description, face_prompt) "
+                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                        (
+                            character.name,
+                            json.dumps(character.aliases, ensure_ascii=False),
+                            character.role,
+                            int(character.is_main),
+                            character.gender,
+                            character.age_group,
+                            character.body_type,
+                            character.description,
+                            character.face_prompt,
+                        ),
+                    )
                     added.append(character.name)
+                else:
+                    assignments: list[str] = []
+                    values: list[Any] = []
+                    if character.aliases:
+                        assignments.append("aliases_json = ?")
+                        values.append(json.dumps(character.aliases, ensure_ascii=False))
+                    for field in ("role", "gender", "body_type", "description"):
+                        value = str(getattr(character, field, "") or "").strip()
+                        if value:
+                            assignments.append(f"{field} = ?")
+                            values.append(value)
+                    if not assignments:
+                        if character.name not in preserved:
+                            preserved.append(character.name)
+                        publishable_names.add(character.name)
+                        continue
+                    assignments.append("updated_at = datetime('now')")
+                    cursor = await db.execute(
+                        f"UPDATE characters SET {', '.join(assignments)} "
+                        "WHERE name = ? AND extraction_locked = 0",
+                        (*values, character.name),
+                    )
+                    if not (cursor.rowcount or 0):
+                        locked_skipped.append(character.name)
+                        continue
+                    updated.append(character.name)
+                publishable_names.add(character.name)
 
             await db.execute(
                 "DELETE FROM entity_evidence WHERE run_id = ? AND entity_type = 'character'",
                 (run_id,),
             )
-            rows: list[tuple[Any, ...]] = []
+            rows: list[tuple[Any, ...]] = [
+                (
+                    run_id,
+                    "character",
+                    str(row["entity_id"]),
+                    str(row["chunk_id"]),
+                    int(row["source_start"]),
+                    int(row["source_end"]),
+                    str(row["evidence_kind"]),
+                    str(row["evidence_text"]),
+                )
+                for row in previous_evidence
+                if str(row["entity_id"]) not in publishable_names
+            ]
             for entity_id, evidence in evidence_by_entity.items():
+                if entity_id not in publishable_names:
+                    continue
                 for item in evidence:
                     rows.append(
                         (
@@ -2516,7 +2618,12 @@ class SQLiteStore:
             await asyncio.shield(db.rollback())
             raise
         await self.load_graph_state()
-        return added
+        return {
+            "added": added,
+            "updated": updated,
+            "locked_skipped": locked_skipped,
+            "preserved": preserved,
+        }
 
     async def add_characters_atomic(
         self, characters: List[NovelCharacter], *, skip_existing: bool = True
@@ -2529,22 +2636,24 @@ class SQLiteStore:
             for character in characters:
                 clause = "DO NOTHING" if skip_existing else (
                     "DO UPDATE SET aliases_json=excluded.aliases_json, role=excluded.role, "
-                    "is_main=excluded.is_main, gender=excluded.gender, age_group=excluded.age_group, "
+                    "is_main=excluded.is_main, extraction_locked=excluded.extraction_locked, "
+                    "gender=excluded.gender, age_group=excluded.age_group, "
                     "body_type=excluded.body_type, description=excluded.description, "
                     "face_prompt=excluded.face_prompt, appearance_details=excluded.appearance_details, "
                     "updated_at=datetime('now')"
                 )
                 cursor = await db.execute(
                     "INSERT INTO characters "
-                    "(name, aliases_json, role, is_main, gender, age_group, body_type, "
+                    "(name, aliases_json, role, is_main, extraction_locked, gender, age_group, body_type, "
                     "description, face_prompt, appearance_details, identities_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     f"ON CONFLICT(name) {clause}",
                     (
                         character.name,
                         json.dumps(character.aliases, ensure_ascii=False),
                         character.role,
                         int(character.is_main),
+                        int(character.extraction_locked),
                         character.gender,
                         character.age_group,
                         character.body_type,

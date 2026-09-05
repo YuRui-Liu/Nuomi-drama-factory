@@ -1030,6 +1030,22 @@ async def generate_scene_reverse_master(
     )
 
 
+@router.post("/projects/{project}/scenes/{name}/spatial-layout/generate-async")
+async def generate_scene_spatial_layout(
+    project: str,
+    name: str,
+    body: SceneReferenceGenerateRequest | None = None,
+    user: dict = Depends(get_api_user),
+):
+    return await _start_scene_reference_task(
+        project=project,
+        name=name,
+        kind="spatial_layout",
+        model=body.model if body else None,
+        user=user,
+    )
+
+
 async def _start_scene_reference_task(
     *,
     project: str,

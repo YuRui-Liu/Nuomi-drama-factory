@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { SceneAssetCard } from "@/components/assets/scene-asset-card";
+import { SceneReferenceVersions } from "@/components/assets/scene-reference-versions";
 import { AssetBeatReferences } from "@/components/assets/asset-beat-references";
 import {
   SceneEnvironmentPromptFields,
@@ -955,6 +956,35 @@ function SceneAssetCardController({
         onDeleteCustomPackage={handleDeleteCustom}
         onGenerateStagePly={handleGenerateStagePly}
       />
+      <div className="mt-3 space-y-3">
+        {scene.master_path ? (
+          <SceneReferenceVersions
+            project={project}
+            sceneName={scene.name}
+            kind="master"
+            baseSceneId={scene.base_scene_id}
+            legacyAssetPath={scene.master_path}
+          />
+        ) : null}
+        {scene.reverse_master_path ? (
+          <SceneReferenceVersions
+            project={project}
+            sceneName={scene.name}
+            kind="reverse_master"
+            baseSceneId={scene.base_scene_id}
+            legacyAssetPath={scene.reverse_master_path}
+          />
+        ) : null}
+        {scene.spatial_layout_image ? (
+          <SceneReferenceVersions
+            project={project}
+            sceneName={scene.name}
+            kind="spatial_layout"
+            baseSceneId={scene.base_scene_id}
+            legacyAssetPath={scene.spatial_layout_image}
+          />
+        ) : null}
+      </div>
       <input
         ref={masterInputRef}
         type="file"

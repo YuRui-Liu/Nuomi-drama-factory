@@ -366,185 +366,121 @@ def test_configure_and_snapshot_work_synchronously_before_loop_binding() -> None
 
 
 @pytest.mark.asyncio
-async def test_release_from_another_running_loop_is_rejected_without_state_change() -> None:
+async def test_release_from_another_running_loop_is_safe_and_wakes_waiter() -> None:
     coordinator = ProviderConcurrencyCoordinator()
     coordinator.configure(PROVIDER, 1)
     active = await coordinator.acquire(PROVIDER, VIDEO)
     waiter = asyncio.create_task(coordinator.acquire(PROVIDER, TTS))
     await _assert_waiting(waiter)
 
-    async def release_in_new_loop() -> BaseException | None:
-        try:
-            await active.release()
-        except BaseException as exc:  # pragma: no branch - returned for assertion
-            return exc
-        return None
+    await asyncio.to_thread(lambda: asyncio.run(active.release()))
+    granted = await asyncio.wait_for(waiter, timeout=1)
 
-    try:
-        error = await asyncio.to_thread(lambda: asyncio.run(release_in_new_loop()))
-        await asyncio.sleep(0)
+    assert active.released is True
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 1
+    assert coordinator.snapshot(PROVIDER)["waiting"] == 0
 
-        assert isinstance(error, ConcurrencyConfigurationError)
-        assert active.released is False
-        assert coordinator.snapshot(PROVIDER)["active_total"] == 1
-        assert coordinator.snapshot(PROVIDER)["waiting"] == 1
-
-        await active.release()
-        granted = await asyncio.wait_for(waiter, timeout=1)
-        await granted.release()
-    finally:
-        if not active.released:
-            await active.release()
-        if not waiter.done() or not waiter.cancelled():
-            await _cancel_or_release(waiter)
+    await granted.release()
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 0
 
 
 @pytest.mark.asyncio
-async def test_configure_and_snapshot_from_another_running_loop_are_rejected() -> None:
+async def test_configure_and_snapshot_from_another_running_loop_are_safe() -> None:
     coordinator = ProviderConcurrencyCoordinator()
     coordinator.configure(PROVIDER, 1)
     active = await coordinator.acquire(PROVIDER, VIDEO)
     waiter = asyncio.create_task(coordinator.acquire(PROVIDER, TTS))
     await _assert_waiting(waiter)
 
-    async def calls_in_new_loop() -> tuple[BaseException | None, BaseException | None]:
-        errors: list[BaseException | None] = []
-        for call in (
-            lambda: coordinator.configure(PROVIDER, 2),
-            lambda: coordinator.snapshot(PROVIDER),
-        ):
-            try:
-                call()
-            except BaseException as exc:  # pragma: no branch - returned for assertion
-                errors.append(exc)
-            else:
-                errors.append(None)
-        return errors[0], errors[1]
+    async def calls_in_new_loop() -> Mapping[str, object]:
+        coordinator.configure(PROVIDER, 2)
+        return coordinator.snapshot(PROVIDER)
 
-    try:
-        configure_error, snapshot_error = await asyncio.to_thread(
-            lambda: asyncio.run(calls_in_new_loop())
-        )
-        await asyncio.sleep(0)
+    snapshot = await asyncio.to_thread(lambda: asyncio.run(calls_in_new_loop()))
+    granted = await asyncio.wait_for(waiter, timeout=1)
 
-        assert isinstance(configure_error, ConcurrencyConfigurationError)
-        assert isinstance(snapshot_error, ConcurrencyConfigurationError)
-        assert coordinator.snapshot(PROVIDER)["active_total"] == 1
-        assert coordinator.snapshot(PROVIDER)["waiting"] == 1
+    assert snapshot["active_total"] == 2
+    assert snapshot["waiting"] == 0
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 2
 
-        await active.release()
-        granted = await asyncio.wait_for(waiter, timeout=1)
-        await granted.release()
-    finally:
-        if not active.released:
-            await active.release()
-        if not waiter.done() or not waiter.cancelled():
-            await _cancel_or_release(waiter)
+    await active.release()
+    await granted.release()
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 0
 
 
 @pytest.mark.asyncio
-async def test_bound_provider_rejects_configure_and_snapshot_without_running_loop() -> None:
+async def test_configure_and_snapshot_without_running_loop_are_safe() -> None:
     coordinator = ProviderConcurrencyCoordinator()
     coordinator.configure(PROVIDER, 1)
     active = await coordinator.acquire(PROVIDER, VIDEO)
     waiter = asyncio.create_task(coordinator.acquire(PROVIDER, TTS))
     await _assert_waiting(waiter)
 
-    def calls_without_loop() -> tuple[BaseException | None, BaseException | None]:
-        errors: list[BaseException | None] = []
-        for call in (
-            lambda: coordinator.configure(PROVIDER, 2),
-            lambda: coordinator.snapshot(PROVIDER),
-        ):
-            try:
-                call()
-            except BaseException as exc:  # pragma: no branch - returned for assertion
-                errors.append(exc)
-            else:
-                errors.append(None)
-        return errors[0], errors[1]
+    def calls_without_loop() -> Mapping[str, object]:
+        coordinator.configure(PROVIDER, 2)
+        return coordinator.snapshot(PROVIDER)
 
-    try:
-        configure_error, snapshot_error = await asyncio.to_thread(calls_without_loop)
-        await asyncio.sleep(0)
+    snapshot = await asyncio.to_thread(calls_without_loop)
+    granted = await asyncio.wait_for(waiter, timeout=1)
 
-        assert isinstance(configure_error, ConcurrencyConfigurationError)
-        assert isinstance(snapshot_error, ConcurrencyConfigurationError)
-        assert coordinator.snapshot(PROVIDER)["active_total"] == 1
-        assert coordinator.snapshot(PROVIDER)["waiting"] == 1
+    assert snapshot["active_total"] == 2
+    assert snapshot["waiting"] == 0
 
-        await active.release()
-        granted = await asyncio.wait_for(waiter, timeout=1)
-        await granted.release()
-    finally:
-        if not active.released:
-            await active.release()
-        if not waiter.done() or not waiter.cancelled():
-            await _cancel_or_release(waiter)
+    await active.release()
+    await granted.release()
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 0
 
 
 @pytest.mark.asyncio
-async def test_release_without_running_loop_is_rejected_before_marking_released() -> None:
+async def test_release_without_running_loop_is_safe_and_wakes_waiter() -> None:
     coordinator = ProviderConcurrencyCoordinator()
     coordinator.configure(PROVIDER, 1)
     active = await coordinator.acquire(PROVIDER, VIDEO)
     waiter = asyncio.create_task(coordinator.acquire(PROVIDER, TTS))
     await _assert_waiting(waiter)
 
-    def release_without_loop() -> BaseException | None:
+    def release_without_loop() -> None:
         release = active.release()
         try:
             release.send(None)
         except StopIteration:
-            return None
-        except BaseException as exc:  # pragma: no branch - returned for assertion
-            return exc
+            pass
         finally:
             release.close()
-        return None
 
-    try:
-        error = await asyncio.to_thread(release_without_loop)
+    await asyncio.to_thread(release_without_loop)
+    granted = await asyncio.wait_for(waiter, timeout=1)
 
-        assert isinstance(error, ConcurrencyConfigurationError)
-        assert active.released is False
-        assert coordinator.snapshot(PROVIDER)["active_total"] == 1
-        assert coordinator.snapshot(PROVIDER)["waiting"] == 1
+    assert active.released is True
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 1
+    assert coordinator.snapshot(PROVIDER)["waiting"] == 0
 
-        await active.release()
-        granted = await asyncio.wait_for(waiter, timeout=1)
-        await granted.release()
-    finally:
-        if not active.released:
-            await active.release()
-        if not waiter.done() or not waiter.cancelled():
-            await _cancel_or_release(waiter)
+    await granted.release()
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 0
 
 
-def test_simultaneous_first_acquire_binds_exactly_one_event_loop() -> None:
+def test_simultaneous_first_acquire_allows_cross_loop_parallelism_within_limit() -> None:
     coordinator = ProviderConcurrencyCoordinator()
     coordinator.configure(PROVIDER, 2)
-    barrier = Barrier(2)
+    start = Barrier(2)
+    acquired = Barrier(2)
+    observed = Barrier(2)
 
-    def run_contender() -> str | BaseException:
-        async def contend() -> str | BaseException:
-            barrier.wait(timeout=2)
-            try:
-                lease = await coordinator.acquire(PROVIDER, VIDEO)
-            except BaseException as exc:  # pragma: no branch - returned for assertion
-                return exc
+    def run_contender() -> int:
+        async def contend() -> int:
+            start.wait(timeout=5)
+            lease = await coordinator.acquire(PROVIDER, VIDEO)
+            acquired.wait(timeout=5)
+            active_total = coordinator.snapshot(PROVIDER)["active_total"]
+            observed.wait(timeout=5)
             await lease.release()
-            return "acquired"
+            return int(active_total)
 
         return asyncio.run(contend())
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda _: run_contender(), range(2)))
 
-    assert results.count("acquired") == 1
-    errors = [item for item in results if isinstance(item, BaseException)]
-    assert len(errors) == 1
-    assert isinstance(errors[0], ConcurrencyConfigurationError)
-    state = coordinator._providers[PROVIDER]
-    assert sum(state.active_by_capability.values()) == 0
-    assert state.waiters == []
+    assert results == [2, 2]
+    assert coordinator.snapshot(PROVIDER)["active_total"] == 0
+    assert coordinator.snapshot(PROVIDER)["waiting"] == 0

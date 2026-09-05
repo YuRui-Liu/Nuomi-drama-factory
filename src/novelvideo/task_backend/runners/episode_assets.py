@@ -46,6 +46,7 @@ async def _run_episode_asset_planner(
 ) -> dict[str, Any]:
     from novelvideo.agents.asset_compiler import AssetCompiler
     from novelvideo.cognee import CogneeStore
+    from novelvideo.director_plan.store import DirectorPlanStore
     from novelvideo.services.prop_promotion_service import promote_episode_props_to_global
     from novelvideo.sqlite_store import SQLiteStore
 
@@ -108,9 +109,12 @@ async def _run_episode_asset_planner(
     episode_obj = cognee_store.get_episode(episode)
     if episode_obj is None:
         raise ValueError(f"Episode {episode} not found")
+    director_plan = DirectorPlanStore(ctx.output_dir).load_active(episode)
+    if director_plan is None:
+        raise ValueError("DIRECTOR_PLAN_REQUIRED: 请先完成并激活导演镜头方案")
 
     update(0.15, f"规划{label}资产...")
-    compiler = AssetCompiler(cognee_store)
+    compiler = AssetCompiler(cognee_store, director_plan=director_plan)
 
     def on_log(message: str) -> None:
         update(log=message)

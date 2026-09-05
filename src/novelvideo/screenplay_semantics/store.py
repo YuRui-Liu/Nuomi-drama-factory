@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 from uuid import uuid4
 
 from novelvideo.screenplay_semantics.models import ScreenplaySemanticRevision
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenplaySemanticActivationConflict(RuntimeError):
@@ -52,15 +55,26 @@ class ScreenplaySemanticStore:
         path = self._revision_path(episode, revision_id)
         if not path.exists():
             return None
-        return ScreenplaySemanticRevision.model_validate_json(path.read_text(encoding="utf-8"))
+        return self._load_revision(path)
+
+    @staticmethod
+    def _load_revision(path: Path) -> ScreenplaySemanticRevision | None:
+        try:
+            return ScreenplaySemanticRevision.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            logger.warning("Skipping invalid screenplay semantic revision %s: %s", path.name, exc)
+            return None
 
     def list_revisions(self, episode: int) -> tuple[ScreenplaySemanticRevision, ...]:
         directory = self._episode_dir(episode) / "revisions"
         if not directory.exists():
             return ()
         revisions = [
-            ScreenplaySemanticRevision.model_validate_json(path.read_text(encoding="utf-8"))
+            revision
             for path in directory.glob("*.json")
+            if (revision := self._load_revision(path)) is not None
         ]
         return tuple(sorted(revisions, key=lambda item: item.created_at, reverse=True))
 

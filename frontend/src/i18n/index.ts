@@ -22,7 +22,7 @@ function initialLanguage(): Supported {
   return normalize(useAppStore.getState().language || "zh");
 }
 
-i18n
+export const i18nReady = i18n
   .use(HttpBackend)
   .use(initReactI18next)
   .init({
@@ -46,7 +46,8 @@ i18n
     interpolation: {
       escapeValue: false,
     },
-  });
+  })
+  .then(() => undefined);
 
 // Keep the app-store's `language` field AND `<html lang>` in lockstep with
 // what i18next actually resolved. Without this, the switcher (which reads

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import novelvideo.media_capabilities.audio.stem_separator as stem_separator
 from novelvideo.media_capabilities.audio.stem_separator import (
     DemucsStemSeparator,
     StemSeparationError,
@@ -35,8 +36,13 @@ class FakeProcess:
         return self.returncode
 
 
-def test_unavailable_when_demucs_executable_cannot_be_resolved(monkeypatch) -> None:
+def test_unavailable_when_demucs_executable_cannot_be_resolved(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setattr("shutil.which", lambda _command: None)
+    monkeypatch.setattr(
+        stem_separator.sys, "executable", str(tmp_path / "missing" / "python.exe")
+    )
     separator = DemucsStemSeparator()
     assert separator.available is False
     with pytest.raises(StemSeparationUnavailable, match="Demucs.*unavailable"):
@@ -59,6 +65,78 @@ def test_executable_precedence_is_explicit_then_environment_then_default(monkeyp
     monkeypatch.delenv("DRAMACLAW_DEMUCS_BIN")
     assert DemucsStemSeparator().resolved_executable == "resolved/demucs"
     assert seen == ["explicit-demucs", "env-demucs", "demucs"]
+
+
+def test_executable_falls_back_to_current_virtual_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    python = scripts / "python.exe"
+    python.touch()
+    demucs = scripts / "demucs.exe"
+    demucs.touch()
+    monkeypatch.delenv("DRAMACLAW_DEMUCS_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda _command: None)
+    monkeypatch.setattr(stem_separator.sys, "executable", str(python))
+
+    assert DemucsStemSeparator().resolved_executable == str(demucs)
+
+
+def test_auto_device_prefers_cuda_and_falls_back_to_cpu(monkeypatch) -> None:
+    monkeypatch.delenv("DRAMACLAW_DEMUCS_DEVICE", raising=False)
+    monkeypatch.setattr(
+        DemucsStemSeparator, "_cuda_available", staticmethod(lambda: True)
+    )
+    assert DemucsStemSeparator().resolved_device == "cuda"
+
+    monkeypatch.setattr(
+        DemucsStemSeparator, "_cuda_available", staticmethod(lambda: False)
+    )
+    assert DemucsStemSeparator().resolved_device == "cpu"
+
+
+def test_device_environment_and_explicit_value_have_stable_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("DRAMACLAW_DEMUCS_DEVICE", "cuda")
+    assert DemucsStemSeparator().resolved_device == "cuda"
+    assert DemucsStemSeparator(device="cpu").resolved_device == "cpu"
+
+    monkeypatch.setenv("DRAMACLAW_DEMUCS_DEVICE", "invalid")
+    with pytest.raises(ValueError, match="DRAMACLAW_DEMUCS_DEVICE"):
+        DemucsStemSeparator()
+
+
+async def test_auto_cuda_failure_retries_once_on_cpu(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "song.wav"
+    source.write_bytes(b"original")
+    output = tmp_path / "stems"
+    devices: list[str] = []
+
+    async def create(*argv, **_kwargs):
+        device = argv[argv.index("-d") + 1]
+        devices.append(device)
+        if device == "cuda":
+            return FakeProcess(returncode=1)
+        run_output = Path(argv[argv.index("-o") + 1])
+        stem_dir = run_output / "htdemucs" / source.stem
+        stem_dir.mkdir(parents=True)
+        (stem_dir / "vocals.wav").write_bytes(b"voice")
+        (stem_dir / "no_vocals.wav").write_bytes(b"music")
+        return FakeProcess()
+
+    monkeypatch.setattr("shutil.which", lambda _command: "demucs")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(
+        DemucsStemSeparator, "_cuda_available", staticmethod(lambda: True)
+    )
+    result = await DemucsStemSeparator(
+        device="auto", audio_probe=lambda _path: asyncio.sleep(0, result=1.0)
+    ).separate(source, output)
+
+    assert devices == ["cuda", "cpu"]
+    assert result.status == "succeeded"
 
 
 async def test_separate_uses_safe_argv_and_maps_two_stems(tmp_path: Path, monkeypatch) -> None:

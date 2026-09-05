@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { PropAssetCard } from "@/components/assets/prop-asset-card";
+import { PropReferenceVersions } from "@/components/assets/prop-reference-versions";
 import { AssetBeatReferences } from "@/components/assets/asset-beat-references";
 import { CreditCostInline } from "@/components/credit-cost-inline";
 import {
@@ -306,19 +307,28 @@ function PropAssetCardController({
   }
 
   return (
-    <PropAssetCard
-      prop={prop}
-      generating={generateReference.isPending || refTask.started}
-      uploading={uploadReference.isPending}
-      referenceCount={referenceCount}
-      referenceCost={referenceCost.data?.data.display}
-      freezonePending={freezonePending}
-      onEdit={onEdit}
-      onDelete={onDelete}
-      onGenerateReference={handleGenerate}
-      onUploadReference={handleUpload}
-      onOpenFreezone={handleOpenFreezone}
-    />
+    <div className="space-y-3">
+      <PropAssetCard
+        prop={prop}
+        generating={generateReference.isPending || refTask.started}
+        uploading={uploadReference.isPending}
+        referenceCount={referenceCount}
+        referenceCost={referenceCost.data?.data.display}
+        freezonePending={freezonePending}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onGenerateReference={handleGenerate}
+        onUploadReference={handleUpload}
+        onOpenFreezone={handleOpenFreezone}
+      />
+      {prop.reference_path ? (
+        <PropReferenceVersions
+          project={project}
+          propName={prop.name}
+          legacyAssetPath={prop.reference_path}
+        />
+      ) : null}
+    </div>
   );
 }
 

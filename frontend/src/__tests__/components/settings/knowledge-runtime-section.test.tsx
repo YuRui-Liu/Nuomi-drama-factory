@@ -28,6 +28,34 @@ const knowledgeRuntimeMockState = vi.hoisted(() => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/queries/model-gateway", () => {
+  const data = {
+      data: {
+        roles: [
+          {
+            id: "director_plan",
+            label: "整集导演规划",
+            route: {
+              runtime: "model_api",
+              model: "deepseek-v4-flash",
+              reasoning_effort: null,
+              skill_id: null,
+              skill_version: null,
+              fallback: "stop",
+            },
+          },
+        ],
+      },
+    };
+  return {
+  useTaskRuntimeConfig: () => ({
+    data,
+    isLoading: false,
+    isError: false,
+  }),
+  useSaveTaskRuntimeConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  };
+});
 vi.mock("@/lib/queries/knowledge-runtime", () => {
   return {
   useKnowledgeRuntimeStatus: () => ({
@@ -101,6 +129,8 @@ it("shows the actual local knowledge and media providers", () => {
   render(<KnowledgeRuntimeSection open />);
 
   expect(screen.getByText("Codex CLI")).toBeInTheDocument();
+  expect(screen.getByText("文本任务路由")).toBeInTheDocument();
+  expect(screen.getByLabelText("整集导演规划执行运行时")).toBeInTheDocument();
   expect(screen.getByText("Ollama Embedding")).toBeInTheDocument();
   expect(screen.getByText("GRSAI")).toBeInTheDocument();
   expect(screen.getByLabelText("GRSAI 图片模型")).toHaveTextContent("gpt-image-2");

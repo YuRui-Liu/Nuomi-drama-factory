@@ -291,3 +291,55 @@ def test_active_projection_clears_stale_generation_state_when_structure_changes(
     assert projected.source_span_ids == ("span-1", "span-2")
     assert projected.shot_ids == ("shot-new",)
     assert projected.director_revision_id == "rev-new"
+
+def test_active_projection_video_inputs_follow_shot_assets(tmp_path: Path) -> None:
+    _activate(
+        tmp_path,
+        (_group("director-a", 1, ("line-11", "line-12"), ("shot-01-01", "shot-01-02")),),
+    )
+    service.load_effective_groups(tmp_path, 1, [])
+    service.advance_revision(tmp_path, 1, "director-a", "render")
+    service.record_stage_result(
+        tmp_path,
+        1,
+        "director-a",
+        "render",
+        expected_revision=1,
+        status="completed",
+        cell_assets=(
+            {"cell": 0, "beat_id": "shot-01-01", "path": "first.png"},
+            {"cell": 1, "beat_id": "shot-01-02", "path": "second.png"},
+        ),
+    )
+
+    [group] = service.load_effective_groups(tmp_path, 1, [])
+
+    assert [item["beat_id"] for item in group.video_inputs] == [
+        "shot-01-01",
+        "shot-01-02",
+    ]
+    assert all(item["has_first_frame"] for item in group.video_inputs)
+
+
+def test_active_projection_accepts_shot_partition_for_video_plan(tmp_path: Path) -> None:
+    _activate(
+        tmp_path,
+        (_group("director-a", 1, ("line-11", "line-12"), ("shot-01-01", "shot-01-02")),),
+    )
+    [group] = service.load_effective_groups(tmp_path, 1, [])
+    shots = service.generation_beats_for_group(tmp_path, 1, group.id, [])
+
+    updated = service.update_video_plan(
+        tmp_path,
+        1,
+        group.id,
+        shots,
+        expected_revision=group.video_plan.revision,
+        units=[{"beat_ids": ["shot-01-01"]}, {"beat_ids": ["shot-01-02"]}],
+    )
+
+    assert [unit.beat_ids for unit in updated.video_plan.units] == [
+        ("shot-01-01",),
+        ("shot-01-02",),
+    ]
+    assert [unit.duration_seconds for unit in updated.video_plan.units] == [3.0, 3.0]

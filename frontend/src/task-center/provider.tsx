@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAppStore } from "@/stores/app-store";
 import { queryKeys } from "@/lib/query-keys";
+import { directorPlanKeys } from "@/lib/queries/director-plans";
 import { api } from "@/lib/api";
 import { createEventBus } from "./event-bus";
 import { EventBusContext } from "./event-bus-context";
@@ -51,10 +52,7 @@ function invalidateCompletedAssetQueries(
 ): void {
   if (task.status !== "completed") return;
 
-  if (
-    task.task_type === TASK_TYPES.SCRIPT_WRITER ||
-    task.task_type === TASK_TYPES.LITERAL_SCRIPT_WRITER
-  ) {
+  if (task.task_type === TASK_TYPES.SCREENPLAY_SEMANTICS) {
     if (task.episode > 0) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.script(projectId, task.episode),
@@ -64,6 +62,18 @@ function invalidateCompletedAssetQueries(
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.pipelineStatus(projectId),
+      });
+    }
+    return;
+  }
+
+  if (task.task_type === TASK_TYPES.DIRECTOR_PLAN) {
+    if (task.episode > 0) {
+      queryClient.invalidateQueries({
+        queryKey: directorPlanKeys.all(projectId, task.episode),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.narrativeGroups(projectId, task.episode),
       });
     }
     return;
@@ -237,6 +247,8 @@ export function TaskCenterProvider({
       try {
         const res = await queryClient.fetchQuery({
           queryKey: queryKeys.tasks(projectId),
+          // Hydration reconciles against the authoritative server snapshot.
+          staleTime: 0,
           queryFn: () =>
             api
               .get(`api/v1/projects/${encodeURIComponent(projectId)}/tasks`)

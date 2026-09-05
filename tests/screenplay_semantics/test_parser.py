@@ -52,3 +52,38 @@ def test_document_without_scene_headers_does_not_invent_scenes():
 
     assert parsed.scenes == ()
     assert all(block.kind in {"unclassified", "formatting"} for block in parsed.metadata_blocks)
+
+
+def test_placeholder_scene_header_keeps_location_and_excludes_html_metadata():
+    parsed = parse_screenplay_document(
+        """---
+episode: E002
+---
+2-1 广播站走廊 日/夜 内/外
+人物：周禾 梁真 陶粒 石岚 罗竞 感染者
+△周禾按下播放键。
+周禾：声音只能争取时间。
+<!-- main_change: 保安胸前钥匙指向录音间。 -->
+2-2 转移通道 日/夜 内/外
+人物：周禾 陶粒 石岚 罗竞 感染者
+△周禾推车卡门。
+"""
+    )
+
+    assert [scene.location for scene in parsed.scenes] == ["广播站走廊", "转移通道"]
+    assert [scene.interior_exterior for scene in parsed.scenes] == [
+        "unspecified",
+        "unspecified",
+    ]
+    assert parsed.scenes[0].characters == (
+        "周禾",
+        "梁真",
+        "陶粒",
+        "石岚",
+        "罗竞",
+        "感染者",
+    )
+    assert "<!--" not in "\n".join(
+        block.text for scene in parsed.scenes for block in scene.blocks
+    )
+    assert any(block.text.startswith("<!--") for block in parsed.metadata_blocks)

@@ -84,7 +84,7 @@ class GrsaiRuntimeConfiguration:
         return GrsaiClient(
             httpx.AsyncClient(
                 base_url=self.account.base_url,
-                trust_env=False,
+                trust_env=True,
                 timeout=httpx.Timeout(connect=20, read=60, write=60, pool=20),
             ),
             default_model=self.model,

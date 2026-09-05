@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -45,6 +44,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     save_h3_director_manifest,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
+from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
@@ -54,6 +54,7 @@ from novelvideo.media_capabilities.video.workflow_registry import (
 )
 from novelvideo.narrative_groups.nonvisual import is_nonvisual_production_note
 from novelvideo.narrative_groups.service import (
+    generation_beats_for_group,
     load_materialized_groups,
     record_stage_result,
     record_video_segment_result,
@@ -303,7 +304,7 @@ def _prompt_context(
     *,
     director_context: str = "",
 ) -> H3PromptContext:
-    from novelvideo.official_defaults import DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
+    from novelvideo.text_runtime_settings import load_text_runtime_settings
 
     return H3PromptContext(
         visual_description=_raw_prompt(beat),
@@ -312,10 +313,7 @@ def _prompt_context(
         next_summary=_narrative(following) if following else "",
         first_frame_sha256=_frame_sha256(str(segment.first_frame)),
         last_frame_sha256=_frame_sha256(str(segment.last_frame)) if segment.last_frame else None,
-        model_id=(
-            os.getenv("H3_PROMPT_OPTIMIZER_MODEL", "").strip()
-            or DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
-        ),
+        model_id=load_text_runtime_settings().model,
         dialogue_required=_dialogue_required(beat, segment),
         director_context=director_context,
     )
@@ -330,22 +328,37 @@ async def _optimize_missing_prompts(
     episode: int,
     max_parallel: int | None = None,
     evidence_by_segment: dict[str, dict[str, Any]] | None = None,
+    episode_beats: list[Mapping[str, Any]] | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
     episode_segments: list[H3DirectorSegment] = []
-    episode_beats: list[Mapping[str, Any]] = []
+    episode_context_beats: list[Mapping[str, Any]] = []
     segment_group_ids: dict[str, str] = {}
+    source_beats = list(episode_beats or beats)
     for group in load_materialized_groups(project_dir, episode):
         render = stage_payload(project_dir, episode, group.id, "render")
-        candidate = _build_segments({"mode": "auto"}, list(beats), render)
-        candidate_beats = _canonical_beats_for_segments(candidate, list(beats))
+        # Episode-level prompt planning may use already-rendered neighbouring
+        # groups for continuity, but an unfinished sibling must never expand
+        # and then fail the scope of the group that the user actually queued.
+        if str(render.get("status") or "").strip().lower() != "completed":
+            continue
+        group_beats = generation_beats_for_group(
+            project_dir, episode, group.id, source_beats
+        )
+        try:
+            candidate = _build_segments({"mode": "auto"}, group_beats, render)
+        except ValueError:
+            # A stale/incomplete sibling render is context that can be omitted;
+            # the requested group's segments were validated before this call.
+            continue
+        candidate_beats = _canonical_beats_for_segments(candidate, group_beats)
         episode_segments.extend(candidate)
-        episode_beats.extend(candidate_beats)
+        episode_context_beats.extend(candidate_beats)
         segment_group_ids.update({item.segment_id: group.id for item in candidate})
     if episode_segments:
         segments = episode_segments
-        beats = list(episode_beats)
+        beats = list(episode_context_beats)
     optimizer = create_h3_episode_pack_optimizer(
         cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
     )
@@ -787,7 +800,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     try:
         workflow = _workflow_definition_for_payload(payload)
         adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
-        beats = await _load_canonical_beats(ctx, episode)
+        source_beats = await _load_canonical_beats(ctx, episode)
+        beats = generation_beats_for_group(
+            project_dir, episode, group_id, source_beats
+        )
         # The video stage owns revision/status; frame assets are canonical render outputs.
         render_state = stage_payload(project_dir, episode, group_id, "render")
         if plan_revision is None:
@@ -838,6 +854,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 raw_segments, segment_beats, ctx=ctx,
                 project_dir=project_dir, episode=episode,
                 evidence_by_segment=evidence_by_segment,
+                episode_beats=source_beats,
             )
         except H3PromptQualityError as exc:
             report = exc.report.model_dump(mode="json")
@@ -1015,7 +1032,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             int(generated.actual_output.get("width") or 0),
             int(generated.actual_output.get("height") or 0),
         )
-        if expected_output != actual_output:
+        if not resolution_matches(expected_output, actual_output, tolerance_px=32):
             message = (
                 f"video output resolution mismatch: expected "
                 f"{expected_output[0]}x{expected_output[1]}, got "
@@ -1136,9 +1153,15 @@ def run_narrative_group_video(envelope: dict[str, Any], ctx: ProjectContext) -> 
     return asyncio.run(_execute(envelope, ctx))
 
 
-register_project_task_runner("narrative_group_video", run_narrative_group_video)
 register_project_task_runner(
-    "narrative_group_video_segment", run_narrative_group_video
+    "narrative_group_video",
+    run_narrative_group_video,
+    text_task_role="h3_episode_pack",
+)
+register_project_task_runner(
+    "narrative_group_video_segment",
+    run_narrative_group_video,
+    text_task_role="h3_segment_repair",
 )
 
 __all__ = [

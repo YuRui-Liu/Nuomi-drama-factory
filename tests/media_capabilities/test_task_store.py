@@ -949,6 +949,23 @@ def test_two_stores_allow_only_one_active_attempt(tmp_path: Path) -> None:
     assert [item.attempt_no for item in first.list_attempts(task.id)] == [1]
 
 
+def test_unknown_attempt_blocks_duplicate_provider_attempt(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    task = create_task(store)
+    attempt = store.start_attempt(task.id, "provider-account-1")
+
+    saved = store.mark_unknown(
+        attempt.id,
+        MediaErrorCode.PROVIDER_TIMEOUT,
+        "provider submission outcome is unknown",
+    )
+
+    assert saved.status is MediaTaskStatus.UNKNOWN
+    assert store.get_task(task.id).status is MediaTaskStatus.UNKNOWN
+    with pytest.raises(TaskStoreConflictError, match="active attempt"):
+        store.start_attempt(task.id, "provider-account-1")
+
+
 def test_start_attempt_rolls_back_insert_and_counter_when_task_update_fails(
     tmp_path: Path,
 ) -> None:

@@ -22,7 +22,7 @@ _STEP_MAP = {
     "portraits": (None, "肖像生成"),
     "identity_plan": (None, "身份规划"),
     "identity_images": (None, "身份图生成"),
-    "script": ("script_writer", "脚本生成"),
+    "script": ("screenplay_semantics", "剧本语义解析"),
     "sketches": ("sketch_generation", "草图生成"),
     "coloring": (None, "配色+身份/道具检测"),
     "global_optimize": ("global_optimize_video", "全局视频优化"),

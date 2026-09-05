@@ -1047,6 +1047,10 @@ class NovelCharacter(BaseModel):
     aliases: List[str] = Field(default_factory=list, description="别名列表")
     role: str = Field(default="", description="角色定位（主角/配角/反派）")
     is_main: bool = Field(default=False, description="是否为主角/核心角色")
+    extraction_locked: bool = Field(
+        default=False,
+        description="是否禁止自动角色提取覆盖该角色",
+    )
     gender: str = Field(default="", description="性别")
     age_group: str = Field(default="youth", description="年龄段: child/youth/middle/elder")
     body_type: str = Field(default="", description="体型描述，如'纤细高挑'、'健壮魁梧'")
@@ -1235,7 +1239,10 @@ class NovelEpisode(BaseModel):
     chapter_end: int = Field(default=0, description="结束章节")
     raw_content: str = Field(default="", description="本集原文")
     adapted_content: str = Field(default="", description="改写后的工作副本")
-    beat_source_text: str = Field(default="", description="逐行分镜生成使用的工作文本")
+    beat_source_text: str = Field(
+        default="",
+        description="剧本校对使用的可编辑工作副本；不得按文本行直接生成 Beat",
+    )
     content_summary: str = Field(default="", description="内容摘要")
     main_conflict: str = Field(default="", description="主要冲突")
     cliffhanger: str = Field(default="", description="悬念/钩子")

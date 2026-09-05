@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -71,6 +71,7 @@ class MediaTaskStatus(StrEnum):
     DOWNLOADING = "downloading"
     VALIDATING = "validating"
     RETRY_WAIT = "retry_wait"
+    UNKNOWN = "unknown"
     CANCEL_REQUESTED = "cancel_requested"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -211,16 +212,74 @@ class RunningHubWorkflowSettings(_ExternalModel):
         return normalized
 
 
+class CapabilityRequirement(_ExternalModel):
+    capability: MediaCapability
+    mode: str | None = None
+    reference_count: int = Field(default=0, ge=0)
+    aspect_ratio: str | None = None
+    resolution: str | None = None
+    duration: float | None = Field(default=None, gt=0)
+    requires_dialogue: bool = False
+    requires_audio: bool = False
+
+
+class CapabilityProfile(_ExternalModel):
+    id: NonEmptyText
+    media_type: Literal["image", "video", "tts"]
+    capabilities: list[MediaCapability] = Field(default_factory=list)
+    modes: list[str] = Field(default_factory=list)
+    max_references: int = Field(default=0, ge=0)
+    aspect_ratios: list[str] = Field(default_factory=list)
+    resolutions: list[str] = Field(default_factory=list)
+    min_duration: float | None = Field(default=None, gt=0)
+    max_duration: float | None = Field(default=None, gt=0)
+    supports_dialogue: bool = False
+    supports_audio: bool = False
+
+    @model_validator(mode="after")
+    def validate_profile(self) -> Self:
+        if self.min_duration and self.max_duration and self.min_duration > self.max_duration:
+            raise ValueError("min_duration must not exceed max_duration")
+        expected_prefix = f"{self.media_type}."
+        if any(not capability.value.startswith(expected_prefix) for capability in self.capabilities):
+            raise ValueError("capability media type does not match profile media_type")
+        return self
+
+    def satisfies(self, requirement: CapabilityRequirement) -> bool:
+        if requirement.capability not in self.capabilities:
+            return False
+        if requirement.mode and requirement.mode not in self.modes:
+            return False
+        if requirement.reference_count > self.max_references:
+            return False
+        if requirement.aspect_ratio and requirement.aspect_ratio not in self.aspect_ratios:
+            return False
+        if requirement.resolution and requirement.resolution not in self.resolutions:
+            return False
+        if requirement.duration is not None:
+            if self.min_duration is not None and requirement.duration < self.min_duration:
+                return False
+            if self.max_duration is not None and requirement.duration > self.max_duration:
+                return False
+        if requirement.requires_dialogue and not self.supports_dialogue:
+            return False
+        return not requirement.requires_audio or self.supports_audio
+
+
 class WorkflowProfile(_ExternalModel):
     id: str
     version: int = Field(ge=1)
+    provider: str = ""
     workflow_id: str
+    workflow_revision: str = ""
+    api_schema_sha256: str = ""
     capabilities: list[MediaCapability] = Field(default_factory=list)
     bindings: dict[str, JsonValue] = Field(default_factory=dict)
     outputs: dict[str, JsonValue] = Field(default_factory=dict)
     constraints: dict[str, JsonValue] = Field(default_factory=dict)
     source_sha256: str = ""
     status: str = "active"
+    health_status: Literal["unknown", "healthy", "degraded", "unavailable"] = "unknown"
 
 
 class CapabilityImplementation(_ExternalModel):

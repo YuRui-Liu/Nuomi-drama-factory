@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from ulid import ULID
 
 from novelvideo.screenplay_semantics.models import (
@@ -103,7 +103,11 @@ def apply_semantic_edit(
         if first.scene_id != second.scene_id:
             raise SemanticEditError("beats must belong to the same scene")
         merged = first.model_copy(update={
-            "id": f"{first.id}-merged", "source_ranges": first.source_ranges + second.source_ranges,
+            "id": f"{first.id}-merged",
+            "source_ranges": tuple(sorted(
+                first.source_ranges + second.source_ranges,
+                key=lambda item: (item.start_line, item.end_line),
+            )),
             "characters": tuple(dict.fromkeys(first.characters + second.characters)),
             "must_show": first.must_show + second.must_show,
             "script_facts": first.script_facts + second.script_facts,
@@ -134,12 +138,17 @@ def apply_semantic_edit(
     else:  # pragma: no cover - discriminated union keeps this unreachable
         raise SemanticEditError("unsupported semantic edit")
 
-    return revision.model_copy(update={
+    payload = revision.model_dump(mode="python")
+    payload.update({
         "revision_id": str(ULID()), "parent_revision_id": revision.revision_id,
         "status": "review_required", "beats": tuple(beats),
         "invalidated_beat_ids": invalidated,
         "created_at": datetime.now(timezone.utc), "activated_at": None,
     })
+    try:
+        return ScreenplaySemanticRevision.model_validate(payload)
+    except ValidationError as exc:
+        raise SemanticEditError(f"semantic edit produced invalid evidence: {exc}") from exc
 
 
 __all__ = ["MergeAdjacentBeats", "ReorderBeats", "SemanticEdit", "SemanticEditError", "SplitBeat", "UpdateBeat", "apply_semantic_edit"]

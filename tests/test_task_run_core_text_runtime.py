@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 from contextlib import nullcontext
+from pathlib import Path
 import threading
 from types import SimpleNamespace
 
@@ -36,6 +38,44 @@ def test_runner_registration_keeps_callable_api_and_exposes_text_role():
     assert registration is not None
     assert registration.runner is runner
     assert registration.text_task_role == "director_plan"
+
+
+def test_graph_asset_extractors_use_configured_knowledge_runtime():
+    # Parse the lightweight registration boundary without importing Cognee.
+    module_path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "novelvideo"
+        / "task_backend"
+        / "runners"
+        / "graph_build.py"
+    )
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    registrations: dict[str, str | None] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "register_project_task_runner" or not node.args:
+            continue
+        task_arg = node.args[0]
+        if not isinstance(task_arg, ast.Constant) or not isinstance(task_arg.value, str):
+            continue
+        role = next(
+            (
+                keyword.value.value
+                for keyword in node.keywords
+                if keyword.arg == "text_task_role"
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, str)
+            ),
+            None,
+        )
+        registrations[task_arg.value] = role
+
+    for task_type in ("build_characters", "build_scenes", "build_props"):
+        assert registrations[task_type] == "knowledge_extraction"
 
 
 async def test_enqueue_freezes_task_override_into_envelope(monkeypatch):

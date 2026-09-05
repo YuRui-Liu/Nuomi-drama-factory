@@ -174,11 +174,15 @@ class CogneeShadowGraph:
         project_dir: str | Path,
         state_dir: str | Path,
         store_factory: Callable[..., Any] | None = None,
+        on_progress: Callable[[float, str], None] | None = None,
+        on_log: Callable[[str], None] | None = None,
     ) -> None:
         self.project_name = project_name
         self.project_dir = Path(project_dir)
         self.state_dir = Path(state_dir)
         self._store_factory = store_factory
+        self._on_progress = on_progress
+        self._on_log = on_log
 
     @property
     def active_pointer_path(self) -> Path:
@@ -253,8 +257,16 @@ class CogneeShadowGraph:
         )
         try:
             await store.initialize()
+            callbacks: dict[str, object] = {}
+            if self._on_progress is not None:
+                callbacks["on_progress"] = self._on_progress
+            if self._on_log is not None:
+                callbacks["on_log"] = self._on_log
             await store.ingest_novel_fast(
-                str(novel_path), rebuild=False, persist_novel_content=False
+                str(novel_path),
+                rebuild=False,
+                persist_novel_content=False,
+                **callbacks,
             )
         finally:
             result = store.close()

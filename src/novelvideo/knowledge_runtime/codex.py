@@ -471,7 +471,10 @@ class CodexCliStructuredBackend:
                 repair_error = _validation_summary(exc)
                 if attempt == 2:
                     raise KnowledgeRuntimeError(
-                        "Codex 未能返回符合 Schema 的结构化结果。",
+                        (
+                            "Codex 未能返回符合 Schema 的结构化结果："
+                            f"{repair_error}"
+                        ),
                         code="CODEX_STRUCTURED_OUTPUT_INVALID",
                     ) from exc
         raise AssertionError("unreachable")

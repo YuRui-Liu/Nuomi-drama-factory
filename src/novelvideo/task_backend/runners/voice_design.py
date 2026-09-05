@@ -43,6 +43,7 @@ async def _run_voice_design(envelope: dict[str, Any], ctx: ProjectContext) -> di
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(ctx.output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
     try:
+        await store.load_graph_state()
         character = store.get_character(name)
         if character is None:
             raise RuntimeError(f"角色不存在: {name}")

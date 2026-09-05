@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import httpx
 
@@ -38,6 +40,75 @@ async def test_grsai_poll_retries_transient_read_timeout(monkeypatch):
     )
 
     assert snapshot.status == "succeeded"
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_grsai_poll_retries_transient_non_json_response(monkeypatch):
+    from novelvideo.generators import scene_reference_images
+    from novelvideo.media_capabilities.image.grsai import GrsaiSnapshot
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def query(self, task_id, *, api_key):
+            self.calls += 1
+            if self.calls == 1:
+                raise json.JSONDecodeError("Expecting value", "", 0)
+            return GrsaiSnapshot(
+                id=task_id,
+                status="succeeded",
+                results=[{"url": "https://files.test/image.png"}],
+            )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scene_reference_images.asyncio, "sleep", no_sleep)
+    client = FakeClient()
+
+    snapshot = await scene_reference_images._poll_grsai_image_result(
+        client,
+        "task-1",
+        api_key="secret",
+        timeout_seconds=30,
+    )
+
+    assert snapshot.status == "succeeded"
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_grsai_submit_retries_connect_timeout(monkeypatch):
+    from novelvideo.generators import scene_reference_images
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def submit(self, request, *, api_key):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ConnectTimeout(
+                    "",
+                    request=httpx.Request("POST", "https://grsai.test"),
+                )
+            return "task-1"
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scene_reference_images.asyncio, "sleep", no_sleep)
+    client = FakeClient()
+
+    task_id = await scene_reference_images._submit_grsai_image(
+        client,
+        object(),
+        api_key="secret",
+    )
+
+    assert task_id == "task-1"
     assert client.calls == 2
 
 

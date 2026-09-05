@@ -47,6 +47,43 @@ def test_valid_multiline_beat_covers_story_blocks_without_line_fallback():
     assert report.issues == ()
 
 
+def test_accepts_character_and_near_verbatim_fact_grounded_in_scene_text():
+    grounded_scene = Scene(
+        id="scene-grounded",
+        ordinal=1,
+        source_range=SourceRange(start_line=1, end_line=2),
+        heading="2-1 广播站走廊 日/夜 内/外",
+        characters=("周禾",),
+        content_hash="grounded",
+        blocks=(
+            SourceBlock(
+                id="line-2",
+                ordinal=1,
+                kind="action",
+                text=(
+                    "△周禾被感染保安堵在消防门后。他从居民语音库找到"
+                    "保安妻子的寻人录音，第一次播放姓名，感染者僵停三秒。"
+                ),
+                source_range=SourceRange(start_line=2, end_line=2),
+            ),
+        ),
+    )
+    grounded_draft = draft(
+        source_ranges=(SourceRange(start_line=2, end_line=2),),
+        characters=("周禾", "保安"),
+        dialogue_source_ids=(),
+        script_facts=(
+            "周禾从居民语音库找到保安妻子的寻人录音。",
+            "第一次播放姓名后，感染者僵停三秒。",
+        ),
+    )
+
+    report = validate_scene_beats(grounded_scene, (grounded_draft,))
+
+    assert report.passed is True
+    assert report.issues == ()
+
+
 def test_missing_story_coverage_is_reported_instead_of_inventing_a_fallback_beat():
     report = validate_scene_beats(
         scene(),

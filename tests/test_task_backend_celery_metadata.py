@@ -22,9 +22,9 @@ def test_completion_metadata_carries_provider_task_id():
     }
 
 
-def test_script_writer_resource_ref_is_episode_slot():
+def test_screenplay_semantics_resource_ref_is_episode_slot():
     refs = _resource_refs_for_task_success(
-        task_type="script_writer",
+        task_type="screenplay_semantics",
         episode=3,
         result={"beats": 18},
     )

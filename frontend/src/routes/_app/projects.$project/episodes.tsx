@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { useCharacters } from "@/lib/queries/characters";
+import { useScreenplaySemantics } from "@/lib/queries/screenplay-semantics";
 import {
   derivePipelineEpisodeStatuses,
   isPlanEpisodeAssetsResult,
@@ -283,13 +284,18 @@ function TopBar({
   const episodeNumber = selectedEpisode?.number ?? 0;
   const { data: episodeDetailRes } = useEpisodeDetail(project, episodeNumber);
   const { data: beatsRes } = useEpisodeBeats(project, episodeNumber);
+  const semantics = useScreenplaySemantics(project, episodeNumber);
   const episodeDetail = episodeDetailRes?.data ?? selectedEpisode;
-  const beatCount = beatsRes?.data.length ?? 0;
+  const semanticsData = semantics.data?.ok ? semantics.data.data : undefined;
+  const semanticRevision = semanticsData?.revisions.find(
+    (revision) => revision.revision_id === semanticsData.active_revision_id,
+  ) ?? semanticsData?.revisions[0];
+  const semanticBeatCount = semanticRevision?.beats.length ?? beatsRes?.data.length ?? 0;
+  const semanticSceneCount = semanticRevision?.scenes.length ?? episodeDetail?.scene_menu?.length ?? 0;
   const sourceLineCount = countContentLines(
     episodeDetail?.beat_source_text || episodeDetail?.raw_content,
   );
   const identityCount = episodeDetail?.identity_ids?.length ?? 0;
-  const sceneCount = episodeDetail?.scene_menu?.length ?? 0;
   const propCount = episodeDetail?.prop_menu?.length ?? 0;
   const headerTitle = selectedEpisode
     ? selectedEpisode.title || t("episode.list.episodeNumber", { n: selectedEpisode.number })
@@ -297,12 +303,12 @@ function TopBar({
   const headerSubtitle = selectedEpisode
     ? t("episode.list.selectedEpisodeSummary", {
         lines: sourceLineCount,
-        beats: beatCount,
+        beats: semanticBeatCount,
         identities: identityCount,
-        scenes: sceneCount,
+        scenes: semanticSceneCount,
         props: propCount,
         status:
-          beatCount > 0
+          semanticRevision || semanticBeatCount > 0
             ? t("episode.list.scriptReady")
             : t("episode.list.scriptPending"),
       })
@@ -1078,6 +1084,16 @@ function EpisodesPage() {
   );
 }
 
+function EpisodesRoutePage() {
+  const { project } = Route.useParams();
+
+  return (
+    <TaskControllerProvider project={project} episode={0}>
+      <EpisodesPage />
+    </TaskControllerProvider>
+  );
+}
+
 // TODO (Phase 6 — backend-coupled, not done yet):
 // - Debounced autosave + ETag/If-Match conflict handling on beat PATCH.
 // - Attempt badges + admin-password unlock dialog on per-stage actions.
@@ -1086,5 +1102,5 @@ function EpisodesPage() {
 // - Identity denormalization into characters response (fixes N+1 identity fetch).
 
 export const Route = createFileRoute("/_app/projects/$project/episodes")({
-  component: EpisodesPage,
+  component: EpisodesRoutePage,
 });

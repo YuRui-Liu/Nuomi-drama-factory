@@ -96,3 +96,19 @@ docs/superpowers/
 # git worktree 统一目录(主目录永远 main)
 /.worktrees/
 .extension-style-import/
+
+# 测试与 agent 临时产物（pytest/codex/agent/tmp/phase/director/m1 等），勿提交
+.pytest*/
+.pytest-*/
+.codex-*/
+.agent-test-*/
+.phase-*/
+.director-*/
+.m1-*/
+.m1-*/
+.tmp*/
+.test-tmp*/
+tests/.tmp-*/
+
+# 本地 agent 数据，勿提交
+.workbuddy/

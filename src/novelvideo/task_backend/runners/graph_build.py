@@ -67,12 +67,19 @@ async def _run_build_characters(ctx: ProjectContext) -> dict[str, Any]:
         if is_structured_pipeline(ctx.state_dir):
             from novelvideo.structured_builders import build_characters_structured
 
-            added = await build_characters_structured(
+            build_result = await build_characters_structured(
                 store,
                 on_progress=lambda progress, task: _progress(ctx, "build_characters", progress, task),
                 on_log=lambda message: _progress(ctx, "build_characters", 0.0, message),
             )
-            return {"characters": len(added), "added_characters": len(added)}
+            if hasattr(build_result, "as_task_result"):
+                return build_result.as_task_result(
+                    total=len(store.get_all_characters())
+                )
+            return {
+                "characters": len(build_result),
+                "added_characters": len(build_result),
+            }
         characters = await store.build_characters_from_graph(
             on_progress=lambda progress, task: _progress(ctx, "build_characters", progress, task),
             on_log=lambda message: _progress(ctx, "build_characters", 0.0, message),
@@ -191,7 +198,19 @@ async def _run_build_episodes(envelope: dict[str, Any], ctx: ProjectContext) -> 
         await store.close()
 
 
-register_project_task_runner("build_characters", run_build_characters)
-register_project_task_runner("build_scenes", run_build_scenes)
-register_project_task_runner("build_props", run_build_props)
+register_project_task_runner(
+    "build_characters",
+    run_build_characters,
+    text_task_role="knowledge_extraction",
+)
+register_project_task_runner(
+    "build_scenes",
+    run_build_scenes,
+    text_task_role="knowledge_extraction",
+)
+register_project_task_runner(
+    "build_props",
+    run_build_props,
+    text_task_role="knowledge_extraction",
+)
 register_project_task_runner("build_episodes", run_build_episodes)

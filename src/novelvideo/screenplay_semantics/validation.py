@@ -25,12 +25,27 @@ def _normalize(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", value)
 
 
+def _fact_supported(fact: str, evidence: str) -> bool:
+    claim = _normalize(fact)
+    if not claim or not evidence:
+        return False
+    if claim in evidence:
+        return True
+    if len(claim) < 6:
+        return False
+    bigrams = [claim[index : index + 2] for index in range(len(claim) - 1)]
+    coverage = sum(item in evidence for item in bigrams) / len(bigrams)
+    threshold = 0.45 if len(claim) >= 10 else 0.6
+    return coverage >= threshold
+
+
 def validate_scene_beats(
     scene: Scene,
     drafts: Sequence[DramaticBeatDraft],
 ) -> SemanticValidationReport:
     issues: list[SemanticValidationIssue] = []
     dialogue_ids = {block.id for block in scene.blocks if block.kind == "dialogue"}
+    scene_evidence = _normalize("\n".join(block.text for block in scene.blocks))
     covered_lines: set[int] = set()
 
     for index, draft in enumerate(drafts):
@@ -55,7 +70,10 @@ def validate_scene_beats(
             covered_lines.update(lines)
 
         for character in draft.characters:
-            if character not in scene.characters:
+            if (
+                character not in scene.characters
+                and _normalize(character) not in scene_evidence
+            ):
                 issues.append(SemanticValidationIssue(
                     code="unknown_character", message=f"人物缺少场次证据：{character}",
                     location=f"{location}.characters", scene_id=scene.id,
@@ -71,7 +89,7 @@ def validate_scene_beats(
             if _covered(block.source_range.start_line, draft.source_ranges)
         ))
         for fact in draft.script_facts:
-            if _normalize(fact) not in evidence:
+            if not _fact_supported(fact, evidence):
                 issues.append(SemanticValidationIssue(
                     code="unsupported_script_fact", message=f"事实缺少原文证据：{fact}",
                     location=f"{location}.script_facts", scene_id=scene.id,

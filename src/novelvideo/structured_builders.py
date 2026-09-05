@@ -55,6 +55,29 @@ class StructuredSceneInput:
     environment: str = ""
     spatial_anchors: tuple[str, ...] = ()
     source_refs: tuple[StructuredSourceRef, ...] = ()
+
+
+class CharacterBuildResult(list[str]):
+    """Backward-compatible added-name list carrying production build statistics."""
+
+    def __init__(self, added: Iterable[str], **stats: Any) -> None:
+        super().__init__(added)
+        self.stats = {
+            "added": list(self),
+            "updated": list(stats.get("updated") or []),
+            "locked_skipped": list(stats.get("locked_skipped") or []),
+            "preserved": list(stats.get("preserved") or []),
+        }
+
+    def as_task_result(self, *, total: int) -> dict[str, Any]:
+        return {
+            "characters": total,
+            "added_characters": len(self.stats["added"]),
+            "updated_characters": len(self.stats["updated"]),
+            "locked_skipped_characters": len(self.stats["locked_skipped"]),
+            "preserved_characters": len(self.stats["preserved"]),
+            "character_build": self.stats,
+        }
     aliases: tuple[str, ...] = ()
     scene_type: str = "interior"
 
@@ -385,12 +408,128 @@ def _log(callback: Any, message: str) -> None:
         callback(message)
 
 
+def _line_number(source: str, offset: int) -> int:
+    return source.count("\n", 0, max(0, int(offset))) + 1
+
+
+def _visual_workspace_for_merged_character(
+    *,
+    item: Any,
+    source_text: str,
+    existing_workspace: Any,
+    existing_roster_proposals: list[Any],
+) -> Any:
+    from novelvideo.character_visual.models import (
+        CharacterDesignProposal,
+        CharacterNarrativeFact,
+        CharacterNarrativeProfile,
+        SourceSpan,
+    )
+    from novelvideo.character_visual.proposals import (
+        ProposalQualityError,
+        build_character_visual_workspace,
+    )
+
+    facts = []
+    for index, evidence in enumerate(item.evidence):
+        field_name = str(evidence.get("field") or "").strip()
+        value = str(evidence.get("value") or "").strip()
+        quote = str(evidence.get("evidence_text") or "").strip()
+        if not field_name or not value or not quote:
+            continue
+        start = _line_number(source_text, int(evidence.get("source_start", 0)))
+        end = _line_number(source_text, int(evidence.get("source_end", 0)))
+        facts.append(
+            CharacterNarrativeFact(
+                fact_id=f"{item.name}-fact-{index + 1}",
+                field=field_name,
+                value=value,
+                source_span=SourceSpan(start_line=start, end_line=max(start, end)),
+                evidence=quote,
+                confidence=float(evidence.get("confidence", 1.0)),
+                assertion="explicit",
+            )
+        )
+    profile = CharacterNarrativeProfile(
+        character_id=item.name,
+        name=item.name,
+        aliases=sorted(item.aliases),
+        biography=item.biography or item.description,
+        occupation=item.occupation or item.role,
+        social_identity=item.social_identity,
+        relationships=list(item.relationships),
+        personality=list(item.personality),
+        dramatic_function=item.dramatic_function,
+        facts=facts,
+    )
+    proposals = [
+        CharacterDesignProposal.model_validate(proposal)
+        for proposal in item.design_proposals
+    ]
+    if len(proposals) != 3:
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "error_code": "CHARACTER_DESIGN_PROPOSALS_REQUIRED",
+                    "character_name": item.name,
+                    "message": "角色提取必须返回三套可审查视觉提案，请重新提取。",
+                    "transport_called": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+    try:
+        return build_character_visual_workspace(
+            profile=profile,
+            proposals=proposals,
+            existing_workspace=existing_workspace,
+            existing_roster_proposals=existing_roster_proposals,
+        )
+    except ProposalQualityError as exc:
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "error_code": "CHARACTER_DESIGN_QUALITY_REJECTED",
+                    "character_name": item.name,
+                    "issues": {
+                        proposal.proposal_id: proposal.quality_issues
+                        for proposal in exc.proposals
+                    },
+                    "transport_called": False,
+                },
+                ensure_ascii=False,
+            )
+        ) from exc
+
+
+def _decode_character_artifact(
+    artifact: str,
+    excluded_names: set[str],
+) -> list[dict[str, Any]] | None:
+    """Reuse character analysis only for the exact extraction-lock snapshot."""
+    try:
+        payload = json.loads(artifact)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    cached_excluded = {
+        str(value)
+        for value in payload.get("excluded_names", [])
+        if str(value or "").strip()
+    }
+    characters = payload.get("characters")
+    if cached_excluded != {str(value) for value in excluded_names}:
+        return None
+    return characters if isinstance(characters, list) else None
+
+
 async def build_characters_structured(
     store: Any,
     *,
     on_progress: Any = None,
     on_log: Any = None,
-) -> list[str]:
+) -> CharacterBuildResult:
     """Extract source-bound characters and atomically add only missing rows."""
     from novelvideo.novel_source import require_imported_novel
     from novelvideo.story_analysis import chunk_source_text, source_sha256
@@ -405,7 +544,23 @@ async def build_characters_structured(
     chunks = chunk_source_text(text, template)
     if not chunks:
         raise ValueError("原文切分结果为空，无法构建角色")
-    identity = f"{source_sha256(text)}:{STRUCTURED_SCHEMA_VERSION}:{template}"
+    existing_characters = list(store.get_all_characters())
+    locked_characters = [
+        character
+        for character in existing_characters
+        if bool(getattr(character, "extraction_locked", False))
+    ]
+    excluded_names = {
+        value
+        for character in locked_characters
+        for value in [character.name, *list(getattr(character, "aliases", []) or [])]
+        if str(value or "").strip()
+    }
+    lock_snapshot = json.dumps(sorted(excluded_names), ensure_ascii=False)
+    identity = (
+        f"{source_sha256(text)}:{STRUCTURED_SCHEMA_VERSION}:{template}:"
+        f"{hashlib.sha256(lock_snapshot.encode('utf-8')).hexdigest()}"
+    )
     run_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     reusable = await store.get_reusable_analysis_run(
         source_sha256=source_sha256(text),
@@ -419,6 +574,7 @@ async def build_characters_structured(
         if artifact:
             from novelvideo.structured_extraction import MergedCharacter
 
+            cached_characters = _decode_character_artifact(artifact, excluded_names)
             merged = [
                 MergedCharacter(
                     name=item["name"],
@@ -428,11 +584,21 @@ async def build_characters_structured(
                     build=item.get("build", ""),
                     gender=item.get("gender", ""),
                     description=item.get("description", ""),
+                    biography=item.get("biography", ""),
+                    occupation=item.get("occupation", ""),
+                    social_identity=item.get("social_identity", ""),
+                    relationships=list(item.get("relationships") or []),
+                    personality=list(item.get("personality") or []),
+                    dramatic_function=item.get("dramatic_function", ""),
+                    design_proposals=list(item.get("design_proposals") or []),
                     evidence=list(item.get("evidence") or []),
                     chunk_ids=set(item.get("chunk_ids") or []),
                 )
-                for item in json.loads(artifact)
+                for item in (cached_characters or [])
+                if item.get("name") not in excluded_names
             ]
+            if merged and any(len(item.design_proposals) != 3 for item in merged):
+                merged = []
             run_id = reusable["run_id"]
     if not merged:
         await store.start_analysis_run(
@@ -446,13 +612,19 @@ async def build_characters_structured(
         )
         _report(on_progress, 0.1, "从原文片段提取角色...")
         try:
-            extracted = extract_characters_from_chunks(chunks, on_log=on_log)
+            extracted = extract_characters_from_chunks(
+                chunks,
+                on_log=on_log,
+                excluded_names=excluded_names,
+            )
             merged = await extracted if inspect.isawaitable(extracted) else extracted
             await store.save_analysis_artifact(
                 run_id,
                 "characters",
                 json.dumps(
-                    [
+                    {
+                        "excluded_names": sorted(excluded_names),
+                        "characters": [
                         {
                             "name": item.name,
                             "aliases": sorted(item.aliases),
@@ -461,11 +633,19 @@ async def build_characters_structured(
                             "build": item.build,
                             "gender": item.gender,
                             "description": item.description,
+                            "biography": item.biography,
+                            "occupation": item.occupation,
+                            "social_identity": item.social_identity,
+                            "relationships": item.relationships,
+                            "personality": item.personality,
+                            "dramatic_function": item.dramatic_function,
+                            "design_proposals": item.design_proposals,
                             "evidence": item.evidence,
                             "chunk_ids": sorted(item.chunk_ids),
                         }
-                        for item in merged
-                    ],
+                            for item in merged
+                        ],
+                    },
                     ensure_ascii=False,
                 ),
             )
@@ -480,14 +660,36 @@ async def build_characters_structured(
             role=item.role,
             gender=item.gender,
             body_type=item.build,
-            description=item.description,
-            face_prompt=item.face or item.description,
+            description=item.biography or item.description,
+            face_prompt=item.face,
         )
         for item in merged
     ]
-    _report(on_progress, 0.8, "原子发布新增角色...")
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+    visual_store = CharacterVisualWorkspaceStore(store.project_dir)
+    roster_proposals = [
+        proposal
+        for character in existing_characters
+        if not bool(getattr(character, "extraction_locked", False))
+        for workspace in [visual_store.get(character.name)]
+        if workspace is not None
+        for proposal in workspace.design_proposals
+    ]
+    workspaces = []
+    for item in merged:
+        workspace = _visual_workspace_for_merged_character(
+            item=item,
+            source_text=text,
+            existing_workspace=visual_store.get(item.name),
+            existing_roster_proposals=roster_proposals,
+        )
+        workspaces.append(workspace)
+        roster_proposals.extend(workspace.design_proposals)
+
+    _report(on_progress, 0.8, "原子发布角色与视觉提案...")
     try:
-        added = await store.publish_character_analysis_atomic(
+        publication = await store.publish_character_analysis_atomic(
             run_id,
             candidates,
             {item.name: list(item.evidence) for item in merged},
@@ -495,9 +697,52 @@ async def build_characters_structured(
     except BaseException as exc:
         await store.finish_analysis_run(run_id, status="failed", error=str(exc))
         raise
-    _log(on_log, f"已新增 {len(added)} 个角色，保留已有 {len(candidates) - len(added)} 个")
+    if isinstance(publication, dict):
+        added = list(publication.get("added") or [])
+        updated = list(publication.get("updated") or [])
+        locked_skipped = list(
+            publication.get("locked_skipped")
+            or publication.get("skipped_locked")
+            or []
+        )
+        locked_skipped = list(
+            dict.fromkeys(
+                [*locked_skipped, *(character.name for character in locked_characters)]
+            )
+        )
+        preserved = list(publication.get("preserved") or [])
+    else:
+        added = list(publication or [])
+        updated = []
+        locked_skipped = [character.name for character in locked_characters]
+        preserved = [
+            candidate.name for candidate in candidates if candidate.name not in added
+        ]
+
+    await store.load_graph_state()
+    publishable_workspaces = [
+        workspace
+        for workspace in workspaces
+        if not bool(
+            getattr(store.get_character(workspace.character_id), "extraction_locked", False)
+        )
+    ]
+    if publishable_workspaces:
+        visual_store.save_many(publishable_workspaces)
+    _log(
+        on_log,
+        (
+            f"角色提取完成：新增 {len(added)}，更新 {len(updated)}，"
+            f"锁定跳过 {len(locked_skipped)}，保留 {len(preserved)}"
+        ),
+    )
     _report(on_progress, 1.0, "角色构建完成")
-    return added
+    return CharacterBuildResult(
+        added,
+        updated=updated,
+        locked_skipped=locked_skipped,
+        preserved=preserved,
+    )
 
 
 async def build_scenes_structured(

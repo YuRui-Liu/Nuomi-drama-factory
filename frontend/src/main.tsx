@@ -22,7 +22,7 @@ import { AppUpdateAvailable } from "@/components/app-update-available";
 import { config as zodConfig } from "zod/v4/core";
 import "@fontsource-variable/inter";
 import "dramaclaw-spec-render/style.css";
-import "./i18n";
+import { i18nReady } from "./i18n";
 import "./index.css";
 
 // Our CSP has no 'unsafe-eval', so zod's JIT probe (`new Function("")`)
@@ -90,7 +90,7 @@ function AppRouterShell() {
 }
 
 async function bootstrap() {
-  await Promise.all([loadClusterConfig(), loadRuntimeConfig()]);
+  await Promise.all([loadClusterConfig(), loadRuntimeConfig(), i18nReady]);
   initDevBackendWatch();
   installVersionUpdateWatch();
   const root = getOrCreateReactRoot(document.getElementById("root")!);

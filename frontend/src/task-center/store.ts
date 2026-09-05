@@ -48,6 +48,12 @@ function isActiveTask(t: TaskState): boolean {
   );
 }
 
+function isExpiredTerminalTask(t: TaskState, now: number): boolean {
+  if (!isTerminal(t) || !t.completed_at) return false;
+  const completedAt = Date.parse(t.completed_at);
+  return !Number.isNaN(completedAt) && now - completedAt > ONE_HOUR_MS;
+}
+
 export const useTaskCenterStore = create<TaskCenterState>((set, get) => ({
   projectId: null,
   tasks: new Map(),
@@ -64,7 +70,9 @@ export const useTaskCenterStore = create<TaskCenterState>((set, get) => ({
     // a separate history surface, not in the live task center count.
     const existing = get().tasks;
     const next = new Map<string, TaskState>();
+    const now = Date.now();
     for (const t of tasks) {
+      if (isExpiredTerminalTask(t, now)) continue;
       const prev = existing.get(t.task_key);
       if (!prev || Date.parse(t.updated_at) >= Date.parse(prev.updated_at)) {
         next.set(t.task_key, t);
@@ -72,7 +80,12 @@ export const useTaskCenterStore = create<TaskCenterState>((set, get) => ({
         next.set(t.task_key, prev);
       }
     }
-    set({ tasks: next });
+    const selectedTaskKey = get().selectedTaskKey;
+    set({
+      tasks: next,
+      selectedTaskKey:
+        selectedTaskKey && next.has(selectedTaskKey) ? selectedTaskKey : null,
+    });
   },
   upsert: (task) => {
     const prev = get().tasks.get(task.task_key) ?? null;
@@ -84,7 +97,10 @@ export const useTaskCenterStore = create<TaskCenterState>((set, get) => ({
   remove: (taskKey) => {
     const next = new Map(get().tasks);
     next.delete(taskKey);
-    set({ tasks: next });
+    set({
+      tasks: next,
+      selectedTaskKey: get().selectedTaskKey === taskKey ? null : get().selectedTaskKey,
+    });
   },
   setProject: (projectId) => set({ projectId }),
   setHealth: (h) => set({ streamHealth: h }),
@@ -97,15 +113,16 @@ export const useTaskCenterStore = create<TaskCenterState>((set, get) => ({
     const existing = get().tasks;
     const next = new Map(existing);
     for (const [k, t] of existing) {
-      if (!isTerminal(t)) continue;
-      // If completed_at is missing or unparseable, leave the task alone.
-      // Only evict when we have an authoritative timestamp and it's older than 1h.
-      if (!t.completed_at) continue;
-      const ts = Date.parse(t.completed_at);
-      if (Number.isNaN(ts)) continue;
-      if (now - ts > ONE_HOUR_MS) next.delete(k);
+      if (isExpiredTerminalTask(t, now)) next.delete(k);
     }
-    if (next.size !== existing.size) set({ tasks: next });
+    if (next.size !== existing.size) {
+      const selectedTaskKey = get().selectedTaskKey;
+      set({
+        tasks: next,
+        selectedTaskKey:
+          selectedTaskKey && next.has(selectedTaskKey) ? selectedTaskKey : null,
+      });
+    }
   },
   reset: () =>
     set({

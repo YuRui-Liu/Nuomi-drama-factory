@@ -1100,11 +1100,14 @@ async def put_group_video_plan(
 ):
     resolved, _, beats = await _resolve_groups(project, episode, user)
     try:
+        plan_beats = generation_beats_for_group(
+            resolved.project_dir, episode, group_id, beats
+        )
         group = update_video_plan(
             resolved.project_dir,
             episode,
             group_id,
-            beats,
+            plan_beats,
             expected_revision=request.expected_revision,
             units=[unit.model_dump() for unit in request.units],
         )

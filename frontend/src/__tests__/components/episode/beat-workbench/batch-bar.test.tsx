@@ -189,13 +189,6 @@ vi.mock("@/lib/queries/episodes", () => ({
   }),
 }));
 
-vi.mock("@/lib/queries/scripts", () => ({
-  useGenerateScript: () => ({
-    mutateAsync: vi.fn(),
-    isPending: false,
-  }),
-}));
-
 vi.mock("@/lib/queries/sketch-regen-queue", () => ({
   useSaveSketchRegenQueue: () => ({
     mutate: vi.fn(),

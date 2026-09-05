@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,77 @@ from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+
+
+def _prop_version_path(output_dir: Path, prop_name: str) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return (
+        output_dir
+        / "assets"
+        / "props"
+        / prop_name
+        / "versions"
+        / f"prop-reference-{stamp}.png"
+    )
+
+
+def _prop_reference_prompt(*, style: str, visual_prompt: str) -> str:
+    return (
+        "Production prop turnaround reference sheet with exactly three panels: "
+        "front, strict side, and back views. Keep the same object geometry, material, "
+        "damage state, color, scale, and design in every panel. Clean neutral background, "
+        "complete object visible, no scene composition. Do not generate authoritative or "
+        "readable text, letters, numbers, UI, document fields, or screen content; reserve "
+        "blank content regions for deterministic post-compositing. "
+        f"Style: {style}. Prop: {visual_prompt}"
+    )
+
+
+def _register_prop_candidate(
+    *,
+    ctx: ProjectContext,
+    output_dir: Path,
+    prop,
+    output_path: Path,
+    canonical_path: Path,
+    prompt: str,
+    model: str,
+    source_attempt_id: str | None,
+) -> dict[str, str]:
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    root = output_dir.resolve()
+    slot_id = f"prop:{prop.name}:reference"
+    workflow = ProductionWorkflowStore(Path(ctx.state_dir) / "production_workflow.json")
+    slot, version, _event = workflow.register_candidate_version(
+        slot_id=slot_id,
+        asset_kind="prop_reference",
+        version_id=output_path.stem,
+        asset_path=output_path.resolve().relative_to(root).as_posix(),
+        source_attempt_id=source_attempt_id,
+        qc_passed=output_path.is_file() and output_path.stat().st_size > 0,
+        generation_metadata={
+            "prop_name": str(prop.name),
+            "prop_type": str(getattr(prop, "prop_type", "") or "object"),
+            "provider": "grsai",
+            "model": model,
+            "aspect_ratio": "16:9",
+            "panel_layout": ["front", "side", "back"],
+            "prompt_snapshot": prompt,
+            "content_policy": "deterministic_post_composite",
+            "canonical_path": canonical_path.resolve().relative_to(root).as_posix(),
+        },
+        actor=str(getattr(ctx, "requester_username", "") or "system"),
+        at=datetime.now(timezone.utc),
+    )
+    if slot.current_version_id == version.version_id:
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_path, canonical_path)
+    return {
+        "slot_id": slot_id,
+        "version_id": version.version_id,
+        "adoption_status": version.adoption_status.value,
+    }
 
 
 def run_prop_reference_asset(
@@ -50,7 +123,8 @@ async def _run_prop_reference_asset(
         visual_prompt = prop.visual_prompt or prop.description or prop.name
         prop_dir = output_dir / "assets" / "props" / prop.name
         prop_dir.mkdir(parents=True, exist_ok=True)
-        output_path = prop_dir / "reference_3view.png"
+        canonical_path = prop_dir / "reference_3view.png"
+        output_path = _prop_version_path(output_dir, prop.name)
         manager.update_progress_for_project(
             ctx,
             "prop_reference_asset",
@@ -62,15 +136,36 @@ async def _run_prop_reference_asset(
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
+        model = str(payload.get("model") or runtime.model).strip() or runtime.model
+        prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
-            model=runtime.model,
-            prompt=f"Professional three-view prop reference sheet, front side and back views, clean background, no text. Style: {style}. Prop: {visual_prompt}",
+            model=model,
+            prompt=prompt,
             output_path=output_path,
-            aspect_ratio="1:1",
+            aspect_ratio="16:9",
         )
         if not result_path:
             raise RuntimeError("图像 API 未返回有效图像")
-        return {"prop_name": prop.name, "path": str(result_path), "style": style}
+        workflow_result = _register_prop_candidate(
+            ctx=ctx,
+            output_dir=output_dir,
+            prop=prop,
+            output_path=Path(result_path),
+            canonical_path=canonical_path,
+            prompt=prompt,
+            model=model,
+            source_attempt_id=str(
+                envelope.get("task_id") or envelope.get("job_id") or ""
+            )
+            or None,
+        )
+        return {
+            "prop_name": prop.name,
+            "path": str(result_path),
+            "style": style,
+            "prompt_snapshot": prompt,
+            **workflow_result,
+        }
     finally:
         await store.close()
 
@@ -125,14 +220,33 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             runtime = load_grsai_runtime_configuration(
                 get_media_capability_store(), get_media_credential_resolver()
             )
+            model = str(payload.get("model") or runtime.model).strip() or runtime.model
+            visual_prompt = prop.visual_prompt or prop.description or prop.name
+            prompt = _prop_reference_prompt(
+                style=style,
+                visual_prompt=visual_prompt,
+            )
+            output_path = _prop_version_path(output_dir, prop.name)
             result = await _generate_grsai_image(
-                model=runtime.model,
-                prompt=("Professional three-view prop reference sheet, front side and back views, clean background, no text. "
-                        f"Style: {style}. Prop: {prop.visual_prompt or prop.description or prop.name}"),
-                output_path=prop_dir / "reference_3view.png",
-                aspect_ratio="1:1",
+                model=model,
+                prompt=prompt,
+                output_path=output_path,
+                aspect_ratio="16:9",
             )
             if result:
+                _register_prop_candidate(
+                    ctx=ctx,
+                    output_dir=output_dir,
+                    prop=prop,
+                    output_path=Path(result),
+                    canonical_path=prop_dir / "reference_3view.png",
+                    prompt=prompt,
+                    model=model,
+                    source_attempt_id=str(
+                        envelope.get("task_id") or envelope.get("job_id") or ""
+                    )
+                    or None,
+                )
                 generated += 1
         return {"generated": generated}
     finally:

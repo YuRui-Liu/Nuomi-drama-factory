@@ -32,6 +32,16 @@ def load_global_routes() -> AgentTaskRoutingConfig:
     return _parse_routing_config(settings.get(TEXT_TASK_ROUTING_KEY))
 
 
+def save_global_routes(config: AgentTaskRoutingConfig) -> AgentTaskRoutingConfig:
+    """Persist the validated global task-role routing table."""
+
+    from novelvideo.model_gateway_settings import save_model_gateway_setting
+
+    parsed = AgentTaskRoutingConfig.model_validate(config)
+    save_model_gateway_setting(TEXT_TASK_ROUTING_KEY, parsed.model_dump_json())
+    return parsed
+
+
 def load_project_routes(ctx: Any) -> AgentTaskRoutingConfig:
     from novelvideo.project_config import load_project_config_file_from_state_dir
 

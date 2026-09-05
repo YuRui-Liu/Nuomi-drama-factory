@@ -358,14 +358,13 @@ def test_m03_l2_covers_episodes_scripts_and_content_endpoints(m03_client):
 
     store.episode.identity_ids = []
     blocked = client.post("/api/v1/projects/demo/episodes/1/script/generate", json={})
-    assert blocked.status_code == 200
-    assert blocked.json()["code"] == "identity_plan_required"
+    assert blocked.status_code == 410
+    assert blocked.json()["detail"]["code"] == "LEGACY_SCRIPT_GENERATION_RETIRED"
 
     store.episode.identity_ids = ["秦_青年"]
     generated = client.post("/api/v1/projects/demo/episodes/1/script/generate", json={})
-    assert generated.status_code == 200
-    assert generated.json()["task_type"] == "script_writer"
-    assert generated.json()["backend"] == "inline"
+    assert generated.status_code == 410
+    assert "screenplay-semantics" in generated.json()["detail"]["replacement"]
 
     saved = client.put(
         "/api/v1/projects/demo/episodes/1/script",

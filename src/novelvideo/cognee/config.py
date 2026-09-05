@@ -265,6 +265,36 @@ def _clear_cognee_embedding_and_vector_engine_caches() -> None:
             cache_clear()
 
 
+def _install_cognee_ollama_offline_tokenizer() -> None:
+    """Keep Ollama embedding token counting fully local.
+
+    Cognee's Ollama engine otherwise constructs a HuggingFace tokenizer with
+    ``from_pretrained`` and may contact huggingface.co during ordinary project
+    startup.  Tokenization here is only used to size chunks; vector generation
+    remains handled by the configured Ollama model.
+    """
+
+    module = importlib.import_module(
+        "cognee.infrastructure.databases.vector.embeddings.OllamaEmbeddingEngine"
+    )
+    engine_cls = module.OllamaEmbeddingEngine
+    if getattr(engine_cls, "_novelvideo_offline_tokenizer", False):
+        return
+
+    from cognee.infrastructure.llm.tokenizer.TikToken.adapter import (
+        TikTokenTokenizer,
+    )
+
+    def get_offline_tokenizer(self):
+        return TikTokenTokenizer(
+            model=None,
+            max_completion_tokens=self.max_completion_tokens,
+        )
+
+    engine_cls.get_tokenizer = get_offline_tokenizer
+    engine_cls._novelvideo_offline_tokenizer = True
+
+
 def _apply_ollama_embedding_env(
     settings: OllamaSettings,
 ) -> tuple[str, str, str, str]:
@@ -1055,6 +1085,7 @@ def init_cognee() -> None:
         embedding_dimensions,
         embedding_api_key,
     ) = _apply_ollama_embedding_env(load_knowledge_runtime_settings())
+    _install_cognee_ollama_offline_tokenizer()
 
     _apply_cognee_runtime_defaults()
 

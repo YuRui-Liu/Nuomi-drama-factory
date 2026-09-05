@@ -67,6 +67,9 @@ INLINE_LABELED_SCENE_RE = re.compile(
 SIMPLE_LOCATION_RE = re.compile(
     rf"^(?P<location>.+?)\s+(?P<time>{TIME_TOKEN_RE})\s+(?P<interior>内|外)$"
 )
+PLACEHOLDER_LOCATION_RE = re.compile(
+    r"^(?P<location>.+?)\s+(?:日/夜|昼/夜)\s+(?:内/外)$"
+)
 SPEAKER_LINE_RE = re.compile(r"^[^\n：:]{1,24}[：:].+$")
 
 
@@ -197,7 +200,7 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
             collecting_header = True
             continue
 
-        simple_location = parse_location_header(line)
+        simple_location = parse_location_header_relaxed(line)
         if simple_location and not _looks_like_content_line(line):
             if current.header_line and (collecting_header or not current.lines) and not current.location:
                 _apply_location(current, line)
@@ -229,7 +232,7 @@ def is_scene_start_line(line: str) -> bool:
         return True
     if LABELED_LOCATION_RE.match(stripped):
         return True
-    return parse_location_header(stripped) is not None
+    return parse_location_header_relaxed(stripped) is not None
 
 
 def parse_location_header(line: str) -> tuple[str, str, str] | None:
@@ -240,6 +243,18 @@ def parse_location_header(line: str) -> tuple[str, str, str] | None:
         return None
     name, time_of_day, interior = locs[0]
     return name, time_of_day, "内" if interior else "外"
+
+
+def parse_location_header_relaxed(line: str) -> tuple[str, str, str] | None:
+    parsed = parse_location_header(line)
+    if parsed is not None:
+        return parsed
+    text = _strip_numbered_scene_prefix(_strip_location_prefix(line))
+    match = PLACEHOLDER_LOCATION_RE.match(text)
+    if match is None:
+        return None
+    location = match.group("location").strip()
+    return (location, "", "") if location else None
 
 
 def parse_location_line(line: str) -> list[tuple[str, str, bool]]:
@@ -304,7 +319,12 @@ def parse_character_line(line: str) -> list[str]:
         return []
 
     result: list[str] = []
-    for part in re.split(r"[、，,]", text):
+    parts = re.split(r"[、，,]", text)
+    if len(parts) == 1 and re.fullmatch(
+        r"[\u4e00-\u9fff]+(?:\s+[\u4e00-\u9fff]+)+", text
+    ):
+        parts = re.split(r"\s+", text)
+    for part in parts:
         item = part.strip()
         if not item:
             continue
@@ -338,7 +358,7 @@ def chinese_to_int(s: str) -> int:
 
 
 def _apply_location(block: ParsedSceneBlock, location_line: str) -> None:
-    loc = parse_location_header(location_line)
+    loc = parse_location_header_relaxed(location_line)
     if not loc:
         return
     block.location, block.time_of_day, block.interior_exterior = loc

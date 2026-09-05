@@ -12,8 +12,7 @@ vi.mock("@/lib/api", () => ({
   api: ky.create({ baseUrl: "http://localhost:3000/" }),
 }));
 
-import { useGenerateScript } from "@/lib/queries/scripts";
-import { BillingRuleNotConfiguredError } from "@/lib/api-errors";
+import { useGenerateRewrite } from "@/lib/queries/scripts";
 
 const server = setupServer();
 
@@ -26,13 +25,13 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
 
-describe("script generation query", () => {
-  it("uses the canonical /script/generate endpoint and surfaces ok:false errors", async () => {
+describe("story adaptation query", () => {
+  it("uses the canonical rewrite endpoint and preserves structured errors", async () => {
     let requestedPath = "";
     let receivedBody: unknown = undefined;
     server.use(
       http.post(
-        "http://localhost:3000/api/v1/projects/demo/episodes/1/script/generate",
+        "http://localhost:3000/api/v1/projects/demo/episodes/1/rewrite/generate",
         async ({ request }) => {
           requestedPath = new URL(request.url).pathname;
           receivedBody = await request.clone().json();
@@ -43,20 +42,16 @@ describe("script generation query", () => {
           });
         },
       ),
-      http.post(
-        "http://localhost:3000/api/v1/projects/demo/episodes/1/literal-script/generate",
-        () => HttpResponse.error(),
-      ),
     );
 
-    const { result } = renderHook(() => useGenerateScript("demo", 1), {
+    const { result } = renderHook(() => useGenerateRewrite("demo", 1), {
       wrapper,
     });
 
     result.current.mutate({});
 
     await waitFor(() => expect(result.current.data).toBeDefined());
-    expect(requestedPath).toBe("/api/v1/projects/demo/episodes/1/script/generate");
+    expect(requestedPath).toBe("/api/v1/projects/demo/episodes/1/rewrite/generate");
     expect(receivedBody).toEqual({});
     expect(result.current.data).toEqual({
       ok: false,
@@ -65,32 +60,18 @@ describe("script generation query", () => {
     });
   });
 
-  it("surfaces missing feature billing rules as a typed error", async () => {
+  it("surfaces transport failures from story adaptation", async () => {
     server.use(
       http.post(
-        "http://localhost:3000/api/v1/projects/demo/episodes/1/script/generate",
-        () =>
-          HttpResponse.json(
-            {
-              ok: false,
-              error: "计费规则未配置，请联系管理员设置积分规则",
-              data: {
-                error_code: "BILLING_RULE_NOT_CONFIGURED",
-                billing_kind: "feature",
-                billing_key: "script_writer",
-              },
-            },
-            { status: 409 },
-          ),
+        "http://localhost:3000/api/v1/projects/demo/episodes/1/rewrite/generate",
+        () => HttpResponse.error(),
       ),
     );
 
-    const { result } = renderHook(() => useGenerateScript("demo", 1), {
+    const { result } = renderHook(() => useGenerateRewrite("demo", 1), {
       wrapper,
     });
 
-    await expect(result.current.mutateAsync({})).rejects.toBeInstanceOf(
-      BillingRuleNotConfiguredError,
-    );
+    await expect(result.current.mutateAsync({})).rejects.toThrow();
   });
 });

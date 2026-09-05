@@ -34,6 +34,7 @@ M05_EXPECTED_OPERATIONS = {
     ("POST", "/api/v1/projects/{project}/scenes/{name}/master/delete"),
     ("POST", "/api/v1/projects/{project}/scenes/{name}/master/generate-async"),
     ("POST", "/api/v1/projects/{project}/scenes/{name}/reverse/generate-async"),
+    ("POST", "/api/v1/projects/{project}/scenes/{name}/spatial-layout/generate-async"),
     ("POST", "/api/v1/projects/{project}/scenes/{name}/pano/upload"),
     ("POST", "/api/v1/projects/{project}/scenes/{name}/pano/delete"),
     ("POST", "/api/v1/projects/{project}/scenes/{name}/custom/upload"),
@@ -515,6 +516,16 @@ def test_scene_reference_generation_accepts_image_source_model(m05_client_factor
     assert payload["ok"] is True
     assert task_backend.calls[-1]["payload"]["model"] == "newapi_gpt_image2"
 
+    spatial = client.post(
+        f"/api/v1/projects/{_PROJECT}/scenes/{_SCENE}/spatial-layout/generate-async"
+    ).json()
+    _assert_task_shape(
+        spatial,
+        backend="inline",
+        task_type="scene_reference_asset",
+    )
+    assert task_backend.calls[-1]["payload"]["kind"] == "spatial_layout"
+
 
 def test_m05_l2_exercises_happy_path_route_contracts(m05_client_factory):
     client, _backend, project_dir, _store = m05_client_factory("inline")
@@ -557,6 +568,13 @@ def test_m05_l2_exercises_happy_path_route_contracts(m05_client_factory):
     )
     _assert_task_shape(
         client.post(f"/api/v1/projects/{_PROJECT}/scenes/{_SCENE}/reverse/generate-async").json(),
+        backend="inline",
+        task_type="scene_reference_asset",
+    )
+    _assert_task_shape(
+        client.post(
+            f"/api/v1/projects/{_PROJECT}/scenes/{_SCENE}/spatial-layout/generate-async"
+        ).json(),
         backend="inline",
         task_type="scene_reference_asset",
     )

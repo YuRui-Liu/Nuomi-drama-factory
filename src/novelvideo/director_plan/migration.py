@@ -41,12 +41,14 @@ class MigrationItem(FrozenModel):
     old_asset_kind: Literal["image", "video"]
     old_shot_id: str
     new_shot_id: str
+    suggested_shot_id: str
+    adopted_shot_id: str | None = None
     score: float = Field(ge=0, le=1)
     confidence: Literal["high", "medium", "low"]
-    reuse_mode: Literal["formal", "reference_only"]
+    reuse_mode: Literal["reuse", "reference_only"]
     suggested_decision: Literal["accepted", "review", "unmatched"]
     decision: Literal[
-        "accepted", "review", "unmatched", "rejected", "reference_only"
+        "legacy_unbound", "accepted", "review", "unmatched", "rejected", "reference_only"
     ]
     manual_decision: Literal["accepted", "rejected", "reference_only"] | None = None
     conflict: bool = False
@@ -125,11 +127,12 @@ def match_one(
         old_asset_kind=asset.asset_kind,
         old_shot_id=asset.old_shot_id,
         new_shot_id=shot.id,
+        suggested_shot_id=shot.id,
         score=score,
         confidence=confidence,
-        reuse_mode="formal" if same_style else "reference_only",
+        reuse_mode="reuse" if same_style else "reference_only",
         suggested_decision=suggested,
-        decision=suggested,
+        decision="legacy_unbound",
         evidence=evidence,
     )
 
@@ -158,12 +161,10 @@ def match_assets(
             if ranked:
                 items.append(ranked[0])
 
-    accepted_counts = Counter(
-        item.old_asset_id for item in items if item.decision == "accepted"
-    )
+    accepted_counts = Counter(item.old_asset_id for item in items)
     return MigrationReport(
         items=tuple(
-            item.model_copy(update={"decision": "review", "conflict": True})
+            item.model_copy(update={"conflict": True})
             if accepted_counts[item.old_asset_id] > 1
             else item
             for item in items
@@ -189,6 +190,7 @@ def update_decision(
         update: dict[str, object] = {
             "decision": decision,
             "manual_decision": decision,
+            "adopted_shot_id": item.suggested_shot_id if decision != "rejected" else None,
         }
         if decision == "reference_only":
             update["reuse_mode"] = "reference_only"

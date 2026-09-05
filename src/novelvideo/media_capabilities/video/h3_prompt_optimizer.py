@@ -201,25 +201,39 @@ def create_h3_prompt_optimizer(
     model_settings: dict[str, Any] | None = None,
 ) -> H3PromptOptimizer:
     """Create a planner from a generic injected director-text model factory."""
+    from novelvideo.text_task_runtime.runtime import (
+        StructuredRuntimeAgent,
+        current_text_task_runtime,
+    )
+
+    routed_runtime = current_text_task_runtime() if director_model_factory is None else None
     factory = director_model_factory or _default_director_model_factory
     settings = model_settings if model_settings is not None else _default_model_settings()
     kwargs: dict[str, Any] = {}
     if settings is not None:
         kwargs["model_settings"] = settings
-    agent = Agent(
-        factory(),
-        system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
-        # DeepSeek thinking models reject tool_choice. PromptedOutput keeps the
-        # typed validation contract without asking the provider to call a tool.
-        output_type=PromptedOutput(H3DirectorPlan),
-        name="MiniMax H3 Director Planner",
-        retries={
-            "tools": 1,
-            "output": _positive_int_env(
-                "DRAMACLAW_H3_PROMPT_OUTPUT_RETRIES", 3
-            ),
-        },
-        **kwargs,
+    agent = (
+        StructuredRuntimeAgent(
+            routed_runtime,
+            output_type=H3DirectorPlan,
+            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+        )
+        if routed_runtime is not None
+        else Agent(
+            factory(),
+            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+            # DeepSeek thinking models reject tool_choice. PromptedOutput keeps the
+            # typed validation contract without asking the provider to call a tool.
+            output_type=PromptedOutput(H3DirectorPlan),
+            name="MiniMax H3 Director Planner",
+            retries={
+                "tools": 1,
+                "output": _positive_int_env(
+                    "DRAMACLAW_H3_PROMPT_OUTPUT_RETRIES", 3
+                ),
+            },
+            **kwargs,
+        )
     )
     return H3PromptOptimizer(
         agent,

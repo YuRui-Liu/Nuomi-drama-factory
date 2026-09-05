@@ -178,7 +178,7 @@ class TaskState:
 
     Attributes:
         task_id: 任务唯一标识
-        task_type: 任务类型（如 video_composer, script_writer）
+        task_type: 任务类型（如 video_composer, screenplay_semantics）
         username: 用户名
         project: 项目名称
         episode: 集数

@@ -20,6 +20,8 @@ import type {
   CharacterAssetRestoreResult,
   CharacterVoiceSamples,
   CharacterVoiceSlot,
+  CharacterVisualWorkspace,
+  CharacterVisualWorkspaceUpdate,
   Identity,
   IdentityAttempts,
 } from "@/types/character";
@@ -40,6 +42,67 @@ export function useCharacters(project: string) {
         .get(p`api/v1/projects/${project}/characters`, { signal })
         .json<OkResponse<Character[]>>(),
     enabled: !!project,
+  });
+}
+
+export function useCharacterVisualWorkspace(project: string, name: string) {
+  return useQuery({
+    queryKey: [...queryKeys.character(project, name), "visual-workspace"],
+    queryFn: ({ signal }) =>
+      api
+        .get(p`api/v1/projects/${project}/characters/${name}/visual-workspace`, { signal })
+        .json<OkResponse<CharacterVisualWorkspace>>(),
+    enabled: Boolean(project && name),
+  });
+}
+
+function invalidateCharacterVisualQueries(
+  qc: ReturnType<typeof useQueryClient>,
+  project: string,
+  name: string,
+) {
+  qc.invalidateQueries({ queryKey: queryKeys.characters(project) });
+  qc.invalidateQueries({
+    queryKey: [...queryKeys.character(project, name), "visual-workspace"],
+  });
+}
+
+export function useUpdateCharacterExtractionLock(project: string, name: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (locked: boolean) =>
+      api
+        .patch(p`api/v1/projects/${project}/characters/${name}/extraction-lock`, {
+          json: { locked },
+        })
+        .json<OkResponse<Character>>(),
+    onSuccess: () => invalidateCharacterVisualQueries(qc, project, name),
+  });
+}
+
+export function useUpdateCharacterVisualWorkspace(project: string, name: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CharacterVisualWorkspaceUpdate) =>
+      api
+        .patch(p`api/v1/projects/${project}/characters/${name}/visual-workspace`, {
+          json: data,
+        })
+        .json<OkResponse<CharacterVisualWorkspace>>(),
+    onSuccess: () => invalidateCharacterVisualQueries(qc, project, name),
+  });
+}
+
+export function useConfirmCharacterVisualBible(project: string, name: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (confirmedBy: string) =>
+      api
+        .post(p`api/v1/projects/${project}/characters/${name}/visual-workspace/confirm`, {
+          json: { confirmed_by: confirmedBy },
+        })
+        .json<OkResponse<CharacterVisualWorkspace>>(),
+    onSuccess: () => invalidateCharacterVisualQueries(qc, project, name),
   });
 }
 

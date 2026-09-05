@@ -88,7 +88,7 @@ def _asset(asset_id: str = "asset-1", *, style_hash: str = "style-a") -> LegacyS
     )
 
 
-def test_matcher_auto_applies_only_high_confidence_same_style_assets() -> None:
+def test_old_asset_remains_unbound_until_human_accepts() -> None:
     report = match_assets(
         old_plan=_plan("old", (_shot("old-shot"),)),
         new_plan=_plan("new", (_shot("new-shot"),)),
@@ -97,8 +97,10 @@ def test_matcher_auto_applies_only_high_confidence_same_style_assets() -> None:
 
     item = report.items[0]
     assert item.confidence == "high"
-    assert item.decision == "accepted"
-    assert item.reuse_mode == "formal"
+    assert item.decision == "legacy_unbound"
+    assert item.reuse_mode == "reuse"
+    assert item.suggested_shot_id == "new-shot"
+    assert item.adopted_shot_id is None
     assert item.evidence.model_dump() == {
         "source_overlap": 1.0,
         "subject_overlap": 1.0,
@@ -118,7 +120,7 @@ def test_different_style_can_only_be_reference() -> None:
     )
 
     assert item.reuse_mode == "reference_only"
-    assert item.decision == "review"
+    assert item.decision == "legacy_unbound"
 
 
 def test_empty_style_hashes_never_enable_formal_reuse() -> None:
@@ -152,7 +154,10 @@ def test_item_id_is_stable_and_manual_decision_is_immutable() -> None:
     updated = update_decision(report, item.item_id, "rejected")
     assert updated.items[0].decision == "rejected"
     assert updated.items[0].manual_decision == "rejected"
-    assert item.decision == "accepted"
+    assert updated.items[0].adopted_shot_id is None
+    accepted = update_decision(report, item.item_id, "accepted")
+    assert accepted.items[0].adopted_shot_id == "new-shot"
+    assert item.decision == "legacy_unbound"
 
 
 def test_medium_and_low_confidence_matches_require_review() -> None:
@@ -170,9 +175,9 @@ def test_medium_and_low_confidence_matches_require_review() -> None:
     )
 
     assert medium.confidence in {"medium", "low"}
-    assert medium.decision == "review"
+    assert medium.decision == "legacy_unbound"
     assert low.confidence == "low"
-    assert low.decision == "unmatched"
+    assert low.decision == "legacy_unbound"
 
 
 def test_conflicting_high_candidates_are_all_downgraded_to_review() -> None:
@@ -185,7 +190,7 @@ def test_conflicting_high_candidates_are_all_downgraded_to_review() -> None:
 
     assert [item.old_asset_id for item in report.items] == ["asset-1", "asset-1"]
     assert all(item.confidence == "high" for item in report.items)
-    assert all(item.decision == "review" for item in report.items)
+    assert all(item.decision == "legacy_unbound" for item in report.items)
     assert all(item.conflict for item in report.items)
 
 
@@ -227,6 +232,6 @@ async def test_service_persists_explainable_migration_on_review_revision() -> No
         assets=(_asset(),),
     )
 
-    assert result.migration_report.items[0]["decision"] == "accepted"
+    assert result.migration_report.items[0]["decision"] == "legacy_unbound"
     assert result.migration_report.items[0]["evidence"]["source_overlap"] == 1.0
     assert store.saved[-1] is result

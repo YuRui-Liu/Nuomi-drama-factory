@@ -37,7 +37,8 @@ async def test_runner_returns_revision_summary(monkeypatch):
 
     repository.list_sources = list_sources
     revision = SimpleNamespace(
-        revision_id="sem-1", status="draft",
+        revision_id="sem-1",
+        status="draft",
         scenes=[SimpleNamespace(status="validated")],
         validation_report=SimpleNamespace(model_dump=lambda mode: {"passed": True, "issues": []}),
     )

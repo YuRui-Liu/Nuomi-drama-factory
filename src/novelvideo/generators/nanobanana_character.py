@@ -58,6 +58,54 @@ def _default_ethnicity_instruction(ethnicity: str) -> str:
     )
 
 
+CHARACTER_STATE_PANEL_LAYOUT = ("front", "side", "back")
+
+
+def build_character_state_sheet_prompt(
+    *,
+    character_name: str,
+    character_tag: str,
+    appearance: str,
+    style_instructions: str,
+    avoid_instructions: str,
+    ethnicity: str,
+    has_costume_reference: bool,
+    medium: str = "the configured project visual style",
+) -> str:
+    """Compile the canonical three-view character state resource prompt."""
+    costume_block = ""
+    if has_costume_reference:
+        costume_block = """
+COSTUME REFERENCE (CRITICAL):
+- Copy clothing, fabric, accessories, colors, and styling from the costume reference.
+- Combine the identity anchor face with the costume reference; do not copy its person.
+"""
+    return f"""Production character turnaround state sheet for {character_tag} ({character_name}).
+Create exactly one 3-panel sheet arranged LEFT TO RIGHT on a plain white or light-gray background:
+- Panel 1: FRONT VIEW, full body, neutral standing pose, head to feet.
+- Panel 2: SIDE VIEW, strict 90-degree profile, full body, head to feet.
+- Panel 3: BACK VIEW, full body, facing directly away, head to feet.
+
+IDENTITY AND STATE LOCK:
+- All 3 panels show the same person, same face, same age, same body proportions, same hair, and same outfit.
+- Preserve identity from the identity-anchor reference; only the viewing angle changes.
+- Preserve clothing seams, accessories, colors, footwear, and silhouette across every panel.
+- Default ethnicity when unspecified: {ethnicity}.
+
+CHARACTER STATE:
+{appearance}
+{costume_block}
+STYLE:
+- Render all panels in {medium}.
+- {style_instructions}
+
+STRICT EXCLUSIONS:
+- {avoid_instructions}
+- No FACE CLOSEUP, no THREE-QUARTER view, no extra panel, no cropped feet.
+- No action pose, expression change, environment, props, text, labels, numbers, watermark, or poster composition.
+""".strip()
+
+
 def create_composite_reference(
     portrait_path: str,
     fullbody_path: str,
@@ -133,7 +181,7 @@ class NanoBananaCharacterGenerator:
 
     与网格生成器使用同一模型（Gemini），确保角色视觉一致性。
     当前仅负责生成 portrait / identity anchor。
-    四视图 reference sheet 走 generate_identity_with_reference()。
+    三视图状态资源图走 generate_identity_with_reference()。
 
     示例:
         >>> generator = NanoBananaCharacterGenerator()
@@ -414,7 +462,7 @@ class NanoBananaCharacterGenerator:
 
         使用角色的正面基准图作为身份锚点，保持面部一致性，
         只变换服装、背景等身份特定的外观。
-        统一生成 4 面板 reference sheet（全脸特写 + 正面全身 + 45° 三分全身 + 背面全身）。
+        统一生成 3 面板状态资源图（正面全身 + 侧面全身 + 背面全身）。
 
         Args:
             character_name: 角色名称
@@ -455,22 +503,29 @@ class NanoBananaCharacterGenerator:
                 character_tag = self._generate_character_tag(character_name)
 
             print(
-                f"[NanoBanana Character] 基于基准图生成 {character_name} 身份图（4面板: 正面+三分+背面）..."
+                f"[NanoBanana Character] 基于基准图生成 {character_name} 状态三视图（正面+侧面+背面）..."
             )
 
-            # 构建 Identity Locked Prompt（4 面板: 全脸 + 正面 + 45° 三分 + 背面）
+            # 构建统一的身份锁定三视图状态资源 Prompt。
             has_costume_ref = bool(costume_image_path and os.path.exists(costume_image_path))
-            prompt = self._build_identity_locked_prompt(
+            family, _ = StyleService.get_style_branch(
+                style or IMAGE_DEFAULT_STYLE,
+                project_dir=project_dir or None,
+            )
+            medium = (
+                self._animation_medium_phrase(style, project_dir=project_dir)
+                if family == "animation"
+                else "the configured project visual style"
+            )
+            prompt = build_character_state_sheet_prompt(
                 character_name=character_name,
-                character_prompt=identity_prompt,
                 character_tag=character_tag,
-                target_view="front",
-                style_name=style,
-                project_dir=project_dir,
-                style_keywords=style_keywords,
-                negative_keywords=negative_keywords,
+                appearance=identity_prompt,
+                style_instructions=style_keywords,
+                avoid_instructions=negative_keywords,
                 ethnicity=ethnicity,
                 has_costume_reference=has_costume_ref,
+                medium=medium,
             )
 
             # 保存 prompt 到文件（审计用）
@@ -544,10 +599,10 @@ class NanoBananaCharacterGenerator:
                     costume_image_bytes = f.read()
                 print(f"[NanoBanana Character] 已加载服装参考图: {costume_image_path}")
 
-            # 统一流程：生成 body 到临时文件 → 拼接 portrait → 删 temp
-            aspect_ratio = "16:9"  # 4面板: 全脸+正+三分+背面
+            # 统一流程：一次生成正面、侧面、背面三视图。
+            aspect_ratio = "16:9"
             image_size = "1K"
-            body_label = "4面板 reference sheet"
+            body_label = "3面板 character state sheet"
 
             temp_body_path = output_path.replace(".png", "_body_temp.png")
             print(f"[NanoBanana Character] 生成{body_label}到临时文件: {temp_body_path}")
@@ -957,133 +1012,26 @@ A second reference image is provided showing the target costume/clothing.
         ethnicity: str = "Chinese",
         has_costume_reference: bool = False,
     ) -> str:
-        """构建 4 面板 reference sheet Prompt（全脸特写 + 正面全身 + 45° 三分全身 + 背面全身）。
-
-        使用参考图作为身份锚点，一次性生成包含面部特写、正面全身、三分视角全身和背面全身的 sheet，
-        零拼接、天然一致。
-
-        Args:
-            character_name: 角色名称
-            character_prompt: 角色外貌描述
-            character_tag: 角色唯一标签
-            target_view: 目标视角
-            style_keywords: 风格关键词
-            negative_keywords: 负面关键词
-            ethnicity: 角色种族（默认 "Chinese"）
-            full_body: 是否生成全身像（默认 True）
-
-        Returns:
-            4-panel reference sheet Prompt
-        """
+        """Build the canonical front/side/back identity-state resource prompt."""
         family, _ = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,
         )
-        if family == "animation":
-            medium = self._animation_medium_phrase(style_name, project_dir=project_dir)
-            prompt = f"""Animated character turnaround / identity sheet. Neutral presentation setup.
-PLAIN SOLID WHITE or LIGHT GRAY background ONLY — no environment, no scenery, no props. {style_keywords}
-
-Using the reference image as IDENTITY ANCHOR for {character_tag} ({character_name}),
-create a 4-panel animated character reference sheet arranged LEFT to RIGHT:
-
-- Panel 1 (LEFT): FACE CLOSEUP — head and shoulders, filling the panel
-- Panel 2 (CENTER-LEFT): FRONT full body — head to feet, standing pose, facing camera
-- Panel 3 (CENTER-RIGHT): THREE-QUARTER VIEW full body — head to feet, body rotated about 45 degrees
-- Panel 4 (RIGHT): BACK VIEW full body — head to feet, facing away from camera
-
-IDENTITY LOCKING (CRITICAL):
-Preserve the same character identity EXACTLY from the reference image:
-- face shape and proportions
-- eye shape and spacing
-- nose and mouth shape
-- hairline, hairstyle, and silhouette
-- skin tone and age impression
-- Preserve the reference identity exactly; do not change face structure, skin tone, hair identity, or silhouette.
-
-CHARACTER DETAILS (CRITICAL - use this for clothing and appearance):
-{character_prompt}
-{self._costume_reference_block(has_costume_reference)}
-
-PRESENTATION RULES:
-- Final medium must be {medium}
-- All 4 panels must keep the same character, same outfit, same hair, same proportions
-- Panel 1 must visually match Panel 2's head area
-- Panels 2-4 must show a complete figure from head to feet
-- Plain neutral production-reference background only
-
-STRICT REQUIREMENTS (MUST AVOID):
-{negative_keywords}
-- Do not allow facial feature drift from reference
-- Do not mix rendering families or switch back to realistic actor rendering
-- Do not include multiple characters
-- No text, labels, or panel numbers on the image
-- Do not add environment scenery, props, or poster composition
-"""
-            return prompt.strip()
-
-        prompt = f"""Character identity reference sheet. Neutral studio setup.
-PLAIN SOLID WHITE or LIGHT GRAY background ONLY — no environment, no scenery, no props. {style_keywords}
-
-Using the reference image as IDENTITY ANCHOR for {character_tag} ({character_name}),
-create a 4-panel character reference sheet arranged LEFT to RIGHT:
-
-- Panel 1 (LEFT): FACE CLOSEUP — head and shoulders, filling the panel. This is a zoomed-in crop of Panel 2's head: SAME hairstyle, SAME visible clothing (neckline, collar, shoulders)
-- Panel 2 (CENTER-LEFT): FRONT full body — head to feet, standing pose, facing camera
-- Panel 3 (CENTER-RIGHT): THREE-QUARTER VIEW full body — head to feet, body rotated approximately 45 degrees from the left, both eyes still visible, standing pose
-- Panel 4 (RIGHT): BACK VIEW full body — head to feet, facing away from camera, showing back of head and body
-
-IDENTITY LOCKING (CRITICAL):
-Preserve the facial structure, facial proportions, and overall likeness
-of {character_tag} EXACTLY as in the reference image, allowing NO alteration,
-stylization, or reinterpretation of the face under any circumstance.
-
-MUST PRESERVE (from reference):
-- Facial structure and bone structure
-- Eye shape, size, spacing, color
-- Nose shape and size
-- Lip shape and fullness
-- Skin tone
-- Hair color, style, texture
-- Preserve the reference identity exactly; do not change face structure, skin tone, hair identity, or silhouette.
-
-DO NOT PRESERVE FROM REFERENCE:
-- Beauty-filter smoothing or retouching
-- Plastic / waxy / overly perfect skin treatment
-- Any rendering finish that conflicts with the selected project style preset
-- The final rendering medium should follow the project style preset, not the reference image
-
-CHARACTER DETAILS (CRITICAL - use this for clothing and appearance):
-{character_prompt}
-{self._costume_reference_block(has_costume_reference)}
-BACKGROUND (CRITICAL — STRICTLY ENFORCED):
-- ALL 4 panels MUST have a PLAIN SOLID-COLOR background (white, light gray, or soft neutral gradient)
-- Do NOT render ANY environment: no rooms, no furniture, no walls, no floors, no scenery
-- This is a production character identity reference sheet, not a fashion catalog, not a glossy poster
-
-FULL BODY FRAMING (Panels 2-4):
-- MUST show COMPLETE figure from top of head to bottom of feet including shoes
-- Standing in neutral pose on a visible ground line
-- Ample space above head and below feet
-- Do NOT crop any body part
-
-CONSISTENCY:
-- ALL 4 panels = SAME person, SAME outfit, SAME hair
-- Panel 1 is a ZOOMED-IN CROP of Panel 2's head area — hairstyle, neckline, collar, and shoulder clothing MUST be identical
-- Panel 1 face MUST match Panels 2-3 face exactly
-- Panel 4 shows the SAME person from behind — SAME hair, SAME outfit, SAME body proportions
-- Only viewing angle changes between Panel 2 (front), Panel 3 (three-quarter), and Panel 4 (back)
-
-STRICT REQUIREMENTS (MUST AVOID):
-{negative_keywords}
-- Do not allow ANY facial feature drift from reference.
-- Do not mix styles or reinterpret the character.
-- Do not include multiple characters.
-- No text, labels, or panel numbers on the image
-- Do NOT create beauty-retouched, glamorized, cosmetic-ad, or fashion-editorial output
-- Keep the project style consistent across all 4 panels
-"""
-        return prompt.strip()
+        medium = (
+            self._animation_medium_phrase(style_name, project_dir=project_dir)
+            if family == "animation"
+            else "the configured project visual style"
+        )
+        return build_character_state_sheet_prompt(
+            character_name=character_name,
+            character_tag=character_tag,
+            appearance=character_prompt,
+            style_instructions=style_keywords,
+            avoid_instructions=negative_keywords,
+            ethnicity=ethnicity,
+            has_costume_reference=has_costume_reference,
+            medium=medium,
+        )
 
     async def _generate_single_image(
         self,

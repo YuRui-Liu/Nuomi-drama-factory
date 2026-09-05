@@ -4,7 +4,7 @@
 Agent 在任务运行器中运行，工具直接使用 async def，复用当前 event loop。
 
 工具集：
-- create_script_writer_tools: 脚本生成 Agent 工具
+- create_story_context_tools: 故事改编上下文查询工具
 - create_episode_planner_tools: 剧集规划 Agent 工具
 - create_reviewer_tools: 脚本审核/修复 Agent 工具（用于身份验证）
 """
@@ -16,11 +16,11 @@ from novelvideo.cognee import CogneeStore
 from novelvideo.utils.logging import tool_logger
 
 
-def create_script_writer_tools(store: CogneeStore, episode_num: int) -> list[Callable]:
-    """创建 ScriptWriter 的 Cognee 工具集。
+def create_story_context_tools(store: CogneeStore, episode_num: int) -> list[Callable]:
+    """创建故事改编上下文查询工具集。
 
     所有工具都是 async def，直接复用当前 event loop。
-    工具直接从图谱查询数据，不使用缓存，确保获取最新信息。
+    工具只读取故事事实，不创建 Beat、镜头或媒体。
     """
 
     @tool_logger("semantic_search")

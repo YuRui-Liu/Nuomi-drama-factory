@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { createLazyFileRoute } from "@tanstack/react-router";
+import { createLazyFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2, Play, Sparkles, Square } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 
 import {
   isPlanEpisodeAssetsResult,
@@ -18,7 +18,8 @@ import {
 } from "@/lib/queries/episodes";
 import { useCharacters } from "@/lib/queries/characters";
 import { useProject } from "@/lib/queries/projects";
-import { useGenerateRewrite, useGenerateScript } from "@/lib/queries/scripts";
+import { useGenerateRewrite } from "@/lib/queries/scripts";
+import { useDirectorPlans } from "@/lib/queries/director-plans";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
 import {
@@ -27,12 +28,7 @@ import {
 } from "@/lib/api-errors";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { TASK_TYPES } from "@/lib/task-types";
-import {
-  getScriptReviewFeedback,
-  type ScriptFeedback,
-} from "@/lib/script-feedback";
 import { IdentityPickerDialog } from "@/components/identity-picker-dialog";
-import { CreditCostInline } from "@/components/credit-cost-inline";
 import {
   EpisodeAssetPlanning,
   type AssetPlanningCategory,
@@ -79,18 +75,13 @@ function ScriptTabContent() {
   const { project, episode } = Route.useParams();
   const epNum = parseInt(episode, 10);
   const queryClient = useQueryClient();
-  const notifyScriptFeedback = (feedback: ScriptFeedback) => {
-    const message = t(feedback.key, feedback.values);
-    if (feedback.type === "warning") toast.warning(message);
-    else toast.success(message);
-  };
-
   const { data: episodeRes } = useEpisodeDetail(project, epNum);
   const { data: projectRes } = useProject(project);
   const { data: beatsRes, isLoading: beatsLoading } = useEpisodeBeats(
     project,
     epNum,
   );
+  const directorPlans = useDirectorPlans(project, epNum);
   const { data: charactersRes } = useCharacters(project);
   const updateEpisode = useUpdateEpisode(project);
   const planIdentities = usePlanIdentities(project);
@@ -114,26 +105,7 @@ function ScriptTabContent() {
     (planPropsCost.error instanceof BillingRuleNotConfiguredError
       ? t("common.billingRuleNotConfiguredShort")
       : null);
-  const generateScript = useGenerateScript(project, epNum);
-  const generateScriptCost = useGenerationCreditCost("feature", "script_writer");
-  const generateScriptCostDisplay =
-    generateScriptCost.data?.data.display ??
-    (generateScriptCost.error instanceof BillingRuleNotConfiguredError
-      ? t("common.billingRuleNotConfiguredShort")
-      : null);
   const generateRewrite = useGenerateRewrite(project, epNum);
-  const scriptTask = useTaskController({
-    key: { taskType: TASK_TYPES.SCRIPT_WRITER, project, episode: epNum },
-    alsoReconcile: [TASK_TYPES.LITERAL_SCRIPT_WRITER],
-    invalidateKeys: [
-      queryKeys.script(project, epNum),
-      queryKeys.beats(project, epNum),
-      queryKeys.pipelineStatus(project),
-    ],
-    showCompleteToast: false,
-    onComplete: (result) =>
-      notifyScriptFeedback(getScriptReviewFeedback(result)),
-  });
 
   const episodeData = episodeRes?.data;
   const characters: Character[] = charactersRes?.data ?? [];
@@ -145,6 +117,14 @@ function ScriptTabContent() {
   const sceneMenu = episodeData?.scene_menu ?? [];
   const propMenu = episodeData?.prop_menu ?? [];
   const beats = beatsRes?.data ?? [];
+  const planRevisions = directorPlans.data?.ok ? directorPlans.data.data : [];
+  const directorPlan = planRevisions.find((item) => item.status === "review_required")
+    ?? planRevisions.find((item) => item.status === "active")
+    ?? planRevisions[0];
+  const directorShotCount = directorPlan?.groups.reduce(
+    (count, group) => count + group.shots.length,
+    0,
+  ) ?? 0;
   const isNarratedProject = projectRes?.data?.spine_template === "narrated";
 
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -319,27 +299,6 @@ function ScriptTabContent() {
     }
   };
 
-  const ensureBeatSourceText = async () => {
-    if (sourceText.trim()) return sourceText;
-
-    const fallback = rawContent.trim();
-    if (!fallback) {
-      toast.error(t("episode.script.noRawText"));
-      return "";
-    }
-
-    await trackSave(sourceScope, () =>
-      updateEpisode.mutateAsync({
-        episodeNum: epNum,
-        data: { beat_source_text: rawContent },
-      }),
-    );
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.episodeDetail(project, epNum),
-    });
-    return rawContent;
-  };
-
   const handleGenerateRewrite = async () => {
     if (rewriteBeatCharsMin > rewriteBeatCharsMax) {
       toast.error(t("episode.script.minGtMax"));
@@ -362,27 +321,6 @@ function ScriptTabContent() {
       toast.success(t("episode.script.rewriteComplete"));
     } catch {
       toast.error(t("common.error"));
-    }
-  };
-
-  const handleGenerateScript = async () => {
-    try {
-      const readySource = await ensureBeatSourceText();
-      if (!readySource.trim()) {
-        return;
-      }
-      if (identityIds.length === 0) {
-        toast.error(t("episode.script.identityRequired"));
-        return;
-      }
-      const res = await generateScript.mutateAsync({});
-      if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
-        return;
-      }
-      scriptTask.start({ scope: res.scope });
-    } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
     }
   };
 
@@ -438,26 +376,7 @@ function ScriptTabContent() {
     }
   };
 
-  const identitiesEmpty = identityIds.length === 0;
   const identityPlanning = planIdentities.isPending || identityTask.started;
-  const generating = generateScript.isPending || scriptTask.started;
-  const rawScriptProgressPercent = Math.round(
-    (scriptTask.stream.progress ?? 0) * 100,
-  );
-  const scriptProgressPercent = Math.min(
-    100,
-    Math.max(0, rawScriptProgressPercent),
-  );
-  const scriptProgressLabel =
-    scriptTask.stream.currentTask || t("common.preparing");
-  const generateButtonBusy = generateScript.isPending || generateRewrite.isPending;
-  const handleGenerateButtonClick = () => {
-    if (scriptTask.started) {
-      void scriptTask.stop();
-      return;
-    }
-    void handleGenerateScript();
-  };
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -470,7 +389,7 @@ function ScriptTabContent() {
         <div className="inline-flex h-7 items-center gap-2 text-muted-foreground">
           <span className="text-[11px]">{t("episode.script.modeLabel")}</span>
           <span className="text-[11px] text-foreground/68">
-            {t("episode.script.modeLiteral").replace(/^模式[：:]\s*/, "")}
+            专业剧本语义模式
           </span>
         </div>
 
@@ -488,7 +407,7 @@ function ScriptTabContent() {
                     max={REWRITE_TARGET_BEATS_MAX}
                     step={1}
                     value={rewriteTargetBeats}
-                    disabled={generating || generateRewrite.isPending}
+                    disabled={generateRewrite.isPending}
                     onChange={(event) =>
                       setRewriteTargetBeats(
                         parseRewriteNumber(event.target.value, rewriteTargetBeats),
@@ -516,7 +435,7 @@ function ScriptTabContent() {
                     max={REWRITE_BEAT_CHARS_MIN_MAX}
                     step={1}
                     value={rewriteBeatCharsMin}
-                    disabled={generating || generateRewrite.isPending}
+                    disabled={generateRewrite.isPending}
                     onChange={(event) =>
                       setRewriteBeatCharsMin(
                         parseRewriteNumber(event.target.value, rewriteBeatCharsMin),
@@ -544,7 +463,7 @@ function ScriptTabContent() {
                     max={REWRITE_BEAT_CHARS_MAX_MAX}
                     step={1}
                     value={rewriteBeatCharsMax}
-                    disabled={generating || generateRewrite.isPending}
+                    disabled={generateRewrite.isPending}
                     onChange={(event) =>
                       setRewriteBeatCharsMax(
                         parseRewriteNumber(event.target.value, rewriteBeatCharsMax),
@@ -567,7 +486,7 @@ function ScriptTabContent() {
                 variant="outline"
                 size="sm"
                 onClick={handleGenerateRewrite}
-                disabled={generating || generateRewrite.isPending}
+                disabled={generateRewrite.isPending}
                 className="h-7 gap-1.5 rounded-[7px] border-primary/35 bg-primary/[0.08] px-2.5 text-xs font-normal text-primary shadow-none hover:border-primary/55 hover:bg-primary/[0.14] hover:text-primary [&_svg]:size-3.5"
               >
                 {generateRewrite.isPending ? (
@@ -579,66 +498,6 @@ function ScriptTabContent() {
               </Button>
             </>
           )}
-          {scriptTask.started && (
-            <div
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              className="flex min-w-[260px] max-w-[380px] items-center gap-2 rounded-[7px] border border-cyan-400/15 bg-cyan-400/[0.06] px-2.5 py-1.5 text-xs text-muted-foreground"
-            >
-              <div className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
-                <div
-                  className="h-full rounded-full bg-cyan-400 transition-[width]"
-                  style={{ width: `${scriptProgressPercent}%` }}
-                />
-              </div>
-              <span className="shrink-0 font-mono text-[11px] tabular-nums text-cyan-100">
-                {scriptProgressPercent}%
-              </span>
-              <span className="min-w-0 truncate text-foreground/80">
-                {scriptProgressLabel}
-              </span>
-            </div>
-          )}
-          <Button
-            size="sm"
-            onClick={handleGenerateButtonClick}
-            disabled={
-              scriptTask.started
-                ? scriptTask.stopping
-                : generateButtonBusy
-            }
-            title={
-              !scriptTask.started && identitiesEmpty
-                ? t("episode.script.identityRequired")
-                : undefined
-            }
-            className="h-7 gap-1.5 rounded-[7px] bg-primary px-2.5 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75 [&_svg]:size-3.5"
-          >
-            {scriptTask.started ? (
-              scriptTask.stopping ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Square className="size-3.5" />
-              )
-            ) : generateButtonBusy ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-            {scriptTask.started ? (
-              t("common.stop")
-            ) : (
-              t("episode.script.generateScript")
-            )}
-            {!scriptTask.started && (
-              <CreditCostInline
-                display={generateScriptCostDisplay}
-                className="text-black"
-                iconClassName="text-black drop-shadow-none [&_path]:fill-current"
-              />
-            )}
-          </Button>
         </div>
       </div>
 
@@ -767,27 +626,51 @@ function ScriptTabContent() {
           </div>
 
           <div className="min-w-0">
-            <ScriptBeatPreview
-              beats={beats}
-              loading={beatsLoading}
-              className="px-0 pb-0"
-              labels={{
-                title: t("episode.script.previewTitle"),
-                count: (count) => t("episode.script.previewCount", { count }),
-                loading: t("episode.script.previewLoading"),
-                emptyTitle: t("episode.script.previewEmptyTitle"),
-                empty: t("episode.script.previewEmpty"),
-                audioType: (type) =>
-                  t(`audioType.${type}`, { defaultValue: type }),
-                speaker: t("episode.script.previewSpeaker"),
-                noSpeaker: t("episode.script.previewNoSpeaker"),
-                dialogueLine: t("episode.script.previewDialogueLine"),
-                narrationLine: t("episode.script.previewNarrationLine"),
-                noNarration: t("episode.script.previewNoNarration"),
-                visualDescription: t("episode.script.previewVisualDescription"),
-                noVisualDescription: t("episode.script.previewNoVisualDescription"),
-              }}
-            />
+            {directorPlan ? (
+              <section className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-5" aria-label="导演镜头方案摘要">
+                <div className="flex flex-wrap items-start gap-3">
+                  <div className="mr-auto">
+                    <h2 className="text-sm font-semibold text-foreground">镜头方案已生成</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {directorPlan.status === "review_required" ? "待人工审核" : directorPlan.status === "active" ? "已激活" : directorPlan.status}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" nativeButton={false} render={<Link to="/projects/$project/episodes/$episode/beats" params={{ project, episode }} />}>审核镜头方案</Button>
+                </div>
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-white/10 bg-black/10 p-3">
+                    <div className="text-[11px] text-muted-foreground">叙事组</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums">{directorPlan.groups.length}</div>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/10 p-3">
+                    <div className="text-[11px] text-muted-foreground">镜头</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums">{directorShotCount}</div>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <ScriptBeatPreview
+                beats={beats}
+                loading={beatsLoading}
+                className="px-0 pb-0"
+                labels={{
+                  title: t("episode.script.previewTitle"),
+                  count: (count) => t("episode.script.previewCount", { count }),
+                  loading: t("episode.script.previewLoading"),
+                  emptyTitle: t("episode.script.previewEmptyTitle"),
+                  empty: t("episode.script.previewEmpty"),
+                  audioType: (type) =>
+                    t(`audioType.${type}`, { defaultValue: type }),
+                  speaker: t("episode.script.previewSpeaker"),
+                  noSpeaker: t("episode.script.previewNoSpeaker"),
+                  dialogueLine: t("episode.script.previewDialogueLine"),
+                  narrationLine: t("episode.script.previewNarrationLine"),
+                  noNarration: t("episode.script.previewNoNarration"),
+                  visualDescription: t("episode.script.previewVisualDescription"),
+                  noVisualDescription: t("episode.script.previewNoVisualDescription"),
+                }}
+              />
+            )}
           </div>
         </div>
       </div>

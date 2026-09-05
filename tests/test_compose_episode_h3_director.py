@@ -93,6 +93,51 @@ def test_external_tts_director_entry_without_ambience_stem_fails_closed(tmp_path
         resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
 
 
+def test_read_only_beat_listing_keeps_director_span_when_ambience_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.task_backend.runners import video as subject
+
+    director_video = tmp_path / "director.mp4"
+    director_video.touch()
+    manifest_path = tmp_path / "director.manifest.json"
+    segment = H3DirectorSegment(
+        segment_id="one",
+        beat_number=1,
+        prompt="p",
+        duration_seconds=1,
+        first_frame="one.png",
+        dialogue_source=DialogueSource.EXTERNAL_TTS,
+    )
+    save_h3_director_manifest(
+        manifest_path,
+        H3DirectorOutputManifest(
+            physical_video=str(director_video),
+            entries=build_h3_timeline_data((segment,)).entries,
+            ambience_stem_status="unavailable",
+        ),
+    )
+
+    class Stage:
+        status = "completed"
+        manifest_asset = str(manifest_path)
+
+    class Group:
+        ordinal = 1
+        stages = {"video": Stage()}
+
+    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+
+    spans = resolve_episode_composition_sources(
+        tmp_path, 1, [{"beat_number": 1}], strict_audio=False
+    )
+
+    assert len(spans) == 1
+    assert spans[0].video_path == director_video
+    assert spans[0].beat_numbers == (1,)
+    assert spans[0].ambience_stem_path is None
+
+
 def test_composition_interleaves_legacy_and_director_spans_by_beat_order(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -38,7 +39,7 @@ class DemucsStemSeparator:
         *,
         executable: str | None = None,
         model: str = "htdemucs",
-        device: str = "cpu",
+        device: str | None = None,
         timeout: float = 30 * 60,
         terminate_timeout: float = 5,
         audio_probe: Callable[[Path], Awaitable[float]] | None = None,
@@ -47,23 +48,48 @@ class DemucsStemSeparator:
             raise ValueError("executable must not be empty")
         if not model.strip():
             raise ValueError("model must not be empty")
-        if not device.strip():
-            raise ValueError("device must not be empty")
+        configured_device = (
+            device if device is not None else os.getenv("DRAMACLAW_DEMUCS_DEVICE", "auto")
+        ).strip().lower()
+        if configured_device not in {"auto", "cuda", "cpu"}:
+            raise ValueError(
+                "DRAMACLAW_DEMUCS_DEVICE must be one of: auto, cuda, cpu"
+            )
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         if terminate_timeout <= 0:
             raise ValueError("terminate_timeout must be positive")
         self.executable = executable
         self.model = model
-        self.device = device
+        self.device = configured_device
         self.timeout = float(timeout)
         self.terminate_timeout = float(terminate_timeout)
         self.audio_probe = audio_probe or self._probe_audio
 
     @property
     def resolved_executable(self) -> str | None:
-        configured = self.executable or os.getenv("DRAMACLAW_DEMUCS_BIN") or "demucs"
-        return shutil.which(configured)
+        environment = os.getenv("DRAMACLAW_DEMUCS_BIN")
+        configured = self.executable or environment or "demucs"
+        resolved = shutil.which(configured)
+        if resolved is not None or self.executable is not None or environment:
+            return resolved
+        sibling_name = "demucs.exe" if os.name == "nt" else "demucs"
+        sibling = Path(sys.executable).with_name(sibling_name)
+        return str(sibling) if sibling.is_file() else None
+
+    @property
+    def resolved_device(self) -> str:
+        if self.device != "auto":
+            return self.device
+        return "cuda" if self._cuda_available() else "cpu"
+
+    @staticmethod
+    def _cuda_available() -> bool:
+        try:
+            import torch
+        except (ImportError, OSError):
+            return False
+        return bool(torch.cuda.is_available())
 
     @property
     def available(self) -> bool:
@@ -85,6 +111,50 @@ class DemucsStemSeparator:
         output_path.mkdir(parents=True, exist_ok=True)
         digest = await asyncio.to_thread(self._sha256, source_path)
         stable_directory = output_path / self.model / digest
+        devices = [self.resolved_device]
+        if self.device == "auto" and devices[0] == "cuda":
+            devices.append("cpu")
+        cuda_error: StemSeparationError | None = None
+        for index, device in enumerate(devices):
+            try:
+                await self._separate_once(
+                    executable=executable,
+                    source_path=source_path,
+                    output_path=output_path,
+                    stable_directory=stable_directory,
+                    device=device,
+                )
+                break
+            except StemSeparationError as exc:
+                if index + 1 < len(devices):
+                    cuda_error = exc
+                    continue
+                if cuda_error is not None:
+                    raise StemSeparationError(
+                        f"Demucs CUDA attempt failed: {cuda_error}; "
+                        f"CPU fallback failed: {exc}"
+                    ) from exc
+                raise
+
+        vocals = stable_directory / "vocals.wav"
+        no_vocals = stable_directory / "no_vocals.wav"
+        return StemSeparationResult(
+            source=source_path,
+            vocals=vocals,
+            no_vocals=no_vocals,
+            status="succeeded",
+            model=self.model,
+        )
+
+    async def _separate_once(
+        self,
+        *,
+        executable: str,
+        source_path: Path,
+        output_path: Path,
+        stable_directory: Path,
+        device: str,
+    ) -> None:
         run_output = output_path / ".demucs-runs" / uuid4().hex
         run_output.mkdir(parents=True)
         try:
@@ -95,7 +165,7 @@ class DemucsStemSeparator:
                 "-n",
                 self.model,
                 "-d",
-                self.device,
+                device,
                 "-o",
                 str(run_output),
                 str(source_path),
@@ -131,16 +201,6 @@ class DemucsStemSeparator:
             await self._validate_stems(stable_directory)
         finally:
             await asyncio.to_thread(shutil.rmtree, run_output, True)
-
-        vocals = stable_directory / "vocals.wav"
-        no_vocals = stable_directory / "no_vocals.wav"
-        return StemSeparationResult(
-            source=source_path,
-            vocals=vocals,
-            no_vocals=no_vocals,
-            status="succeeded",
-            model=self.model,
-        )
 
     async def _validate_stems(self, directory: Path) -> None:
         for path in (directory / "vocals.wav", directory / "no_vocals.wav"):

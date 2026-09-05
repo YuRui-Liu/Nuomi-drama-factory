@@ -73,6 +73,35 @@ from novelvideo.models import (
 )
 
 console = Console()
+COGNEE_INGEST_DATA_ITEM_MAX_CHARS = 16_000
+
+
+def _split_cognee_ingest_content(
+    content: str,
+    *,
+    max_chars: int = COGNEE_INGEST_DATA_ITEM_MAX_CHARS,
+) -> list[str]:
+    """Split source text into bounded Cognee data items without losing bytes."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    if len(content) <= max_chars:
+        return [content]
+
+    chunks: list[str] = []
+    cursor = 0
+    while cursor < len(content):
+        limit = min(cursor + max_chars, len(content))
+        if limit < len(content):
+            paragraph_break = content.rfind("\n\n", cursor, limit)
+            line_break = content.rfind("\n", cursor, limit)
+            split_at = paragraph_break + 2 if paragraph_break >= cursor else line_break + 1
+            if split_at <= cursor:
+                split_at = limit
+        else:
+            split_at = limit
+        chunks.append(content[cursor:split_at])
+        cursor = split_at
+    return chunks
 
 
 def _json_list_payload(values: list[str]) -> str:
@@ -665,8 +694,17 @@ class CogneeStore:
         report(0.1, "解析原文...")
         log("Step 1/2: 导入原文到 Cognee...")
         self._set_cognee_context()
+        ingest_items = _split_cognee_ingest_content(content)
+        if len(ingest_items) > 1:
+            log(f"原文较长，拆分为 {len(ingest_items)} 个图谱数据项")
         with self.embedding_model_scope():
-            await cognee.add(content, dataset_name=self.dataset_name)
+            for index, item in enumerate(ingest_items, start=1):
+                await cognee.add(item, dataset_name=self.dataset_name)
+                if len(ingest_items) > 1:
+                    report(
+                        0.1 + (0.15 * index / len(ingest_items)),
+                        f"导入图谱数据项 {index}/{len(ingest_items)}...",
+                    )
         log("原文导入完成")
         await asyncio.sleep(0)
 

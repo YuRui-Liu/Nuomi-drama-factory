@@ -77,6 +77,70 @@ export interface Character {
   portrait_url?: string | null;
   history_url?: string;
   restore_url?: string;
+  extraction_locked?: boolean;
+}
+
+export interface CharacterVisualFact {
+  fact_id: string;
+  field: string;
+  value: string;
+  source_span: { start_line: number; end_line: number };
+  evidence: string;
+  assertion: "explicit" | "inferred";
+  trust: "trusted" | "legacy_untrusted";
+}
+
+export interface CharacterDesignProposal {
+  proposal_id: string;
+  title: string;
+  rationale: string;
+  recommended?: boolean;
+  identity_anchors?: string[];
+  asymmetry_detail?: string | null;
+  quality_issues?: string[];
+  face_shape?: string | null;
+  facial_features?: string[];
+  hair_style?: string | null;
+  body_type?: string | null;
+  distinctive_features?: string[];
+  outfit_states?: Record<string, string>;
+}
+
+export interface CharacterVisualBible {
+  revision_id: string;
+  status: "draft" | "confirmed" | "superseded";
+  face_shape?: string | null;
+  facial_features: string[];
+  hair_style?: string | null;
+  body_type?: string | null;
+  distinctive_features: string[];
+  outfit_states: Record<string, string>;
+  identity_anchors?: string[];
+  asymmetry_detail?: string | null;
+  quality_issues?: string[];
+}
+
+export interface CharacterVisualWorkspace {
+  character_id: string;
+  profile: {
+    character_id: string;
+    name: string;
+    biography: string;
+    facts: CharacterVisualFact[];
+  };
+  design_proposals: CharacterDesignProposal[];
+  selected_proposal_id?: string | null;
+  visual_bible?: CharacterVisualBible | null;
+  legacy_fields: Array<{
+    field: string;
+    value: string;
+    trust: "legacy_untrusted";
+    allowed_for_generation: false;
+  }>;
+}
+
+export interface CharacterVisualWorkspaceUpdate {
+  selected_proposal_id?: string | null;
 }
 
 export interface Identity {

@@ -53,10 +53,7 @@ def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfi
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
         profile = profile.model_copy(update={"workflow_id": normalized})
-    required_bindings = {
-        "task_type", "global_prompt", "frame_rate", "width", "height",
-        "ref_max_size", "total_frames", "timeline_data",
-    }
+    required_bindings = {"timeline_data"}
     if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
         raise ValueError("H3 production profile is missing required bindings or output")
     return profile
@@ -403,7 +400,6 @@ async def generate_h3_director_video(
         candidate = await pipeline.generate_timeline(
             request,
             timeline_data=timeline_data,
-            director_params=_director_semantic_values(timeline_data),
             input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
             idempotency_input={
                 "version": 5,

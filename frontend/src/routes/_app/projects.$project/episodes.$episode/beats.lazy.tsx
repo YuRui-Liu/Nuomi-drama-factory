@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { createLazyFileRoute } from "@tanstack/react-router";
+import { createLazyFileRoute, Link } from "@tanstack/react-router";
 import {
   useCallback,
   useEffect,
@@ -11,16 +11,17 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Brush, Clapperboard, Loader2, Play, RefreshCw } from "lucide-react";
+import { Brush, Clapperboard, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-import { useEpisodeBeats, useEpisodeDetail } from "@/lib/queries/episodes";
+import { useEpisodeBeats } from "@/lib/queries/episodes";
+import { useDirectorPlans } from "@/lib/queries/director-plans";
+import { useNarrativeGroups } from "@/lib/queries/narrative-groups";
 import { useBeatStates } from "@/hooks/use-beat-states";
 import { useBeatsWorkbenchParam } from "@/hooks/use-beats-workbench-param";
 import { useEpisodeImageTaskInvalidation } from "@/hooks/use-episode-image-task-invalidation";
 import { useSelection } from "@/hooks/use-selection";
 import { useViewToggles } from "@/hooks/use-view-toggles";
-import { useGenerateScript } from "@/lib/queries/scripts";
 import {
   useSketchSettings,
   type SketchAspectRatio,
@@ -37,7 +38,6 @@ import {
 } from "@/lib/aspect-ratio";
 import { useVideoBackends } from "@/lib/queries/video";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
-import { useTaskController } from "@/hooks/use-task-controller";
 import { useScopedTaskBatchInvalidation } from "@/hooks/use-scoped-task-batch-invalidation";
 import { queryKeys } from "@/lib/query-keys";
 import { TASK_TYPES } from "@/lib/task-types";
@@ -72,13 +72,8 @@ import { DirectorReviewWorkbench } from "@/components/episode/director-review";
 import { RenderPlanDialog } from "@/components/episode/beat-workbench/render-plan-dialog";
 import { useHideHeaderOnScroll } from "@/components/episode/header-collapse";
 import { Button } from "@/components/ui/button";
-import { EMPTY_STATE_ACTION_BUTTON_CLASS } from "@/components/ui/empty-state-styles";
 import { CreditCostInline } from "@/components/credit-cost-inline";
 import { formatCreditCost } from "@/components/credits/credit-visual";
-import {
-  backendErrorToastMessage,
-  BillingRuleNotConfiguredError,
-} from "@/lib/api-errors";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -122,16 +117,30 @@ function BeatsTabContent() {
 
   // Data
   const { data: beatsRes, isLoading } = useEpisodeBeats(project, epNum);
-  const { data: episodeRes } = useEpisodeDetail(project, epNum);
+  const directorPlans = useDirectorPlans(project, epNum);
+  const productionGroups = useNarrativeGroups(project, epNum);
   const { data: sketchSettingsRes } = useSketchSettings(project);
   const projectConfigRes = useProject(project);
   const videoBackendsRes = useVideoBackends(project);
   const updateProject = useUpdateProject(project);
   const { states } = useBeatStates(project, epNum);
   const beats = beatsRes?.data ?? [];
+  const directorPlanRevisions = directorPlans.data?.ok
+    ? directorPlans.data.data
+    : [];
+  const hasActiveDirectorPlan = directorPlanRevisions.some(
+    (plan) => plan.status === "active",
+  );
+  const hasPendingDirectorPlan = directorPlanRevisions.some(
+    (plan) =>
+      plan.status === "draft" ||
+      plan.status === "validating" ||
+      plan.status === "review_required",
+  );
+  const hasProductionGroups = Boolean(
+    productionGroups.data?.ok && productionGroups.data.data.length > 0,
+  );
   useRegisterEpisodeActionsSlot(beats.length > 0);
-  const identityIds = episodeRes?.data?.identity_ids ?? [];
-  const identityPlanReady = identityIds.length > 0;
   const isNarratedProject = projectConfigRes.data?.data?.spine_template === "narrated";
 
   // URL deep-link
@@ -160,6 +169,13 @@ function BeatsTabContent() {
   // Project-level prefs mirrored from NiceGUI video_studio_page.video_settings.
   const [videoBackend, setVideoBackendState] = useState(DEFAULT_VIDEO_MODEL);
   const [workbenchMode, setWorkbenchMode] = useState<"groups" | "director" | "repair">("groups");
+  useEffect(() => {
+    if (hasActiveDirectorPlan && hasProductionGroups) {
+      setWorkbenchMode("groups");
+    } else if (!hasActiveDirectorPlan && hasPendingDirectorPlan) {
+      setWorkbenchMode("director");
+    }
+  }, [hasActiveDirectorPlan, hasPendingDirectorPlan, hasProductionGroups]);
 
   // 左(渲染/Beat 区)与右(详情/功能区)的可拖拽宽度占比。拖动中间分隔条调节占比;
   // 比例持久化到 localStorage —— 属 UI 偏好(region 无关),不随切区清空。clamp 25%–70%。
@@ -496,40 +512,6 @@ function BeatsTabContent() {
     clearSelection();
   }, [beats, clearSelection, isLoading, selection]);
 
-  // Generate script for empty state
-  const generateScript = useGenerateScript(project, epNum);
-  const generateScriptCost = useGenerationCreditCost("feature", "script_writer");
-  const generateScriptCostDisplay =
-    generateScriptCost.data?.data.display ??
-    (generateScriptCost.error instanceof BillingRuleNotConfiguredError
-      ? t("common.billingRuleNotConfiguredShort")
-      : null);
-  const scriptTask = useTaskController({
-    key: { taskType: "script_writer", project, episode: epNum },
-    alsoReconcile: ["literal_script_writer"],
-    invalidateKeys: [
-      queryKeys.script(project, epNum),
-      queryKeys.beats(project, epNum),
-      queryKeys.pipelineStatus(project),
-    ],
-  });
-  const handleGenerate = async () => {
-    if (!identityPlanReady) {
-      toast.error(t("episode.script.identityRequired"));
-      return;
-    }
-    try {
-      const res = await generateScript.mutateAsync({});
-      if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
-        return;
-      }
-      scriptTask.start({ scope: res.scope });
-    } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
-    }
-  };
-
   const [openingEpisodeFreezone, setOpeningEpisodeFreezone] = useState(false);
   const handleOpenEpisodeFreezone = useCallback(async () => {
     setOpeningEpisodeFreezone(true);
@@ -546,17 +528,73 @@ function BeatsTabContent() {
     }
   }, [epNum, project, t]);
 
-  // Confirm dialog state for empty-state generate
-  const [genBeatsConfirm, setGenBeatsConfirm] = useState(false);
   const [gridGalleryOpen, setGridGalleryOpen] = useState(false);
   const [renderGridGalleryOpen, setRenderGridGalleryOpen] = useState(false);
 
   // Loading state
-  if (isLoading) {
+  if (
+    isLoading ||
+    (beats.length === 0 &&
+      (directorPlans.isLoading || productionGroups.isLoading))
+  ) {
     return (
       <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
         <Loader2 className="size-4 animate-spin" />
         {t("episode.beats.loading")}
+      </div>
+    );
+  }
+
+  if (workbenchMode === "groups" && hasProductionGroups) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-10 shrink-0 items-center justify-end border-b border-white/[0.055] px-3">
+          <Button type="button" variant="outline" size="sm" onClick={() => setWorkbenchMode("director")}>
+            审核镜头方案
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          <NarrativeGroupWorkbench
+            project={project}
+            episode={epNum}
+            onRepairBeat={(beatId) => {
+              const beatNumber = Number.parseInt(beatId, 10);
+              if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
+              setWorkbenchMode("repair");
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (workbenchMode === "director" || (!hasActiveDirectorPlan && hasPendingDirectorPlan)) {
+    return (
+      <DirectorReviewWorkbench
+        project={project}
+        episode={epNum}
+        onClose={() => setWorkbenchMode("groups")}
+      />
+    );
+  }
+
+  if (hasActiveDirectorPlan && !hasProductionGroups) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-12 text-center">
+        <EpisodeEmptyState
+          icon={Clapperboard}
+          title="生产计划未同步"
+          description="镜头方案已经审核通过，但叙事组生产数据尚未加载。请重试；若仍失败，请检查叙事组接口。"
+          className="h-auto p-0"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void productionGroups.refetch()}
+        >
+          重试加载生产计划
+        </Button>
       </div>
     );
   }
@@ -571,82 +609,9 @@ function BeatsTabContent() {
           description={t("episode.beats.noBeats")}
           className="h-auto p-0"
         />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setGenBeatsConfirm(true)}
-          disabled={
-            !identityPlanReady || generateScript.isPending || scriptTask.started
-          }
-          className={cn(EMPTY_STATE_ACTION_BUTTON_CLASS, "[&_svg]:size-3.5")}
-          title={
-            identityPlanReady
-              ? undefined
-              : t("episode.script.identityRequired")
-          }
-        >
-          {generateScript.isPending || scriptTask.started ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Play className="size-4" />
-          )}
-          {t("episode.beats.generateBeats")}
-          <CreditCostInline display={generateScriptCostDisplay} />
+        <Button variant="outline" size="sm" render={<Link to="/projects/$project/episodes/$episode/script" params={{ project, episode }} />}>
+          返回剧本校对页完成导演拆解
         </Button>
-        <AlertDialog open={genBeatsConfirm} onOpenChange={setGenBeatsConfirm}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("episode.beats.generateBeatsTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {t("episode.beats.generateBeatsDesc")}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => {
-                  setGenBeatsConfirm(false);
-                  handleGenerate();
-                }}
-              >
-                {t("common.confirmExecute")}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-    );
-  }
-
-  if (workbenchMode === "director") {
-    return (
-      <DirectorReviewWorkbench
-        project={project}
-        episode={epNum}
-        onClose={() => setWorkbenchMode("groups")}
-      />
-    );
-  }
-
-  if (workbenchMode === "groups") {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="flex h-10 shrink-0 items-center justify-end border-b border-white/[0.055] px-3">
-          <Button type="button" variant="outline" size="sm" onClick={() => setWorkbenchMode("director")}>
-            重新导演分镜
-          </Button>
-        </div>
-        <div className="min-h-0 flex-1">
-          <NarrativeGroupWorkbench
-            project={project}
-            episode={epNum}
-            onRepairBeat={(beatId) => {
-              const beatNumber = Number.parseInt(beatId, 10);
-              if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
-              setWorkbenchMode("repair");
-            }}
-          />
-        </div>
       </div>
     );
   }

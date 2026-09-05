@@ -595,6 +595,33 @@ def test_nonvisual_production_note_is_not_shootable():
     }) is False
 
 
+def test_prompt_context_records_effective_runtime_model_not_internal_alias(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners.narrative_group_video import _prompt_context
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"frame")
+    monkeypatch.setattr(
+        "novelvideo.text_runtime_settings.load_text_runtime_settings",
+        lambda: SimpleNamespace(model="deepseek-v4-flash"),
+    )
+    segment = H3DirectorSegment(
+        segment_id="beat-1", beat_number=1, prompt="人物抬头",
+        duration_seconds=5, first_frame=str(frame),
+    )
+
+    context = _prompt_context(
+        segment,
+        {"id": "beat-1", "visual_description": "人物抬头"},
+        None,
+        None,
+    )
+
+    assert context.model_id == "deepseek-v4-flash"
+
+
 def test_group_video_uses_rendered_frame_even_for_production_note(tmp_path):
     from novelvideo.task_backend.runners.narrative_group_video import _build_segments
 
@@ -1000,3 +1027,218 @@ def test_pair_optimizer_context_contains_start_and_target_director_context(
         "start_context": {"beat_number": 2, "camera": {"azim": 2}},
         "target_context": {"beat_number": 3, "camera": {"azim": 3}},
     }]
+
+
+def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    frame = tmp_path / "current.png"
+    frame.write_bytes(b"current")
+    current = H3DirectorSegment(
+        segment_id="shot-01-01",
+        beat_number=1,
+        prompt="人物缓慢抬头并看向门口",
+        duration_seconds=5,
+        first_frame=str(frame),
+    )
+    source_beats = [
+        {"id": "line-1", "beat_number": 1, "content": "人物抬头"},
+        {"id": "line-2", "beat_number": 2, "content": "门外有人"},
+    ]
+
+    monkeypatch.setattr(
+        narrative_group_video,
+        "load_materialized_groups",
+        lambda *_args: [
+            SimpleNamespace(id="group-01"),
+            SimpleNamespace(id="group-02"),
+        ],
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "stage_payload",
+        lambda _project_dir, _episode, group_id, _stage: (
+            {
+                "status": "completed",
+                "cell_assets": [
+                    {"beat_id": "shot-01-01", "path": str(frame)}
+                ],
+                "video_plan": {
+                    "units": [{"beat_ids": ["shot-01-01"]}]
+                },
+            }
+            if group_id == "group-01"
+            else {
+                "status": "pending",
+                "cell_assets": [],
+                "video_plan": {
+                    "units": [{"beat_ids": ["shot-02-01"]}]
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "generation_beats_for_group",
+        lambda _project_dir, _episode, group_id, _beats: [
+            {
+                "id": "shot-01-01" if group_id == "group-01" else "shot-02-01",
+                "beat_number": 1 if group_id == "group-01" else 2,
+                "content": "人物抬头" if group_id == "group-01" else "门外有人",
+            }
+        ],
+    )
+
+    class Dumpable:
+        def model_dump(self, **_kwargs):
+            return {}
+
+    class Optimizer:
+        async def optimize(self, episode_input):
+            return SimpleNamespace(
+                segments=tuple(
+                    SimpleNamespace(
+                        segment_id=item.segment_id,
+                        plan=Dumpable(),
+                        compiler_version="test",
+                        quality_report=Dumpable(),
+                        prompt=f"optimized:{item.segment_id}",
+                    )
+                    for item in episode_input.segments
+                )
+            )
+
+    monkeypatch.setattr(
+        narrative_group_video,
+        "create_h3_episode_pack_optimizer",
+        lambda **_kwargs: Optimizer(),
+    )
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: SimpleNamespace(
+            revision_id="rev-1", project_style_snapshot=None
+        ),
+    )
+
+    result = asyncio.run(
+        narrative_group_video._optimize_missing_prompts(
+            [current],
+            source_beats,
+            ctx=SimpleNamespace(state_dir=tmp_path / "state"),
+            project_dir=tmp_path,
+            episode=1,
+        )
+    )
+
+    assert [item.segment_id for item in result] == ["shot-01-01"]
+    assert result[0].prompt == "optimized:shot-01-01"
+
+def test_execute_projects_active_director_shots_before_building_segments(
+    tmp_path, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from novelvideo.director_plan.models import (
+        DirectorPlanRevision,
+        NarrativeGroupPlan,
+        ShotPlan,
+        ValidationReport,
+    )
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    shot = ShotPlan(
+        id="shot-01-01",
+        source_span_ids=("line-11",),
+        subject="王总",
+        action="抬头看向门口",
+        visible_start_state="低头",
+        visible_end_state="抬头",
+        duration_seconds=4,
+    )
+    group = NarrativeGroupPlan(
+        id="director-a",
+        ordinal=1,
+        source_span_ids=("line-11",),
+        scene_anchor="office",
+        time_anchor="day",
+        objective="notice visitor",
+        visible_turn="looks up",
+        relation_to_previous="single",
+        shots=(shot,),
+    )
+    revision = DirectorPlanRevision(
+        revision_id="rev-active",
+        episode=1,
+        status="review_required",
+        source_script_hash="sha256:abc",
+        director_model="director-v1",
+        prompt_version="v2",
+        project_style_snapshot_id="style-1",
+        groups=(group,),
+        validation_report=ValidationReport(passed=True),
+        created_at=datetime(2026, 8, 30, 12, tzinfo=timezone.utc),
+    )
+    store = DirectorPlanStore(tmp_path)
+    store.save(revision)
+    store.activate(1, revision.revision_id)
+    captured = []
+
+    async def load_beats(_ctx, _episode):
+        return [{"id": "line-11", "beat_number": 11, "content": "王总抬头"}]
+
+    def build_segments(_payload, beat_records, _saved):
+        captured.extend(beat_records)
+        return []
+
+    def saved_stage(_project_dir, _episode, _group_id, stage):
+        if stage == "video":
+            return {"revision": 1, "video_plan": {"revision": 1}}
+        return {
+            "beat_ids": ["line-11"],
+            "cell_assets": [
+                {"beat_id": "shot-01-01", "path": str(tmp_path / "frame.png")}
+            ],
+            "video_plan": {
+                "revision": 1,
+                "units": [{"beat_ids": ["shot-01-01"]}],
+            },
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", load_beats)
+    monkeypatch.setattr(narrative_group_video, "_build_segments", build_segments)
+    monkeypatch.setattr(narrative_group_video, "stage_payload", saved_stage)
+    monkeypatch.setattr(
+        narrative_group_video, "record_stage_result", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_workflow_definition_for_payload",
+        lambda _payload: SimpleNamespace(adapter_key="fake"),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: object()),
+    )
+    ctx = SimpleNamespace(output_dir=str(tmp_path), state_dir=tmp_path / "state")
+
+    result = asyncio.run(
+        narrative_group_video._execute(
+            {
+                "episode": 1,
+                "payload": {
+                    "group_id": "director-a",
+                    "revision": 1,
+                    "plan_revision": 1,
+                },
+            },
+            ctx,
+        )
+    )
+
+    assert result["status"] == "skipped"
+    assert [beat["id"] for beat in captured] == ["shot-01-01"]

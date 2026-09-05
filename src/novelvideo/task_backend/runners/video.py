@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,10 @@ from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
-from novelvideo.media_capabilities.video.h3_prompt_optimizer import create_h3_prompt_optimizer
+from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+    H3PromptOptimizationUnavailable,
+    create_h3_prompt_optimizer,
+)
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.media_capabilities.video.models import H3Mode
 
@@ -47,7 +51,11 @@ class VideoSpan:
 
 
 def resolve_episode_composition_sources(
-    project_dir: str | Path, episode: int, beats: list[dict[str, Any]]
+    project_dir: str | Path,
+    episode: int,
+    beats: list[dict[str, Any]],
+    *,
+    strict_audio: bool = True,
 ) -> list[VideoSpan]:
     """Resolve Director outputs first, then legacy per-beat video fallbacks.
 
@@ -82,9 +90,11 @@ def resolve_episode_composition_sources(
         if any(entry.dialogue_source is DialogueSource.EXTERNAL_TTS for entry in entries):
             ambience = Path(manifest.ambience_stem_path or "")
             if manifest.ambience_stem_status != "succeeded" or not ambience.exists():
-                raise RuntimeError(
-                    f"Director manifest {manifest_path} requires an ambience stem for external_tts"
-                )
+                if strict_audio:
+                    raise RuntimeError(
+                        f"Director manifest {manifest_path} requires an ambience stem for external_tts"
+                    )
+                ambience = None
         else:
             ambience = None
         span = VideoSpan(
@@ -208,11 +218,24 @@ async def _optimize_h3_single_prompt(
     if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
         raise ValueError("single-video H3 requires a first frame")
     optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
-    result = await optimizer.optimize_segment(
-        segment, _h3_prompt_context(
-            beat=beat, config=config, first_frame=first_frame, last_frame=last_frame
-        ), mode,
-    )
+    try:
+        result = await optimizer.optimize_segment(
+            segment,
+            _h3_prompt_context(
+                beat=beat,
+                config=config,
+                first_frame=first_frame,
+                last_frame=last_frame,
+            ),
+            mode,
+        )
+    except H3PromptOptimizationUnavailable as exc:
+        logging.getLogger(__name__).warning(
+            "H3 prompt optimizer unavailable for beat %s; using draft prompt: %s",
+            beat_num,
+            exc,
+        )
+        return segment.prompt
     return result.prompt
 
 

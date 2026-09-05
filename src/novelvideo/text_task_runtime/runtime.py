@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Protocol, TypeVar
+from types import SimpleNamespace
 
 from pydantic_ai import Agent, PromptedOutput
 
@@ -160,6 +161,30 @@ _CURRENT_TEXT_TASK_RUNTIME: ContextVar[StructuredTextRuntime | None] = ContextVa
 
 def current_text_task_runtime() -> StructuredTextRuntime | None:
     return _CURRENT_TEXT_TASK_RUNTIME.get()
+
+
+class StructuredRuntimeAgent:
+    """Small Agent-compatible facade for planners that only call ``run``."""
+
+    def __init__(
+        self,
+        runtime: StructuredTextRuntime,
+        *,
+        output_type: type[Any],
+        system_prompt: str = "",
+    ) -> None:
+        self.runtime = runtime
+        self.output_type = output_type
+        self.system_prompt = system_prompt
+        self.model_name = runtime.snapshot.model
+
+    async def run(self, prompt: str) -> Any:
+        output = await self.runtime.run_structured(
+            prompt=prompt,
+            output_type=self.output_type,
+            system_prompt=self.system_prompt,
+        )
+        return SimpleNamespace(output=output)
 
 
 @contextmanager

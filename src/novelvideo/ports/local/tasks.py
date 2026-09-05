@@ -252,6 +252,25 @@ class InlineTaskBackend:
                 metadata=job.metadata,
             ),
         )
+        await self._drain_episode_graph_outbox(job.ctx)
+
+    async def _drain_episode_graph_outbox(self, ctx) -> None:
+        from novelvideo.api.deps import make_sqlite_store_for_context
+        from novelvideo.episode_source_store import EpisodeSourceStore
+
+        repository = EpisodeSourceStore(await make_sqlite_store_for_context(ctx))
+        pending = await repository.list_graph_outbox()
+        if not pending:
+            return
+        latest = max(pending, key=lambda item: int(item["target_revision"]))
+        for payload in pending:
+            revision = int(payload["target_revision"])
+            if revision != int(latest["target_revision"]):
+                await repository.delete_graph_outbox(revision)
+        await self.enqueue_project_task(
+            ctx, task_type="episode_graph_index", queue_kind="default",
+            episode=0, scope=f"revision:{latest['target_revision']}", payload=latest,
+        )
 
     def _on_background_task_done(self, task: asyncio.Task, lane_name: str) -> None:
         self._background_tasks.discard(task)

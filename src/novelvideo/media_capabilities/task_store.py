@@ -852,6 +852,49 @@ class TaskStore:
             )
             return self._attempt_from_row(self._attempt_row(connection, attempt_id))
 
+    def mark_unknown(
+        self,
+        attempt_id: str,
+        error_code: MediaErrorCode | str,
+        error_message: str,
+    ) -> MediaAttemptRecord:
+        """Persist an ambiguous provider submission without permitting auto-retry."""
+        attempt_id = _validated_text(attempt_id, "attempt_id")
+        error_code_text = _validated_text(str(error_code), "error_code", 128)
+        _reject_sensitive_keys(error_code_text)
+        try:
+            stable_error_code = MediaErrorCode(error_code_text)
+        except ValueError:
+            raise ValueError("invalid error_code") from None
+        error_message = _validated_text(error_message, "error_message", 2048)
+        _reject_sensitive_keys(error_message)
+        with self._write() as connection:
+            row = self._attempt_row(connection, attempt_id)
+            current = MediaTaskStatus(row["status"])
+            self._validate_transition(current, MediaTaskStatus.UNKNOWN)
+            timestamp = _iso(_now())
+            connection.execute(
+                """
+                UPDATE media_attempts
+                SET status = ?, error_code = ?, error_message = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    MediaTaskStatus.UNKNOWN.value,
+                    stable_error_code.value,
+                    error_message,
+                    timestamp,
+                    attempt_id,
+                ),
+            )
+            self._sync_task(
+                connection,
+                row["task_id"],
+                MediaTaskStatus.UNKNOWN,
+                timestamp,
+            )
+            return self._attempt_from_row(self._attempt_row(connection, attempt_id))
+
     @staticmethod
     def _attempt_row(
         connection: sqlite3.Connection, attempt_id: str
@@ -871,6 +914,10 @@ class TaskStore:
             raise InvalidTaskTransition(f"terminal status {current.value} cannot change")
         allowed = target == _MAIN_NEXT.get(current)
         allowed |= target in {MediaTaskStatus.FAILED, MediaTaskStatus.CANCEL_REQUESTED}
+        allowed |= current in {
+            MediaTaskStatus.PREPARING,
+            MediaTaskStatus.UPLOADING,
+        } and target == MediaTaskStatus.UNKNOWN
         allowed |= current == MediaTaskStatus.CANCEL_REQUESTED and target in {
             MediaTaskStatus.CANCELLED,
             MediaTaskStatus.FAILED,

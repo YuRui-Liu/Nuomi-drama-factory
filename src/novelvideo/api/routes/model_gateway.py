@@ -32,6 +32,8 @@ from novelvideo.text_runtime_settings import (
     save_text_runtime_settings,
     text_runtime_status,
 )
+from novelvideo.text_task_runtime.models import AgentTaskRoute, AgentTaskRoutingConfig
+from novelvideo.text_task_runtime.settings import load_global_routes, save_global_routes
 from novelvideo.newapi_provisioner import (
     build_channel_payload,
     build_provisioner_status,
@@ -83,6 +85,19 @@ class TextRuntimeConfigBody(BaseModel):
     model: str
     api_key: str | None = Field(default=None, alias="apiKey")
     clear_api_key: bool = Field(default=False, alias="clearApiKey")
+
+
+TEXT_TASK_ROLE_LABELS = {
+    "episode_normalization": "剧本解析与规范化",
+    "knowledge_extraction": "知识图谱与角色/场景/道具提取",
+    "director_plan": "整集导演规划",
+    "h3_episode_pack": "MiniMax H3 整集提示词",
+    "h3_segment_repair": "MiniMax H3 局部修复",
+}
+
+
+class TaskRuntimeConfigBody(BaseModel):
+    routes: dict[str, AgentTaskRoute]
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -387,6 +402,47 @@ async def save_text_runtime_config(body: TextRuntimeConfigBody) -> dict[str, Any
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"ok": True, "data": text_runtime_status(saved), "runtime": runtime}
+
+
+def _task_runtime_config_payload() -> dict[str, Any]:
+    configured = load_global_routes()
+    defaults = AgentTaskRoute()
+    return {
+        "roles": [
+            {
+                "id": role,
+                "label": label,
+                "route": (
+                    defaults.model_copy(
+                        update=configured.routes.get(role).model_dump(exclude_none=True)
+                    )
+                    if configured.routes.get(role) is not None
+                    else defaults
+                ).model_dump(mode="json"),
+            }
+            for role, label in TEXT_TASK_ROLE_LABELS.items()
+        ]
+    }
+
+
+@router.get("/task-runtime/config")
+async def get_task_runtime_config() -> dict[str, Any]:
+    return {"ok": True, "data": _task_runtime_config_payload()}
+
+
+@router.put("/task-runtime/config")
+async def put_task_runtime_config(body: TaskRuntimeConfigBody) -> dict[str, Any]:
+    unknown = sorted(set(body.routes) - set(TEXT_TASK_ROLE_LABELS))
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unsupported task roles: {', '.join(unknown)}")
+    config = AgentTaskRoutingConfig(
+        routes={
+            role: route.model_dump(mode="json")
+            for role, route in body.routes.items()
+        }
+    )
+    save_global_routes(config)
+    return {"ok": True, "data": _task_runtime_config_payload()}
 
 
 @router.post("/official/enable")

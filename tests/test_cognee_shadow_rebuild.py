@@ -104,6 +104,42 @@ async def test_successful_shadow_switch_is_consumed_by_runtime_resolver(
 
 
 @pytest.mark.asyncio
+async def test_shadow_forwards_cognee_progress_and_logs(tmp_path) -> None:
+    observed: list[tuple[str, object]] = []
+
+    class ProgressStore(RecordingStore):
+        async def ingest_novel_fast(
+            self,
+            novel_path: str,
+            *,
+            rebuild: bool,
+            persist_novel_content: bool,
+            on_progress=None,
+            on_log=None,
+        ) -> None:
+            on_progress(0.3, "构建知识图谱...")
+            on_log("知识图谱数据项 1/3")
+
+    graph = CogneeShadowGraph(
+        project_name="demo/project",
+        project_dir=tmp_path / "project",
+        state_dir=tmp_path / "state",
+        store_factory=lambda **kwargs: ProgressStore(**kwargs),
+        on_progress=lambda progress, task: observed.append(
+            ("progress", (progress, task))
+        ),
+        on_log=lambda message: observed.append(("log", message)),
+    )
+
+    await graph.build_shadow(target_revision=2, canonical_novel="第二集")
+
+    assert observed == [
+        ("progress", (0.3, "构建知识图谱...")),
+        ("log", "知识图谱数据项 1/3"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_each_shadow_attempt_uses_a_unique_build_directory(tmp_path) -> None:
     class SuccessfulStore(RecordingStore):
         async def ingest_novel_fast(

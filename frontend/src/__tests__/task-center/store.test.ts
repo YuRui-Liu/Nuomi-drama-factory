@@ -26,6 +26,35 @@ describe("store.hydrate + upsert + remove", () => {
     expect(useTaskCenterStore.getState().tasks.size).toBe(2);
   });
 
+  it("hydrate immediately drops expired terminal tasks and clears their selection", () => {
+    const staleCompletedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const s = useTaskCenterStore.getState();
+    s.upsert(
+      sampleTask({
+        task_id: "old-run",
+        task_key: "old-task",
+        status: "failed",
+        completed_at: staleCompletedAt,
+      }),
+    );
+    s.setSelected("old-task");
+
+    s.hydrate([
+      sampleTask({
+        task_id: "old-run",
+        task_key: "old-task",
+        status: "failed",
+        completed_at: staleCompletedAt,
+      }),
+      sampleTask({ task_id: "current-run", task_key: "current-task", status: "running" }),
+    ]);
+
+    const state = useTaskCenterStore.getState();
+    expect(state.tasks.has("old-task")).toBe(false);
+    expect(state.tasks.has("current-task")).toBe(true);
+    expect(state.selectedTaskKey).toBeNull();
+  });
+
   it("hydrate preserves newer in-memory tasks when BE payload is stale", () => {
     const s = useTaskCenterStore.getState();
     s.upsert(sampleTask({ task_id: "a1", task_key: "k", progress: 0.9, updated_at: "2026-04-18T15:00:00Z" }));
@@ -75,6 +104,14 @@ describe("store.hydrate + upsert + remove", () => {
     s.upsert(sampleTask({ task_id: "a", task_key: "k" }));
     s.remove("k");
     expect(useTaskCenterStore.getState().tasks.size).toBe(0);
+  });
+
+  it("remove clears the selected task when that row is deleted", () => {
+    const s = useTaskCenterStore.getState();
+    s.upsert(sampleTask({ task_id: "a", task_key: "k" }));
+    s.setSelected("k");
+    s.remove("k");
+    expect(useTaskCenterStore.getState().selectedTaskKey).toBeNull();
   });
 
   it("markHydrated sets isHydrated true", () => {
@@ -168,6 +205,22 @@ describe("store pruning", () => {
     expect(state.tasks.has("stale")).toBe(false);
     expect(state.tasks.has("fresh")).toBe(true);
     expect(state.tasks.has("running")).toBe(true);
+  });
+
+  it("prune clears the selection when it evicts that terminal task", () => {
+    const staleCompletedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const s = useTaskCenterStore.getState();
+    s.upsert(
+      sampleTask({
+        task_id: "stale",
+        task_key: "stale",
+        status: "failed",
+        completed_at: staleCompletedAt,
+      }),
+    );
+    s.setSelected("stale");
+    s.prune();
+    expect(useTaskCenterStore.getState().selectedTaskKey).toBeNull();
   });
 
   it("prune does NOT evict terminal tasks with missing/malformed completed_at", () => {

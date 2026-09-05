@@ -17,7 +17,13 @@ from novelvideo.generators.tts_generator import EdgeTTSGenerator, MockTTSGenerat
 from novelvideo.generators.video_composer import SceneAsset, VideoComposer
 from novelvideo.generators.video_generator import MockVideoGenerator
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, raise_if_envelope_cancel_requested
-from novelvideo.task_backend.limits import global_lane_concurrency
+from novelvideo.task_backend.limits import (
+    global_lane_concurrency,
+    project_lane_active_limit,
+    project_lane_effective_active_limit,
+    project_lane_min_active_limit,
+    project_user_lane_active_limit,
+)
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.subprocesses import (
     active_subprocess_count,
@@ -28,6 +34,35 @@ from novelvideo.task_state import TaskStateManager
 
 
 pytestmark = pytest.mark.m07
+
+
+def test_video_lane_defaults_allow_five_tasks_for_one_user_in_one_project(monkeypatch):
+    for env_name in (
+        "ST_PROJECT_MAX_ACTIVE_VIDEO_TASKS",
+        "ST_PROJECT_MIN_ACTIVE_VIDEO_TASKS",
+        "ST_PROJECT_USER_MAX_ACTIVE_VIDEO_TASKS",
+        "ST_CE_GLOBAL_MAX_ACTIVE_VIDEO_TASKS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    assert project_lane_active_limit("video") == 5
+    assert project_lane_min_active_limit("video") == 5
+    assert project_user_lane_active_limit("video") == 5
+    assert project_lane_effective_active_limit("video", eligible_user_count=1) == 5
+    assert global_lane_concurrency("video") == 5
+
+
+def test_video_lane_positive_environment_overrides_remain_supported(monkeypatch):
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_VIDEO_TASKS", "7")
+    monkeypatch.setenv("ST_PROJECT_MIN_ACTIVE_VIDEO_TASKS", "6")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_VIDEO_TASKS", "4")
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_VIDEO_TASKS", "3")
+
+    assert project_lane_active_limit("video") == 7
+    assert project_lane_min_active_limit("video") == 6
+    assert project_user_lane_active_limit("video") == 4
+    assert project_lane_effective_active_limit("video", eligible_user_count=1) == 6
+    assert global_lane_concurrency("video") == 3
 
 
 def _ctx(tmp_path: Path, project_id: str = "proj_l014", requester: str = "editor_1") -> ProjectContext:

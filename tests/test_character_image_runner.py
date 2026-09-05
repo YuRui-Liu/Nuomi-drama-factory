@@ -6,12 +6,34 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, tmp_path):
+    from novelvideo.character_visual import (
+        CharacterNarrativeProfile,
+        CharacterVisualBible,
+        CharacterVisualWorkspace,
+        CharacterVisualWorkspaceStore,
+    )
     from novelvideo.models import NovelCharacter
     from novelvideo.task_backend.runners import character_image
 
     character = NovelCharacter(
         name="小鹿",
         face_prompt="女性，青年，黑色长发，黑色杏眼，白皙肤色，鹅蛋脸",
+    )
+    CharacterVisualWorkspaceStore(tmp_path).save(
+        CharacterVisualWorkspace(
+            character_id="小鹿",
+            profile=CharacterNarrativeProfile(character_id="小鹿", name="小鹿"),
+            visual_bible=CharacterVisualBible(
+                character_id="小鹿",
+                revision_id="vb-test",
+                status="confirmed",
+                face_shape="窄鹅蛋脸",
+                facial_features=["眼尾微垂", "鼻梁偏直"],
+                distinctive_features=["左眉尾浅痣"],
+                identity_anchors=["窄鹅蛋脸", "眼尾微垂", "左眉尾浅痣"],
+                confirmed_by="tester",
+            ),
+        )
     )
     calls: dict[str, object] = {}
 
@@ -95,7 +117,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_character_portrait_designs_face_when_import_has_no_face_prompt(
+async def test_character_portrait_refuses_unconfirmed_visual_identity_before_transport(
     monkeypatch, tmp_path
 ):
     from novelvideo.models import NovelCharacter
@@ -120,18 +142,33 @@ async def test_character_portrait_designs_face_when_import_has_no_face_prompt(
 
     monkeypatch.setattr(character_image, "_generate_grsai_image", fake_grsai_image)
 
-    output = await character_image._generate_character_portrait(
-        character=character,
-        ethnicity="Chinese",
-        output_dir=tmp_path,
-        style="post_apocalyptic",
-        model="gpt-image-2",
-        task_type="character_portrait",
-        scope="character:林默:portrait",
-        update=lambda *_args: None,
+    with pytest.raises(RuntimeError) as exc_info:
+        await character_image._generate_character_portrait(
+            character=character,
+            ethnicity="Chinese",
+            output_dir=tmp_path,
+            style="post_apocalyptic",
+            model="gpt-image-2",
+            task_type="character_portrait",
+            scope="character:林默:portrait",
+            update=lambda *_args: None,
+        )
+
+    assert "CHARACTER_VISUAL_BIBLE_REQUIRED" in str(exc_info.value)
+    assert '"transport_called": false' in str(exc_info.value)
+    assert captured == {}
+
+
+def test_legacy_face_prompt_is_not_silently_trusted_for_portrait():
+    from novelvideo.models import NovelCharacter
+    from novelvideo.task_backend.runners.character_image import _character_portrait_face_prompt
+
+    character = NovelCharacter(
+        name="林默",
+        description="广播站值班员",
+        face_prompt="雨夜撞门后惊恐回头",
     )
 
-    assert output.read_bytes() == b"png"
-    assert "林默" in str(captured["prompt"])
-    assert "广播站值班员" in str(captured["prompt"])
-    assert "stable reusable facial identity" in str(captured["prompt"])
+    prompt = _character_portrait_face_prompt(character)
+    assert "雨夜撞门后惊恐回头" not in prompt
+    assert "source description: 广播站值班员" in prompt

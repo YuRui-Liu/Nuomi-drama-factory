@@ -151,8 +151,12 @@ async def test_h3_runner_does_not_import_legacy_stack(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_h3_runner_fails_closed_before_runtime_when_optimizer_fails(tmp_path, monkeypatch) -> None:
+async def test_h3_runner_uses_draft_when_optimizer_connection_fails(tmp_path, monkeypatch) -> None:
     from novelvideo.task_backend.runners import video as runner
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+        H3PromptOptimizationUnavailable,
+    )
+    from novelvideo.media_capabilities.video.runtime import H3GenerationResult
 
     class Manager:
         def update_progress_for_project(self, *_args, **_kwargs):
@@ -161,24 +165,33 @@ async def test_h3_runner_fails_closed_before_runtime_when_optimizer_fails(tmp_pa
     first, _ = _frames(tmp_path)
     runtime_calls = []
 
-    async def never_generate(**kwargs):
+    async def generate(**kwargs):
         runtime_calls.append(kwargs)
-
-    monkeypatch.setattr(runner, "get_task_manager", lambda: Manager())
-    monkeypatch.setattr(runner, "create_h3_prompt_optimizer", lambda **_: _Optimizer(fail=True))
-    monkeypatch.setattr(
-        "novelvideo.media_capabilities.video.runtime.generate_h3_video", never_generate
-    )
-
-    with pytest.raises(RuntimeError, match="optimizer unavailable"):
-        await runner._run_single_video_async(
-            {"task_type": "single_video", "episode": 1, "beat_num": 1,
-             "payload": {"config": {"frame_path": first, "prompt": "草稿动作",
-             "video_backend": "runninghub:minimax-h3", "h3_mode": "auto"}}},
-            _ctx(tmp_path),
+        return H3GenerationResult(
+            output_path=str(tmp_path / "beat_001.mp4"),
+            provider_task_id="provider-1",
+            actual_mode="i2va",
         )
 
-    assert runtime_calls == []
+    monkeypatch.setattr(runner, "get_task_manager", lambda: Manager())
+    class FailingOptimizer:
+        async def optimize_segment(self, *_args, **_kwargs):
+            raise H3PromptOptimizationUnavailable("Connection error after 3 attempts")
+
+    monkeypatch.setattr(runner, "create_h3_prompt_optimizer", lambda **_: FailingOptimizer())
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.video.runtime.generate_h3_video", generate
+    )
+
+    await runner._run_single_video_async(
+        {"task_type": "single_video", "episode": 1, "beat_num": 1,
+         "payload": {"config": {"frame_path": first, "prompt": "草稿动作",
+         "video_backend": "runninghub:minimax-h3", "h3_mode": "auto"}}},
+        _ctx(tmp_path),
+    )
+
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0]["prompt"] == "草稿动作"
 
 
 @pytest.mark.asyncio

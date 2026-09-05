@@ -29,6 +29,12 @@ class _CharacterStore:
         for key, value in updates.items():
             setattr(character, key, value)
 
+    async def set_character_extraction_locked(self, name: str, locked: bool):
+        character = self.characters[name]
+        changed = character.extraction_locked != locked
+        character.extraction_locked = locked
+        return changed
+
     async def rename_character(self, old_name: str, new_name: str):
         character = self.characters.pop(old_name)
         character.name = new_name
@@ -166,6 +172,113 @@ def test_list_characters_repairs_duplicate_narrator_main(monkeypatch, tmp_path):
     assert mains == ["陆辰"]
     assert store.get_character("陆辰").is_main is True
     assert store.get_character("沈月白").is_main is False
+
+
+def test_extraction_lock_patch_is_idempotent_and_list_exposes_state(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭", extraction_locked=False)])
+    client = _client(monkeypatch, tmp_path, store)
+
+    first = client.patch(
+        "/projects/demo/characters/林昭/extraction-lock",
+        json={"extraction_locked": True},
+    )
+    repeated = client.patch(
+        "/projects/demo/characters/林昭/extraction-lock",
+        json={"extraction_locked": True},
+    )
+    listed = client.get("/projects/demo/characters")
+
+    expected = {
+        "ok": True,
+        "data": {"name": "林昭", "extraction_locked": True},
+    }
+    assert first.status_code == 200
+    assert first.json() == expected
+    assert repeated.status_code == 200
+    assert repeated.json() == expected
+    assert store.get_character("林昭").extraction_locked is True
+    assert listed.json()["data"][0]["extraction_locked"] is True
+
+
+def test_selecting_visual_proposal_builds_draft_bible_that_can_be_confirmed(
+    monkeypatch, tmp_path
+):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    proposal = {
+        "proposal_id": "proposal-1",
+        "title": "冷峻捕快",
+        "rationale": "突出克制与行动力",
+        "recommended": True,
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "body_type": "清瘦挺拔",
+        "distinctive_features": ["左眉断痕"],
+        "identity_anchors": ["窄长脸", "左眉断痕", "薄唇"],
+        "asymmetry_detail": "左眉略低",
+        "quality_issues": [],
+        "outfit_states": {"default": "深色捕快服"},
+    }
+    seeded = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": [proposal]},
+    )
+    assert seeded.status_code == 200
+
+    selected = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "proposal-1"},
+    )
+
+    assert selected.status_code == 200
+    data = selected.json()["data"]
+    assert data["selected_proposal_id"] == "proposal-1"
+    assert data["visual_bible"] == {
+        "character_id": "林昭",
+        "revision_id": "proposal:proposal-1",
+        "status": "draft",
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "body_type": "清瘦挺拔",
+        "distinctive_features": ["左眉断痕"],
+        "outfit_states": {"default": "深色捕快服"},
+        "identity_anchors": ["窄长脸", "左眉断痕", "薄唇"],
+        "source_fact_ids": [],
+        "confirmed_by": None,
+    }
+
+    confirmed = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["data"]["visual_bible"]["status"] == "confirmed"
+    assert confirmed.json()["data"]["visual_bible"]["confirmed_by"] == "director"
+
+
+def test_incomplete_visual_bible_cannot_be_confirmed(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    seeded = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={
+            "visual_bible": {
+                "character_id": "林昭",
+                "revision_id": "empty-draft",
+                "status": "draft",
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    response = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_BIBLE_INCOMPLETE"
 
 
 def test_character_and_identity_lists_expose_asset_history_links(monkeypatch, tmp_path):

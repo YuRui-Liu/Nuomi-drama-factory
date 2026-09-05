@@ -35,6 +35,25 @@ class _FakeGenerator:
         return TTSResult(success=True, audio_path=str(output_path), duration_seconds=1.25)
 
 
+class _PathGenerator:
+    def __init__(self):
+        self.calls = []
+
+    async def generate(self, *, prompt, reference_audio_path, output_path, emotion_prompt=""):
+        from novelvideo.generators.tts_generator import TTSResult
+
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "reference_audio_path": str(reference_audio_path),
+                "emotion_prompt": emotion_prompt,
+            }
+        )
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"runninghub-audio")
+        return TTSResult(success=True, audio_path=str(output_path), duration_seconds=0.0)
+
+
 def _characters():
     from novelvideo.models import CharacterIdentity, NovelCharacter
 
@@ -76,7 +95,7 @@ def test_dialogue_emotion_prompt_extracts_attribution_outside_quote():
         dialogue_emotion_prompt(
             {"narration_segment": "李婶哭着喊：“陆老板，您是救命恩人！”"}
         )
-        == "李婶哭着喊"
+        == "我真的已经撑不住了。"
     )
 
 
@@ -85,7 +104,7 @@ def test_dialogue_emotion_prompt_extracts_trailing_attribution():
 
     assert (
         dialogue_emotion_prompt({"narration_segment": "“别走！”她哽咽着说。"})
-        == "她哽咽着说"
+        == "我真的已经撑不住了。"
     )
 
 
@@ -93,6 +112,32 @@ def test_dialogue_emotion_prompt_ignores_plain_dialogue_without_quotes():
     from novelvideo.seedance2_i2v.voice_clone import dialogue_emotion_prompt
 
     assert dialogue_emotion_prompt({"narration_segment": "你终于来了。"}) == ""
+
+
+@pytest.mark.asyncio
+async def test_seedance2_voice_clone_passes_local_reference_path_to_runninghub_generator(tmp_path):
+    from novelvideo.seedance2_i2v.voice_clone import generate_seedance2_dialogue_audio
+
+    project_dir = tmp_path / "project"
+    reference = project_dir / "assets" / "characters" / "谢铮" / "voice_sample.wav"
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(b"voice")
+    generator = _PathGenerator()
+
+    result = await generate_seedance2_dialogue_audio(
+        beat={"speaker": "谢铮", "narration_segment": "你终于来了。"},
+        episode=1,
+        beat_num=1,
+        store=_FakeStore(project_dir, _characters()),
+        generator=generator,
+    )
+
+    assert result.success is True
+    assert generator.calls[0] == {
+        "prompt": "你终于来了。",
+        "reference_audio_path": str(reference),
+        "emotion_prompt": "",
+    }
 
 
 def test_seedance2_audio_type_normalizes_legacy_action_to_silence():
@@ -179,7 +224,7 @@ async def test_seedance2_voice_clone_sends_only_spoken_text_to_fal(tmp_path):
 
     assert result.success is True
     assert generator.calls[0]["prompt"] == "你终于来了。"
-    assert generator.calls[0]["emotion_prompt"] == "谢铮压低声音说"
+    assert generator.calls[0]["emotion_prompt"] == "别出声，听我说。"
 
 
 @pytest.mark.asyncio

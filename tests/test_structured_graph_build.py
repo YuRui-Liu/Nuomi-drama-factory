@@ -6,12 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from novelvideo.sqlite_store import SQLiteStore
 
 
 @pytest.fixture
 async def structured_store(tmp_path: Path):
-    from novelvideo.sqlite_store import SQLiteStore
-
     project_dir = tmp_path / "project"
     state_dir = tmp_path / "state"
     store = SQLiteStore(
@@ -25,6 +24,30 @@ async def structured_store(tmp_path: Path):
         yield store
     finally:
         await store.close()
+
+
+def test_character_artifact_cache_is_scoped_to_locked_snapshot():
+    from novelvideo.structured_builders import _decode_character_artifact
+
+    artifact = json.dumps(
+        {
+            "excluded_names": ["周禾"],
+            "characters": [{"name": "梁真", "design_proposals": [{}, {}, {}]}],
+        },
+        ensure_ascii=False,
+    )
+    assert _decode_character_artifact(artifact, {"周禾"}) is not None
+    assert _decode_character_artifact(artifact, set()) is None
+
+
+def test_legacy_character_artifact_without_lock_snapshot_is_not_reused():
+    from novelvideo.structured_builders import _decode_character_artifact
+
+    artifact = json.dumps(
+        [{"name": "梁真", "design_proposals": [{}, {}, {}]}],
+        ensure_ascii=False,
+    )
+    assert _decode_character_artifact(artifact, set()) is None
 
 
 @pytest.mark.asyncio
@@ -128,9 +151,81 @@ async def test_structured_character_build_adds_missing_without_overwriting_user_
     await store.load_graph_state()
 
     async def fake_extract(_chunks, **_kwargs):
+        def proposals(prefix: str):
+            result = [
+                    {
+                        "proposal_id": f"{prefix}-a",
+                        "title": "冷峻骨相",
+                        "recommended": True,
+                        "face_shape": "窄长脸，颧骨清晰",
+                        "facial_features": ["眼窝偏深", "鼻梁笔直"],
+                        "hair_style": "利落短发",
+                        "distinctive_features": ["左眉尾断眉"],
+                        "identity_anchors": ["窄长脸", "深眼窝", "左眉尾断眉"],
+                        "asymmetry_detail": "左眉尾断眉",
+                    },
+                    {
+                        "proposal_id": f"{prefix}-b",
+                        "title": "克制圆润",
+                        "face_shape": "短圆脸，下颌柔和",
+                        "facial_features": ["右眼略窄", "鼻头微圆"],
+                        "hair_style": "自然侧分发",
+                        "distinctive_features": ["右眼下浅痣"],
+                        "identity_anchors": ["短圆脸", "右眼略窄", "右眼下浅痣"],
+                        "asymmetry_detail": "右眼下浅痣",
+                    },
+                    {
+                        "proposal_id": f"{prefix}-c",
+                        "title": "坚毅方正",
+                        "face_shape": "方脸，下颌角明确",
+                        "facial_features": ["眉弓较高", "薄唇"],
+                        "hair_style": "略乱寸发",
+                        "distinctive_features": ["左侧嘴角旧疤"],
+                        "identity_anchors": ["方脸", "高眉弓", "左嘴角旧疤"],
+                        "asymmetry_detail": "左侧嘴角旧疤",
+                    },
+            ]
+            if prefix == "shen":
+                for index, proposal in enumerate(result, start=1):
+                    proposal["face_shape"] = [
+                        "菱形脸，颧骨外扩",
+                        "鹅蛋脸，额头饱满",
+                        "三角脸，下巴收尖",
+                    ][index - 1]
+                    proposal["facial_features"] = [
+                        ["厚下唇", "耳垂偏小"],
+                        ["平直眉", "薄上唇"],
+                        ["下垂眼尾", "贴面耳"],
+                    ][index - 1]
+                    proposal["hair_style"] = [
+                        "低位盘发",
+                        "齐肩黑色直发",
+                        "蓬松短卷发",
+                    ][index - 1]
+                    proposal["distinctive_features"] = [
+                        ["右耳上缘小缺口"],
+                        ["鼻尖左侧浅痣"],
+                        ["右眼尾短疤"],
+                    ][index - 1]
+                    proposal["identity_anchors"] = [
+                        proposal["face_shape"],
+                        proposal["facial_features"][0],
+                        proposal["distinctive_features"][0],
+                    ]
+                    proposal["asymmetry_detail"] = proposal["distinctive_features"][0]
+            return result
         return [
-            MergedCharacter(name="林默", description="模型描述"),
-            MergedCharacter(name="沈青", gender="female", description="调查记者"),
+            MergedCharacter(
+                name="林默",
+                description="模型描述",
+                design_proposals=proposals("lin"),
+            ),
+            MergedCharacter(
+                name="沈青",
+                gender="female",
+                description="调查记者",
+                design_proposals=proposals("shen"),
+            ),
         ]
 
     monkeypatch.setattr(

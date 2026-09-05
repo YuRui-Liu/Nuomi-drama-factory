@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -36,3 +37,25 @@ def test_activation_rejects_stale_source_revision(tmp_path):
 
     with pytest.raises(ScreenplaySemanticActivationConflict, match="source revision"):
         store.activate(1, "sem-1", expected_source_revision=1)
+
+
+def test_list_revisions_skips_invalid_historical_revision(tmp_path):
+    store = ScreenplaySemanticStore(tmp_path)
+    valid = store.save(revision(revision_id="sem-valid"))
+    broken = valid.model_dump(mode="json")
+    broken["revision_id"] = "sem-broken"
+    broken["beats"][0]["source_ranges"] = [
+        {"start_line": 13, "end_line": 14},
+        {"start_line": 8, "end_line": 12},
+    ]
+    path = (
+        tmp_path
+        / "screenplay_semantics"
+        / "ep001"
+        / "revisions"
+        / "sem-broken.json"
+    )
+    path.write_text(json.dumps(broken, ensure_ascii=False), encoding="utf-8")
+
+    assert [item.revision_id for item in store.list_revisions(1)] == ["sem-valid"]
+    assert store.load(1, "sem-broken") is None

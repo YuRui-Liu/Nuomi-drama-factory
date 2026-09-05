@@ -14,10 +14,8 @@ interface UseStageTaskOptions {
   taskType: string;
   /**
    * Extra task types to auto-resume on mount. Use when one UI surface drives
-   * multiple backend task types that shouldn't step on each other — e.g.
-   * script rhythm toggle switches between `script_writer` and
-   * `literal_script_writer`. On reconcile, the matching type wins and
-   * governs the stream + cancel call until the task terminates.
+   * multiple backend task types that belong to one stage. On reconcile, the
+   * matching type wins and governs the stream + cancel call until termination.
    */
   alsoReconcile?: string[];
   project: string;

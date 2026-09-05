@@ -31,7 +31,8 @@ _PROJECT_TASK_RESOURCE_KINDS = {
     "build_scenes": "script",
     "build_props": "script",
     "build_episodes": "script",
-    "script_writer": "script",
+    "screenplay_semantics": "script",
+    "director_plan": "script",
     "beat_video_prompt": "script",
     "identity_planner": "portrait",
     "episode_scene_planner": "script",
@@ -287,7 +288,7 @@ async def _emit_project_task_metrics(
             )
             return
 
-        if clean_outcome == "success" and task_type == "script_writer":
+        if clean_outcome == "success" and task_type == "screenplay_semantics":
             beats = _positive_int((result or {}).get("beats") if isinstance(result, dict) else None)
             await usage_meter.bump_content_counter(
                 user_id=user_id,
@@ -530,7 +531,33 @@ def run_project_task_core_sync(
                 metadata=run_metadata,
             )
 
-            _ensure_builtin_runners_registered()
+            try:
+                _ensure_builtin_runners_registered()
+            except BaseException as exc:
+                error, failure_payload, handled = _project_task_failure_for_exception(exc)
+                asyncio.run(
+                    _refund_feature_credit_reservation(
+                        feature_reservation_id,
+                        metadata={
+                            "source": "task_runner_registration_failed",
+                            "error": error,
+                            **failure_payload,
+                        },
+                    )
+                )
+                manager.fail_task_for_project(
+                    ctx,
+                    task_type,
+                    episode,
+                    beat_num=beat_num,
+                    scope=scope,
+                    error=error,
+                    metadata={**run_metadata, **failure_payload},
+                    expected_task_id=run_task_id,
+                )
+                if handled:
+                    return {"failed": True, **failure_payload}
+                raise
             registration = get_project_task_runner_registration(task_type)
             if registration is None:
                 error = f"No project task runner registered for task_type={task_type}"

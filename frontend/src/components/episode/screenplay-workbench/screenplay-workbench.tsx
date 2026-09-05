@@ -1,9 +1,10 @@
 import { Loader2, Play, ShieldCheck, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
 import { useTaskController } from "@/hooks/use-task-controller";
-import { useCreateDirectorPlan } from "@/lib/queries/director-plans";
+import { useCreateDirectorPlan, useDirectorPlans } from "@/lib/queries/director-plans";
 import {
   useActivateScreenplaySemantics,
   useCreateScreenplaySemantics,
@@ -26,12 +27,21 @@ export function ScreenplayWorkbench({ project, episode }: { project: string; epi
   const repair = useRepairScreenplaySemantics(project, episode);
   const activate = useActivateScreenplaySemantics(project, episode);
   const director = useCreateDirectorPlan(project, episode);
+  const directorPlans = useDirectorPlans(project, episode);
   const repairTask = useTaskController({
     key: { project, episode, taskType: TASK_TYPES.SCREENPLAY_SEMANTIC_REPAIR },
     invalidateKeys: [screenplaySemanticKeys.all(project, episode)],
     showCompleteToast: false,
   });
   const data = semantics.data?.ok ? semantics.data.data : undefined;
+  const planRevisions = directorPlans.data?.ok ? directorPlans.data.data : [];
+  const directorPlan = planRevisions.find((item) => item.status === "review_required")
+    ?? planRevisions.find((item) => item.status === "active")
+    ?? planRevisions[0];
+  const directorShotCount = directorPlan?.groups.reduce(
+    (count, group) => count + group.shots.length,
+    0,
+  ) ?? 0;
   const revision = data?.revisions[0]
     ?? data?.revisions.find((item) => item.revision_id === data.active_revision_id);
   const [sceneId, setSceneId] = useState("");
@@ -82,6 +92,11 @@ export function ScreenplayWorkbench({ project, episode }: { project: string; epi
     {(repair.isPending || repairTask.started) && <div role="status" className="border-b border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-xs text-cyan-100">{repairTask.stream.currentTask || "正在提交导演拆解 Runtime 修复"}（默认并发 3，最多 2 轮）。不会修改剧本原文，完成后仍需人工激活。</div>}
     {repair.isError && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">Runtime 修复提交失败：{repair.error instanceof Error ? repair.error.message : "未知错误"}</div>}
     {repairTask.stream.status === "failed" && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">Runtime 修复失败：{repairTask.stream.error || "未知错误"}</div>}
+    {directorPlan && <div role="status" className="flex flex-wrap items-center gap-2 border-b border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-xs text-emerald-100">
+      <span className="font-medium">{directorPlan.status === "review_required" ? "镜头方案已生成，待人工审核" : directorPlan.status === "active" ? "镜头方案已激活" : `镜头方案状态：${directorPlan.status}`}</span>
+      <span className="text-emerald-100/70">{directorPlan.groups.length} 个叙事组 · {directorShotCount} 个镜头</span>
+      <Button className="ml-auto" size="sm" variant="outline" nativeButton={false} render={<Link to="/projects/$project/episodes/$episode/beats" params={{ project, episode: String(episode) }} />}>审核镜头方案</Button>
+    </div>}
     {!revision ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-center"><p className="text-sm text-muted-foreground">尚未解析。本入口只拆解已有剧本，不改写剧情。</p><Button disabled={pending} onClick={() => create.mutate([])}>解析场次</Button></div> : <>
       <div className="flex items-center gap-3 border-b border-white/10 px-3 py-2 text-xs text-muted-foreground"><span>{revision.revision_id}</span><span>{revision.status}</span><span>{revision.scenes.length} 场 · {revision.beats.length} 个戏剧节拍</span><span className={revision.validation_report.passed ? "text-emerald-400" : "text-amber-400"}>{revision.validation_report.passed ? "校验通过" : `${revision.validation_report.issues.length} 个问题`}</span></div>
       <div className="grid h-[560px] min-h-0 grid-cols-[220px_minmax(360px,1fr)_minmax(280px,0.8fr)]">

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping
+from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import RLock
@@ -34,7 +35,7 @@ class _ProviderConfig:
 @dataclass(slots=True)
 class _Waiter:
     capability: str
-    future: asyncio.Future[ConcurrencyLease]
+    future: Future[ConcurrencyLease]
 
 
 @dataclass(slots=True)
@@ -42,7 +43,6 @@ class _ProviderState:
     config: _ProviderConfig
     active_by_capability: Counter[str] = field(default_factory=Counter)
     waiters: list[_Waiter] = field(default_factory=list)
-    loop: asyncio.AbstractEventLoop | None = None
 
 
 class ConcurrencyLease:
@@ -94,9 +94,8 @@ class ProviderConcurrencyCoordinator:
 
     def __init__(self) -> None:
         self._providers: dict[str, _ProviderState] = {}
-        # State transitions never await, so a short process-local lock can make
-        # first-loop binding and synchronous configuration atomic without
-        # blocking the event loop on remote work.
+        # State transitions never await. A process-local lock protects provider
+        # counts and queues shared by tasks running in different threads/loops.
         self._lock = RLock()
 
     def configure(
@@ -126,11 +125,6 @@ class ProviderConcurrencyCoordinator:
         )
         with self._lock:
             state = self._providers.get(normalized_provider)
-            if state is not None:
-                if not state.active_by_capability and not state.waiters:
-                    state.loop = None
-                else:
-                    self._require_bound_loop(normalized_provider, state)
             if state is None:
                 self._providers[normalized_provider] = _ProviderState(config=config)
                 return
@@ -146,16 +140,8 @@ class ProviderConcurrencyCoordinator:
         """Wait for and return a grant satisfying every matching limit."""
         normalized_provider = self._normalize_provider_id(provider_id)
         normalized_capability = self._normalize_capability(capability)
-        loop = asyncio.get_running_loop()
         with self._lock:
             state = self._state(normalized_provider)
-            if state.loop is None:
-                state.loop = loop
-            elif state.loop is not loop and not state.active_by_capability and not state.waiters:
-                state.loop = loop
-            else:
-                self._require_bound_loop(normalized_provider, state)
-
             self._drain(normalized_provider, state)
             if self._can_grant(state, normalized_capability):
                 return self._grant(state, normalized_provider, normalized_capability)
@@ -165,13 +151,14 @@ class ProviderConcurrencyCoordinator:
                     f"concurrency queue for provider {normalized_provider!r} is full"
                 )
 
-            future: asyncio.Future[ConcurrencyLease] = loop.create_future()
+            future: Future[ConcurrencyLease] = Future()
             waiter = _Waiter(normalized_capability, future)
             state.waiters.append(waiter)
             self._drain(normalized_provider, state)
 
+        wrapped = asyncio.wrap_future(future)
         try:
-            return await asyncio.shield(future)
+            return await asyncio.shield(wrapped)
         except asyncio.CancelledError:
             with self._lock:
                 if future.done() and not future.cancelled():
@@ -200,7 +187,6 @@ class ProviderConcurrencyCoordinator:
         normalized_provider = self._normalize_provider_id(provider_id)
         with self._lock:
             state = self._state(normalized_provider)
-            self._require_bound_loop(normalized_provider, state)
             active_by_rule = {
                 pattern: sum(
                     count
@@ -325,7 +311,6 @@ class ProviderConcurrencyCoordinator:
     def _release(self, lease: ConcurrencyLease) -> None:
         with self._lock:
             state = self._state(lease._provider_id)
-            self._require_bound_loop(lease._provider_id, state)
             if lease._released:
                 return
             lease._released = True
@@ -337,21 +322,6 @@ class ProviderConcurrencyCoordinator:
     @staticmethod
     def _remove_waiter(state: _ProviderState, target: _Waiter) -> None:
         state.waiters[:] = [waiter for waiter in state.waiters if waiter is not target]
-
-    @staticmethod
-    def _require_bound_loop(provider_id: str, state: _ProviderState) -> None:
-        if state.loop is None:
-            return
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError as exc:
-            raise ConcurrencyConfigurationError(
-                f"provider {provider_id!r} requires its bound running event loop"
-            ) from exc
-        if running_loop is not state.loop:
-            raise ConcurrencyConfigurationError(
-                f"provider {provider_id!r} is bound to another event loop"
-            )
 
 
 __all__ = [

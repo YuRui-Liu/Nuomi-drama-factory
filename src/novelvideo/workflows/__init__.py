@@ -1,17 +1,7 @@
-"""NovelVideo Workflows 模块（Cognee 版）。"""
+"""Workflow package.
 
-from novelvideo.workflows.script_writing import (
-    ScriptWritingWorkflow,
-    create_script_writing_workflow,
-)
-from novelvideo.workflows.literal_script_writing import (
-    LiteralScriptWritingWorkflow,
-    create_literal_script_writing_workflow,
-)
+The legacy line-to-Beat script writers are intentionally not exported. The
+active production path is screenplay semantics -> dramatic beats -> shot plan.
+"""
 
-__all__ = [
-    "ScriptWritingWorkflow",
-    "create_script_writing_workflow",
-    "LiteralScriptWritingWorkflow",
-    "create_literal_script_writing_workflow",
-]
+__all__: list[str] = []

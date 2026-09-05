@@ -33,10 +33,13 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  useChangeNarrativeGroupStyle:()=>({mutateAsync:vi.fn(),isPending:false}),
  useNarrativeGroupVideoPrompts:(...args:any[])=>m.promptsQuery(...args),
  useUpdateNarrativeGroupVideoDialogueSource:()=>({mutateAsync:vi.fn()}),
+ updateNarrativeGroupVideoPlan:vi.fn().mockResolvedValue({ok:true}),
+ updateNarrativeGroupVideoSettings:vi.fn().mockResolvedValue({ok:true}),
  narrativeGroupTaskScope:()=>"grid-scope",
  narrativeGroupVideoTaskScope:()=>"video-scope",
  narrativeGroupVideoPromptUnitKey:(_:any,index:number)=>String(index),
 }));
+vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}));
 vi.mock("@/hooks/use-task-controller",()=>({useTaskController:()=>({start:m.start})}));
 vi.mock("sonner",()=>({toast:{success:m.success,error:m.error}}));
 vi.mock("@/lib/queries/media-models",()=>({

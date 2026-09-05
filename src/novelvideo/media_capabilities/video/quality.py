@@ -32,12 +32,26 @@ def _requested_resolution(value: str | None) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def resolution_matches(
+    expected: tuple[int, int],
+    actual: tuple[int, int],
+    *,
+    tolerance_px: int = 0,
+) -> bool:
+    """Return whether both dimensions are within the allowed pixel alignment."""
+    return all(
+        abs(expected_value - actual_value) <= tolerance_px
+        for expected_value, actual_value in zip(expected, actual, strict=True)
+    )
+
+
 def validate_video(
     probe: VideoProbe,
     request: VideoGenerationRequest,
     *,
     first_frame_similarity: float | None = None,
     minimum_frame_similarity: float = 0.9,
+    resolution_tolerance_px: int = 0,
 ) -> tuple[VideoQualityIssue, ...]:
     issues: list[VideoQualityIssue] = []
     if probe.width <= 0 or probe.height <= 0 or probe.fps <= 0:
@@ -45,7 +59,11 @@ def validate_video(
     if abs(probe.duration - request.duration) > max(0.5, request.duration * 0.1):
         issues.append(VideoQualityIssue(code="video.duration_mismatch"))
     expected = _requested_resolution(request.resolution)
-    if expected is not None and (probe.width, probe.height) != expected:
+    if expected is not None and not resolution_matches(
+        expected,
+        (probe.width, probe.height),
+        tolerance_px=resolution_tolerance_px,
+    ):
         issues.append(VideoQualityIssue(code="video.resolution_mismatch"))
     if request.generate_audio and not probe.has_audio:
         issues.append(VideoQualityIssue(code="video.audio_missing"))
@@ -54,4 +72,4 @@ def validate_video(
     return tuple(issues)
 
 
-__all__ = ["VideoProbe", "VideoQualityIssue", "validate_video"]
+__all__ = ["VideoProbe", "VideoQualityIssue", "resolution_matches", "validate_video"]

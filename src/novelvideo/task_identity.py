@@ -24,8 +24,6 @@ TASK_IDENTITY_SPECS: dict[str, TaskIdentitySpec] = {
     "character_portrait": TaskIdentitySpec("character_portrait", scope_mode="raw"),
     "build_episodes": TaskIdentitySpec("build_eps"),
     "identity_planner": TaskIdentitySpec("identity_planner", include_episode=True),
-    "script_writer": TaskIdentitySpec("script_writer", include_episode=True),
-    "literal_script_writer": TaskIdentitySpec("literal_script_writer", include_episode=True),
     "director_notes": TaskIdentitySpec("director_notes", include_episode=True),
     "compose_episode": TaskIdentitySpec("compose_episode", include_episode=True),
     "audio_generation": TaskIdentitySpec("audio_gen", include_episode=True),

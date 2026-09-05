@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import time
 from pathlib import Path
@@ -44,6 +45,18 @@ def _grsai_error_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
+async def _submit_grsai_image(client, request, *, api_key: str) -> str:
+    """Retry connection establishment without retrying ambiguous read failures."""
+    for attempt in range(3):
+        try:
+            return await client.submit(request, api_key=api_key)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(attempt + 1)
+    raise RuntimeError("unreachable")
+
+
 async def _poll_grsai_image_result(
     client,
     task_id: str,
@@ -56,7 +69,7 @@ async def _poll_grsai_image_result(
     while True:
         try:
             snapshot = await client.query(task_id, api_key=api_key)
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        except (httpx.TimeoutException, httpx.NetworkError, json.JSONDecodeError) as exc:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     f"GRSAI polling timed out ({_grsai_error_detail(exc)})"
@@ -115,7 +128,11 @@ async def _call_grsai_image_api(
         image_size=image_config.get("image_size") or "1K",
     )
     try:
-        task_id = await client.submit(request, api_key=runtime.api_key)
+        task_id = await _submit_grsai_image(
+            client,
+            request,
+            api_key=runtime.api_key,
+        )
         snapshot = await _poll_grsai_image_result(
             client,
             task_id,
@@ -708,11 +725,20 @@ async def generate_scene_reference_image(
     style_prompt: str = "",
     avoid_instructions: str = "",
     base_scene: NovelScene | None = None,
+    output_path_override: Path | None = None,
 ) -> Path:
-    """Generate one canonical scene reference image and return its path."""
+    """Generate one scene reference image and return its path.
+
+    ``output_path_override`` lets the production workflow create an immutable
+    candidate while legacy callers keep the canonical output path.
+    """
 
     project_dir = Path(project_dir)
-    output_path = _output_path(project_dir, scene.name, kind)
+    output_path = (
+        Path(output_path_override)
+        if output_path_override is not None
+        else _output_path(project_dir, scene.name, kind)
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     references: list[tuple[str, bytes, str]] = []

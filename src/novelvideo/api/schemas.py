@@ -426,6 +426,7 @@ class CharacterCreate(BaseModel):
     name: str
     role: str = ""
     is_main: bool = False
+    extraction_locked: bool = False
     gender: str = ""
     age_group: str = "youth"
     description: str = ""
@@ -1848,6 +1849,25 @@ class CharacterUpdate(BaseModel):
     body_type: Optional[str] = None  # "纤细高挑" / "健壮魁梧" 等
     fish_voice_id: Optional[str] = None  # Fish Audio S2 声线 ID
     aliases: Optional[list[str]] = None
+
+
+class CharacterExtractionLockUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    locked: bool = Field(
+        validation_alias=AliasChoices("locked", "extraction_locked"),
+    )
+
+
+class CharacterVisualWorkspaceUpdate(BaseModel):
+    profile: Optional[dict] = None
+    design_proposals: Optional[list[dict]] = None
+    selected_proposal_id: Optional[str] = None
+    visual_bible: Optional[dict] = None
+
+
+class CharacterVisualBibleConfirmRequest(BaseModel):
+    confirmed_by: str = Field(min_length=1, max_length=160)
 
 
 # ── 场景资产 ─────────────────────────────────────────────────────────────────

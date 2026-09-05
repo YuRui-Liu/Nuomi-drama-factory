@@ -125,6 +125,23 @@ def test_apply_ollama_embedding_env_binds_qwen3_tokenizer(monkeypatch) -> None:
     assert os.environ["HUGGINGFACE_TOKENIZER"] == "Qwen/Qwen3-Embedding-0.6B"
 
 
+def test_ollama_embedding_tokenizer_is_offline_and_does_not_load_huggingface() -> None:
+    from novelvideo.cognee import config
+
+    config._install_cognee_ollama_offline_tokenizer()
+
+    from cognee.infrastructure.databases.vector.embeddings.OllamaEmbeddingEngine import (
+        OllamaEmbeddingEngine,
+    )
+
+    engine = object.__new__(OllamaEmbeddingEngine)
+    engine.max_completion_tokens = 512
+    tokenizer = engine.get_tokenizer()
+
+    assert type(tokenizer).__name__ == "TikTokenTokenizer"
+    assert tokenizer.count_tokens("本地 Ollama 不应访问 Hugging Face") > 0
+
+
 def test_init_cognee_configures_native_ollama_without_newapi(monkeypatch) -> None:
     from novelvideo.cognee import config
 

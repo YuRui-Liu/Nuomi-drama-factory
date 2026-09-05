@@ -68,11 +68,34 @@ def build_project_knowledge_runtime(project_context: Any) -> KnowledgeRuntimeCon
             "请先在设置中选择并测试 Ollama Embedding 模型。",
             code="OLLAMA_PROBE_REQUIRED",
         )
+    from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+
+    routed_runtime = current_text_task_runtime()
+
+    class _RoutedKnowledgeBackend:
+        async def acreate_structured_output(
+            self,
+            text_input: str,
+            system_prompt: str,
+            response_model: type[Any],
+            **_kwargs: Any,
+        ) -> Any:
+            assert routed_runtime is not None
+            return await routed_runtime.run_structured(
+                prompt=text_input,
+                system_prompt=system_prompt,
+                output_type=response_model,
+            )
+
     return KnowledgeRuntimeContext(
         username=str(project_context.owner_username),
         project_name=str(project_context.project_name),
         state_dir=Path(project_context.state_dir),
-        text_backend=CodexCliStructuredBackend(),
+        text_backend=(
+            _RoutedKnowledgeBackend()
+            if routed_runtime is not None
+            else CodexCliStructuredBackend()
+        ),
         embedding=settings,
     )
 

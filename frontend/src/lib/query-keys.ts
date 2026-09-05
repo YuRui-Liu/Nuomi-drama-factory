@@ -8,6 +8,8 @@ export const queryKeys = {
   projectGrants: (p: string) => ["projects", p, "grants"] as const,
   userSearch: (q: string) => ["users", "search", q] as const,
   pipelineStatus: (p: string) => ["projects", p, "pipeline-status"] as const,
+  productionAssetSlot: (p: string, slotId: string) =>
+    ["projects", p, "production-assets", "slots", slotId] as const,
   characters: (p: string) => ["projects", p, "characters"] as const,
   character: (p: string, name: string) =>
     ["projects", p, "characters", name] as const,
@@ -96,6 +98,7 @@ export const queryKeys = {
   ttsVoices: (p: string) => ["projects", p, "tts", "voices"] as const,
   modelGateway: () => ["model-gateway", "config"] as const,
   textRuntime: () => ["model-gateway", "text-runtime"] as const,
+  taskRuntime: () => ["model-gateway", "task-runtime"] as const,
   knowledgeRuntime: () => ["knowledge-runtime"] as const,
   mediaProviderAccounts: () => ["media-capabilities", "providers"] as const,
   videoModels: () => ["media-capabilities", "video", "models"] as const,

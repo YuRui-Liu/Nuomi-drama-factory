@@ -27,6 +27,28 @@ export interface SaveTextRuntimeInput {
   clearApiKey?: boolean;
 }
 
+export type TaskRuntimeName = "codex" | "model_api";
+export type TaskReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface AgentTaskRoute {
+  runtime: TaskRuntimeName;
+  model: string;
+  reasoning_effort: TaskReasoningEffort | null;
+  skill_id: string | null;
+  skill_version: string | null;
+  fallback: "stop";
+}
+
+export interface TaskRuntimeRole {
+  id: string;
+  label: string;
+  route: AgentTaskRoute;
+}
+
+export interface TaskRuntimeConfig {
+  roles: TaskRuntimeRole[];
+}
+
 /** 通用的「端点预览」：服务端只回 key 预览，绝不回完整 key。 */
 export interface GatewayEndpointPreview {
   baseUrl: string;
@@ -292,6 +314,30 @@ export function useSaveTextRuntimeConfig() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.textRuntime() });
       qc.invalidateQueries({ queryKey: queryKeys.modelGateway() });
+    },
+  });
+}
+
+export function useTaskRuntimeConfig(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.taskRuntime(),
+    queryFn: ({ signal }) =>
+      api
+        .get("api/v1/model-gateway/task-runtime/config", { signal })
+        .json<OkResponse<TaskRuntimeConfig>>(),
+    enabled,
+  });
+}
+
+export function useSaveTaskRuntimeConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (routes: Record<string, AgentTaskRoute>) =>
+      api
+        .put("api/v1/model-gateway/task-runtime/config", { json: { routes } })
+        .json<OkResponse<TaskRuntimeConfig> | ErrorResponse>(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.taskRuntime() });
     },
   });
 }

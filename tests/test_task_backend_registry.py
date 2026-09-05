@@ -21,9 +21,28 @@ def test_importing_runners_registers_builtin_project_task_runners():
         assert task_type in names
         assert get_project_task_runner(task_type) is not None
 
-    for removed_task_type in {"batch_render", "video_generation", "render_plan"}:
+    for removed_task_type in {
+        "batch_render",
+        "video_generation",
+        "render_plan",
+        "script_writer",
+        "literal_script_writer",
+    }:
         assert removed_task_type not in names
         assert get_project_task_runner(removed_task_type) is None
+
+
+def test_legacy_line_beat_task_types_are_removed_from_runtime_contracts():
+    from novelvideo.api.routes.tasks import _TASK_TYPE_LABELS
+    from novelvideo.official_defaults import DEFAULT_TEXT_MODEL_BY_ENV
+    from novelvideo.task_backend.run_core import _resource_kind_for_task
+    from novelvideo.task_identity import TASK_IDENTITY_SPECS
+
+    for task_type in {"script_writer", "literal_script_writer"}:
+        assert task_type not in TASK_IDENTITY_SPECS
+        assert task_type not in _TASK_TYPE_LABELS
+        assert _resource_kind_for_task(task_type) == ""
+    assert "LITERAL_BEAT_META_MODEL" not in DEFAULT_TEXT_MODEL_BY_ENV
 
 
 def test_removed_render_plan_runner_does_not_import_deleted_scope_helper():

@@ -111,10 +111,17 @@ class RunningHubExecutor:
                 snapshot = await self._client.query(attempt.provider_task_id)
                 if snapshot.status == "failed":
                     self._store.record_provider_status(attempt.id, snapshot.status)
+                    provider_detail = (
+                        f": {snapshot.provider_message}"
+                        if snapshot.provider_message
+                        else ""
+                    )
                     self._store.fail_attempt(
                         attempt.id,
                         error_code=MediaErrorCode.POLL_FAILED,
-                        error_message="RunningHub provider task failed",
+                        error_message=(
+                            f"RunningHub provider task failed{provider_detail}"
+                        )[:2048],
                     )
                     return self._current_task(task_id)
                 if snapshot.status == "cancelled":
@@ -178,16 +185,36 @@ class RunningHubExecutor:
                     {"artifacts": [artifact.model_dump(mode="json")]},
                 )
                 return self._current_task(task_id)
-        except RunningHubError:
+        except RunningHubError as exc:
+            if phase == "submit" and exc.retriable and attempt.provider_task_id is None:
+                self._store.mark_unknown(
+                    attempt.id,
+                    error_code=MediaErrorCode.PROVIDER_TIMEOUT,
+                    error_message=(
+                        "RunningHub submit outcome is unknown; manual reconciliation "
+                        "is required before retry"
+                    ),
+                )
+                return self._current_task(task_id)
             error_code = {
                 "submit": MediaErrorCode.SUBMIT_FAILED,
                 "query": MediaErrorCode.POLL_FAILED,
                 "download": MediaErrorCode.DOWNLOAD_FAILED,
             }[phase]
+            details: list[str] = []
+            if exc.code:
+                details.append(f"code={exc.code}")
+            if exc.http_status is not None:
+                details.append(f"HTTP {exc.http_status}")
+            error_message = (
+                f"RunningHub {phase} failed ({', '.join(details)})"
+                if details
+                else "RunningHub provider operation failed"
+            )
             self._store.fail_attempt(
                 attempt.id,
                 error_code=error_code,
-                error_message="RunningHub provider operation failed",
+                error_message=error_message,
             )
             return self._current_task(task_id)
 

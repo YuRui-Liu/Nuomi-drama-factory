@@ -30,6 +30,8 @@ class FakeClient:
 
     async def submit(self, workflow_id: str, node_info: list[dict[str, object]]) -> str:
         self.submit_calls.append((workflow_id, node_info))
+        if self.error is not None:
+            raise self.error
         return "remote-1"
 
     async def query(self, task_id: str) -> ProviderTaskSnapshot:
@@ -207,7 +209,12 @@ async def test_provider_failed_status_finishes_attempt_instead_of_polling_foreve
     tmp_path: Path,
 ) -> None:
     store, task, attempt = setup_attempt(tmp_path, submitted=True)
-    client = FakeClient(ProviderTaskSnapshot(status="failed"))
+    client = FakeClient(
+        ProviderTaskSnapshot(
+            status="failed",
+            provider_message="MiniMax director node 12 validation failed",
+        )
+    )
     executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
 
     result = await executor.step(task.id, profile=profile(), semantic_values={})
@@ -216,6 +223,10 @@ async def test_provider_failed_status_finishes_attempt_instead_of_polling_foreve
     assert failed.status is MediaTaskStatus.FAILED
     assert failed.provider_status == "failed"
     assert failed.error_code is MediaErrorCode.POLL_FAILED
+    assert failed.error_message == (
+        "RunningHub provider task failed: "
+        "MiniMax director node 12 validation failed"
+    )
     assert result.status is MediaTaskStatus.FAILED
 
 
@@ -309,3 +320,44 @@ async def test_runninghub_error_fails_with_stable_redacted_error(tmp_path: Path)
     assert failed.error_message == "RunningHub provider operation failed"
     assert secret not in failed.error_message
     assert result.status == MediaTaskStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_runninghub_rejection_preserves_safe_provider_code(tmp_path: Path) -> None:
+    store, task, attempt = setup_attempt(tmp_path, submitted=False)
+    client = FakeClient()
+    client.error = RunningHubError(
+        "RunningHub rejected the request",
+        code="WORKFLOW_INVALID",
+        http_status=200,
+    )
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+
+    result = await executor.step(task.id, profile=profile(), semantic_values={})
+
+    failed = store.get_attempt(attempt.id)
+    assert failed.error_code == MediaErrorCode.SUBMIT_FAILED
+    assert failed.error_message == (
+        "RunningHub submit failed (code=WORKFLOW_INVALID, HTTP 200)"
+    )
+    assert result.status == MediaTaskStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_submit_transport_failure_stays_unknown_without_retry(
+    tmp_path: Path,
+) -> None:
+    store, task, attempt = setup_attempt(tmp_path, submitted=False)
+    client = FakeClient()
+    client.error = RunningHubError("RunningHub transport failed", retriable=True)
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+
+    first = await executor.step(task.id, profile=profile(), semantic_values={})
+
+    saved = store.get_attempt(attempt.id)
+    assert saved.status is MediaTaskStatus.UNKNOWN
+    assert saved.provider_task_id is None
+    assert saved.error_code is MediaErrorCode.PROVIDER_TIMEOUT
+    assert first.status is MediaTaskStatus.UNKNOWN
+    assert store.recoverable(saved.updated_at) == []
+    assert len(client.submit_calls) == 1

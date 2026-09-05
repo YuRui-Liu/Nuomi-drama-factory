@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 import re
 import shutil
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,15 @@ from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+
+
+@dataclass(frozen=True, slots=True)
+class CharacterStateGeneration:
+    output_path: Path
+    canonical_path: Path
+    reference_paths: tuple[Path, ...]
+    prompt: str
+    state_id: str
 
 
 def _safe_asset_name(name: str) -> str:
@@ -75,10 +86,8 @@ def _find_identity(character, identity_id: str, identity_name: str):
 
 
 def _character_portrait_face_prompt(character: Any) -> str:
-    explicit = str(getattr(character, "face_prompt", "") or "").strip()
-    if explicit:
-        return explicit
-
+    # Legacy face_prompt has no provenance and must not silently become a
+    # generation constraint. A confirmed VisualBible is handled separately.
     context_parts = [
         f"name: {str(getattr(character, 'name', '') or '').strip()}",
         f"gender: {str(getattr(character, 'gender', '') or '').strip()}",
@@ -93,6 +102,34 @@ def _character_portrait_face_prompt(character: Any) -> str:
         f"reusable facial identity consistent with this character context: {context}. "
         "Use natural facial proportions and distinctive, repeatable features; do not "
         "add clothing, props, action, or an exaggerated expression."
+    )
+
+
+def _character_portrait_prompt(character: Any, *, style: str, visual_bible=None) -> str:
+    if visual_bible is not None:
+        from novelvideo.character_visual import compile_visual_prompt_snapshot
+
+        return compile_visual_prompt_snapshot(
+            bible=visual_bible,
+            project_style=style,
+            reference_paths=[],
+        ).prompt
+    return _character_portrait_face_prompt(character)
+
+
+def _visual_bible_required_error(character_name: str) -> RuntimeError:
+    return RuntimeError(
+        json.dumps(
+            {
+                "error_code": "CHARACTER_VISUAL_BIBLE_REQUIRED",
+                "message": (
+                    f"角色“{character_name}”尚未确认视觉身份设定。"
+                    "请先在资产中心选择并确认一套视觉提案，再生成角色头像。"
+                ),
+                "transport_called": False,
+            },
+            ensure_ascii=False,
+        )
     )
 
 
@@ -177,9 +214,21 @@ async def _run_character_image(
         model = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         ).model
+        from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+        visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
+            character.name
+        )
 
         update(0.25, "准备生成参数...")
         if mode == "portrait":
+            if visual_bible is None:
+                raise _visual_bible_required_error(character.name)
+            portrait_prompt = _character_portrait_prompt(
+                character,
+                style=style,
+                visual_bible=visual_bible,
+            )
             output_path = await _generate_character_portrait(
                 character=character,
                 ethnicity=ethnicity,
@@ -189,6 +238,7 @@ async def _run_character_image(
                 task_type=task_type,
                 scope=str(scope or ""),
                 update=update,
+                compiled_prompt=portrait_prompt,
             )
         elif mode == "identity_portrait":
             output_path = await _generate_identity_portrait(
@@ -205,7 +255,7 @@ async def _run_character_image(
                 update=update,
             )
         elif mode == "identity_image":
-            output_path = await _generate_identity_image(
+            state_generation = await _generate_identity_image(
                 character=character,
                 ethnicity=ethnicity,
                 identity_id=identity_id,
@@ -217,15 +267,39 @@ async def _run_character_image(
                 scope=str(scope or ""),
                 update=update,
             )
+            output_path = state_generation.output_path
+            workflow_result = _register_character_state_candidate(
+                ctx=ctx,
+                output_dir=output_dir,
+                character_name=character.name,
+                identity_id=identity_id,
+                generation=state_generation,
+                source_attempt_id=str(
+                    envelope.get("task_id") or envelope.get("job_id") or ""
+                )
+                or None,
+                recipe_revision=str(
+                    project_config.get("production_recipe_version") or "1"
+                ),
+            )
         else:
             raise RuntimeError(f"未知角色图像生成模式: {mode}")
-        return {
+        result = {
             "mode": mode,
             "character_name": character.name,
             "identity_id": identity_id,
             "identity_name": identity_name,
             "path": str(output_path),
         }
+        if mode == "identity_image":
+            result.update(workflow_result)
+            result["prompt_snapshot"] = state_generation.prompt
+        if mode == "portrait":
+            result["prompt_snapshot"] = portrait_prompt
+            result["visual_bible_revision"] = (
+                visual_bible.revision_id if visual_bible is not None else None
+            )
+        return result
     finally:
         await store.close()
 
@@ -240,8 +314,11 @@ async def _generate_character_portrait(
     task_type: str,
     scope: str,
     update,
+    compiled_prompt: str | None = None,
 ) -> Path:
-    face_prompt = _character_portrait_face_prompt(character)
+    if not str(compiled_prompt or "").strip():
+        raise _visual_bible_required_error(character.name)
+    face_prompt = str(compiled_prompt).strip()
     char_assets_dir = output_dir / "assets" / "characters" / character.name
     portrait_path = char_assets_dir / "portrait.png"
     temp_dir = char_assets_dir / f".tmp_portrait_{_asset_suffix()}"
@@ -277,9 +354,27 @@ async def _generate_identity_portrait(
     identity = _find_identity(character, identity_id, identity_name)
     if identity is None:
         raise RuntimeError(f"找不到身份: {identity_id or identity_name}")
-    face_prompt = str(identity.face_prompt or "").strip()
-    if not face_prompt:
-        raise RuntimeError("该身份无 face_prompt，无需独立 Portrait")
+    from novelvideo.character_visual import (
+        CharacterVisualWorkspaceStore,
+        compile_visual_prompt_snapshot,
+    )
+
+    visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
+        character.name
+    )
+    if visual_bible is None:
+        raise RuntimeError("请先在角色视觉身份设定中确认 VisualBible")
+    base_prompt = compile_visual_prompt_snapshot(
+        bible=visual_bible,
+        project_style=style,
+        reference_paths=[],
+    ).prompt
+    variant_parts = [
+        base_prompt,
+        f"Identity age group: {identity.age_group}" if identity.age_group else "",
+        f"Identity body type: {identity.body_type}" if identity.body_type else "",
+    ]
+    face_prompt = ". ".join(part for part in variant_parts if part)
     safe_name = _safe_asset_name(identity.identity_name)
     id_dir = output_dir / "assets" / "characters" / character.name / "identities"
     portrait_path = id_dir / f"{character.name}_{safe_name}_portrait.png"
@@ -305,6 +400,61 @@ async def _generate_identity_portrait(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _register_character_state_candidate(
+    *,
+    ctx: ProjectContext,
+    output_dir: Path,
+    character_name: str,
+    identity_id: str,
+    generation: CharacterStateGeneration,
+    source_attempt_id: str | None,
+    recipe_revision: str,
+) -> dict[str, str]:
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    root = output_dir.resolve()
+    candidate_path = generation.output_path.resolve().relative_to(root).as_posix()
+    canonical_path = generation.canonical_path.resolve().relative_to(root).as_posix()
+    reference_sources = [
+        path.resolve().relative_to(root).as_posix()
+        for path in generation.reference_paths
+        if path.resolve().is_relative_to(root)
+    ]
+    slot_id = f"character:{character_name}:state:{generation.state_id}"
+    version_id = generation.output_path.stem
+    workflow = ProductionWorkflowStore(Path(ctx.state_dir) / "production_workflow.json")
+    slot, version, _event = workflow.register_candidate_version(
+        slot_id=slot_id,
+        asset_kind="character_state",
+        version_id=version_id,
+        asset_path=candidate_path,
+        source_attempt_id=source_attempt_id,
+        qc_passed=(
+            generation.output_path.is_file()
+            and generation.output_path.stat().st_size > 0
+        ),
+        generation_metadata={
+            "character_name": character_name,
+            "identity_id": identity_id,
+            "state_id": generation.state_id,
+            "panel_layout": ["front", "side", "back"],
+            "recipe_revision": recipe_revision,
+            "reference_sources": reference_sources,
+            "canonical_path": canonical_path,
+        },
+        actor=str(getattr(ctx, "requester_username", "") or "system"),
+        at=datetime.now(timezone.utc),
+    )
+    if slot.current_version_id == version.version_id:
+        generation.canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(generation.output_path, generation.canonical_path)
+    return {
+        "slot_id": slot_id,
+        "version_id": version.version_id,
+        "adoption_status": version.adoption_status.value,
+    }
+
+
 async def _generate_identity_image(
     *,
     character,
@@ -317,7 +467,7 @@ async def _generate_identity_image(
     task_type: str,
     scope: str,
     update,
-) -> Path:
+) -> CharacterStateGeneration:
     from novelvideo.utils.path_resolver import (
         compute_identity_costume_path,
         compute_identity_portrait_path,
@@ -343,8 +493,12 @@ async def _generate_identity_image(
     char_assets_dir = output_dir / "assets" / "characters" / character.name
     identity_dir = char_assets_dir / "identities"
     identity_dir.mkdir(parents=True, exist_ok=True)
-    output_path = identity_dir / f"{safe_name}.png"
-    temp_output_path = identity_dir / f".tmp_{safe_name}_{_asset_suffix()}.png"
+    canonical_path = identity_dir / f"{safe_name}.png"
+    state_id = identity.identity_id
+    version_id = f"character-state-{_asset_suffix()}"
+    versions_dir = identity_dir / safe_name / "versions"
+    output_path = versions_dir / f"{version_id}.png"
+    temp_output_path = versions_dir / f".{version_id}.tmp.png"
 
     identity_age = str(identity.age_group or "").strip()
     char_age = str(character.age_group or "youth").strip() or "youth"
@@ -353,7 +507,21 @@ async def _generate_identity_image(
             identity_prompt = "" if has_costume_image else appearance_details
             reference_image_path = identity_portrait
         else:
-            face_override = str(identity.face_prompt or "").strip()
+            from novelvideo.character_visual import (
+                CharacterVisualWorkspaceStore,
+                compile_visual_prompt_snapshot,
+            )
+
+            visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
+                character.name
+            )
+            if visual_bible is None:
+                raise RuntimeError("请先确认角色 VisualBible 或上传年龄身份 Portrait")
+            face_override = compile_visual_prompt_snapshot(
+                bible=visual_bible,
+                project_style=style,
+                reference_paths=[],
+            ).prompt
             identity_prompt = (
                 face_override
                 if has_costume_image
@@ -370,16 +538,36 @@ async def _generate_identity_image(
     update(0.45, "调用图像模型生成身份图...")
     try:
         references = [reference_image_path] + ([costume_image] if has_costume_image else [])
+        from novelvideo.generators.nanobanana_character import (
+            build_character_state_sheet_prompt,
+        )
+
+        prompt = build_character_state_sheet_prompt(
+            character_name=character.name,
+            character_tag=str(identity.character_tag or character.name),
+            appearance=_strip_known_style_prefix(
+                identity_prompt or appearance_details
+            ),
+            style_instructions=style,
+            avoid_instructions="no identity drift, no inconsistent clothing",
+            ethnicity=ethnicity,
+            has_costume_reference=has_costume_image,
+        )
         await _generate_grsai_image(
             model=model,
-            prompt=("Full-body single character reference image, preserve the same face and identity from references, "
-                    f"coherent anatomy, no text, no watermark. Identity: {identity.identity_name}. "
-                    f"Ethnicity: {ethnicity}. Visual style: {style}. Clothing and appearance: "
-                    f"{_strip_known_style_prefix(identity_prompt or appearance_details)}"),
+            prompt=prompt,
             output_path=temp_output_path,
             reference_paths=[path for path in references if path],
+            aspect_ratio="16:9",
         )
-        return _replace_canonical_asset(temp_output_path, output_path)
+        _replace_canonical_asset(temp_output_path, output_path)
+        return CharacterStateGeneration(
+            output_path=output_path,
+            canonical_path=canonical_path,
+            reference_paths=tuple(Path(path) for path in references if path),
+            prompt=prompt,
+            state_id=state_id,
+        )
     finally:
         temp_output_path.unlink(missing_ok=True)
         temp_body_path = temp_output_path.with_name(f"{temp_output_path.stem}_body_temp.png")
