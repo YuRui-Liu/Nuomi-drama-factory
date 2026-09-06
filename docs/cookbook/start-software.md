@@ -6,9 +6,9 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](README.md)
 
-导航：[Cookbook 首页](README.md) · [共享系统地图](system-map.md) · [常见故障](../zh/guides/troubleshooting.md) · [模型配置](../zh/getting-started/configuring-models.md)
+导航：[Cookbook 首页](README.md) · [共享系统地图](system-map.md) · [常见故障](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/guides/troubleshooting.md) · [模型配置](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/getting-started/configuring-models.md)
 
-本文说明如何从源码启动 Nuomi Drama Factory CE。正常使用推荐 Docker Compose；需要修改和调试代码时使用本地开发模式。完整安装和部署选择见[安装说明](../zh/getting-started/installation.md)与[自托管指南](../zh/guides/self-hosting.md)，这里集中记录开发时常用的启动、端口和诊断命令。
+本文说明如何从源码启动 Nuomi Drama Factory CE。正常使用推荐 Docker Compose；需要修改和调试代码时使用本地开发模式。完整安装和部署选择见[安装说明](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/getting-started/installation.md)与[自托管指南](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/guides/self-hosting.md)，这里集中记录开发时常用的启动、端口和诊断命令。
 
 以下命令默认从仓库根目录执行；文中的 `<repo-root>` 表示仓库根目录。
 
@@ -70,7 +70,7 @@ curl -f http://localhost:8780/api/v1/config
 
 网页打开后，进入「设置 → 模型配置 → 官方渠道」，填写 Nuomi Drama Factory key 并保存。模型推理通过远程网关执行；只启动界面和 API 时可以暂不填写，但文本、图片、视频和音频生成功能会失败。
 
-如果需要使用自己的本地 NewAPI 网关，改用仓库中的 self-hosted Compose 配置；相关说明见[模型配置](../zh/getting-started/configuring-models.md)。
+如果需要使用自己的本地 NewAPI 网关，改用仓库中的 self-hosted Compose 配置；相关说明见[模型配置](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/getting-started/configuring-models.md)。
 
 ### 5. 查看日志、重启和停止
 
@@ -204,4 +204,4 @@ corepack enable
 corepack prepare pnpm@11.5.0 --activate
 ```
 
-更完整的故障说明见[常见故障](../zh/guides/troubleshooting.md)。
+更完整的故障说明见[常见故障](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/guides/troubleshooting.md)。

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -78,7 +80,8 @@ test('cookbook configuration enables local search and Mermaid', () => {
 test('cookbook configuration keeps the approved Chinese information architecture', () => {
   assert.match(cookbookConfig, /defineConfig\s*\(/);
   assert.match(cookbookConfig, /lang:\s*['\"]zh-CN['\"]/);
-  assert.match(cookbookConfig, /ignoreDeadLinks:\s*false/);
+  assert.match(cookbookConfig, /['\"]README\.md['\"]:\s*['\"]index\.md['\"]/);
+  assert.match(cookbookConfig, /ignoreDeadLinks:\s*['\"]localhostLinks['\"]/);
 
   for (const label of [
     'Cookbook 首页',
@@ -150,4 +153,49 @@ test('cookbook home documents the HTML reading commands', () => {
   assert.match(home, /HTML 阅读入口/);
   assert.match(home, /仓库根目录/);
   assert.match(home, /Markdown 仍是唯一内容源/);
+});
+
+test(
+  'cookbook production build contains the core HTML pages and client features',
+  { skip: !process.env.COOKBOOK_DIST },
+  () => {
+    const distRoot = pathToFileURL(resolve(process.env.COOKBOOK_DIST) + '/');
+    const pages = [
+      'index.html',
+      'system-map.html',
+      'pipelines/01-ingest.html',
+      'pipelines/02-episode-graph.html',
+      'pipelines/03-production-assets.html',
+      'pipelines/04-screenplay.html',
+      'pipelines/05-storyboard.html',
+      'pipelines/06-audio.html',
+      'pipelines/07-video.html',
+      'pipelines/08-compose-export.html',
+    ];
+
+    for (const page of pages) {
+      const file = new URL(page, distRoot);
+      assert.ok(existsSync(file), 'expected generated page ' + page);
+      assert.match(readFileSync(file, 'utf8'), /<!doctype html>/i);
+    }
+
+    const assetsRoot = new URL('assets/', distRoot);
+    const assetNames = readdirSync(assetsRoot, { recursive: true }).join('\n');
+    assert.match(assetNames, /localSearchIndex/);
+    assert.match(assetNames, /mermaid/i);
+  },
+);
+
+test('cookbook build keeps cross-doc links deployable and checks internal links', () => {
+  const startPage = readFileSync(
+    new URL('../docs/cookbook/start-software.md', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(startPage, /\]\(\.\.\/zh\//);
+  assert.match(
+    startPage,
+    /https:\/\/github\.com\/YuRui-Liu\/Nuomi-drama-factory\/blob\/main\/docs\/zh\//,
+  );
+  assert.match(cookbookConfig, /ignoreDeadLinks:\s*['\"]localhostLinks['\"]/);
 });
