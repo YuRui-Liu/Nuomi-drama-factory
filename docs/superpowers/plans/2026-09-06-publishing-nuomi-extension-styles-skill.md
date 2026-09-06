@@ -110,6 +110,7 @@ expected_preview = (
 {
     "schema_version": 1,
     "catalog_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+    "snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
     "style": style.projection_input(),
     "preview_prompt": preview_prompt,
     "targets": {
@@ -190,7 +191,7 @@ def _replace_bytes(path: Path, payload: bytes) -> None: ...
 def _commit_payloads(payloads: dict[Path, bytes]) -> None: ...
 ```
 
-`apply_release` 拒绝未知 schema version、非固定 targets、计划 style 失效、重复 ID、来源失配和哈希漂移。全部 payload 构建且完整新目录通过 `load_catalog` 后才调用 `_commit_payloads`。写入失败时按反序恢复原有字节或删除本次新文件；恢复异常合并进最终错误。`apply` 成功向 stdout 输出包含 ID 和三个目标的 JSON 摘要。
+`apply_release` 拒绝未知 schema version、非固定 targets、计划 SHA256 与批准值不符、计划 style 失效、重复 ID、来源失配和后端/前端哈希漂移。全部 payload 构建且完整新目录通过 `load_catalog` 后才调用 `_commit_payloads`。写入失败时按反序恢复原有字节或删除本次新文件；恢复异常合并进最终错误。`apply` 成功向 stdout 输出包含 ID 和三个目标的 JSON 摘要。
 
 - [ ] **步骤 5：运行完整脚本测试验证通过**
 

@@ -51,14 +51,18 @@ The generated source may be PNG, JPEG, or WebP. `apply` center-crops it and writ
 ## Commands and outcomes
 
 ```bash
-python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
+.venv/bin/python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
   prepare --manifest /tmp/release.json --plan /tmp/release-plan.json
 
-python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
-  apply --plan /tmp/release-plan.json --preview /absolute/generated-preview.png
+shasum -a 256 /tmp/release-plan.json
+
+.venv/bin/python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
+  apply --plan /tmp/release-plan.json \
+  --approved-plan-sha256 <sha256-shown-to-user> \
+  --preview /absolute/generated-preview.png
 ```
 
-`prepare` writes only the requested plan. The plan records schema version, normalized style, prompt, catalog SHA256, and the three fixed targets. `apply` rejects changed catalogs, builds all outputs in memory, and restores already replaced targets when a later replacement fails.
+`prepare` writes only the requested plan. The plan records schema version, normalized style, prompt, catalog and frontend snapshot SHA256 values, and the three fixed targets. Present the plan SHA256 to the user; `apply` requires that exact approved digest. It rejects changed catalogs or snapshots, builds all outputs in memory, and restores already replaced targets when a later replacement fails.
 
 - Exit `0`: success.
 - Exit `2`: invalid input, source, image, target, or write/rollback failure.

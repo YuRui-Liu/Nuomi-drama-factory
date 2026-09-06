@@ -515,6 +515,39 @@ def test_required_catalog_baseline_allows_contract_safe_additions():
     _assert_required_catalog_baseline(actual)
 
 
+def test_real_catalog_accepts_a_contract_safe_twentieth_style(
+    curated_catalog_path, tmp_path
+):
+    raw = json.loads(curated_catalog_path.read_text(encoding="utf-8"))
+    additional = json.loads(json.dumps(raw[-1], ensure_ascii=False))
+    additional.update(
+        {
+            "id": "drama_ext.future_style",
+            "name": "未来风格",
+            "preview_asset": "/images/extension-styles/future-style.webp",
+        }
+    )
+    raw.append(additional)
+    expanded_catalog = tmp_path / "catalog.json"
+    expanded_catalog.write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+
+    catalog = load_catalog(expanded_catalog)
+    actual = {
+        style.id: (
+            style.name,
+            style.category,
+            tuple(style.source["source_ids"]),
+            style.preview_asset,
+        )
+        for style in catalog
+    }
+
+    _assert_required_catalog_baseline(actual)
+    assert actual["drama_ext.future_style"][0] == "未来风格"
+
+
 CURATED_REVISION = "3a9c63baa03e6bbe2f28c89a2654cf9845466646"
 BUILTIN_PRESET_CANONICAL_SHA256 = {
     # Baseline captured from DramaClaw commit 652dd48 before this feature.

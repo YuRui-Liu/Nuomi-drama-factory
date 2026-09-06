@@ -65,12 +65,12 @@ python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
 2. 检查 ID、预览 URL 和已有目录资产是否冲突。
 3. 根据 `source_audit.json` 校验来源仓库、批准状态、40 位小写修订号和 `source_ids`。
 4. 应用项目现有故事偏置检测，拒绝将剧情内容固化进全局风格。
-5. 计算当前后端目录原始字节的 SHA256。
-6. 生成只读发布计划，包含规范化风格对象、预览提示词、目录哈希和三个目标相对路径。
+5. 计算当前后端目录与前端快照原始字节的 SHA256，并确认二者同步。
+6. 生成只读发布计划，包含规范化风格对象、预览提示词、两个哈希和三个目标相对路径。
 
 除用户指定的计划文件外，`prepare` 不修改仓库。校验失败使用退出码 `2`，输出简洁、稳定且可操作的错误信息。
 
-技能向用户展示风格摘要、六片段摘要、来源、预览提示词和将被修改的文件，并等待明确批准。
+技能计算发布计划文件的 SHA256，向用户展示风格摘要、六片段摘要、来源、预览提示词、计划摘要和将被修改的文件，并等待明确批准。
 
 ### 阶段二：Generate and Apply
 
@@ -80,13 +80,15 @@ python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
 
 ```bash
 python skills/publishing-nuomi-extension-styles/scripts/publish_style.py \
-  apply --plan /tmp/release-plan.json --preview /path/to/generated.png
+  apply --plan /tmp/release-plan.json \
+  --approved-plan-sha256 <已展示并批准的摘要> \
+  --preview /path/to/generated.png
 ```
 
 `apply` 执行以下工作：
 
-1. 重新校验计划内容及当前项目契约。
-2. 比较目录 SHA256；若目录自 `prepare` 后发生变化，以退出码 `3` 拒绝写入并要求重新准备。
+1. 重新校验计划内容及当前项目契约，并要求计划文件 SHA256 等于用户批准时展示的摘要。
+2. 在目录文件锁内比较后端目录与前端快照 SHA256；若任一文件自 `prepare` 后发生变化，以退出码 `3` 拒绝写入并要求重新准备。
 3. 在内存中解码预览图，按中心裁切生成 16:9、640×360、RGB、WebP 输出。
 4. 在内存中构造新后端目录和前端快照，并再次校验完整目录。
 5. 原子写入后端目录、前端快照和预览 WebP。

@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
+import hmac
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import textwrap
@@ -23,7 +26,10 @@ SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from novelvideo.extension_styles.schema import ExtensionStyle  # noqa: E402
+from novelvideo.extension_styles.schema import (  # noqa: E402
+    ExtensionStyle,
+    load_catalog,
+)
 
 
 SCHEMA_VERSION = 1
@@ -33,6 +39,7 @@ SNAPSHOT_PATH = Path(
     "frontend/src/features/canvas/extension-styles/catalog.generated.json"
 )
 PREVIEW_DIR = Path("frontend/public/images/extension-styles")
+_STYLE_SUFFIX_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 
 class PublishError(Exception):
@@ -63,6 +70,21 @@ def _catalog_entries(catalog_bytes: bytes) -> list[dict[str, Any]]:
     return raw
 
 
+def _safe_project_path(project_root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        raise PublishError(f"target is not a safe project-relative path: {relative}")
+    candidate = project_root / relative
+    try:
+        resolved_parent = candidate.parent.resolve(strict=True)
+    except OSError as error:
+        raise PublishError(f"target parent is unavailable: {relative}: {error}") from error
+    if not resolved_parent.is_relative_to(project_root):
+        raise PublishError(f"target resolves outside project root: {relative}")
+    if candidate.is_symlink():
+        raise PublishError(f"target must not be a symlink: {relative}")
+    return candidate
+
+
 def _validate_catalog(entries: list[dict[str, Any]]) -> None:
     seen: set[str] = set()
     for entry in entries:
@@ -91,7 +113,8 @@ def _validate_manifest(raw: Any) -> tuple[ExtensionStyle, str]:
 def _validate_source(style: ExtensionStyle, audit: Any) -> None:
     if not isinstance(audit, Mapping):
         raise PublishError("source audit must be an object")
-    if audit.get("license", {}).get("review") != "approved":
+    license_data = audit.get("license")
+    if not isinstance(license_data, Mapping) or license_data.get("review") != "approved":
         raise PublishError("source audit license review is not approved")
     source = style.source
     if source.get("repository") != audit.get("repository"):
@@ -99,8 +122,12 @@ def _validate_source(style: ExtensionStyle, audit: Any) -> None:
     if source.get("imported_revision") != audit.get("revision"):
         raise PublishError("style imported revision does not match source audit")
     source_ids = source.get("source_ids")
-    if not isinstance(source_ids, tuple) or not source_ids:
-        raise PublishError("style source_ids must be a non-empty array")
+    if (
+        not isinstance(source_ids, tuple)
+        or not source_ids
+        or not all(isinstance(source_id, str) and source_id for source_id in source_ids)
+    ):
+        raise PublishError("style source_ids must be a non-empty array of strings")
     templates = audit.get("templates")
     if not isinstance(templates, list):
         raise PublishError("source audit templates must be an array")
@@ -115,7 +142,10 @@ def _validate_source(style: ExtensionStyle, audit: Any) -> None:
 
 
 def _preview_target(style: ExtensionStyle) -> tuple[str, Path]:
-    slug = style.id.removeprefix("drama_ext.").replace("_", "-")
+    suffix = style.id.removeprefix("drama_ext.")
+    if not _STYLE_SUFFIX_RE.fullmatch(suffix):
+        raise PublishError("style id suffix must be lowercase snake_case")
+    slug = suffix.replace("_", "-")
     preview_asset = f"/images/extension-styles/{slug}.webp"
     if style.preview_asset != preview_asset:
         raise PublishError(
@@ -130,13 +160,19 @@ def _validate_candidate(
     entries: list[dict[str, Any]],
 ) -> Path:
     _, preview_target = _preview_target(style)
+    _safe_project_path(project_root, CATALOG_PATH)
+    _safe_project_path(project_root, AUDIT_PATH)
+    _safe_project_path(project_root, SNAPSHOT_PATH)
+    _safe_project_path(project_root, preview_target)
     if any(entry.get("id") == style.id for entry in entries):
         raise PublishError(f"extension style id already exists: {style.id}")
     if any(entry.get("preview_asset") == style.preview_asset for entry in entries):
         raise PublishError(f"preview asset already exists in catalog: {style.preview_asset}")
-    if (project_root / preview_target).exists():
+    if _safe_project_path(project_root, preview_target).exists():
         raise PublishError(f"preview asset file already exists: {preview_target}")
-    audit = _read_json(project_root / AUDIT_PATH, "source audit")
+    audit = _read_json(
+        _safe_project_path(project_root, AUDIT_PATH), "source audit"
+    )
     _validate_source(style, audit)
     return preview_target
 
@@ -148,16 +184,22 @@ def prepare_release(project_root: Path, manifest_path: Path) -> dict[str, object
     style, preview_prompt = _validate_manifest(
         _read_json(manifest_path, "release manifest")
     )
-    catalog_path = project_root / CATALOG_PATH
+    catalog_path = _safe_project_path(project_root, CATALOG_PATH)
+    snapshot_path = _safe_project_path(project_root, SNAPSHOT_PATH)
     try:
+        load_catalog(catalog_path)
         catalog_bytes = catalog_path.read_bytes()
-    except OSError as error:
+        snapshot_bytes = snapshot_path.read_bytes()
+    except (OSError, ValueError) as error:
         raise PublishError(f"extension style catalog is unreadable: {error}") from error
     entries = _catalog_entries(catalog_bytes)
+    if snapshot_bytes != _render_snapshot(entries):
+        raise PublishError("frontend extension style snapshot is stale")
     preview_target = _validate_candidate(project_root, style, entries)
     return {
         "schema_version": SCHEMA_VERSION,
         "catalog_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+        "snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
         "style": style.projection_input(),
         "preview_prompt": preview_prompt,
         "targets": {
@@ -216,16 +258,37 @@ def _replace_bytes(path: Path, payload: bytes) -> None:
             temporary.unlink()
 
 
-def _commit_payloads(payloads: dict[Path, bytes]) -> None:
-    originals = {
-        path: path.read_bytes() if path.exists() else None for path in payloads
-    }
+def _current_bytes(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
+def _target_label(path: Path) -> str:
+    if path.name == CATALOG_PATH.name:
+        return "extension style catalog"
+    if path.name == SNAPSHOT_PATH.name:
+        return "frontend extension style snapshot"
+    return "preview asset"
+
+
+def _commit_payloads(
+    payloads: dict[Path, bytes], expected: dict[Path, bytes | None]
+) -> None:
+    originals = {path: _current_bytes(path) for path in payloads}
+    for path, original in originals.items():
+        if original != expected[path]:
+            raise PublishError(
+                f"{_target_label(path)} changed before commit", exit_code=3
+            )
     completed: list[Path] = []
     try:
         for path, payload in payloads.items():
+            if _current_bytes(path) != originals[path]:
+                raise PublishError(
+                    f"{_target_label(path)} changed during commit", exit_code=3
+                )
             _replace_bytes(path, payload)
             completed.append(path)
-    except OSError as error:
+    except (OSError, PublishError) as error:
         recovery_errors: list[str] = []
         for path in reversed(completed):
             try:
@@ -236,15 +299,27 @@ def _commit_payloads(payloads: dict[Path, bytes]) -> None:
                     _replace_bytes(path, original)
             except OSError as recovery_error:
                 recovery_errors.append(f"{path}: {recovery_error}")
+        if isinstance(error, PublishError) and not completed:
+            raise
         message = f"failed to write release: {error}"
         if recovery_errors:
             message += "; recovery failed: " + "; ".join(recovery_errors)
-        raise PublishError(message) from error
+        exit_code = error.exit_code if isinstance(error, PublishError) else 2
+        raise PublishError(message, exit_code=exit_code) from error
 
 
 def _validate_plan(raw: Any) -> tuple[ExtensionStyle, dict[str, str]]:
     if not isinstance(raw, Mapping):
         raise PublishError("release plan must be an object")
+    if set(raw) != {
+        "schema_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "style",
+        "preview_prompt",
+        "targets",
+    }:
+        raise PublishError("release plan fields do not match schema version 1")
     if raw.get("schema_version") != SCHEMA_VERSION:
         raise PublishError(f"unsupported release plan schema: {raw.get('schema_version')}")
     try:
@@ -261,6 +336,10 @@ def _validate_plan(raw: Any) -> tuple[ExtensionStyle, dict[str, str]]:
         raise PublishError("release plan targets are not the fixed project targets")
     if not isinstance(raw.get("catalog_sha256"), str):
         raise PublishError("release plan catalog_sha256 is invalid")
+    if not isinstance(raw.get("snapshot_sha256"), str):
+        raise PublishError("release plan snapshot_sha256 is invalid")
+    if not isinstance(raw.get("preview_prompt"), str) or not raw["preview_prompt"].strip():
+        raise PublishError("release plan preview_prompt is invalid")
     return style, expected_targets
 
 
@@ -268,34 +347,65 @@ def apply_release(
     project_root: Path,
     plan_path: Path,
     preview_path: Path,
+    approved_plan_sha256: str,
 ) -> dict[str, object]:
     """Apply a validated plan to the three fixed product targets."""
 
     project_root = project_root.resolve()
-    plan = _read_json(plan_path, "release plan")
-    style, targets = _validate_plan(plan)
-    catalog_path = project_root / CATALOG_PATH
     try:
-        catalog_bytes = catalog_path.read_bytes()
+        plan_bytes = plan_path.read_bytes()
+    except OSError as error:
+        raise PublishError(f"release plan is unreadable: {error}") from error
+    actual_plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()
+    if not hmac.compare_digest(actual_plan_sha256, approved_plan_sha256):
+        raise PublishError("release plan does not match the approved plan SHA256")
+    try:
+        plan = json.loads(plan_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise PublishError(f"release plan is invalid JSON: {error}") from error
+    style, targets = _validate_plan(plan)
+    catalog_path = _safe_project_path(project_root, CATALOG_PATH)
+    snapshot_path = _safe_project_path(project_root, SNAPSHOT_PATH)
+    preview_target = _safe_project_path(project_root, Path(targets["preview"]))
+    try:
+        lock_handle = catalog_path.open("rb")
     except OSError as error:
         raise PublishError(f"extension style catalog is unreadable: {error}") from error
-    if hashlib.sha256(catalog_bytes).hexdigest() != plan["catalog_sha256"]:
-        raise PublishError(
-            "extension style catalog changed after prepare; run prepare again",
-            exit_code=3,
-        )
-    entries = _catalog_entries(catalog_bytes)
-    _validate_candidate(project_root, style, entries)
-    style_data = style.projection_input()
-    new_catalog = _append_catalog_entry(catalog_bytes, style_data)
-    new_entries = _catalog_entries(new_catalog)
-    preview_bytes = _render_preview(preview_path)
-    payloads = {
-        project_root / targets["catalog"]: new_catalog,
-        project_root / targets["snapshot"]: _render_snapshot(new_entries),
-        project_root / targets["preview"]: preview_bytes,
-    }
-    _commit_payloads(payloads)
+    with lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            load_catalog(catalog_path)
+            catalog_bytes = catalog_path.read_bytes()
+            snapshot_bytes = snapshot_path.read_bytes()
+        except (OSError, ValueError) as error:
+            raise PublishError(f"extension style catalog is unreadable: {error}") from error
+        if hashlib.sha256(catalog_bytes).hexdigest() != plan["catalog_sha256"]:
+            raise PublishError(
+                "extension style catalog changed after prepare; run prepare again",
+                exit_code=3,
+            )
+        if hashlib.sha256(snapshot_bytes).hexdigest() != plan["snapshot_sha256"]:
+            raise PublishError(
+                "frontend extension style snapshot changed after prepare; run prepare again",
+                exit_code=3,
+            )
+        entries = _catalog_entries(catalog_bytes)
+        _validate_candidate(project_root, style, entries)
+        style_data = style.projection_input()
+        new_catalog = _append_catalog_entry(catalog_bytes, style_data)
+        new_entries = _catalog_entries(new_catalog)
+        preview_bytes = _render_preview(preview_path)
+        payloads = {
+            catalog_path: new_catalog,
+            snapshot_path: _render_snapshot(new_entries),
+            preview_target: preview_bytes,
+        }
+        expected = {
+            catalog_path: catalog_bytes,
+            snapshot_path: snapshot_bytes,
+            preview_target: None,
+        }
+        _commit_payloads(payloads, expected)
     return {"style_id": style.id, "targets": targets}
 
 
@@ -309,6 +419,7 @@ def _build_parser() -> argparse.ArgumentParser:
     apply = subparsers.add_parser("apply")
     apply.add_argument("--plan", type=Path, required=True)
     apply.add_argument("--preview", type=Path, required=True)
+    apply.add_argument("--approved-plan-sha256", required=True)
     apply.add_argument("--project-root", type=Path, default=REPOSITORY_ROOT)
     return parser
 
@@ -326,7 +437,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(plan, ensure_ascii=False))
         else:
-            summary = apply_release(args.project_root, args.plan, args.preview)
+            summary = apply_release(
+                args.project_root,
+                args.plan,
+                args.preview,
+                args.approved_plan_sha256,
+            )
             print(json.dumps(summary, ensure_ascii=False))
     except PublishError as error:
         print(str(error), file=sys.stderr)

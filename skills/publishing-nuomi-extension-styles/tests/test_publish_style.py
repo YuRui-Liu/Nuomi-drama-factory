@@ -135,6 +135,10 @@ def _prepare(publisher, project: Path) -> tuple[dict[str, object], Path]:
     return plan, plan_path
 
 
+def _approved_digest(plan_path: Path) -> str:
+    return hashlib.sha256(plan_path.read_bytes()).hexdigest()
+
+
 def test_prepare_writes_plan_without_mutating_project(publisher, project: Path):
     before = _product_bytes(project)
     manifest = _manifest(project)
@@ -145,6 +149,11 @@ def test_prepare_writes_plan_without_mutating_project(publisher, project: Path):
     assert plan["schema_version"] == 1
     assert plan["catalog_sha256"] == hashlib.sha256(
         before["src/novelvideo/extension_styles/catalog.json"]
+    ).hexdigest()
+    assert plan["snapshot_sha256"] == hashlib.sha256(
+        before[
+            "frontend/src/features/canvas/extension-styles/catalog.generated.json"
+        ]
     ).hexdigest()
     assert plan["style"] == _style()
     assert plan["preview_prompt"] == (
@@ -188,6 +197,38 @@ def test_prepare_rejects_noncanonical_preview_path(publisher, project: Path):
         publisher.prepare_release(project, _manifest(project, style))
 
 
+@pytest.mark.parametrize(
+    "style_id",
+    ["drama_ext.", "drama_ext.Foo", "drama_ext.foo bar", "drama_ext.foo-bar"],
+)
+def test_prepare_rejects_non_snake_case_id(publisher, project: Path, style_id: str):
+    with pytest.raises(publisher.PublishError, match="lowercase snake_case"):
+        publisher.prepare_release(project, _manifest(project, _style(style_id)))
+
+
+def test_prepare_rejects_non_string_source_ids_with_stable_error(
+    publisher, project: Path
+):
+    style = _style()
+    style["source"]["source_ids"] = [{"unexpected": "object"}]
+
+    with pytest.raises(publisher.PublishError, match="source_ids.*strings"):
+        publisher.prepare_release(project, _manifest(project, style))
+
+
+def test_prepare_rejects_symlinked_target_parent_outside_project(
+    publisher, project: Path, tmp_path: Path
+):
+    preview_dir = project / "frontend/public/images/extension-styles"
+    preview_dir.rmdir()
+    outside = project.parent / f"{project.name}-outside"
+    outside.mkdir()
+    preview_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(publisher.PublishError, match="outside project root"):
+        publisher.prepare_release(project, _manifest(project))
+
+
 def test_apply_updates_three_products_and_normalizes_preview(
     publisher, project: Path
 ):
@@ -198,7 +239,9 @@ def test_apply_updates_three_products_and_normalizes_preview(
         project / "src/novelvideo/extension_styles/source_audit.json"
     ).read_bytes()
 
-    summary = publisher.apply_release(project, plan_path, source)
+    summary = publisher.apply_release(
+        project, plan_path, source, _approved_digest(plan_path)
+    )
 
     catalog = json.loads(
         (project / plan["targets"]["catalog"]).read_text(encoding="utf-8")
@@ -231,7 +274,7 @@ def test_apply_rejects_catalog_drift_without_writes(publisher, project: Path):
     before = _product_bytes(project)
 
     with pytest.raises(publisher.PublishError, match="changed") as error:
-        publisher.apply_release(project, plan_path, source)
+        publisher.apply_release(project, plan_path, source, _approved_digest(plan_path))
 
     assert error.value.exit_code == 3
     assert _product_bytes(project) == before
@@ -244,7 +287,7 @@ def test_apply_rejects_invalid_image_without_writes(publisher, project: Path):
     before = _product_bytes(project)
 
     with pytest.raises(publisher.PublishError, match="preview"):
-        publisher.apply_release(project, plan_path, source)
+        publisher.apply_release(project, plan_path, source, _approved_digest(plan_path))
 
     assert _product_bytes(project) == before
 
@@ -269,9 +312,66 @@ def test_apply_rolls_back_every_target_when_replace_fails(
     monkeypatch.setattr(publisher, "_replace_bytes", fail_second_replace)
 
     with pytest.raises(publisher.PublishError, match="injected replacement failure"):
-        publisher.apply_release(project, plan_path, source)
+        publisher.apply_release(project, plan_path, source, _approved_digest(plan_path))
 
     assert _product_bytes(project) == before
+
+
+def test_apply_rejects_plan_changed_after_approval(publisher, project: Path):
+    _, plan_path = _prepare(publisher, project)
+    approved_digest = _approved_digest(plan_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["style"]["name"] = "审批后被替换的名称"
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    source = project / "preview.png"
+    Image.new("RGB", (640, 360), "white").save(source)
+    before = _product_bytes(project)
+
+    with pytest.raises(publisher.PublishError, match="approved plan"):
+        publisher.apply_release(project, plan_path, source, approved_digest)
+
+    assert _product_bytes(project) == before
+
+
+def test_apply_rejects_snapshot_drift_without_writes(publisher, project: Path):
+    _, plan_path = _prepare(publisher, project)
+    snapshot = (
+        project
+        / "frontend/src/features/canvas/extension-styles/catalog.generated.json"
+    )
+    snapshot.write_bytes(snapshot.read_bytes() + b"\n")
+    source = project / "preview.png"
+    Image.new("RGB", (640, 360), "white").save(source)
+    before = _product_bytes(project)
+
+    with pytest.raises(publisher.PublishError, match="snapshot changed") as error:
+        publisher.apply_release(project, plan_path, source, _approved_digest(plan_path))
+
+    assert error.value.exit_code == 3
+    assert _product_bytes(project) == before
+
+
+def test_apply_rechecks_catalog_after_render_before_commit(
+    publisher, project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _, plan_path = _prepare(publisher, project)
+    source = project / "preview.png"
+    Image.new("RGB", (640, 360), "white").save(source)
+    catalog = project / "src/novelvideo/extension_styles/catalog.json"
+    real_render = publisher._render_preview
+
+    def render_then_drift(path: Path) -> bytes:
+        rendered = real_render(path)
+        catalog.write_bytes(catalog.read_bytes() + b"\n")
+        return rendered
+
+    monkeypatch.setattr(publisher, "_render_preview", render_then_drift)
+
+    with pytest.raises(publisher.PublishError, match="catalog changed") as error:
+        publisher.apply_release(project, plan_path, source, _approved_digest(plan_path))
+
+    assert error.value.exit_code == 3
+    assert catalog.read_bytes().endswith(b"\n\n")
 
 
 def test_main_returns_stable_validation_exit_code(publisher, project: Path):
