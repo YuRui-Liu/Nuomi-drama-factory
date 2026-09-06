@@ -87,7 +87,7 @@ def _patch_test_workflow(monkeypatch, module):
     )
 
 
-def test_append_attempt_preserves_entry_evidence_and_requires_contiguous_numbers():
+def test_append_attempt_upserts_submitted_attempt_and_rejects_terminal_replacement():
     from pydantic import ValidationError
 
     from novelvideo.media_capabilities.video.h3_timeline import (
@@ -122,15 +122,28 @@ def test_append_attempt_preserves_entry_evidence_and_requires_contiguous_numbers
     assert updated.entries[0].risk_report == {"score": 0.2}
     assert updated.entries[0].compiled_bundle == {"sha256": "a" * 64}
     assert updated.entries[0].attempts[0].provider_task_id == "provider-1"
+    completed = _append_attempt(
+        updated, "s1",
+        H3GenerationAttemptEvidence(
+            attempt=1, status="completed", provider_task_id="provider-1"
+        ),
+    )
+    assert len(completed.entries[0].attempts) == 1
+    assert completed.entries[0].attempts[0].status == "completed"
+    with pytest.raises(ValueError, match="cannot replace"):
+        _append_attempt(
+            completed, "s1",
+            H3GenerationAttemptEvidence(attempt=1, status="transport_failed"),
+        )
     with pytest.raises(ValueError, match="next attempt.*2"):
         _append_attempt(
-            updated, "s1",
-            H3GenerationAttemptEvidence(attempt=3, status="completed"),
+            completed, "s1",
+            H3GenerationAttemptEvidence(attempt=3, status="submitted"),
         )
     with pytest.raises(ValueError, match="unknown segment"):
         _append_attempt(
             updated, "missing",
-            H3GenerationAttemptEvidence(attempt=2, status="completed"),
+            H3GenerationAttemptEvidence(attempt=2, status="submitted"),
         )
     with pytest.raises(ValidationError):
         H3TimelineEntry(
@@ -505,15 +518,94 @@ def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
     stage = load_groups(tmp_path, 1)[0].stages["video"]
     persisted = load_h3_director_manifest(stage.manifest_asset)
     assert persisted.status == "transport_failed"
-    assert persisted.provider_task_id == "provider-before-poll"
+    assert persisted.provider_task_id is None
     assert all(
         entry.provider_task_id == "provider-before-poll"
         for entry in persisted.entries
     )
-    assert [attempt.status for attempt in persisted.entries[0].attempts] == [
-        "submitted", "transport_failed"
-    ]
+    assert len(persisted.entries[0].attempts) == 1
+    assert persisted.entries[0].attempts[0].status == "transport_failed"
     assert persisted.entries[0].attempts[0].provider_task_id == "provider-before-poll"
+
+
+def test_group_video_provider_submission_is_scoped_to_current_segment(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    calls = 0
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1},
+            {"id": "beat-2", "beat_number": 2},
+        ]
+
+    async def generate(_ctx, *, on_provider_submitted, output_path, **_kwargs):
+        nonlocal calls
+        calls += 1
+        provider_task_id = f"provider-{calls}"
+        await on_provider_submitted(provider_task_id)
+        manifest_path = next(Path(output_path).parent.glob("*.manifest.json"))
+        submitted = load_h3_director_manifest(manifest_path)
+        assert submitted.provider_task_id is None
+        if calls == 1:
+            assert submitted.entries[0].status == "submitted"
+            assert submitted.entries[0].provider_task_id == "provider-1"
+            assert submitted.entries[1].provider_task_id is None
+            assert submitted.entries[1].attempts == ()
+        else:
+            assert submitted.entries[0].status == "completed"
+            assert submitted.entries[0].provider_task_id == "provider-1"
+            assert submitted.entries[0].attempts[0].status == "completed"
+            assert submitted.entries[1].provider_task_id == "provider-2"
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id=provider_task_id,
+            actual_mode="i2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+    )
+    manifest = load_h3_director_manifest(
+        load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
+    )
+
+    assert result["status"] == "completed"
+    assert [entry.provider_task_id for entry in manifest.entries] == [
+        "provider-1", "provider-2"
+    ]
+    assert all(len(entry.attempts) == 1 for entry in manifest.entries)
+    assert all(entry.attempts[0].status == "completed" for entry in manifest.entries)
 
 
 def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
@@ -576,7 +668,7 @@ def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
     manifest = load_h3_director_manifest(stage.manifest_asset)
 
     assert result["status"] == "partial_failure"
-    assert manifest.status == "transport_failed"
+    assert manifest.status == "partial_failure"
     assert [entry.status for entry in manifest.entries] == [
         "transport_failed", "completed"
     ]
@@ -635,11 +727,12 @@ def test_group_video_updates_generated_evidence_before_postprocess(
     persisted = load_h3_director_manifest(stage.manifest_asset)
     assert persisted.status == "postprocess_failed"
     assert persisted.physical_video.endswith("ng-01_r1.mp4")
-    assert persisted.provider_task_id == "provider-42"
+    assert persisted.provider_task_id is None
     assert all(entry.provider_task_id == "provider-42" for entry in persisted.entries)
     assert all(entry.status == "postprocess_failed" for entry in persisted.entries)
     assert [attempt.status for attempt in persisted.entries[0].attempts] == ["completed"]
     assert persisted.entries[0].attempts[0].provider_task_id == "provider-42"
+    assert len(persisted.entries[0].attempts) == 1
 
 
 def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
@@ -727,12 +820,16 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
     from novelvideo.narrative_groups.service import advance_revision, load_groups
 
     _seed_group(tmp_path)
+    revision_advanced = False
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
 
     async def generate(_ctx, *, output_path, **_kwargs):
-        advance_revision(tmp_path, 1, "ng-01", "video", regenerate=True)
+        nonlocal revision_advanced
+        if not revision_advanced:
+            advance_revision(tmp_path, 1, "ng-01", "video", regenerate=True)
+            revision_advanced = True
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"video")
         return SimpleNamespace(output_path=output_path, provider_task_id="provider-1", actual_mode="i2va")
@@ -758,7 +855,7 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
     )
 
     state = load_groups(tmp_path, 1)[0].stages["video"]
-    assert state.revision >= 2
+    assert state.revision == 2
     assert state.status == "queued"
 
 

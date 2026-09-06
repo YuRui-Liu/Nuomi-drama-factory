@@ -480,11 +480,15 @@ def _manifest_with_status(
     provider_task_id: str | None = None,
     **updates: Any,
 ) -> H3DirectorOutputManifest:
+    single_segment = len(manifest.entries) == 1
+    manifest_provider_task_id = (
+        provider_task_id if single_segment else manifest.provider_task_id
+    )
     payload = manifest.model_dump(mode="python")
     payload.update({
         "status": status,
         "physical_video": physical_video,
-        "provider_task_id": provider_task_id,
+        "provider_task_id": manifest_provider_task_id,
         **updates,
     })
     payload["entries"] = [
@@ -492,7 +496,9 @@ def _manifest_with_status(
             **entry.model_dump(mode="python"),
             "status": status,
             "physical_video": physical_video,
-            "provider_task_id": provider_task_id,
+            "provider_task_id": (
+                provider_task_id if single_segment else entry.provider_task_id
+            ),
         }
         for entry in manifest.entries
     ]
@@ -514,16 +520,54 @@ def _append_attempt(
             entries.append(entry)
             continue
         expected = len(entry.attempts) + 1
-        if evidence.attempt != expected:
-            raise ValueError(
-                f"next attempt for segment {segment_id} must be {expected}"
-            )
+        attempts = entry.attempts
+        if evidence.attempt == expected:
+            attempts = (*attempts, evidence)
+        elif attempts and evidence.attempt == attempts[-1].attempt:
+            if (
+                attempts[-1].status != "submitted"
+                or evidence.status not in {"completed", "transport_failed"}
+            ):
+                raise ValueError(
+                    f"cannot replace attempt {evidence.attempt} for segment {segment_id}"
+                )
+            attempts = (*attempts[:-1], evidence)
+        else:
+            raise ValueError(f"next attempt for segment {segment_id} must be {expected}")
         entries.append(entry.model_copy(update={
-            "attempts": (*entry.attempts, evidence),
+            "attempts": attempts,
         }))
     return H3DirectorOutputManifest.model_validate({
         **manifest.model_dump(mode="python"),
         "entries": tuple(entries),
+    })
+
+
+def _manifest_with_segment_status(
+    manifest: H3DirectorOutputManifest,
+    segment_id: str,
+    status: str,
+    *,
+    provider_task_id: str | None,
+) -> H3DirectorOutputManifest:
+    if not any(
+        entry.segment.segment_id == segment_id for entry in manifest.entries
+    ):
+        raise ValueError(f"unknown segment: {segment_id}")
+    entries = tuple(
+        entry.model_copy(update={
+            "status": status,
+            "provider_task_id": provider_task_id,
+        })
+        if entry.segment.segment_id == segment_id else entry
+        for entry in manifest.entries
+    )
+    return H3DirectorOutputManifest.model_validate({
+        **manifest.model_dump(mode="python"),
+        "provider_task_id": (
+            provider_task_id if len(entries) == 1 else manifest.provider_task_id
+        ),
+        "entries": entries,
     })
 
 
@@ -537,13 +581,17 @@ def _finalize_segment_manifest(
     actual_output: Mapping[str, int],
     **updates: Any,
 ) -> H3DirectorOutputManifest:
-    partial = bool(failed_ids)
-    terminal = "transport_failed" if partial else "completed"
+    if failed_ids and generated:
+        terminal = "partial_failure"
+    elif failed_ids:
+        terminal = "transport_failed"
+    else:
+        terminal = "completed"
     finalized = _manifest_with_status(
         manifest,
         terminal,
         physical_video=physical_video,
-        provider_task_id=None if partial else manifest.provider_task_id,
+        provider_task_id=None if failed_ids else manifest.provider_task_id,
         provider_parameters=dict(provider_parameters),
         actual_output=dict(actual_output),
         **updates,
@@ -970,20 +1018,22 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
 
                 async def on_provider_submitted(provider_task_id: str) -> None:
                     nonlocal manifest
-                    manifest = _manifest_with_status(
-                        manifest,
-                        "submitted",
-                        provider_task_id=provider_task_id,
-                    )
                     entry = next(
                         item for item in manifest.entries
                         if item.segment.segment_id == segment.segment_id
+                    )
+                    attempt = len(entry.attempts) + 1
+                    manifest = _manifest_with_segment_status(
+                        manifest,
+                        segment.segment_id,
+                        "submitted",
+                        provider_task_id=provider_task_id,
                     )
                     manifest = _append_attempt(
                         manifest,
                         segment.segment_id,
                         H3GenerationAttemptEvidence(
-                            attempt=len(entry.attempts) + 1,
+                            attempt=attempt,
                             status="submitted",
                             provider_task_id=provider_task_id,
                         ),
@@ -1011,11 +1061,23 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         entry.attempts[-1].provider_task_id
                         if entry.attempts else None
                     )
+                    attempt = (
+                        entry.attempts[-1].attempt
+                        if entry.attempts
+                        and entry.attempts[-1].status == "submitted"
+                        else len(entry.attempts) + 1
+                    )
+                    manifest = _manifest_with_segment_status(
+                        manifest,
+                        segment.segment_id,
+                        "transport_failed",
+                        provider_task_id=provider_task_id,
+                    )
                     manifest = _append_attempt(
                         manifest,
                         segment.segment_id,
                         H3GenerationAttemptEvidence(
-                            attempt=len(entry.attempts) + 1,
+                            attempt=attempt,
                             status="transport_failed",
                             provider_task_id=provider_task_id,
                             error_code=type(exc).__name__,
@@ -1032,11 +1094,23 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         current for current in manifest.entries
                         if current.segment.segment_id == segment.segment_id
                     )
+                    attempt = (
+                        entry.attempts[-1].attempt
+                        if entry.attempts
+                        and entry.attempts[-1].status == "submitted"
+                        else len(entry.attempts) + 1
+                    )
+                    manifest = _manifest_with_segment_status(
+                        manifest,
+                        segment.segment_id,
+                        "completed",
+                        provider_task_id=item.provider_task_id,
+                    )
                     manifest = _append_attempt(
                         manifest,
                         segment.segment_id,
                         H3GenerationAttemptEvidence(
-                            attempt=len(entry.attempts) + 1,
+                            attempt=attempt,
                             status="completed",
                             provider_task_id=item.provider_task_id,
                         ),
