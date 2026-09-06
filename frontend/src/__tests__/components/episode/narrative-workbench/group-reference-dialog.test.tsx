@@ -117,7 +117,7 @@ describe("GroupReferenceDialog", () => {
       providerId: "grsai-main",
       model: "gpt-image-2",
       imageSize: "1K",
-      allowUnconstrained: false,
+      allowUnconstrained: true,
       saveAsProjectDefault: false,
     });
   });
@@ -198,7 +198,7 @@ describe("GroupReferenceDialog", () => {
       providerId: "grsai-main",
       model: "gpt-image-2",
       imageSize: "1K",
-      allowUnconstrained: false,
+      allowUnconstrained: true,
       saveAsProjectDefault: false,
     });
   });
@@ -212,5 +212,49 @@ describe("GroupReferenceDialog", () => {
 
     expect(screen.getByRole("checkbox", { name: "添加引用 苏清晏（少女）" })).not.toBeChecked();
     expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
+  });
+
+  it("blocks unresolved draft references and confirms missing references as ignored", () => {
+    const unresolvedPreview: NarrativeGroupReferencePreview = {
+      ...preview,
+      requirements: [
+        {
+          id: "scene_variant:hall:rain", kind: "scene_variant", entity_id: "hall",
+          variant_id: "rain", shot_ids: ["shot-1"], required: true, label: "大厅 / 雨夜",
+          status: "draft_variant", candidate_asset_ids: ["hall-rain"],
+          available_actions: ["confirm_draft"], bindings: [],
+        },
+        {
+          id: "prop:letter", kind: "prop", entity_id: "letter", shot_ids: ["shot-2"],
+          required: true, label: "密信", status: "missing_asset", candidate_asset_ids: [],
+          available_actions: ["choose_prop", "upload", "ignore"], bindings: [],
+        },
+      ],
+    };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { onSubmit } = renderDialog({ preview: unresolvedPreview });
+
+    expect(screen.getByText("待处理问题")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /生成/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "确认使用草稿 大厅 / 雨夜" }));
+    fireEvent.click(screen.getByRole("button", { name: "忽略 密信" }));
+    expect(confirm).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成（忽略 1 项）" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      referenceResolution: { decisions: [
+        { requirement_id: "scene_variant:hall:rain", action: "confirm_draft", asset_id: "hall-rain" },
+        { requirement_id: "prop:letter", action: "ignore" },
+      ] },
+    }));
+    confirm.mockRestore();
+  });
+
+  it("defaults unconstrained rendering to allowed while still honoring deselection", () => {
+    renderDialog({ stage: "render", sketchReady: false });
+    const checkbox = screen.getByRole("checkbox", { name: /允许无草图约束生成/ });
+    expect(checkbox).toBeChecked();
+    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeEnabled();
+    fireEvent.click(checkbox);
+    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeDisabled();
   });
 });

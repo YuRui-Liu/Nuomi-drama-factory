@@ -135,6 +135,24 @@ def test_upload_id_is_server_resolved(tmp_path):
     assert asdict(snapshot.images[0])["resolution"] == "temporary"
 
 
+def test_free_project_asset_and_upload_are_added_to_snapshot(tmp_path):
+    asset_path = _image(tmp_path / "assets" / "props" / "letter.png")
+    asset = ResolvedProjectAsset("asset-1", asset_path, "prop", "letter")
+    upload = save_reference_upload(tmp_path, _png(), "image/png", "mood.png")
+
+    snapshot = build_reference_snapshot(
+        _preview(), [], project_dir=tmp_path,
+        project_assets={asset.asset_id: asset}, uploads={upload.upload_id: upload},
+        additional_asset_ids=[asset.asset_id],
+        additional_upload_ids=[upload.upload_id],
+    )
+
+    assert [(item.source_id, item.resolution) for item in snapshot.images] == [
+        (asset.asset_id, "project_asset"),
+        (upload.upload_id, "temporary"),
+    ]
+
+
 def test_snapshot_rejects_more_than_nine_images(tmp_path):
     requirements = tuple(
         _requirement(tmp_path, id=f"prop:{index}") for index in range(10)

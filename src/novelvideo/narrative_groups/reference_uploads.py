@@ -327,8 +327,6 @@ def _persistence_request(
     *, requirement_id: str, asset_kind: str, target_entity_id: str,
     base_entity_id: str, variant_id: str, upload_id: str, extension: str,
 ) -> PersistenceRequest:
-    if not requirement_id.strip():
-        raise InvalidReferenceUpload("requirement_id is required for persistence")
     if asset_kind not in {"character_identity", "scene_base", "scene_variant", "prop"}:
         raise InvalidReferenceUpload("valid asset_kind is required for persistence")
     if not target_entity_id.strip():

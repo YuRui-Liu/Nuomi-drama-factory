@@ -503,13 +503,13 @@ async def _reference_persistence_target(
 ) -> Path:
     target = target_entity_id.strip()
     if asset_kind == "prop":
-        if requirement_id != f"prop:{target}" or not target:
+        if (requirement_id and requirement_id != f"prop:{target}") or not target:
             raise HTTPException(status_code=422, detail="Invalid prop persistence target")
         if await store.get_prop(target) is None:
             raise HTTPException(status_code=422, detail="Target prop does not exist")
         return canonical_prop_reference_path(project_dir, target)
     if asset_kind == "scene_base":
-        if requirement_id != f"scene_base:{target}" or not target:
+        if (requirement_id and requirement_id != f"scene_base:{target}") or not target:
             raise HTTPException(status_code=422, detail="Invalid scene persistence target")
         scene = await store.get_scene_exact(target)
         if scene is None or str(getattr(scene, "base_scene_id", "") or "").strip():
@@ -520,7 +520,7 @@ async def _reference_persistence_target(
         variant = variant_id.strip()
         if (
             not target or not base or not variant
-            or requirement_id != f"scene_variant:{base}:{variant}"
+            or (requirement_id and requirement_id != f"scene_variant:{base}:{variant}")
         ):
             raise HTTPException(status_code=422, detail="Invalid scene variant target")
         scene = await store.get_scene_exact(target)
@@ -532,7 +532,7 @@ async def _reference_persistence_target(
             raise HTTPException(status_code=422, detail="Target scene variant does not exist")
         return canonical_scene_master_path(project_dir, target)
     if asset_kind == "character_identity":
-        if requirement_id != f"character_identity:{target}" or not target:
+        if (requirement_id and requirement_id != f"character_identity:{target}") or not target:
             raise HTTPException(status_code=422, detail="Invalid identity persistence target")
         characters = await store.list_characters()
         character = next((
@@ -1159,14 +1159,16 @@ async def _enqueue_group_action(
             )
             assets = await _project_reference_assets(store, resolved.project_dir)
             decisions = request.reference_resolution.decisions
-            uploads = {
-                item.upload_id: upload
-                for item in decisions
-                if item.upload_id
-                and (upload := load_reference_upload(
-                    resolved.project_dir, item.upload_id
-                )) is not None
-            }
+            additional_upload_ids = request.reference_resolution.additional_upload_ids
+            requested_upload_ids = [
+                *(item.upload_id for item in decisions if item.upload_id),
+                *additional_upload_ids,
+            ]
+            uploads = {}
+            for upload_id in requested_upload_ids:
+                upload = load_reference_upload(resolved.project_dir, upload_id)
+                if upload is not None:
+                    uploads[upload_id] = upload
             style_asset_id = request.reference_resolution.style_asset_id
             if style_asset_id and style_asset_id not in assets:
                 raise HTTPException(status_code=422, detail="Unknown style asset ID")
@@ -1181,6 +1183,8 @@ async def _enqueue_group_action(
                     project_dir=resolved.project_dir,
                     project_assets=assets,
                     uploads=uploads,
+                    additional_asset_ids=request.reference_resolution.additional_asset_ids,
+                    additional_upload_ids=additional_upload_ids,
                     style_reference=(
                         assets[style_asset_id].image_path
                         if style_asset_id in assets else None

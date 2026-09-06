@@ -53,6 +53,8 @@ export interface NarrativeReferenceDecision {
 export interface NarrativeReferenceResolution {
   decisions: NarrativeReferenceDecision[];
   style_asset_id?: string;
+  additional_asset_ids?: string[];
+  additional_upload_ids?: string[];
 }
 
 export interface NarrativeReferenceCandidate {
@@ -480,6 +482,12 @@ export function narrativeGroupActionPayload(input: {
     if (input.selection.referenceResolution) {
       payload.reference_resolution = {
         decisions: input.selection.referenceResolution.decisions,
+        ...(input.selection.referenceResolution.additional_asset_ids?.length
+          ? { additional_asset_ids: input.selection.referenceResolution.additional_asset_ids }
+          : {}),
+        ...(input.selection.referenceResolution.additional_upload_ids?.length
+          ? { additional_upload_ids: input.selection.referenceResolution.additional_upload_ids }
+          : {}),
         ...(input.selection.referenceResolution.style_asset_id
           ? { style_asset_id: input.selection.referenceResolution.style_asset_id }
           : {}),

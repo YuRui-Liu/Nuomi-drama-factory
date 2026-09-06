@@ -183,6 +183,8 @@ def build_reference_snapshot(
     project_dir: Path,
     project_assets: Mapping[str, ResolvedProjectAsset] | None = None,
     uploads: Mapping[str, ReferenceUpload] | None = None,
+    additional_asset_ids: Sequence[str] = (),
+    additional_upload_ids: Sequence[str] = (),
     style_reference: str | None = None,
     max_images: int = 9,
 ) -> ReferenceDecisionSnapshot:
@@ -272,6 +274,33 @@ def build_reference_snapshot(
         raise UnresolvedReferenceRequirements(
             "unresolved reference requirements: " + ", ".join(unresolved)
         )
+
+    for asset_id in dict.fromkeys(additional_asset_ids):
+        asset = asset_lookup.get(asset_id)
+        if asset is None or asset.asset_id != asset_id:
+            raise InvalidReferenceDecisions("unknown additional project asset")
+        images.append(SnapshotReferenceImage(
+            requirement_id="",
+            source="project_asset",
+            source_id=asset.asset_id,
+            asset_kind=asset.asset_kind,
+            image_path=_validated_path(asset.image_path, (assets_root,)),
+            resolution="project_asset",
+        ))
+    for upload_id in dict.fromkeys(additional_upload_ids):
+        upload = upload_lookup.get(upload_id)
+        if upload is None or upload.upload_id != upload_id:
+            raise InvalidReferenceDecisions("unknown additional upload")
+        images.append(SnapshotReferenceImage(
+            requirement_id="",
+            source="upload",
+            source_id=upload.upload_id,
+            asset_kind="additional",
+            image_path=_validated_path(
+                upload.image_path, (assets_root, upload_root), expected_mime=upload.mime_type
+            ),
+            resolution="temporary" if upload.temporary else "project_asset",
+        ))
 
     safe_style = _validated_path(style_reference, (assets_root,)) if style_reference else ""
     count = len(images) + bool(safe_style)

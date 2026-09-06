@@ -49,6 +49,8 @@ class NarrativeReferenceResolutionRequest(BaseModel):
 
     decisions: list[NarrativeReferenceDecisionRequest] = Field(default_factory=list)
     style_asset_id: str = ""
+    additional_asset_ids: list[str] = Field(default_factory=list)
+    additional_upload_ids: list[str] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):
