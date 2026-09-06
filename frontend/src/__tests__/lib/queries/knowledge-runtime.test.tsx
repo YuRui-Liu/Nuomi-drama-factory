@@ -179,6 +179,8 @@ it("loads and saves the supported RunningHub workflow IDs", async () => {
   const workflows = {
     image_upscale: "1001",
     video_minimax_h3: "2087934731806658562",
+    video_minimax_h3_ref: "2096502793044582401",
+    video_minimax_h3_ref_max_images: 5,
     tts_qwen3_voice_design: "3003",
     tts_indextts2_voice_clone: "4004",
   };

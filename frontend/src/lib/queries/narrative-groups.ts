@@ -46,6 +46,33 @@ export interface NarrativeGroupReferencePreview {
   warnings: string[];
 }
 
+export type VideoReferenceSourceKind =
+  | "character_identity"
+  | "scene_master"
+  | "prop_reference"
+  | "temporary_upload";
+
+export interface VideoReferenceCandidate {
+  reference_id: string;
+  source_kind: VideoReferenceSourceKind;
+  label: string;
+  subject_description: string;
+  thumbnail_url?: string | null;
+}
+
+export interface VideoReferenceSelection {
+  reference_id: string;
+  subject_description: string;
+}
+
+export interface VideoReferencePreview {
+  revision: number;
+  max_images: number;
+  candidates: VideoReferenceCandidate[];
+  selected: VideoReferenceSelection[];
+  warnings: string[];
+}
+
 export interface NarrativeGroupGenerationSelection {
   useStyle: boolean;
   selectedCharacterReferenceIds: string[];
@@ -262,6 +289,30 @@ export function narrativeGroupVideoPromptsPath(project: string, episode: number,
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/prompts`;
 }
 
+export function narrativeGroupVideoReferencePreviewPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/reference-preview`;
+}
+
+export function narrativeGroupVideoReferenceUploadPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/reference-uploads`;
+}
+
+export function narrativeGroupVideoReferencesPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/references`;
+}
+
+export function narrativeGroupVideoReferencePreviewQueryKey(
+  project: string, episode: number, groupId: string,
+) {
+  return [...queryKeys.narrativeGroups(project, episode), groupId, "video", "reference-preview"] as const;
+}
+
 /** Exact backend task scope for one narrative-group stage revision. */
 export function narrativeGroupTaskScope(
   groupId: string,
@@ -287,6 +338,7 @@ export function narrativeGroupVideoPayload(input: {
   revision: number;
   planRevision?: number;
   settingsRevision?: number;
+  referenceRevision?: number;
   aspectRatio: "9:16" | "16:9";
   resolution?: string;
 }) {
@@ -296,6 +348,7 @@ export function narrativeGroupVideoPayload(input: {
     revision: input.revision,
     ...(input.planRevision !== undefined ? { plan_revision: input.planRevision } : {}),
     ...(input.settingsRevision !== undefined ? { settings_revision: input.settingsRevision } : {}),
+    ...(input.referenceRevision !== undefined ? { reference_revision: input.referenceRevision } : {}),
     aspect_ratio: input.aspectRatio,
     ...(input.resolution ? { resolution: input.resolution } : {}),
   };
@@ -445,17 +498,20 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }: {
+    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
       revision: number;
       planRevision?: number;
       settingsRevision?: number;
+      referenceRevision?: number;
       aspectRatio: "9:16" | "16:9";
       resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }),
+      json: narrativeGroupVideoPayload({
+        model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution,
+      }),
     }).json<TaskResponse>(),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
@@ -552,6 +608,75 @@ export function useNarrativeGroupReferences(
       narrativeGroupReferencePath(project, episode, groupId, stage), { signal },
     ).json<ApiResponse<NarrativeGroupReferencePreview>>(),
     enabled: enabled && !!project && episode > 0 && !!groupId,
+  });
+}
+
+export function useNarrativeGroupVideoReferencePreview(
+  project: string,
+  episode: number,
+  groupId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, groupId),
+    queryFn: ({ signal }) => api.get(
+      narrativeGroupVideoReferencePreviewPath(project, episode, groupId), { signal },
+    ).json<ApiResponse<VideoReferencePreview>>(),
+    enabled,
+  });
+}
+
+function invalidateNarrativeGroupVideoReferenceQueries(
+  qc: ReturnType<typeof useQueryClient>,
+  project: string,
+  episode: number,
+  groupId: string,
+) {
+  return Promise.all([
+    qc.invalidateQueries({
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, groupId),
+      exact: true,
+    }),
+    qc.invalidateQueries({
+      queryKey: queryKeys.narrativeGroups(project, episode),
+      exact: true,
+    }),
+  ]);
+}
+
+export function useUploadNarrativeGroupVideoReference(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, file }: { groupId: string; file: File }) => {
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      return api.post(narrativeGroupVideoReferenceUploadPath(project, episode, groupId), {
+        body: formData,
+      }).json<ApiResponse<VideoReferenceCandidate>>();
+    },
+    onSuccess: (_response, input) => qc.invalidateQueries({
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, input.groupId),
+      exact: true,
+    }),
+  });
+}
+
+export function useUpdateNarrativeGroupVideoReferences(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, expectedRevision, references }: {
+      groupId: string;
+      expectedRevision: number;
+      references: VideoReferenceSelection[];
+    }) => api.put(narrativeGroupVideoReferencesPath(project, episode, groupId), {
+      json: {
+        expected_revision: expectedRevision,
+        references,
+      },
+    }).json<ApiResponse<VideoReferencePreview>>(),
+    onSuccess: (_response, input) => invalidateNarrativeGroupVideoReferenceQueries(
+      qc, project, episode, input.groupId,
+    ),
   });
 }
 

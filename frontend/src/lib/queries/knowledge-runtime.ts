@@ -78,6 +78,8 @@ export interface SaveMediaProviderInput {
 export interface RunningHubWorkflowSettings {
   image_upscale: string;
   video_minimax_h3: string;
+  video_minimax_h3_ref: string;
+  video_minimax_h3_ref_max_images: number;
   tts_qwen3_voice_design: string;
   tts_indextts2_voice_clone: string;
 }
