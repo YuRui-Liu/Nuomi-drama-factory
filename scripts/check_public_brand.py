@@ -20,12 +20,12 @@ _PUBLIC_FILES = {
     "SECURITY.md",
     "NOTICE",
     "frontend/index.html",
+    ".github/PULL_REQUEST_TEMPLATE.md",
 }
 _PUBLIC_TREES = (
-    "docs/en/",
-    "docs/zh/",
-    "docs/cookbook/",
+    "docs/",
     ".github/ISSUE_TEMPLATE/",
+    ".github/PULL_REQUEST_TEMPLATE/",
     "frontend/src/",
 )
 _TEXT_SUFFIXES = {
@@ -48,7 +48,7 @@ _BRAND = re.compile(r"dramaclaw", re.IGNORECASE)
 _ALLOWED_OCCURRENCES = re.compile(
     r"(?<![A-Za-z0-9_])DRAMACLAW_[A-Z0-9_]+(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_])dramaclaw_[a-z0-9_]+(?![A-Za-z0-9_])"
-    r"|https://nfg-web-assets\.cdnfg\.com/dramaclaw(?:/[^\s\"'<>)]*)?"
+    r"|https://nfg-web-assets\.cdnfg\.com/dramaclaw/[^\s\"'<>)]*"
 )
 
 

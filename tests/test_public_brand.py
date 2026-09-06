@@ -65,15 +65,29 @@ def test_scan_text_rejects_identifiers_without_exact_case_and_boundaries() -> No
     ]
 
 
+def test_scan_text_rejects_cdn_paths_without_an_exact_brand_segment() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("README.md"),
+        "https://nfg-web-assets.cdnfg.com/dramaclawX/poster.webp",
+    ) == ["README.md:1"]
+
+
 def test_public_paths_include_docs_and_frontend_but_exclude_internal_content() -> None:
     scanner = _load_scanner()
 
     assert scanner.is_public_path(Path("docs/en/guide.md"))
     assert scanner.is_public_path(Path("docs/cookbook/example.md"))
+    assert scanner.is_public_path(Path("docs/releasing.md"))
+    assert scanner.is_public_path(Path("docs/operations/runbook.md"))
     assert scanner.is_public_path(Path(".github/ISSUE_TEMPLATE/bug.yml"))
+    assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE.md"))
+    assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE/release.md"))
     assert scanner.is_public_path(Path("frontend/src/components/header.tsx"))
     assert not scanner.is_public_path(Path("docs/plans/migration.md"))
     assert not scanner.is_public_path(Path("docs/superpowers/spec.md"))
+    assert not scanner.is_public_path(Path(".github/workflows/ci.yml"))
     assert not scanner.is_public_path(Path("package-lock.json"))
     assert not scanner.is_public_path(Path("LICENSES/vendor.txt"))
     assert not scanner.is_public_path(Path("src/novelvideo/hermes/dramaclaw.py"))
