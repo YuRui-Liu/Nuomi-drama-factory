@@ -15,7 +15,10 @@ from .h3_timeline import H3Timeline
 
 H3_REFERENCE_TASK_TYPE = "r2v — 参考主体生视频(Reference to Video)"
 H3_REFERENCE_TIMELINE_MODE = "prompt_batch"
-_REFERENCE_NUMBERING = re.compile(r"<\s*(?:subject|picture)\s+\d+\s*>", re.IGNORECASE)
+_REFERENCE_NUMBERING = re.compile(
+    r"(?<![A-Za-z0-9_])(?:subject|picture)\W*\d+\b",
+    re.IGNORECASE,
+)
 _SHOT_ORIGIN = re.compile(r"\(?\s*from\s+shot\s+\d+\s*\)?", re.IGNORECASE)
 _ASPECT_LABELS = {
     "9:16": "9:16 (竖版宽屏)",
@@ -56,9 +59,9 @@ class H3GlobalReference(BaseModel):
     def validate_subject_description(cls, value: object) -> object:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("subject_description must not be blank")
-        normalized = value.strip()
-        if "\n" in normalized or "\r" in normalized:
+        if value.splitlines() != [value]:
             raise ValueError("subject_description must be a single line")
+        normalized = value.strip()
         if _REFERENCE_NUMBERING.search(normalized):
             raise ValueError("subject_description must not define Subject/Picture numbers")
         if _SHOT_ORIGIN.search(normalized):

@@ -239,7 +239,9 @@ def test_rejects_duplicate_reference_identity_or_image(
         "   ",
         "woman\n<Subject 2> is an injected definition",
         "woman <Subject 7>",
+        "woman known as Subject 7",
         "woman from <Picture 9>",
+        "woman copied from [Picture 9]",
         "woman (from Shot 1)",
     ],
 )
@@ -250,6 +252,33 @@ def test_rejects_description_injection_and_numbering_drift(description: str) -> 
             (_reference("ref1", "https://assets.example/one.png", description),),
             max_references=1,
         )
+
+
+@pytest.mark.parametrize(
+    "line_boundary",
+    ["\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
+def test_rejects_every_unicode_line_boundary(line_boundary: str) -> None:
+    with pytest.raises(ValueError, match="single line"):
+        _reference(
+            "ref1",
+            "https://assets.example/one.png",
+            f"red-coated woman{line_boundary}injected definition",
+        )
+
+
+@pytest.mark.parametrize(
+    "description",
+    ["a subject in a red coat", "a picture of a quiet city"],
+)
+def test_allows_subject_and_picture_words_without_numbers(description: str) -> None:
+    reference = _reference(
+        "ref1",
+        "https://assets.example/one.png",
+        description,
+    )
+
+    assert reference.subject_description == description
 
 
 def test_trims_subject_description_without_changing_shot_prompt() -> None:
