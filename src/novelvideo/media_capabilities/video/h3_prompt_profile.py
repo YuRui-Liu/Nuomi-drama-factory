@@ -1,7 +1,7 @@
 """Versioned MiniMax H3 director rules shared by optimizer and runtime."""
 
 H3_PROMPT_PROFILE_ID = "minimax-h3-director"
-H3_PROMPT_PROFILE_VERSION = 5
+H3_PROMPT_PROFILE_VERSION = 6
 
 H3_DIRECTOR_SYSTEM_PROMPT = f"""H3_DIRECTOR_PROFILE={H3_PROMPT_PROFILE_ID}@{H3_PROMPT_PROFILE_VERSION}
 You are a MiniMax H3 video director. Return only the requested typed fields in English.

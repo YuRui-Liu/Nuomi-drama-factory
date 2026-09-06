@@ -76,6 +76,28 @@ class H3PromptContext(BaseModel):
     continuity_contracts_json: str = ""
     risk_report_json: str = ""
 
+    @field_validator("continuity_locks")
+    @classmethod
+    def validate_continuity_locks(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if sum(len(value.encode("utf-8")) for value in values) > (
+            _MAX_CONTINUITY_JSON_BYTES
+        ):
+            raise ValueError("continuity locks must not exceed 65536 bytes")
+        for value in values:
+            if any(unicodedata.category(char) == "Cc" for char in value):
+                raise ValueError(
+                    "continuity locks must not contain a control character"
+                )
+            lowered = value.casefold()
+            if any(
+                token in lowered
+                for token in _RESERVED_CONTINUITY_RENDER_TOKENS
+            ):
+                raise ValueError(
+                    "continuity locks contain a reserved rendering token"
+                )
+        return values
+
     @field_validator("continuity_contracts_json", "risk_report_json")
     @classmethod
     def validate_continuity_json(cls, value: str) -> str:
