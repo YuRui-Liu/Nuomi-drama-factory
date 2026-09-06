@@ -6,6 +6,11 @@ from .builder import (
     contracts_for_segment,
     director_world_binding,
 )
+from .compiler import (
+    H3_SHOT_COMPILER_VERSION,
+    compile_shot_bundle,
+    continuity_locks_for,
+)
 from .hashing import canonical_sha256
 from .mode_selector import select_h3_mode
 from .models import (
@@ -51,6 +56,7 @@ __all__ = [
     "FrameEvidence",
     "H3ModeDecision",
     "H3ReferenceBinding",
+    "H3_SHOT_COMPILER_VERSION",
     "LightingLock",
     "PropLock",
     "RiskDimensionScore",
@@ -64,6 +70,8 @@ __all__ = [
     "build_shot_continuity_contract",
     "canonical_sha256",
     "continuity_score",
+    "compile_shot_bundle",
+    "continuity_locks_for",
     "contracts_for_segment",
     "director_world_binding",
     "identity_score",

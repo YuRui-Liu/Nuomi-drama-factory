@@ -59,6 +59,9 @@ class H3PromptContext(BaseModel):
     model_id: str = Field(min_length=1)
     dialogue_required: bool = False
     director_context: str = ""
+    continuity_locks: tuple[str, ...] = ()
+    continuity_contracts_json: str = ""
+    risk_report_json: str = ""
 
 
 H3PromptStructuredOutput = H3DirectorPlan
@@ -92,6 +95,10 @@ def compile_and_gate_h3_plan(
         raise ValueError(
             f"director plan mode {plan.mode.value!r} does not match {mode.value!r}"
         )
+    merged_locks = tuple(
+        dict.fromkeys((*plan.continuity_locks, *context.continuity_locks))
+    )
+    plan = plan.model_copy(update={"continuity_locks": merged_locks})
     normalized = normalize_h3_action_timeline(plan)
     report = inspect_h3_plan(normalized, segment=segment, context=context)
     report.raise_for_failure()
@@ -373,6 +380,9 @@ Next context: {context.next_summary}
 Picture 1 SHA-256: {context.first_frame_sha256}
 Picture 2 SHA-256: {context.last_frame_sha256 or 'not supplied'}
 Director-stage constraints: {context.director_context or 'none supplied; use only source and frame facts'}
+Continuity locks: {context.continuity_locks or 'none supplied'}
+Continuity contracts JSON: {context.continuity_contracts_json or 'none supplied'}
+Risk report JSON: {context.risk_report_json or 'none supplied'}
 """
 
 

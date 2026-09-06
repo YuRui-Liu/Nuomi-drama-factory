@@ -119,7 +119,7 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.cache_hit is True
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
-    assert snapshot["prompt_profile_version"] == 4
+    assert snapshot["prompt_profile_version"] == 5
     assert snapshot["compiler_version"] == 1
 
 
@@ -389,7 +389,12 @@ async def test_optimizer_hashes_unsafe_segment_id_for_cache_path(tmp_path):
 
 def test_h3_task_contains_versioned_director_rules_and_context():
     context = _context().model_copy(
-        update={"director_context": '{"camera":{"azim":12},"actors":[{"name":"林默"}]}' }
+        update={
+            "director_context": '{"camera":{"azim":12},"actors":[{"name":"林默"}]}',
+            "continuity_locks": ("cup stays in right hand",),
+            "continuity_contracts_json": '{"shot_id":"shot-1"}',
+            "risk_report_json": '{"continuity":{"level":1}}',
+        }
     )
 
     task = h3_prompt_optimizer._build_task(_segment(), context, H3Mode.FL2VA)
@@ -402,6 +407,41 @@ def test_h3_task_contains_versioned_director_rules_and_context():
     assert "teleport" in task and "Picture 2" in task
     assert "invent visible text, UI" in task
     assert "林默" in task
+    assert task.index("Director-stage constraints") < task.index("Continuity locks")
+    assert "cup stays in right hand" in task
+    assert '{"shot_id":"shot-1"}' in task
+    assert '{"continuity":{"level":1}}' in task
+
+
+def test_optimizer_hash_changes_when_contract_locks_change():
+    left = _context().model_copy(
+        update={"continuity_locks": ("cup in right hand",)}
+    )
+    right = _context().model_copy(
+        update={"continuity_locks": ("cup in left hand",)}
+    )
+
+    assert h3_prompt_optimizer._input_hash(
+        _segment(), left, H3Mode.I2VA
+    ) != h3_prompt_optimizer._input_hash(_segment(), right, H3Mode.I2VA)
+
+
+def test_compile_and_gate_merges_contract_locks_before_wire_compile():
+    context = _context().model_copy(
+        update={"continuity_locks": ("preserve identity", "cup stays in right hand")}
+    )
+
+    result = h3_prompt_optimizer.compile_and_gate_h3_plan(
+        _director_plan(),
+        segment=_segment(),
+        context=context,
+        mode=H3Mode.I2VA,
+        input_hash="a" * 64,
+    )
+
+    assert result.plan.continuity_locks.count("preserve identity") == 1
+    assert "cup stays in right hand" in result.plan.continuity_locks
+    assert "cup stays in right hand" in result.prompt
 
 
 def test_shared_compile_and_quality_gate_rejects_mode_mismatch():
