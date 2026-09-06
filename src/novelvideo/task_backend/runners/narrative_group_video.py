@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -48,6 +49,8 @@ from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    delete_h3_reference_input_snapshot,
+    garbage_collect_h3_reference_input_snapshots,
     generate_h3_reference_director_video,
     load_h3_reference_input_snapshot,
 )
@@ -119,32 +122,17 @@ async def _reference_execution_snapshot(
     reference_limit: int,
     provider_workflow_id: str,
     reference_snapshot_id: str,
+    reference_snapshot_digest: str,
 ):
-    from novelvideo.api.deps import (
-        get_media_capability_store,
-        get_media_credential_resolver,
-    )
-
-    if int(reference_limit) != int(workflow.reference_policy.max_images):
-        raise ValueError("queued reference limit changed from workflow definition")
+    del workflow
+    if not 1 <= int(reference_limit) <= 10:
+        raise ValueError("queued reference limit is invalid")
+    if not str(provider_workflow_id).strip():
+        raise ValueError("provider_workflow_id is required")
     if not str(reference_snapshot_id).strip():
         raise ValueError("reference_snapshot_id is required")
-    runtime = _load_reference_runtime_configuration(
-        get_media_capability_store(), get_media_credential_resolver()
-    )
-    current_workflow_id = runtime.workflow_id_for_key(
-        workflow.workflow_settings_key
-    )
-    if str(current_workflow_id) != str(provider_workflow_id):
-        raise ValueError("queued provider workflow changed from runtime configuration")
-
-
-def _load_reference_runtime_configuration(*args):
-    from novelvideo.media_capabilities.runtime.configuration import (
-        load_runninghub_runtime_configuration,
-    )
-
-    return load_runninghub_runtime_configuration(*args)
+    if re.fullmatch(r"[0-9a-f]{64}", str(reference_snapshot_digest)) is None:
+        raise ValueError("reference_snapshot_digest is required")
 
 
 def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, ...]:
@@ -159,6 +147,21 @@ def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, .
         )
         for index, reference in enumerate(references, start=1)
     )
+
+
+def _delete_terminal_reference_snapshot(
+    ctx: ProjectContext, payload: Mapping[str, Any]
+) -> None:
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
+        return
+    try:
+        delete_h3_reference_input_snapshot(
+            state_root=ctx.state_dir, snapshot_id=snapshot_id
+        )
+    except (OSError, ValueError):
+        # TTL GC will recover an orphan that cannot be removed at terminal time.
+        pass
 
 
 async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[str, Any]]:
@@ -864,6 +867,15 @@ async def run_video_segments(
 
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
+    state_root = getattr(ctx, "state_dir", None)
+    if state_root is not None:
+        try:
+            garbage_collect_h3_reference_input_snapshots(
+                state_root=state_root,
+                protected_ids=(str(payload.get("reference_snapshot_id") or ""),),
+            )
+        except (OSError, ValueError):
+            pass
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     project_dir = _project_dir(payload, ctx)
     group_id = str(payload["group_id"])
@@ -874,6 +886,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         workflow_parameters = {"resolution": str(payload.get("resolution") or "720p")}
     saved = stage_payload(project_dir, episode, group_id, "video")
     if saved["revision"] != revision:
+        _delete_terminal_reference_snapshot(ctx, payload)
         return {"status": "stale", "group_id": group_id, "revision": revision}
     plan_revision = payload.get("plan_revision")
     saved_plan_revision = (saved.get("video_plan") or {}).get("revision")
@@ -881,6 +894,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         plan_revision is not None
         and int(plan_revision) != int(saved_plan_revision or 0)
     ):
+        _delete_terminal_reference_snapshot(ctx, payload)
         return {"status": "stale", "group_id": group_id, "revision": revision}
     workflow = _workflow_definition_for_payload(payload)
     materialized_group = None
@@ -889,9 +903,14 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     reference_limit = None
     provider_workflow_id = None
     reference_snapshot_id = None
+    reference_snapshot_digest = None
     frozen_frames = None
     reference_policy = getattr(workflow, "reference_policy", None)
-    if getattr(reference_policy, "required", False):
+    reference_required = (
+        getattr(reference_policy, "required", False)
+        or workflow.adapter_key == "minimax-h3-ref"
+    )
+    if reference_required:
         contract_version = payload.get("reference_contract_version")
         if isinstance(contract_version, bool) or contract_version != 1:
             raise ValueError("reference_contract_version 1 is required")
@@ -906,35 +925,44 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         if not provider_workflow_id:
             raise ValueError("provider_workflow_id is required")
         reference_snapshot_id = str(payload.get("reference_snapshot_id") or "").strip()
-        materialized_group = next(
-            group for group in load_materialized_groups(project_dir, episode)
-            if group.id == group_id
-        )
-        requested_reference_revision = payload.get("reference_revision")
-        reference_revision = materialized_group.video_reference_settings.revision
-        if (
-            requested_reference_revision is None
-            or int(requested_reference_revision) != int(reference_revision)
-        ):
-            return {"status": "stale", "group_id": group_id, "revision": revision}
-        await _reference_execution_snapshot(
-            workflow=workflow,
-            reference_limit=reference_limit,
-            provider_workflow_id=provider_workflow_id,
-            reference_snapshot_id=reference_snapshot_id,
-        )
+        reference_snapshot_digest = str(
+            payload.get("reference_snapshot_digest") or ""
+        ).strip()
+        try:
+            materialized_group = next(
+                group for group in load_materialized_groups(project_dir, episode)
+                if group.id == group_id
+            )
+            requested_reference_revision = payload.get("reference_revision")
+            reference_revision = materialized_group.video_reference_settings.revision
+            if (
+                requested_reference_revision is None
+                or int(requested_reference_revision) != int(reference_revision)
+            ):
+                _delete_terminal_reference_snapshot(ctx, payload)
+                return {"status": "stale", "group_id": group_id, "revision": revision}
+            await _reference_execution_snapshot(
+                workflow=workflow,
+                reference_limit=reference_limit,
+                provider_workflow_id=provider_workflow_id,
+                reference_snapshot_id=reference_snapshot_id,
+                reference_snapshot_digest=reference_snapshot_digest,
+            )
+        except BaseException:
+            _delete_terminal_reference_snapshot(ctx, payload)
+            raise
     reference_manifest_fields = {
         "provider_workflow_id": provider_workflow_id,
         "reference_settings_revision": reference_revision,
         "reference_limit": reference_limit,
         "global_references": _reference_manifest_entries(global_references),
     }
-    record_stage_result(
-        project_dir, episode, group_id, "video", expected_revision=revision,
-        status="running", error="", workflow_parameters=workflow_parameters,
-    )
     manifest_path: Path | None = None
     try:
+        record_stage_result(
+            project_dir, episode, group_id, "video", expected_revision=revision,
+            status="running", error="", workflow_parameters=workflow_parameters,
+        )
         adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
         source_beats = await _load_canonical_beats(ctx, episode)
         beats = generation_beats_for_group(
@@ -972,7 +1000,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 "status": "skipped", "reason": "nonvisual_beats",
                 "group_id": group_id, "revision": revision,
             }
-        if getattr(reference_policy, "required", False):
+        if reference_required:
             frame_sources = tuple(
                 str(source)
                 for segment in raw_segments
@@ -982,12 +1010,14 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             input_snapshot = load_h3_reference_input_snapshot(
                 state_root=ctx.state_dir,
                 snapshot_id=reference_snapshot_id,
+                expected_digest=reference_snapshot_digest,
                 frame_sources=frame_sources,
             )
             if (
                 input_snapshot.reference_revision != reference_revision
                 or input_snapshot.reference_limit != reference_limit
                 or input_snapshot.provider_workflow_id != provider_workflow_id
+                or input_snapshot.digest != reference_snapshot_digest
             ):
                 raise ValueError("queued H3 reference snapshot contract does not match payload")
             global_references = input_snapshot.references
@@ -1332,6 +1362,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             **failure_assets,
         )
         raise
+    finally:
+        if reference_required:
+            _delete_terminal_reference_snapshot(ctx, payload)
 
 
 def run_narrative_group_video(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:

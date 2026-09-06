@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -351,7 +352,7 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
     )
     frozen_frame_content = frame.read_bytes()
 
-    snapshot_id = runtime.persist_h3_reference_input_snapshot(
+    persisted = runtime.persist_h3_reference_input_snapshot(
         state_root=state,
         references=references,
         frames=frames,
@@ -359,10 +360,12 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
         reference_limit=5,
         provider_workflow_id="2096502793044582401",
     )
+    snapshot_id = persisted.snapshot_id
     Image.new("RGB", (4, 5), "red").save(frame)
     loaded = runtime.load_h3_reference_input_snapshot(
         state_root=state,
         snapshot_id=snapshot_id,
+        expected_digest=persisted.digest,
         frame_sources=(str(frame),),
     )
 
@@ -377,6 +380,27 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
     assert str(frame) not in descriptor_text
     assert str(references[0].path) not in descriptor_text
     assert "content" not in descriptor_text
+    orphan = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=references,
+        frames=frames,
+        reference_revision=7,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    storage = state / "h3_reference_input_snapshots"
+    for item in (storage / snapshot_id, storage / orphan.snapshot_id):
+        item.touch()
+        item.chmod(0o700)
+        os.utime(item, (100, 100))
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        protected_ids=(snapshot_id,),
+        ttl_seconds=10,
+        now=200,
+    ) == 1
+    assert not (storage / orphan.snapshot_id).exists()
+    assert (storage / snapshot_id).exists()
     assert runtime.delete_h3_reference_input_snapshot(
         state_root=state, snapshot_id=snapshot_id
     ) is True
@@ -400,7 +424,7 @@ def test_reference_input_snapshot_store_rejects_tampered_blob(tmp_path: Path) ->
         project_root=project,
     )
     state = tmp_path / "state"
-    snapshot_id = runtime.persist_h3_reference_input_snapshot(
+    persisted = runtime.persist_h3_reference_input_snapshot(
         state_root=state,
         references=(_reference(project / "ref.png", _png_bytes()),),
         frames=frames,
@@ -408,15 +432,66 @@ def test_reference_input_snapshot_store_rejects_tampered_blob(tmp_path: Path) ->
         reference_limit=5,
         provider_workflow_id="2096502793044582401",
     )
+    snapshot_id = persisted.snapshot_id
     snapshot_dir = state / "h3_reference_input_snapshots" / snapshot_id
-    next((snapshot_dir / "frames").iterdir()).write_bytes(b"tampered")
+    frame_blob = next((snapshot_dir / "frames").iterdir())
+    changed = BytesIO()
+    Image.new("RGB", (3, 3), "red").save(changed, format="PNG")
+    changed_content = changed.getvalue()
+    frame_blob.write_bytes(changed_content)
+    descriptor_path = snapshot_dir / "snapshot.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["frames"][0]["sha256"] = hashlib.sha256(changed_content).hexdigest()
+    descriptor_path.write_text(
+        json.dumps(
+            descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ValueError, match="sha256|image"):
+    with pytest.raises(ValueError, match="digest"):
         runtime.load_h3_reference_input_snapshot(
             state_root=state,
             snapshot_id=snapshot_id,
+            expected_digest=persisted.digest,
             frame_sources=(str(frame),),
         )
+
+
+def test_reference_input_snapshot_store_rejects_symlink_storage(
+    tmp_path: Path,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    state = tmp_path / "state"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    state.mkdir()
+    outside.mkdir()
+    (state / "h3_reference_input_snapshots").symlink_to(
+        outside, target_is_directory=True
+    )
+    frame = project / "frame.png"
+    Image.new("RGB", (3, 3), "green").save(frame)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+
+    with pytest.raises((OSError, ValueError)):
+        runtime.persist_h3_reference_input_snapshot(
+            state_root=state,
+            references=(_reference(project / "ref.png", _png_bytes()),),
+            frames=frames,
+            reference_revision=1,
+            reference_limit=5,
+            provider_workflow_id="2096502793044582401",
+        )
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.asyncio

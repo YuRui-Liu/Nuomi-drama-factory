@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
@@ -46,8 +47,9 @@ from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.narrative_groups.video_references import (
     MAX_VIDEO_REFERENCE_BYTES,
     MAX_VIDEO_REFERENCE_PIXELS,
+    _CtypesWin32SnapshotAdapter,
+    _path_is_within_root,
     _read_file_snapshot,
-    _is_reparse_point,
 )
 
 
@@ -58,6 +60,7 @@ H3_FRAME_ALLOWED_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
 # A narrative group normally has at most five physical units with two frames each.
 H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES = 5 * H3_FRAME_MAX_BYTES
 H3_REFERENCE_INPUT_SNAPSHOT_VERSION = 1
+H3_REFERENCE_INPUT_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
 _SNAPSHOT_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -73,6 +76,7 @@ class H3FrozenFrame:
 
 @dataclass(frozen=True, slots=True)
 class H3ReferenceInputSnapshot:
+    digest: str
     reference_revision: int
     reference_limit: int
     provider_workflow_id: str
@@ -80,13 +84,17 @@ class H3ReferenceInputSnapshot:
     frames: MappingProxyType
 
 
-def _write_private_file(path: Path, content: bytes) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+@dataclass(frozen=True, slots=True)
+class H3PersistedReferenceInputSnapshot:
+    snapshot_id: str
+    digest: str
+
+
+def _write_private_file_at(directory_fd: int, name: str, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
     try:
         view = memoryview(content)
         while view:
@@ -95,23 +103,228 @@ def _write_private_file(path: Path, content: bytes) -> None:
                 raise OSError("failed to write H3 input snapshot")
             view = view[written:]
         os.fsync(descriptor)
-        if hasattr(os, "fchmod"):
-            os.fchmod(descriptor, 0o600)
+        os.fchmod(descriptor, 0o600)
     finally:
         os.close(descriptor)
 
 
-def _snapshot_storage_root(state_root: str | Path) -> Path:
-    state = Path(state_root)
+def _delete_posix_snapshot_at(storage_fd: int, snapshot_id: str) -> bool:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        snapshot_fd = os.open(snapshot_id, flags, dir_fd=storage_fd)
+    except FileNotFoundError:
+        return False
+    try:
+        for name in os.listdir(snapshot_fd):
+            metadata = os.stat(name, dir_fd=snapshot_fd, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                if name not in {"references", "frames"}:
+                    raise ValueError("unexpected H3 snapshot directory")
+                child_fd = os.open(name, flags, dir_fd=snapshot_fd)
+                try:
+                    for child in os.listdir(child_fd):
+                        child_metadata = os.stat(
+                            child, dir_fd=child_fd, follow_symlinks=False
+                        )
+                        if not stat.S_ISREG(child_metadata.st_mode):
+                            raise ValueError("unexpected H3 snapshot entry")
+                        os.unlink(child, dir_fd=child_fd)
+                finally:
+                    os.close(child_fd)
+                os.rmdir(name, dir_fd=snapshot_fd)
+            elif stat.S_ISREG(metadata.st_mode) and name in {
+                "snapshot.json", ".snapshot.json.tmp"
+            }:
+                os.unlink(name, dir_fd=snapshot_fd)
+            else:
+                raise ValueError("unexpected H3 snapshot entry")
+        os.rmdir(snapshot_id, dir_fd=storage_fd)
+        return True
+    finally:
+        os.close(snapshot_fd)
+
+
+def _persist_posix_snapshot(
+    state: Path,
+    snapshot_id: str,
+    blobs: list[tuple[str, bytes]],
+    descriptor: bytes,
+) -> None:
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if _is_reparse_point(state):
-        raise ValueError("H3 snapshot state root is a symlink or reparse point")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    created = False
+    try:
+        descriptors.append(os.open(state, flags))
+        try:
+            os.mkdir("h3_reference_input_snapshots", 0o700, dir_fd=descriptors[-1])
+        except FileExistsError:
+            pass
+        descriptors.append(os.open(
+            "h3_reference_input_snapshots", flags, dir_fd=descriptors[-1]
+        ))
+        os.mkdir(snapshot_id, 0o700, dir_fd=descriptors[-1])
+        created = True
+        descriptors.append(os.open(snapshot_id, flags, dir_fd=descriptors[-1]))
+        snapshot_fd = descriptors[-1]
+        os.mkdir("references", 0o700, dir_fd=snapshot_fd)
+        os.mkdir("frames", 0o700, dir_fd=snapshot_fd)
+        child_fds = {}
+        try:
+            for name in ("references", "frames"):
+                child_fds[name] = os.open(name, flags, dir_fd=snapshot_fd)
+            for blob, content in blobs:
+                directory, name = blob.split("/", 1)
+                _write_private_file_at(child_fds[directory], name, content)
+            _write_private_file_at(snapshot_fd, ".snapshot.json.tmp", descriptor)
+            os.rename(
+                ".snapshot.json.tmp", "snapshot.json",
+                src_dir_fd=snapshot_fd, dst_dir_fd=snapshot_fd,
+            )
+            os.fsync(snapshot_fd)
+        finally:
+            for descriptor_fd in child_fds.values():
+                os.close(descriptor_fd)
+    except BaseException:
+        if created and len(descriptors) >= 2:
+            try:
+                _delete_posix_snapshot_at(descriptors[1], snapshot_id)
+            except (OSError, ValueError):
+                pass
+        raise
+    finally:
+        for descriptor_fd in reversed(descriptors):
+            os.close(descriptor_fd)
+
+
+def _open_validated_windows_directory(adapter, path: Path, root: Path):
+    handle = adapter.open_write_directory(path)
+    attributes = int(adapter.attributes(handle))
+    if attributes & int(adapter.REPARSE_POINT):
+        adapter.close(handle)
+        raise ValueError("H3 snapshot directory is a reparse point")
+    if not attributes & int(adapter.DIRECTORY):
+        adapter.close(handle)
+        raise ValueError("H3 snapshot parent is not a directory")
+    final_path = Path(adapter.final_path_for_handle(handle))
+    if not _path_is_within_root(root, final_path) or os.path.normcase(
+        os.path.abspath(final_path)
+    ) != os.path.normcase(os.path.abspath(path)):
+        adapter.close(handle)
+        raise ValueError("H3 snapshot directory handle path changed")
+    return handle
+
+
+def _persist_windows_snapshot(
+    state: Path,
+    snapshot_id: str,
+    blobs: list[tuple[str, bytes]],
+    descriptor: bytes,
+    *,
+    adapter=None,
+) -> None:
+    win32 = adapter or _CtypesWin32SnapshotAdapter()
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
     storage = state / "h3_reference_input_snapshots"
-    storage.mkdir(mode=0o700, exist_ok=True)
-    if _is_reparse_point(storage):
-        raise ValueError("H3 snapshot storage is a symlink or reparse point")
-    storage.chmod(0o700)
-    return storage
+    snapshot_dir = storage / snapshot_id
+    directories = [state, storage, snapshot_dir, snapshot_dir / "references", snapshot_dir / "frames"]
+    handles = []
+    published_files: list[Path] = []
+    try:
+        handles.append(_open_validated_windows_directory(win32, state, state))
+        for directory in directories[1:]:
+            win32.create_directory(directory)
+            handles.append(_open_validated_windows_directory(win32, directory, state))
+        for blob, content in blobs:
+            path = snapshot_dir / blob
+            handle = win32.create_new_file(path)
+            try:
+                if int(win32.attributes(handle)) & int(win32.REPARSE_POINT):
+                    raise ValueError("H3 snapshot blob is a reparse point")
+                final_path = Path(win32.final_path_for_handle(handle))
+                if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(
+                    os.path.abspath(path)
+                ):
+                    raise ValueError("H3 snapshot blob handle path changed")
+                win32.write_file(handle, content)
+                win32.flush_file(handle)
+            finally:
+                win32.close(handle)
+            published_files.append(path)
+        temporary = snapshot_dir / ".snapshot.json.tmp"
+        handle = win32.create_new_file(temporary)
+        try:
+            win32.write_file(handle, descriptor)
+            win32.flush_file(handle)
+        finally:
+            win32.close(handle)
+        published_files.append(temporary)
+        target = snapshot_dir / "snapshot.json"
+        win32.move_file(temporary, target)
+        published_files[-1] = target
+    except BaseException:
+        for path in reversed(published_files):
+            try:
+                win32.delete_file(path)
+            except OSError:
+                pass
+        raise
+    finally:
+        for handle in reversed(handles):
+            win32.close(handle)
+
+
+def _delete_windows_snapshot(state: Path, snapshot_id: str, *, adapter=None) -> bool:
+    win32 = adapter or _CtypesWin32SnapshotAdapter()
+    storage = state / "h3_reference_input_snapshots"
+    snapshot_dir = storage / snapshot_id
+    handles = []
+    try:
+        try:
+            handles.append(_open_validated_windows_directory(win32, state, state))
+            handles.append(_open_validated_windows_directory(win32, storage, state))
+            snapshot_handle = _open_validated_windows_directory(
+                win32, snapshot_dir, state
+            )
+            handles.append(snapshot_handle)
+        except FileNotFoundError:
+            return False
+        for directory_name in ("references", "frames"):
+            directory = snapshot_dir / directory_name
+            child_handle = _open_validated_windows_directory(win32, directory, state)
+            handles.append(child_handle)
+            for child in directory.iterdir():
+                file_handle = win32.open_path(child, directory=False)
+                try:
+                    attributes = int(win32.attributes(file_handle))
+                    if attributes & (int(win32.REPARSE_POINT) | int(win32.DIRECTORY)):
+                        raise ValueError("unexpected H3 snapshot entry")
+                    final_path = Path(win32.final_path_for_handle(file_handle))
+                    if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(
+                        os.path.abspath(child)
+                    ):
+                        raise ValueError("H3 snapshot cleanup handle path changed")
+                finally:
+                    win32.close(file_handle)
+                win32.delete_file(child)
+            win32.close(handles.pop())
+            os.rmdir(directory)
+        for child in snapshot_dir.iterdir():
+            if child.name not in {"snapshot.json", ".snapshot.json.tmp"}:
+                raise ValueError("unexpected H3 snapshot entry")
+            file_handle = win32.open_path(child, directory=False)
+            try:
+                if int(win32.attributes(file_handle)) & int(win32.REPARSE_POINT):
+                    raise ValueError("unexpected H3 snapshot reparse point")
+            finally:
+                win32.close(file_handle)
+            win32.delete_file(child)
+        win32.close(handles.pop())
+        os.rmdir(snapshot_dir)
+        return True
+    finally:
+        for handle in reversed(handles):
+            win32.close(handle)
 
 
 def persist_h3_reference_input_snapshot(
@@ -122,7 +335,8 @@ def persist_h3_reference_input_snapshot(
     reference_revision: int,
     reference_limit: int,
     provider_workflow_id: str,
-) -> str:
+    win32_adapter: object | None = None,
+) -> H3PersistedReferenceInputSnapshot:
     """Persist immutable enqueue inputs; only the opaque returned ID enters payloads."""
     if isinstance(reference_revision, bool) or not isinstance(reference_revision, int):
         raise ValueError("reference_revision must be a non-negative integer")
@@ -189,36 +403,32 @@ def persist_h3_reference_input_snapshot(
             "blob": blob,
         })
 
-    storage = _snapshot_storage_root(state_root)
     snapshot_id = uuid4().hex
-    snapshot_dir = storage / snapshot_id
-    snapshot_dir.mkdir(mode=0o700)
-    try:
-        (snapshot_dir / "references").mkdir(mode=0o700)
-        (snapshot_dir / "frames").mkdir(mode=0o700)
-        for blob, content in reference_contents + frame_contents:
-            _write_private_file(snapshot_dir / blob, content)
-        descriptor = json.dumps({
-            "version": H3_REFERENCE_INPUT_SNAPSHOT_VERSION,
-            "reference_revision": reference_revision,
-            "reference_limit": reference_limit,
-            "provider_workflow_id": workflow_id,
-            "references": reference_records,
-            "frames": frame_records,
-        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        temporary_descriptor = snapshot_dir / ".snapshot.json.tmp"
-        _write_private_file(temporary_descriptor, descriptor)
-        os.replace(temporary_descriptor, snapshot_dir / "snapshot.json")
-    except BaseException:
-        shutil.rmtree(snapshot_dir, ignore_errors=True)
-        raise
-    return snapshot_id
+    descriptor = json.dumps({
+        "version": H3_REFERENCE_INPUT_SNAPSHOT_VERSION,
+        "reference_revision": reference_revision,
+        "reference_limit": reference_limit,
+        "provider_workflow_id": workflow_id,
+        "references": reference_records,
+        "frames": frame_records,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(descriptor).hexdigest()
+    blobs = reference_contents + frame_contents
+    if os.name != "nt":
+        _persist_posix_snapshot(Path(state_root), snapshot_id, blobs, descriptor)
+    else:
+        _persist_windows_snapshot(
+            Path(state_root), snapshot_id, blobs, descriptor,
+            adapter=win32_adapter,
+        )
+    return H3PersistedReferenceInputSnapshot(snapshot_id=snapshot_id, digest=digest)
 
 
 def load_h3_reference_input_snapshot(
     *,
     state_root: str | Path,
     snapshot_id: str,
+    expected_digest: str,
     frame_sources,
 ) -> H3ReferenceInputSnapshot:
     """Load and hash-check immutable enqueue inputs through no-follow handles."""
@@ -232,6 +442,11 @@ def load_h3_reference_input_snapshot(
         "H3 reference snapshot descriptor",
         expected_root=snapshot_dir,
     )
+    actual_digest = hashlib.sha256(raw_descriptor).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", str(expected_digest)):
+        raise ValueError("invalid H3 reference snapshot digest")
+    if actual_digest != expected_digest:
+        raise ValueError("H3 reference snapshot digest does not match payload")
     try:
         descriptor = json.loads(raw_descriptor)
     except (TypeError, ValueError) as exc:
@@ -297,6 +512,7 @@ def load_h3_reference_input_snapshot(
             width=width, height=height, suffix=suffix,
         )
     return H3ReferenceInputSnapshot(
+        digest=actual_digest,
         reference_revision=int(descriptor["reference_revision"]),
         reference_limit=reference_limit,
         provider_workflow_id=str(descriptor["provider_workflow_id"]),
@@ -306,16 +522,16 @@ def load_h3_reference_input_snapshot(
 
 
 def delete_h3_reference_input_snapshot(
-    *, state_root: str | Path, snapshot_id: str
+    *,
+    state_root: str | Path,
+    snapshot_id: str,
+    win32_adapter: object | None = None,
 ) -> bool:
     """Remove an unqueued snapshot without following caller-controlled links."""
     if _SNAPSHOT_ID_PATTERN.fullmatch(str(snapshot_id)) is None:
         raise ValueError("invalid H3 reference snapshot ID")
     state = Path(state_root)
     storage = state / "h3_reference_input_snapshots"
-    target = storage / str(snapshot_id)
-    if not target.exists() and not target.is_symlink():
-        return False
     if os.name != "nt" and all(
         hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
     ):
@@ -324,41 +540,94 @@ def delete_h3_reference_input_snapshot(
         try:
             descriptors.append(os.open(state, flags))
             descriptors.append(os.open(storage.name, flags, dir_fd=descriptors[-1]))
-            descriptors.append(os.open(str(snapshot_id), flags, dir_fd=descriptors[-1]))
-            snapshot_fd = descriptors[-1]
-            for directory_name in ("references", "frames"):
-                directory_fd = os.open(directory_name, flags, dir_fd=snapshot_fd)
-                try:
-                    for name in os.listdir(directory_fd):
-                        metadata = os.stat(
-                            name, dir_fd=directory_fd, follow_symlinks=False
-                        )
-                        if not stat.S_ISREG(metadata.st_mode):
-                            raise ValueError("unexpected H3 snapshot entry")
-                        os.unlink(name, dir_fd=directory_fd)
-                finally:
-                    os.close(directory_fd)
-                os.rmdir(directory_name, dir_fd=snapshot_fd)
-            for name in ("snapshot.json", ".snapshot.json.tmp"):
-                try:
-                    os.unlink(name, dir_fd=snapshot_fd)
-                except FileNotFoundError:
-                    pass
-            if os.listdir(snapshot_fd):
-                raise ValueError("unexpected H3 snapshot entry")
-            os.rmdir(str(snapshot_id), dir_fd=descriptors[-2])
-            return True
+            return _delete_posix_snapshot_at(descriptors[-1], str(snapshot_id))
+        except FileNotFoundError:
+            return False
         except OSError as exc:
             raise ValueError("H3 snapshot cleanup violates no-follow policy") from exc
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)
 
-    for component in (state, storage, target, target / "references", target / "frames"):
-        if component.exists() and _is_reparse_point(component):
-            raise ValueError("H3 snapshot cleanup encountered a reparse point")
-    shutil.rmtree(target)
-    return True
+    return _delete_windows_snapshot(
+        state, str(snapshot_id), adapter=win32_adapter
+    )
+
+
+def garbage_collect_h3_reference_input_snapshots(
+    *,
+    state_root: str | Path,
+    protected_ids=(),
+    ttl_seconds: int = H3_REFERENCE_INPUT_SNAPSHOT_TTL_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Delete expired orphan snapshots while retaining active task inputs."""
+    if isinstance(ttl_seconds, bool) or int(ttl_seconds) < 0:
+        raise ValueError("snapshot TTL must be a non-negative integer")
+    protected = {str(item) for item in protected_ids}
+    cutoff = float(time.time() if now is None else now) - int(ttl_seconds)
+    state = Path(state_root)
+    if os.name == "nt":
+        storage = state / "h3_reference_input_snapshots"
+        win32 = _CtypesWin32SnapshotAdapter()
+        handles = []
+        try:
+            try:
+                handles.append(_open_validated_windows_directory(win32, state, state))
+                handles.append(
+                    _open_validated_windows_directory(win32, storage, state)
+                )
+            except FileNotFoundError:
+                return 0
+            expired = []
+            for item in storage.iterdir():
+                if (
+                    _SNAPSHOT_ID_PATTERN.fullmatch(item.name) is None
+                    or item.name in protected
+                ):
+                    continue
+                handle = _open_validated_windows_directory(win32, item, state)
+                try:
+                    modified = item.stat(follow_symlinks=False).st_mtime
+                finally:
+                    win32.close(handle)
+                if modified <= cutoff:
+                    expired.append(item.name)
+        finally:
+            for handle in reversed(handles):
+                win32.close(handle)
+    else:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptors: list[int] = []
+        try:
+            descriptors.append(os.open(state, flags))
+            try:
+                descriptors.append(os.open(
+                    "h3_reference_input_snapshots", flags, dir_fd=descriptors[-1]
+                ))
+            except FileNotFoundError:
+                return 0
+            expired = []
+            for name in os.listdir(descriptors[-1]):
+                if _SNAPSHOT_ID_PATTERN.fullmatch(name) is None or name in protected:
+                    continue
+                metadata = os.stat(
+                    name, dir_fd=descriptors[-1], follow_symlinks=False
+                )
+                if stat.S_ISDIR(metadata.st_mode) and metadata.st_mtime <= cutoff:
+                    expired.append(name)
+        except FileNotFoundError:
+            return 0
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+    deleted = 0
+    for snapshot_id in expired:
+        if delete_h3_reference_input_snapshot(
+            state_root=state, snapshot_id=snapshot_id
+        ):
+            deleted += 1
+    return deleted
 
 
 def _image_metadata(content: bytes, *, label: str) -> tuple[int, int, str]:
@@ -777,9 +1046,11 @@ async def generate_h3_reference_director_video(
 
 __all__ = [
     "H3FrozenFrame",
+    "H3PersistedReferenceInputSnapshot",
     "H3ReferenceInputSnapshot",
     "delete_h3_reference_input_snapshot",
     "freeze_h3_reference_frames",
+    "garbage_collect_h3_reference_input_snapshots",
     "generate_h3_reference_director_video",
     "load_h3_reference_input_snapshot",
     "persist_h3_reference_input_snapshot",
