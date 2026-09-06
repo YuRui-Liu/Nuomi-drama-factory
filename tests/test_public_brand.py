@@ -46,6 +46,25 @@ def test_scan_text_allows_compatibility_identifiers_and_asset_urls() -> None:
     assert scanner.scan_text(Path("frontend/src/example.ts"), text) == []
 
 
+def test_scan_text_rejects_identifiers_without_exact_case_and_boundaries() -> None:
+    scanner = _load_scanner()
+    text = "\n".join(
+        [
+            "DRAMACLAW_Api",
+            "DRAMACLAW_API_URLx",
+            "dramaclaw_getX",
+            "xDRAMACLAW_API_URL",
+        ]
+    )
+
+    assert scanner.scan_text(Path("frontend/src/example.ts"), text) == [
+        "frontend/src/example.ts:1",
+        "frontend/src/example.ts:2",
+        "frontend/src/example.ts:3",
+        "frontend/src/example.ts:4",
+    ]
+
+
 def test_public_paths_include_docs_and_frontend_but_exclude_internal_content() -> None:
     scanner = _load_scanner()
 

@@ -46,8 +46,8 @@ _TEXT_SUFFIXES = {
 _LOCK_NAMES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
 _BRAND = re.compile(r"dramaclaw", re.IGNORECASE)
 _ALLOWED_OCCURRENCES = re.compile(
-    r"DRAMACLAW_[A-Z0-9_]+"
-    r"|dramaclaw_[a-z0-9_]+"
+    r"(?<![A-Za-z0-9_])DRAMACLAW_[A-Z0-9_]+(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])dramaclaw_[a-z0-9_]+(?![A-Za-z0-9_])"
     r"|https://nfg-web-assets\.cdnfg\.com/dramaclaw(?:/[^\s\"'<>)]*)?"
 )
 
