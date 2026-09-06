@@ -979,16 +979,31 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
         narrative_groups, "resolve_saved_video_references", resolved_references
     )
     snapshots = []
+    lifecycle = []
 
     def persist_snapshot(**kwargs):
+        lifecycle.append("persist")
         snapshots.append(kwargs)
         return SimpleNamespace(snapshot_id="1" * 32, digest="a" * 64)
+
+    def activate_snapshot(**kwargs):
+        lifecycle.append("activate")
+
+    original_enqueue = backend.enqueue_project_task
+
+    async def tracked_enqueue(*args, **kwargs):
+        lifecycle.append("enqueue")
+        return await original_enqueue(*args, **kwargs)
 
     monkeypatch.setattr(
         narrative_groups,
         "persist_h3_reference_input_snapshot",
         persist_snapshot,
     )
+    monkeypatch.setattr(
+        narrative_groups, "activate_h3_reference_snapshot", activate_snapshot
+    )
+    monkeypatch.setattr(backend, "enqueue_project_task", tracked_enqueue)
     no_frames = client.post(endpoint, json=request)
     assert no_frames.status_code == 422
     assert backend.calls == []
@@ -1016,6 +1031,7 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
     assert snapshots[0]["provider_workflow_id"] == "2096502793044582401"
     assert tuple(snapshots[0]["references"])[0].reference_id == "opaque"
     assert snapshots[0]["frames"]
+    assert lifecycle == ["persist", "activate", "enqueue"]
 
 
 def test_h3_reference_reservation_rechecks_reference_revision_atomically(
@@ -1097,6 +1113,9 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
         lambda **kwargs: deleted.append(kwargs) or True,
     )
     monkeypatch.setattr(
+        narrative_groups, "activate_h3_reference_snapshot", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
         narrative_groups, "get_task_backend", lambda: FailingBackend()
     )
 
@@ -1115,6 +1134,103 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
     group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
     assert group.stages["video"].status == "pending"
     assert group.stages["video"].revision == 0
+
+
+def test_h3_reference_snapshot_activation_failure_rolls_back_without_enqueue(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    deleted = []
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    monkeypatch.setattr(
+        narrative_groups, "persist_h3_reference_input_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            snapshot_id="3" * 32, digest="c" * 64
+        ),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "activate_h3_reference_snapshot",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("activation failed")),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "delete_h3_reference_input_snapshot",
+        lambda **kwargs: deleted.append(kwargs) or True,
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 422
+    assert backend.calls == []
+    assert deleted == [{
+        "state_root": str(tmp_path), "snapshot_id": "3" * 32,
+    }]
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == "pending"
+    assert group.stages["video"].revision == 0
+
+
+def test_h3_reference_successfully_enqueues_an_activated_snapshot(
+    monkeypatch, tmp_path
+):
+    import hashlib
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_content = image_bytes()
+    reference_path.write_bytes(reference_content)
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_content,
+            sha256=hashlib.sha256(reference_content).hexdigest(),
+            temporary_upload_id="upload",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 202
+    snapshot_id = backend.calls[0][1]["payload"]["reference_snapshot_id"]
+    lease = json.loads((
+        tmp_path / "h3_reference_input_snapshots" / snapshot_id / "lease.json"
+    ).read_text(encoding="utf-8"))
+    assert lease["state"] == "queued"
+    assert lease["expires_at"] is None
 
 
 def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):

@@ -35,6 +35,7 @@ from novelvideo.media_capabilities.video.parameters import (
     resolve_workflow_parameters,
 )
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    activate_h3_reference_snapshot,
     delete_h3_reference_input_snapshot,
     freeze_h3_reference_frames,
     persist_h3_reference_input_snapshot,
@@ -1323,6 +1324,34 @@ async def _enqueue_group_video(
             "reference_snapshot_id": reference_snapshot_id,
             "reference_snapshot_digest": persisted_snapshot.digest,
         })
+        try:
+            activate_h3_reference_snapshot(
+                state_root=resolved.ctx.state_dir,
+                snapshot_id=reference_snapshot_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            try:
+                delete_h3_reference_input_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
+            raise HTTPException(
+                status_code=422,
+                detail="Video reference input snapshot cannot be activated",
+            ) from exc
+        except Exception:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            try:
+                delete_h3_reference_input_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
+            raise
     try:
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",
