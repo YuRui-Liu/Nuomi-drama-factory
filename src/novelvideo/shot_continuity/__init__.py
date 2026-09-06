@@ -12,6 +12,7 @@ from .compiler import (
     compile_shot_bundle,
     continuity_locks_for,
 )
+from .evaluation import H3ContinuityEvaluation, LOCK_KINDS, evaluate_manifests
 from .hashing import canonical_sha256
 from .mode_selector import select_h3_mode
 from .models import (
@@ -56,9 +57,11 @@ __all__ = [
     "Evidence",
     "FrameEvidence",
     "H3ModeDecision",
+    "H3ContinuityEvaluation",
     "H3ReferenceBinding",
     "H3_SHOT_COMPILER_VERSION",
     "LightingLock",
+    "LOCK_KINDS",
     "PropLock",
     "RiskDimensionScore",
     "SceneLock",
@@ -76,6 +79,7 @@ __all__ = [
     "continuity_locks_for",
     "contracts_for_segment",
     "director_world_binding",
+    "evaluate_manifests",
     "identity_score",
     "motion_score",
     "select_h3_mode",

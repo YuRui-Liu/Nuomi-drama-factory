@@ -73,6 +73,70 @@ Runner 的 episode-pack optimizer 会把当前组放到同集已完成 render �
 
 组内任何 segment 采用 `external_tts` 时，Runner 尝试用 Demucs 分离原视频对白与 ambience。Demucs 未安装会记录 `unavailable` 并保留视频，但后续要求外部 TTS 的严格合成会因为缺少成功 ambience stem 而拒绝；全组 `h3_native` 不做 stem 分离。
 
+### H3 连续性契约、路由与灰度评测
+
+H3 连续性层把导演意图转换为可审计的生成输入，数据按以下顺序流动：
+
+```text
+ShotContinuityContract
+  -> S/I/M/C risk report
+  -> I2VA / FL2VA / reject mode decision
+  -> CompiledShotBundle
+  -> provider attempt(s)
+  -> Generation Manifest（含 observed_carry_out）
+```
+
+`ShotContinuityContract` 保存场景、主体、道具、摄影机、灯光和边界状态，不保存供应商大 Prompt。risk report 的四个维度分别评分，不能把总分相同的风险当成同一种问题：
+
+| policy | 低/中风险 | 2 级风险 | 处置 |
+| --- | --- | --- | --- |
+| 空间 `S` | `S0/S1` 使用已有帧和空间锁 | `S2` 包含过肩/反打、复杂遮挡、跨区移动或精确轴线关系 | 路由 Director World snapshot/control frames；它不负责修复身份或动作过载 |
+| 身份 `I` | `I0/I1` 使用帧内身份锁 | `I2` 包含多人相似外观、强遮挡或关键资产细节 | 要求已验证的 H3 Ref capability；不可用时阻断，不能静默改走 Base |
+| 运动 `M` | `M0/M1` 保持少量、单向且可达的动作节拍 | `M2` 包含动作过载、方向反复或复杂动作与复杂运镜竞争 | 拆镜、减少动作或简化摄影机；增加 Prompt、Ref 或 Director World 不能消除不可达性 |
+| 连续性 `C` | `C0/C1` 可依据计划契约并行或保持常规状态 | `C2` 的后继镜头依赖精确姿态、道具、屏幕位置或末端构图 | 等待前镜头被采用并完成 Postflight；末态可达且尾帧有效时优先 FL2VA，否则阻断并修正证据 |
+
+模式选择在 capability 与端点可达性检查之后进行。I2VA 需要首帧，适合软末态；FL2VA 还需要有效尾帧，并要求起止状态能由同一连续动作自然连接。换人、换地、拓扑跳变、无解释换装/换手或动作过载不会通过切换模式解决。摄影机保持 `static` 是合法导演选择；选择动态摄影机时，Prompt 需要写明运动类型、方向、幅度、速度和结束构图，避免只写「镜头运动」一类不可验证描述。
+
+Base 与 Ref 使用相同的 Contract、风险审计和 Bundle 核心，但 transport 输入不同：
+
+| 路径 | 必需输入 | 适用范围 | 不允许的降级 |
+| --- | --- | --- | --- |
+| Base H3 | 首帧、精简 Prompt；FL2VA 增加尾帧；`S2` 可增加 Director World 控制帧 | 已有 `runninghub:minimax-h3` 路径和不依赖全局 Ref 的镜头 | 不把参考图描述塞进长 Prompt 来假装 Ref |
+| H3 Ref | Base 输入，加叙事组级角色/场景/关键道具 Ref、稳定 Picture 顺序和 Subject/Picture 定义 | `I2` 或显式需要资产锚定的镜头 | Ref 不替代首帧、尾帧、空间控制或端点可达性检查 |
+
+当前 Ref workflow 的组合能力仍标为 `hybrid_input_unverified`：fixture 只能验证 payload 结构，不能证明远端同时接受 Ref 与首/尾帧。开放该路径前，需要用户单独授权一次真实付费的最低成本烟测；未授权或烟测未通过时保持不可用，不能自动删掉 Ref、删掉尾帧或回退 Base。
+
+边界验收区分计划与事实。`planned_carry_out` 来自本次 entry 的最后一个 Contract revision；最终采用 attempt 后，Postflight 才写入 `observed_carry_out`。两者不一致时可以重生成或修改控制；若导演接受偏差，则创建新的 Contract revision，并让引用旧 predecessor revision 的直接后继进入 stale。stale 后继必须基于新 revision 重建，晚到的旧任务不能覆盖当前结果。没有 Contract 或 observed 证据的历史 manifest 保持可读取，但评测时记为 unscored，不能按「缺失等于匹配」放行。
+
+错误、attempt 和 replay 使用以下边界：
+
+- `contract_invalid`、`unreachable_motion` 和 `missing_capability` 是结构性错误，应在付费调用前修正输入，不做原样重试。
+- provider 超时、限流或临时 5xx 可以复用冻结的同一 Bundle；每次提交都追加 attempt。生成缺陷只允许在预算内有限重采样。
+- 修改 Prompt、Contract、资产、模式或参数会产生新 Bundle/hash，不能伪装成旧 attempt 的重试。
+- replay 读取 Manifest 中冻结的 Contract/Bundle revision、资产哈希和 attempt 证据，不重新读取当前项目资产来推导历史输入。
+
+离线评测只处理调用者明确传入的 manifest，不扫描项目目录。示例中的路径选择、题材分层和评测集冻结由调用者负责：
+
+```python
+from pathlib import Path
+
+from novelvideo.media_capabilities.video.h3_timeline import (
+    load_h3_director_manifest,
+)
+from novelvideo.shot_continuity import evaluate_manifests
+
+manifest_paths = (
+    Path("fixtures/h3/baseline-a.manifest.json"),
+    Path("fixtures/h3/pilot-a.manifest.json"),
+)
+report = evaluate_manifests(
+    load_h3_director_manifest(path) for path in manifest_paths
+)
+print(report.model_dump_json(indent=2))
+```
+
+`accepted_shots` 只计 `status="completed"`。`first_pass_usable_rate` 严格以所有 entry 为分母，分子是已接受且恰有一次 attempt 的 entry；`attempts_per_accepted_shot` 以已接受镜头为分母。`boundary_match_rate` 与 identity/spatial/prop/camera/lighting 五类 violation rate 只以同时具有非空 planned 与 observed 的 scored entry 为分母。空集合和零分母均返回 `0.0`。
+
 ### workflow resolver、adapter 与 provider profile 分层
 
 NarrativeGroup registry 当前只注册 `runninghub:minimax-h3`，scene 固定为 `narrative_group`，参数只公开 `resolution=720p|1080p`。registry 负责可用性、scene、mode 与产品参数；`H3WorkflowAdapter` 把产品分辨率映射成 RunningHub Director 尺寸；runtime 再加载版本化 `minimax_h3.json` profile，把 timeline 语义绑定到实际 workflow node，并通过 provider 级并发协调器提交。
