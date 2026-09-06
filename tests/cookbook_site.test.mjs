@@ -20,6 +20,27 @@ const cookbookConfig = readFileSync(
   'utf8',
 );
 
+const productPages = [
+  '01-project-and-novel',
+  '02-episode-planning',
+  '03-production-assets',
+  '04-screenplay-and-storyboard',
+  '05-audio-and-video',
+  '06-compose-and-export',
+  '07-settings-and-tasks',
+];
+
+const creationPages = [
+  '01-creative-philosophy',
+  '02-end-to-end-workflow',
+  '03-episode-rhythm',
+  '04-character-consistency',
+  '05-shot-language',
+  '06-audiovisual-continuity',
+  '07-quality-gates',
+  '08-retrospective-template',
+];
+
 test('root package scripts expose the cookbook site commands', () => {
   assert.equal(packageJson.scripts['docs:dev'], 'pnpm --dir docs/cookbook dev');
   assert.equal(packageJson.scripts['docs:build'], 'pnpm --dir docs/cookbook build');
@@ -69,6 +90,8 @@ test('cookbook navigation includes every site route', () => {
     '/pipelines/06-audio',
     '/pipelines/07-video',
     '/pipelines/08-compose-export',
+    ...productPages.map((page) => `/product/${page}`),
+    ...creationPages.map((page) => `/creation/${page}`),
   ];
 
   for (const route of routes) {
@@ -77,6 +100,46 @@ test('cookbook navigation includes every site route', () => {
       new RegExp(`link:\\s*['\"]${route.replaceAll('/', '\\/')}['\"]`),
       `expected navigation entry for ${route}`,
     );
+  }
+});
+
+test('product guides provide a consistent business-to-technology reading path', () => {
+  for (const page of productPages) {
+    const file = new URL(`../docs/cookbook/product/${page}.md`, import.meta.url);
+    assert.ok(existsSync(file), `expected product guide ${page}`);
+    const content = readFileSync(file, 'utf8');
+
+    for (const heading of [
+      '功能概览',
+      '用户操作',
+      '业务流程',
+      '业务规则',
+      '产品验收',
+      '技术实现',
+    ]) {
+      assert.match(content, new RegExp(`^## ${heading}$`, 'm'), `${page}: ${heading}`);
+    }
+    assert.match(content, /```mermaid/, `${page}: Mermaid business flow`);
+  }
+});
+
+test('creation guides turn methodology into executable checklists', () => {
+  for (const page of creationPages) {
+    const file = new URL(`../docs/cookbook/creation/${page}.md`, import.meta.url);
+    assert.ok(existsSync(file), `expected creation guide ${page}`);
+    const content = readFileSync(file, 'utf8');
+
+    for (const heading of [
+      '适用场景',
+      '判断标准',
+      '推荐工作流',
+      '常见失败',
+      '软件入口',
+      '检查清单',
+    ]) {
+      assert.match(content, new RegExp(`^## ${heading}$`, 'm'), `${page}: ${heading}`);
+    }
+    assert.match(content, /- \[ \]/, `${page}: actionable checklist`);
   }
 });
 
@@ -93,6 +156,9 @@ test('cookbook configuration keeps the approved Chinese information architecture
 
   for (const label of [
     'Cookbook 首页',
+    '产品功能',
+    '创作方法',
+    '技术实现',
     '系统地图',
     '启动与调试',
     '中文文档',
@@ -179,6 +245,8 @@ test(
       'pipelines/06-audio.html',
       'pipelines/07-video.html',
       'pipelines/08-compose-export.html',
+      ...productPages.map((page) => `product/${page}.html`),
+      ...creationPages.map((page) => `creation/${page}.html`),
     ];
 
     for (const page of pages) {
