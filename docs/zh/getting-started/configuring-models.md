@@ -86,7 +86,7 @@ docker compose -f docker-compose.selfhosted.yml up -d --build
 
 - 如果 NewAPI 没初始化，调用 NewAPI `/api/setup` 创建管理员。
 - 如果 NewAPI 已初始化，会跳过管理员创建；你填的初始化密码不会修改已有管理员密码。
-- 创建或复用名为 `dramaclaw-ce-runtime` 的 runtime token；这是必须原样保留的内部兼容名称。
+- 创建或复用 runtime token；默认名称为 `dramaclaw-ce-runtime`，可通过 `NEWAPI_RELAY_TOKEN_NAME` 配置。
 - 把 runtime token 写入 Nuomi Drama Factory 本地配置数据库。
 - 将模型网关模式切换为 `custom`。
 
@@ -399,7 +399,7 @@ MEDIA_RELAY_TTL_SECONDS=1800
 
 Cloudinary 的 Cloud name、API Key、API Secret 可以在 Cloudinary 控制台的 API Keys 页面查看。进入控制台后，打开 Product environment settings -> API Keys，即可看到 `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>` 格式的提示。
 
-`CLOUDINARY_RELAY_FOLDER` 对应网页里的“API 文件夹（可选）”。这里填的是 Cloudinary 后台里的 folder 名称，不是本地文件夹路径。例如填 `dramaclaw-relay` 后，上传的参考图会放在 Cloudinary 的 `dramaclaw-relay` 文件夹下，便于后台管理；该 folder 名是内部兼容示例，必须原样保留。留空时上传到 Cloudinary 根目录。
+`CLOUDINARY_RELAY_FOLDER` 对应网页里的“API 文件夹（可选）”。这里填的是 Cloudinary 后台里的 folder 名称，不是本地文件夹路径。例如可填 `dramaclaw-relay`，上传的参考图会放在 Cloudinary 的 `dramaclaw-relay` 文件夹下，便于后台管理；该目录名只是示例，可按需自定义。留空时上传到 Cloudinary 根目录。
 
 网页设置中保存媒体存储配置后，本地 SQLite 配置优先生效，后端不会回传完整密钥给前端显示。
 
