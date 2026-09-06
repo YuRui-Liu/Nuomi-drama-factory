@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from novelvideo.shared.runtime_env import is_ce_effective
 from novelvideo.task_backend.queues import normalize_queue_kind
+from novelvideo.task_concurrency_settings import process_task_concurrency_settings
 
 PROJECT_LANE_LIMIT_DEFAULTS = {
     "default": 12,
@@ -112,7 +114,7 @@ def _lane_active_limit(
     raw = os.environ.get(env_name)
     default = defaults[lane]
     if raw is None or not raw.strip():
-        return default
+        return _saved_ce_limit(lane) or default
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
@@ -125,18 +127,28 @@ def _positive_lane_int(
     *,
     env_prefix: str,
     defaults: dict[str, int],
+    use_saved_ce_limit: bool = False,
 ) -> int:
     lane = normalize_queue_kind(queue_kind)
     env_name = f"{env_prefix}_{lane.upper()}_TASKS"
     raw = os.environ.get(env_name)
     default = defaults[lane]
     if raw is None or not raw.strip():
+        if use_saved_ce_limit:
+            return _saved_ce_limit(lane) or default
         return default
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
         return default
     return max(parsed, 1)
+
+
+def _saved_ce_limit(queue_kind: str | None) -> int | None:
+    if not is_ce_effective():
+        return None
+    lane = normalize_queue_kind(queue_kind)
+    return process_task_concurrency_settings().lanes[lane]
 
 
 def project_lane_active_limit(queue_kind: str | None) -> int | None:
@@ -153,7 +165,7 @@ def project_lane_min_active_limit(queue_kind: str | None) -> int:
     raw = os.environ.get(env_name)
     default = PROJECT_LANE_MIN_DEFAULTS[lane]
     if raw is None or not raw.strip():
-        return default
+        return _saved_ce_limit(lane) or default
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
@@ -191,6 +203,7 @@ def global_lane_concurrency(queue_kind: str | None) -> int:
         queue_kind,
         env_prefix="ST_CE_GLOBAL_MAX_ACTIVE",
         defaults=GLOBAL_LANE_CONCURRENCY_DEFAULTS,
+        use_saved_ce_limit=True,
     )
 
 

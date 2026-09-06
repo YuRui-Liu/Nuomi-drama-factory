@@ -3819,6 +3819,31 @@
       "models": "Models & Channels",
       "storage": "Media Storage"
     },
+    "taskConcurrency": {
+      "title": "Task concurrency",
+      "description": "Set CE-wide task concurrency limits. Restart the services after saving to apply them.",
+      "loading": "Loading concurrency settings…",
+      "loadFailed": "Unable to load task concurrency settings. Please try again.",
+      "saveFailed": "Failed to save task concurrency settings",
+      "save": "Save concurrency settings",
+      "saved": "Configuration saved. Restart the services to apply it.",
+      "restartPending": "Restart required",
+      "managedByEnvironment": "Managed by environment variable",
+      "currentUsage": "Currently running {{active}} / {{executor}}",
+      "limitDetails": "Project {{project}} · User {{user}} · Executor {{executor}}",
+      "invalidSummary": "Fix the highlighted concurrency values before saving.",
+      "lanes": {
+        "default": "General tasks",
+        "video": "Video tasks",
+        "world": "World building",
+        "ffmpeg": "FFmpeg"
+      },
+      "validation": {
+        "required": "A value is required",
+        "integer": "Enter an integer",
+        "range": "Enter an integer from 1 to 32"
+      }
+    },
     "modelConfig": {
       "title": "Model Config",
       "description": "Choose a model gateway channel: the platform official gateway, or your own local NewAPI.",

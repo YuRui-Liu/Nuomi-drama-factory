@@ -69,6 +69,7 @@ from novelvideo.api.routes import (  # noqa: E402
     scripts,
     screenplay_semantics,
     styles,
+    task_runtime,
     tasks,
 )
 
@@ -121,6 +122,7 @@ api_router.include_router(scripts.router, tags=["scripts"])
 api_router.include_router(screenplay_semantics.router, tags=["screenplay-semantics"])
 api_router.include_router(content.router, tags=["content"])
 api_router.include_router(generation.router, tags=["generation"])
+api_router.include_router(task_runtime.router, tags=["task-runtime"])
 api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(files.router, tags=["files"])
 api_router.include_router(styles.router, tags=["styles"])

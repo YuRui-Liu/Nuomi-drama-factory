@@ -89,18 +89,18 @@ class InlineTaskBackend:
             "ST_CE_TASK_HEARTBEAT_SECONDS",
             min(5.0, self._lease_seconds / 3.0),
         )
-        self._lanes: dict[str, _InlineLane] = {
-            lane: _InlineLane(
+        self._lanes: dict[str, _InlineLane] = {}
+        for lane in sorted(QUEUE_KINDS):
+            concurrency = global_lane_concurrency(lane)
+            self._lanes[lane] = _InlineLane(
                 name=lane,
-                concurrency=global_lane_concurrency(lane),
+                concurrency=concurrency,
                 queue_limit=global_lane_queue_limit(lane),
                 executor=ThreadPoolExecutor(
-                    max_workers=global_lane_concurrency(lane),
+                    max_workers=concurrency,
                     thread_name_prefix=f"inline-{lane}",
                 ),
             )
-            for lane in sorted(QUEUE_KINDS)
-        }
 
     @staticmethod
     def _positive_float_env(name: str, default: float) -> float:
@@ -223,6 +223,17 @@ class InlineTaskBackend:
                 "active": lane.active,
                 "queued": len(lane.queued),
                 "concurrency": lane.concurrency,
+            }
+            for name, lane in sorted(self._lanes.items())
+        }
+
+    def lane_runtime_status(self) -> dict[str, dict[str, int]]:
+        return {
+            name: {
+                "active": lane.active,
+                "queued": len(lane.queued),
+                "executor_limit": lane.concurrency,
+                "queue_limit": lane.queue_limit,
             }
             for name, lane in sorted(self._lanes.items())
         }

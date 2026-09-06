@@ -3819,6 +3819,31 @@
       "models": "模型与渠道",
       "storage": "媒体存储"
     },
+    "taskConcurrency": {
+      "title": "任务并发",
+      "description": "设置 CE 全局任务并发上限。保存后需要重启服务才会生效。",
+      "loading": "正在加载并发设置…",
+      "loadFailed": "无法加载任务并发设置，请重试。",
+      "saveFailed": "保存任务并发设置失败",
+      "save": "保存并发设置",
+      "saved": "配置已保存，重启服务后生效",
+      "restartPending": "待重启",
+      "managedByEnvironment": "由环境变量管理",
+      "currentUsage": "当前运行 {{active}} / {{executor}}",
+      "limitDetails": "项目 {{project}} · 用户 {{user}} · 执行器 {{executor}}",
+      "invalidSummary": "请修正标记的并发数后再保存。",
+      "lanes": {
+        "default": "普通任务",
+        "video": "视频任务",
+        "world": "世界构建",
+        "ffmpeg": "FFmpeg"
+      },
+      "validation": {
+        "required": "不能为空",
+        "integer": "请输入整数",
+        "range": "请输入 1–32 之间的整数"
+      }
+    },
     "modelConfig": {
       "title": "模型配置",
       "description": "选择模型网关渠道：使用平台官方网关，或自配本地 NewAPI。",

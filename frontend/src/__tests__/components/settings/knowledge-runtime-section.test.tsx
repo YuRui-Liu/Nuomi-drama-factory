@@ -25,6 +25,14 @@ const knowledgeRuntimeMockState = vi.hoisted(() => ({
   } | undefined,
   recognize: vi.fn(),
   recognizePending: false,
+  concurrencyOpen: undefined as boolean | undefined,
+}));
+
+vi.mock("@/components/settings/task-concurrency-card", () => ({
+  TaskConcurrencyCard: ({ open }: { open: boolean }) => {
+    knowledgeRuntimeMockState.concurrencyOpen = open;
+    return <div>任务并发</div>;
+  },
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -109,6 +117,7 @@ beforeEach(() => {
   };
   knowledgeRuntimeMockState.recognize.mockReset().mockResolvedValue(undefined);
   knowledgeRuntimeMockState.recognizePending = false;
+  knowledgeRuntimeMockState.concurrencyOpen = undefined;
   knowledgeRuntimeMockState.runningHubWorkflows = {
     image_upscale: "",
     video_minimax_h3: "2087934731806658562",
@@ -130,6 +139,12 @@ it("shows the actual local knowledge and media providers", () => {
 
   expect(screen.getByText("Codex CLI")).toBeInTheDocument();
   expect(screen.getByText("文本任务路由")).toBeInTheDocument();
+  expect(screen.getByText("任务并发")).toBeInTheDocument();
+  expect(knowledgeRuntimeMockState.concurrencyOpen).toBe(true);
+  expect(
+    screen.getByText("文本任务路由").compareDocumentPosition(screen.getByText("任务并发")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
   expect(screen.getByLabelText("整集导演规划执行运行时")).toBeInTheDocument();
   expect(screen.getByText("Ollama Embedding")).toBeInTheDocument();
   expect(screen.getByText("GRSAI")).toBeInTheDocument();
@@ -142,6 +157,12 @@ it("shows the actual local knowledge and media providers", () => {
   expect(screen.getByRole("button", { name: "测试并保存" })).toBeInTheDocument();
   expect(screen.queryByText(/RelayClaw/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/NewAPI/i)).not.toBeInTheDocument();
+});
+
+it("passes the closed state to the task concurrency card", () => {
+  render(<KnowledgeRuntimeSection open={false} />);
+
+  expect(knowledgeRuntimeMockState.concurrencyOpen).toBe(false);
 });
 
 it("shows an available Codex runtime with its resolved path, version and message", () => {

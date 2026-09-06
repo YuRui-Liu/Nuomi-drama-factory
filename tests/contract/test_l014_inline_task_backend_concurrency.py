@@ -76,6 +76,99 @@ def test_video_lane_positive_environment_overrides_remain_supported(monkeypatch)
     assert global_lane_concurrency("video") == 3
 
 
+def test_saved_ce_concurrency_unifies_default_lane_until_restart(
+    monkeypatch, tmp_path
+):
+    from novelvideo import config
+    from novelvideo.task_concurrency_settings import (
+        reset_process_task_concurrency_for_tests,
+        save_task_concurrency_settings,
+    )
+
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+    for name in (
+        "ST_PROJECT_MAX_ACTIVE_DEFAULT_TASKS",
+        "ST_PROJECT_MIN_ACTIVE_DEFAULT_TASKS",
+        "ST_PROJECT_USER_MAX_ACTIVE_DEFAULT_TASKS",
+        "ST_CE_GLOBAL_MAX_ACTIVE_DEFAULT_TASKS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    reset_process_task_concurrency_for_tests()
+    save_task_concurrency_settings(
+        {"default": 7, "video": 5, "world": 1, "ffmpeg": 1}
+    )
+
+    assert project_lane_active_limit("default") == 7
+    assert project_lane_min_active_limit("default") == 7
+    assert project_user_lane_active_limit("default") == 7
+    assert project_lane_effective_active_limit("default", eligible_user_count=1) == 7
+    assert global_lane_concurrency("default") == 7
+
+    save_task_concurrency_settings(
+        {"default": 9, "video": 5, "world": 1, "ffmpeg": 1}
+    )
+    assert project_lane_active_limit("default") == 7
+    assert project_user_lane_active_limit("default") == 7
+    assert global_lane_concurrency("default") == 7
+
+
+def test_saved_ce_concurrency_keeps_environment_override_precedence(
+    monkeypatch, tmp_path
+):
+    from novelvideo import config
+    from novelvideo.task_concurrency_settings import (
+        reset_process_task_concurrency_for_tests,
+        save_task_concurrency_settings,
+    )
+
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+    reset_process_task_concurrency_for_tests()
+    save_task_concurrency_settings(
+        {"default": 7, "video": 5, "world": 1, "ffmpeg": 1}
+    )
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_DEFAULT_TASKS", "6")
+    monkeypatch.setenv("ST_PROJECT_MIN_ACTIVE_DEFAULT_TASKS", "5")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_DEFAULT_TASKS", "4")
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_DEFAULT_TASKS", "3")
+
+    assert project_lane_active_limit("default") == 6
+    assert project_lane_min_active_limit("default") == 5
+    assert project_user_lane_active_limit("default") == 4
+    assert project_lane_effective_active_limit("default", eligible_user_count=1) == 5
+    assert global_lane_concurrency("default") == 3
+
+
+def test_inline_backend_reports_frozen_lane_runtime_status(monkeypatch, tmp_path):
+    from novelvideo import config
+    from novelvideo.task_concurrency_settings import (
+        reset_process_task_concurrency_for_tests,
+        save_task_concurrency_settings,
+    )
+
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+    for lane in ("DEFAULT", "VIDEO", "WORLD", "FFMPEG"):
+        monkeypatch.delenv(f"ST_CE_GLOBAL_MAX_ACTIVE_{lane}_TASKS", raising=False)
+    reset_process_task_concurrency_for_tests()
+    save_task_concurrency_settings(
+        {"default": 6, "video": 5, "world": 1, "ffmpeg": 1}
+    )
+
+    backend = InlineTaskBackend()
+
+    assert backend.lane_runtime_status()["default"] == {
+        "active": 0,
+        "queued": 0,
+        "executor_limit": 6,
+        "queue_limit": 512,
+    }
+
+
 def _ctx(tmp_path: Path, project_id: str = "proj_l014", requester: str = "editor_1") -> ProjectContext:
     return ProjectContext(
         project_id=project_id,
@@ -97,13 +190,31 @@ def _ctx(tmp_path: Path, project_id: str = "proj_l014", requester: str = "editor
 
 @pytest.fixture(autouse=True)
 def _task_ports(monkeypatch, tmp_path):
+    from novelvideo import config
+    from novelvideo.task_concurrency_settings import (
+        reset_process_task_concurrency_for_tests,
+    )
+
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+    reset_process_task_concurrency_for_tests()
     manager = TaskStateManager()
     monkeypatch.setenv("ST_CE_TASK_RUNTIME_DB", str(tmp_path / "runtime" / "tasks.db"))
     monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
     registry.register_port("cancellation_store", InMemoryCancellationStore())
     monkeypatch.setattr("novelvideo.task_state._task_manager", manager)
     monkeypatch.setattr("novelvideo.ports.local.tasks.get_task_manager", lambda: manager)
-    return manager
+    yield manager
+    reset_process_task_concurrency_for_tests()
+
+
+def test_contract_fixture_isolates_ce_task_concurrency_settings(tmp_path):
+    from novelvideo import config
+    from novelvideo.shared.runtime_env import is_ce_effective
+
+    assert Path(config.STATE_DIR) == tmp_path / "state"
+    assert is_ce_effective() is True
 
 
 def test_runtime_lane_store_admission_is_transactional_across_instances(tmp_path):

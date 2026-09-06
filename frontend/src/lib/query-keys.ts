@@ -99,6 +99,7 @@ export const queryKeys = {
   modelGateway: () => ["model-gateway", "config"] as const,
   textRuntime: () => ["model-gateway", "text-runtime"] as const,
   taskRuntime: () => ["model-gateway", "task-runtime"] as const,
+  taskConcurrency: () => ["task-runtime", "concurrency"] as const,
   knowledgeRuntime: () => ["knowledge-runtime"] as const,
   mediaProviderAccounts: () => ["media-capabilities", "providers"] as const,
   videoModels: () => ["media-capabilities", "video", "models"] as const,
