@@ -1702,7 +1702,11 @@ class TaskStateManager:
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
                 completed_at = excluded.completed_at,
-                expires_at = excluded.expires_at
+                expires_at = excluded.expires_at,
+                execution_owner_id = excluded.execution_owner_id,
+                lease_expires_at = excluded.lease_expires_at,
+                heartbeat_at = excluded.heartbeat_at,
+                cancel_requested_at = excluded.cancel_requested_at
             """,
             (
                 task_key,

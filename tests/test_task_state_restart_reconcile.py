@@ -169,6 +169,13 @@ def test_expired_inline_task_unblocks_reservation(tmp_path: Path) -> None:
 
     assert reserved is True
     assert state.task_id != created.task_id
+    fetched = manager.get_task_for_project(ctx, "ingest_fast", 0, scope="job_r")
+    assert fetched is not None
+    assert fetched.status == "submitting"
+    assert fetched.execution_owner_id == ""
+    assert fetched.lease_expires_at == ""
+    assert fetched.heartbeat_at == ""
+    assert fetched.cancel_requested_at == ""
 
 
 def test_sweep_reclaims_tasks_that_expire_after_process_start(tmp_path: Path) -> None:
