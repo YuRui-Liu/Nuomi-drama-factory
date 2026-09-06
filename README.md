@@ -222,8 +222,15 @@ cd Nuomi-drama-factory
 uv sync
 cp .env.example .env && $EDITOR .env
 
-uv run novelvideo api --port 8780   # start the REST API (CE defaults to inline tasks, no Ray/Redis)
+ST_EDITION=ce uv run novelvideo api --port 8780   # terminal 1: start the REST API
+cd frontend && pnpm dev --host 127.0.0.1          # terminal 2: start the web UI
 ```
+
+Or start both processes from the repository root with `bash scripts/start-ce.sh`.
+The local single-user default queue admits three concurrent tasks. To raise it to eight,
+set both `ST_PROJECT_MIN_ACTIVE_DEFAULT_TASKS=8` and
+`ST_PROJECT_USER_MAX_ACTIVE_DEFAULT_TASKS=8` before starting the API (the project hard
+limit remains `ST_PROJECT_MAX_ACTIVE_DEFAULT_TASKS=12`).
 
 <br/>
 
