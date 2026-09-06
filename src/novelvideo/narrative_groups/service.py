@@ -923,12 +923,27 @@ def _commit_video_reference_settings(
             raise RuntimeError(
                 "narrative group structure changed while resolving video references"
             )
+        if references == group.video_reference_settings.references:
+            return group
+        stages = dict(group.stages)
+        video_stage = stages.get("video", GroupStageState())
+        generated_model = video_stage.actual_model or group.video_settings.workflow_id
+        if (
+            generated_model == "runninghub:minimax-h3-ref"
+            and bool(video_stage.video_asset or video_stage.manifest_asset)
+        ):
+            stages["video"] = replace(
+                video_stage,
+                needs_regeneration=True,
+                stale_reason="video_reference_settings_changed",
+            )
         updated_group = replace(
             group,
             video_reference_settings=VideoReferenceSettings(
                 revision=group.video_reference_settings.revision + 1,
                 references=references,
             ),
+            stages=stages,
         )
         save_groups(
             project_dir,
@@ -1140,6 +1155,8 @@ def reserve_video_revision(
                 grid_asset="",
                 cell_assets=(),
                 error="",
+                needs_regeneration=False,
+                stale_reason="",
                 actual_provider="",
                 actual_model="",
                 actual_mode="",
@@ -1347,6 +1364,8 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "dialogue_stem_status": state.dialogue_stem_status,
         "ambience_stem_status": state.ambience_stem_status,
         "error": state.error,
+        "needs_regeneration": state.needs_regeneration,
+        "stale_reason": state.stale_reason,
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
         "actual_mode": state.actual_mode,

@@ -430,6 +430,98 @@ def test_update_accepts_only_server_candidates_and_preserves_selection_order(tmp
     )
 
 
+def test_changed_reference_settings_mark_existing_ref_video_stale_without_deleting_it(
+    tmp_path,
+):
+    _prepare_assets(tmp_path)
+    store = _Store(_beats())
+    group = replace(
+        _group("beat-1", "beat-2"),
+        video_settings=models.VideoSettings(
+            workflow_id="runninghub:minimax-h3-ref"
+        ),
+    )
+    service.save_groups(tmp_path, 1, [group])
+    service.advance_revision(tmp_path, 1, "ng-01", "video")
+    video_path = tmp_path / "videos" / "existing.mp4"
+    service.record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1,
+        status="completed", video_asset=str(video_path),
+        actual_model="runninghub:minimax-h3-ref",
+    )
+    candidate = _preview(store, tmp_path, group=group).candidates[0]
+
+    updated = _run(service.update_video_reference_settings(
+        store=store, project_dir=tmp_path, episode_number=1,
+        group_id="ng-01", expected_revision=0,
+        selections=(VideoReferenceSelection(candidate.reference_id, "Alice"),),
+        max_images=10,
+    ))
+
+    stage = updated.stages["video"]
+    assert stage.status == "completed"
+    assert stage.video_asset == str(video_path)
+    assert stage.needs_regeneration is True
+    assert stage.stale_reason == "video_reference_settings_changed"
+    assert updated.to_dict()["stages"]["video"]["needs_regeneration"] is True
+
+
+def test_unchanged_reference_save_is_idempotent_and_does_not_mark_video_stale(
+    tmp_path,
+):
+    _prepare_assets(tmp_path)
+    store = _Store(_beats())
+    group = _group("beat-1", "beat-2")
+    service.save_groups(tmp_path, 1, [group])
+    candidate = _preview(store, tmp_path, group=group).candidates[0]
+    selections = (VideoReferenceSelection(candidate.reference_id, "Alice"),)
+    first = _run(service.update_video_reference_settings(
+        store=store, project_dir=tmp_path, episode_number=1,
+        group_id="ng-01", expected_revision=0, selections=selections,
+        max_images=10,
+    ))
+    service.advance_revision(tmp_path, 1, "ng-01", "video")
+    service.record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1,
+        status="completed", video_asset="existing.mp4",
+        actual_model="runninghub:minimax-h3-ref",
+    )
+
+    unchanged = _run(service.update_video_reference_settings(
+        store=store, project_dir=tmp_path, episode_number=1,
+        group_id="ng-01", expected_revision=first.video_reference_settings.revision,
+        selections=selections, max_images=10,
+    ))
+
+    assert unchanged.video_reference_settings.revision == 1
+    assert unchanged.stages["video"].needs_regeneration is False
+    assert unchanged.stages["video"].stale_reason == ""
+
+
+def test_reference_changes_do_not_mark_legacy_h3_video_stale(tmp_path):
+    _prepare_assets(tmp_path)
+    store = _Store(_beats())
+    group = _group("beat-1", "beat-2")
+    service.save_groups(tmp_path, 1, [group])
+    service.advance_revision(tmp_path, 1, "ng-01", "video")
+    service.record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1,
+        status="completed", video_asset="legacy.mp4",
+        actual_model="runninghub:minimax-h3",
+    )
+    candidate = _preview(store, tmp_path, group=group).candidates[0]
+
+    updated = _run(service.update_video_reference_settings(
+        store=store, project_dir=tmp_path, episode_number=1,
+        group_id="ng-01", expected_revision=0,
+        selections=(VideoReferenceSelection(candidate.reference_id, "Alice"),),
+        max_images=10,
+    ))
+
+    assert updated.stages["video"].needs_regeneration is False
+    assert updated.stages["video"].stale_reason == ""
+
+
 @pytest.mark.parametrize(
     ("selections", "match"),
     [

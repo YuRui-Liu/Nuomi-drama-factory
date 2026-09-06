@@ -982,7 +982,7 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
 
     def persist_snapshot(**kwargs):
         snapshots.append(kwargs)
-        return "1" * 32
+        return SimpleNamespace(snapshot_id="1" * 32, digest="a" * 64)
 
     monkeypatch.setattr(
         narrative_groups,
@@ -1010,6 +1010,7 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
     assert payload["provider_workflow_id"] == "2096502793044582401"
     assert payload["reference_limit"] == 2
     assert payload["reference_snapshot_id"] == "1" * 32
+    assert payload["reference_snapshot_digest"] == "a" * 64
     assert snapshots[0]["reference_revision"] == 0
     assert snapshots[0]["reference_limit"] == 2
     assert snapshots[0]["provider_workflow_id"] == "2096502793044582401"
@@ -1087,7 +1088,9 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
     )
     monkeypatch.setattr(
         narrative_groups, "persist_h3_reference_input_snapshot",
-        lambda **kwargs: "2" * 32,
+        lambda **kwargs: SimpleNamespace(
+            snapshot_id="2" * 32, digest="b" * 64
+        ),
     )
     monkeypatch.setattr(
         narrative_groups, "delete_h3_reference_input_snapshot",
@@ -1822,6 +1825,30 @@ def test_get_video_prompts_returns_safe_h3_reference_manifest_contract(
     assert "private.png" not in response.text
     assert "secret-image-bytes" not in response.text
     assert "asset_id" not in response.text
+
+
+def test_get_video_prompts_treats_non_list_global_references_as_empty(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "global_references": {"content": "must-not-leak"},
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["global_references"] == []
+    assert "must-not-leak" not in response.text
 
 
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):

@@ -828,7 +828,10 @@ def _serialize_prompt_review(
     ):
         reference_limit = None
     global_references = []
-    for raw_reference in (manifest.get("global_references") or ())[:10]:
+    raw_global_references = manifest.get("global_references")
+    if not isinstance(raw_global_references, (list, tuple)):
+        raw_global_references = ()
+    for raw_reference in raw_global_references[:10]:
         reference = _manifest_mapping(raw_reference)
         picture_index = reference.get("picture_index")
         reference_id = _safe_review_string(reference.get("reference_id"))
@@ -1294,7 +1297,7 @@ async def _enqueue_group_video(
                 reference_segments,
                 project_root=resolved.project_dir,
             )
-            reference_snapshot_id = persist_h3_reference_input_snapshot(
+            persisted_snapshot = persist_h3_reference_input_snapshot(
                 state_root=resolved.ctx.state_dir,
                 references=resolved_references,
                 frames=frozen_frames,
@@ -1302,6 +1305,7 @@ async def _enqueue_group_video(
                 reference_limit=int(reference_limit),
                 provider_workflow_id=str(provider_workflow_id),
             )
+            reference_snapshot_id = persisted_snapshot.snapshot_id
         except (OSError, TypeError, ValueError) as exc:
             restore_video_reservation(resolved.project_dir, episode, reservation)
             raise HTTPException(
@@ -1317,6 +1321,7 @@ async def _enqueue_group_video(
             "provider_workflow_id": provider_workflow_id,
             "reference_limit": reference_limit,
             "reference_snapshot_id": reference_snapshot_id,
+            "reference_snapshot_digest": persisted_snapshot.digest,
         })
     try:
         queued = await get_task_backend().enqueue_project_task(

@@ -211,6 +211,8 @@ class GroupStageState:
     dialogue_stem_status: str = "not_requested"
     ambience_stem_status: str = "not_requested"
     error: str = ""
+    needs_regeneration: bool = False
+    stale_reason: str = ""
     actual_provider: str = ""
     actual_model: str = ""
     actual_mode: str = ""
