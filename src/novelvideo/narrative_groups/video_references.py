@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
+import os
 import re
+import stat
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
@@ -35,6 +40,9 @@ _SAFE_UPLOAD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _REFERENCE_NUMBERING = re.compile(
     r"<?\s*(?:subject|picture)\s+\d+\s*>?", re.IGNORECASE
 )
+MAX_VIDEO_REFERENCE_BYTES = 20 * 1024 * 1024
+MAX_VIDEO_REFERENCE_PIXELS = 40_000_000
+_ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,8 @@ class ResolvedVideoReference:
     label: str
     subject_description: str
     path: Path
+    content: bytes
+    sha256: str
     asset_id: str = ""
     temporary_upload_id: str = ""
 
@@ -221,17 +231,63 @@ def _path_within_project(project_dir: Path, path: Path) -> Path:
     return resolved
 
 
+def _safe_path_segment(value: str, label: str) -> str:
+    raw = str(value or "").strip()
+    try:
+        path = Path(raw)
+        is_absolute = path.is_absolute()
+    except (OSError, ValueError):
+        is_absolute = True
+        path = Path(".")
+    if (
+        not raw
+        or raw in {".", ".."}
+        or "\0" in raw
+        or is_absolute
+        or "/" in raw
+        or "\\" in raw
+        or path.name != raw
+    ):
+        raise ValueError(f"{label} asset ID must be a safe path segment")
+    return raw
+
+
+def _path_within_asset_root(
+    project_dir: Path, asset_kind: str, candidate: Path
+) -> Path:
+    project_root = project_dir.resolve(strict=False)
+    asset_root = (project_root / "assets" / asset_kind).resolve(strict=False)
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        asset_root.relative_to(project_root)
+        lexical.relative_to(asset_root)
+        lexical.resolve(strict=False).relative_to(asset_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"video reference path must remain inside the canonical {asset_kind} root"
+        ) from exc
+    return lexical
+
+
 def _identity_path(
     project_dir: Path, identity_id: str, character_name: str
 ) -> tuple[Path, bool]:
-    name = character_name or identity_id.split("_", 1)[0].strip()
-    identity = _path_within_project(
-        project_dir, canonical_identity_path(project_dir, name, identity_id)
+    identity_id = _safe_path_segment(identity_id, "character identity")
+    name = _safe_path_segment(
+        character_name or identity_id.split("_", 1)[0].strip(),
+        "character",
+    )
+    identity = _path_within_asset_root(
+        project_dir,
+        "characters",
+        canonical_identity_path(project_dir, name, identity_id),
     )
     if identity.is_file():
         return identity, False
-    portrait = _path_within_project(
-        project_dir, canonical_portrait_path(project_dir, name)
+    portrait = _path_within_asset_root(
+        project_dir,
+        "characters",
+        canonical_portrait_path(project_dir, name),
     )
     return portrait, True
 
@@ -286,11 +342,13 @@ def temporary_upload_path(
         raise ValueError("temporary upload ID is invalid")
     project = Path(project_dir)
     group_root = _temporary_group_root(project, episode_number, group_id)
-    path = (group_root / f"{upload_id}.png").resolve(strict=False)
+    path = group_root / f"{upload_id}.png"
     if path.parent != group_root:
         raise ValueError(
             "temporary upload path must remain inside the current group directory"
         )
+    if path.is_symlink():
+        raise ValueError("temporary upload symlink is forbidden by no-follow policy")
     return path
 
 
@@ -382,8 +440,11 @@ async def resolve_group_video_reference_preview(
 
     for scene_id in sorted(scene_ids):
         try:
-            path = _path_within_project(
-                project, canonical_scene_master_path(project, scene_id)
+            scene_id = _safe_path_segment(scene_id, "scene")
+            path = _path_within_asset_root(
+                project,
+                "scenes",
+                canonical_scene_master_path(project, scene_id),
             )
         except ValueError:
             warnings.append(f"Scene {scene_id} has an unsafe asset ID.")
@@ -402,8 +463,11 @@ async def resolve_group_video_reference_preview(
 
     for prop_id in sorted(prop_ids):
         try:
-            path = _path_within_project(
-                project, canonical_prop_reference_path(project, prop_id)
+            prop_id = _safe_path_segment(prop_id, "prop")
+            path = _path_within_asset_root(
+                project,
+                "props",
+                canonical_prop_reference_path(project, prop_id),
             )
         except ValueError:
             warnings.append(f"Prop {prop_id} has an unsafe asset ID.")
@@ -473,14 +537,135 @@ def _resolve_item_path(
         path, _ = _identity_path(project, item.asset_id, character_name)
         return path
     if item.source_kind == "scene_master":
-        return _path_within_project(
-            project, canonical_scene_master_path(project, item.asset_id)
+        scene_id = _safe_path_segment(item.asset_id, "scene")
+        return _path_within_asset_root(
+            project,
+            "scenes",
+            canonical_scene_master_path(project, scene_id),
         )
     if item.source_kind == "prop_reference":
-        return _path_within_project(
-            project, canonical_prop_reference_path(project, item.asset_id)
+        prop_id = _safe_path_segment(item.asset_id, "prop")
+        return _path_within_asset_root(
+            project,
+            "props",
+            canonical_prop_reference_path(project, prop_id),
         )
     raise ValueError(f"unsupported video reference source kind: {item.source_kind}")
+
+
+def _read_no_follow_bytes(project_dir: Path, path: Path, label: str) -> bytes:
+    """Read one regular file through directory FDs without following symlinks."""
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+    ):
+        raise ValueError("no-follow reference reads are unsupported on this platform")
+
+    project_root = project_dir.resolve(strict=True)
+    lexical_path = Path(os.path.abspath(path))
+    try:
+        relative = lexical_path.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError("video reference path must remain inside the project") from exc
+    if not relative.parts:
+        raise ValueError("video reference image path is invalid")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+    descriptors: list[int] = []
+    try:
+        descriptors.append(os.open(project_root, directory_flags))
+        for component in relative.parts[:-1]:
+            descriptors.append(
+                os.open(component, directory_flags, dir_fd=descriptors[-1])
+            )
+        file_descriptor = os.open(
+            relative.parts[-1], file_flags, dir_fd=descriptors[-1]
+        )
+        descriptors.append(file_descriptor)
+        before = os.fstat(file_descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("video reference must be a regular file")
+        if before.st_size <= 0:
+            raise ValueError(f"video reference image is empty: {label}")
+        if before.st_size > MAX_VIDEO_REFERENCE_BYTES:
+            raise ValueError("video reference image exceeds the byte limit")
+
+        chunks: list[bytes] = []
+        total = 0
+        while total <= MAX_VIDEO_REFERENCE_BYTES:
+            chunk = os.read(
+                file_descriptor,
+                min(1024 * 1024, MAX_VIDEO_REFERENCE_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > MAX_VIDEO_REFERENCE_BYTES:
+            raise ValueError("video reference image exceeds the byte limit")
+        content = b"".join(chunks)
+        after = os.fstat(file_descriptor)
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or len(content) != after.st_size
+        ):
+            raise ValueError("video reference image changed while being read")
+        return content
+    except FileNotFoundError as exc:
+        raise ValueError(f"video reference image is missing: {label}") from exc
+    except OSError as exc:
+        raise ValueError(
+            f"video reference image violates the no-follow policy: {label}"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _validate_decoded_image(content: bytes, label: str) -> None:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            image = Image.open(BytesIO(content))
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        SyntaxError,
+        UnidentifiedImageError,
+        ValueError,
+    ) as exc:
+        raise ValueError(f"video reference image cannot be decoded: {label}") from exc
+
+    with image:
+        image_format = str(image.format or "").upper()
+        if image_format not in _ALLOWED_IMAGE_FORMATS:
+            raise ValueError(
+                f"video reference image format is unsupported: {image_format or 'unknown'}"
+            )
+        width, height = image.size
+        if width <= 0 or height <= 0 or width * height > MAX_VIDEO_REFERENCE_PIXELS:
+            raise ValueError("video reference image exceeds the pixel limit")
+        try:
+            image.load()
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise ValueError(
+                f"video reference image cannot be decoded: {label}"
+            ) from exc
+
+
+def _snapshot_reference_image(
+    project_dir: Path, path: Path, label: str
+) -> tuple[bytes, str]:
+    content = _read_no_follow_bytes(project_dir, path, label)
+    _validate_decoded_image(content, label)
+    return content, hashlib.sha256(content).hexdigest()
 
 
 async def resolve_saved_video_references(
@@ -518,15 +703,9 @@ async def resolve_saved_video_references(
         path = _resolve_item_path(
             project, episode_number, group, reference, identities
         )
-        if not path.is_file():
-            raise ValueError(f"video reference image is missing: {reference.label}")
-        try:
-            with Image.open(path) as image:
-                image.verify()
-        except (OSError, UnidentifiedImageError) as exc:
-            raise ValueError(
-                f"video reference image cannot be decoded: {reference.label}"
-            ) from exc
+        content, content_sha256 = await asyncio.to_thread(
+            _snapshot_reference_image, project, path, reference.label
+        )
         resolved.append(
             ResolvedVideoReference(
                 reference_id=reference.reference_id,
@@ -534,6 +713,8 @@ async def resolve_saved_video_references(
                 label=reference.label,
                 subject_description=description,
                 path=path,
+                content=content,
+                sha256=content_sha256,
                 asset_id=reference.asset_id,
                 temporary_upload_id=reference.temporary_upload_id,
             )

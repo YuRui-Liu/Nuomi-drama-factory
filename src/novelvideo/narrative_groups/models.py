@@ -13,6 +13,12 @@ VideoReferenceSourceKind = Literal[
     "prop_reference",
     "temporary_upload",
 ]
+_VIDEO_REFERENCE_SOURCE_KINDS = {
+    "character_identity",
+    "scene_master",
+    "prop_reference",
+    "temporary_upload",
+}
 StageStatus = Literal[
     "pending",
     "queued",
@@ -141,6 +147,22 @@ class VideoReferenceItem:
     asset_id: str = ""
     temporary_upload_id: str = ""
 
+    def __post_init__(self) -> None:
+        for name in (
+            "reference_id",
+            "source_kind",
+            "label",
+            "subject_description",
+            "asset_id",
+            "temporary_upload_id",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a string")
+            object.__setattr__(self, name, value.strip())
+        if self.source_kind not in _VIDEO_REFERENCE_SOURCE_KINDS:
+            raise ValueError("source_kind is invalid")
+
     def to_dict(self) -> dict[str, str]:
         return {
             "reference_id": self.reference_id,
@@ -158,7 +180,14 @@ class VideoReferenceSettings:
     references: tuple[VideoReferenceItem, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "references", tuple(self.references))
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision cannot be negative")
+        references = tuple(self.references)
+        if not all(isinstance(item, VideoReferenceItem) for item in references):
+            raise TypeError("references must contain VideoReferenceItem values")
+        object.__setattr__(self, "references", references)
 
     def to_dict(self) -> dict[str, Any]:
         return {

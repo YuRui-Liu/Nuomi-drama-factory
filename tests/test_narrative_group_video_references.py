@@ -9,6 +9,7 @@ from PIL import Image
 import pytest
 
 from novelvideo.narrative_groups import models, service
+from novelvideo.narrative_groups import video_references
 from novelvideo.narrative_groups.video_references import (
     VideoReferenceSelection,
     resolve_group_video_reference_preview,
@@ -541,7 +542,7 @@ def test_resolved_rejects_escaped_asset_paths(tmp_path):
     outside = _png(tmp_path.parent / "escape" / "master.png")
     group = _saved_group("scene_master", "../../../escape")
 
-    with pytest.raises(ValueError, match="project"):
+    with pytest.raises(ValueError, match="project|asset ID"):
         _resolve_saved(_Store(_beats()), tmp_path, group)
 
     assert outside.is_file()
@@ -611,5 +612,233 @@ def test_temporary_upload_path_rejects_symlink_outside_current_group(tmp_path):
     group_root.mkdir(parents=True)
     (group_root / "upload-a.png").symlink_to(sibling_file)
 
-    with pytest.raises(ValueError, match="group"):
+    with pytest.raises(ValueError, match="group|no-follow"):
         temporary_upload_path(tmp_path, 1, "ng-01", "upload-a")
+
+
+def test_preview_rejects_asset_ids_that_escape_their_canonical_roots(tmp_path):
+    identity_id = "../Alice_Hero"
+    scene_id = "../../escaped-scene"
+    prop_id = "../../escaped-prop"
+    _png(tmp_path / "assets" / "Alice" / "identities" / "Hero.png")
+    _png(tmp_path / "escaped-scene" / "master.png")
+    _png(tmp_path / "escaped-prop" / "reference_3view.png")
+    beats = [
+        {
+            "id": "beat-1",
+            "detected_identities": [identity_id],
+            "scene_id": scene_id,
+            "detected_props": [prop_id],
+        }
+    ]
+
+    preview = _preview(_Store(beats), tmp_path, group=_group("beat-1"))
+
+    assert preview.candidates == ()
+    assert len(preview.warnings) == 3
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "asset_id", "escaped_path"),
+    [
+        (
+            "character_identity",
+            "../Alice_Hero",
+            Path("assets/Alice/identities/Hero.png"),
+        ),
+        ("scene_master", "../../escaped-scene", Path("escaped-scene/master.png")),
+        (
+            "prop_reference",
+            "../../escaped-prop",
+            Path("escaped-prop/reference_3view.png"),
+        ),
+    ],
+)
+def test_resolved_rejects_asset_ids_outside_canonical_root(
+    tmp_path, source_kind, asset_id, escaped_path
+):
+    _png(tmp_path / escaped_path)
+
+    with pytest.raises(ValueError, match="asset ID"):
+        _resolve_saved(_Store(_beats()), tmp_path, _saved_group(source_kind, asset_id))
+
+
+def test_resolved_returns_immutable_verified_bytes_and_sha256(tmp_path):
+    path = _png(canonical_prop_reference_path(tmp_path, "Key"))
+    original = path.read_bytes()
+
+    resolved = _resolve_saved(
+        _Store(_beats()), tmp_path, _saved_group("prop_reference", "Key")
+    )[0]
+    path.write_bytes(b"changed after resolution")
+
+    assert resolved.content == original
+    assert resolved.sha256 == hashlib.sha256(original).hexdigest()
+    assert isinstance(resolved.content, bytes)
+
+
+def test_resolved_rejects_final_file_symlink_even_within_asset_root(tmp_path):
+    target = _png(canonical_prop_reference_path(tmp_path, "Other"))
+    path = canonical_prop_reference_path(tmp_path, "Key")
+    path.parent.mkdir(parents=True)
+    path.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink|no-follow"):
+        _resolve_saved(
+            _Store(_beats()), tmp_path, _saved_group("prop_reference", "Key")
+        )
+
+
+def test_resolved_no_follow_read_rejects_regular_file_swapped_to_symlink(
+    tmp_path, monkeypatch
+):
+    path = _png(canonical_prop_reference_path(tmp_path, "Key"))
+    target = _png(canonical_prop_reference_path(tmp_path, "Other"))
+    real_snapshot = video_references._snapshot_reference_image
+
+    def swap_then_snapshot(project_dir, lexical_path, label):
+        path.unlink()
+        path.symlink_to(target)
+        return real_snapshot(project_dir, lexical_path, label)
+
+    monkeypatch.setattr(
+        video_references, "_snapshot_reference_image", swap_then_snapshot
+    )
+
+    with pytest.raises(ValueError, match="no-follow"):
+        _resolve_saved(
+            _Store(_beats()), tmp_path, _saved_group("prop_reference", "Key")
+        )
+
+
+def test_resolved_rejects_png_with_valid_header_but_truncated_pixels(tmp_path):
+    path = _png(canonical_prop_reference_path(tmp_path, "Key"))
+    encoded = path.read_bytes()
+    path.write_bytes(encoded[:45])
+
+    with pytest.raises(ValueError, match="decod"):
+        _resolve_saved(
+            _Store(_beats()), tmp_path, _saved_group("prop_reference", "Key")
+        )
+
+
+def test_resolved_enforces_byte_and_pixel_limits(tmp_path, monkeypatch):
+    path = _png(canonical_prop_reference_path(tmp_path, "Key"))
+    group = _saved_group("prop_reference", "Key")
+    monkeypatch.setattr(
+        video_references, "MAX_VIDEO_REFERENCE_BYTES", len(path.read_bytes()) - 1,
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="byte limit"):
+        _resolve_saved(_Store(_beats()), tmp_path, group)
+
+    monkeypatch.setattr(
+        video_references, "MAX_VIDEO_REFERENCE_BYTES", 1024 * 1024,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        video_references, "MAX_VIDEO_REFERENCE_PIXELS", 15,
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="pixel limit"):
+        _resolve_saved(_Store(_beats()), tmp_path, group)
+
+
+def test_update_uses_to_thread_for_both_sidecar_sections(tmp_path, monkeypatch):
+    _prepare_assets(tmp_path)
+    store = _Store(_beats())
+    group = _group("beat-1")
+    service.save_groups(tmp_path, 1, [group])
+    candidate = _preview(store, tmp_path, group=group).candidates[0]
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def tracked_to_thread(function, /, *args, **kwargs):
+        calls.append(function.__name__)
+        return await real_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(service, "asyncio", asyncio, raising=False)
+    monkeypatch.setattr(service.asyncio, "to_thread", tracked_to_thread)
+
+    _run(
+        service.update_video_reference_settings(
+            store=store,
+            project_dir=tmp_path,
+            episode_number=1,
+            group_id="ng-01",
+            expected_revision=0,
+            selections=(VideoReferenceSelection(candidate.reference_id, "Alice"),),
+            max_images=10,
+        )
+    )
+
+    assert calls == [
+        "_load_video_reference_update_group",
+        "_commit_video_reference_settings",
+    ]
+
+
+def test_update_detects_group_structure_change_while_resolving_candidates(tmp_path):
+    _prepare_assets(tmp_path)
+    base = _group("beat-1")
+    service.save_groups(tmp_path, 1, [base])
+
+    class _BarrierStore(_Store):
+        def __init__(self, beats):
+            super().__init__(beats)
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_beats_as_dicts(self, episode_number):
+            self.entered.set()
+            await self.release.wait()
+            return await super().get_beats_as_dicts(episode_number)
+
+    store = _BarrierStore(_beats())
+    candidate = _preview(_Store(_beats()), tmp_path, group=base).candidates[0]
+
+    async def scenario():
+        updating = asyncio.create_task(
+            service.update_video_reference_settings(
+                store=store,
+                project_dir=tmp_path,
+                episode_number=1,
+                group_id="ng-01",
+                expected_revision=0,
+                selections=(VideoReferenceSelection(candidate.reference_id, "Alice"),),
+                max_images=10,
+            )
+        )
+        await store.entered.wait()
+        changed = replace(
+            base,
+            beat_ids=("beat-2",),
+            cell_to_beat=(models.CellMapping(cell=0, beat_id="beat-2"),),
+        )
+        await asyncio.to_thread(service.save_groups, tmp_path, 1, [changed])
+        store.release.set()
+        with pytest.raises(RuntimeError, match="structure|changed"):
+            await updating
+
+    _run(scenario())
+
+
+def test_video_reference_models_reject_invalid_runtime_values():
+    with pytest.raises(ValueError, match="source_kind"):
+        models.VideoReferenceItem(
+            reference_id="id",
+            source_kind="local_path",
+            label="label",
+            subject_description="description",
+        )
+    with pytest.raises(TypeError, match="subject_description"):
+        models.VideoReferenceItem(
+            reference_id="id",
+            source_kind="prop_reference",
+            label="label",
+            subject_description=123,
+        )
+    with pytest.raises(ValueError, match="revision"):
+        models.VideoReferenceSettings(revision=-1)
+    with pytest.raises(TypeError, match="VideoReferenceItem"):
+        models.VideoReferenceSettings(references=({"reference_id": "id"},))

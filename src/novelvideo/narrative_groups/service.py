@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
 import math
@@ -797,20 +798,13 @@ async def update_video_reference_settings(
     )
 
     requested = validate_video_reference_selections(selections, max_images)
-    initial_groups = load_materialized_groups(project_dir, episode_number)
-    initial_group = next(
-        (item for item in initial_groups if item.id == group_id), None
+    initial_group = await asyncio.to_thread(
+        _load_video_reference_update_group,
+        project_dir,
+        episode_number,
+        group_id,
+        expected_revision,
     )
-    if initial_group is None:
-        raise KeyError(group_id)
-    if initial_group.video_reference_settings.revision != int(expected_revision):
-        raise RuntimeError("narrative group video reference settings revision is stale")
-    video_stage = initial_group.stages.get("video", GroupStageState())
-    if video_stage.status in {"queued", "running"}:
-        raise RuntimeError(
-            f"cannot update video reference settings while video stage is {video_stage.status}"
-        )
-
     preview = await resolve_group_video_reference_preview(
         store=store,
         project_dir=project_dir,
@@ -842,21 +836,72 @@ async def update_video_reference_settings(
         )
         for selection in requested
     )
+    return await asyncio.to_thread(
+        _commit_video_reference_settings,
+        project_dir,
+        episode_number,
+        group_id,
+        expected_revision,
+        _video_reference_group_fingerprint(initial_group),
+        references,
+    )
 
+
+def _video_reference_group_fingerprint(group: NarrativeGroup) -> tuple[Any, ...]:
+    return (
+        group.director_revision_id,
+        group.ordinal,
+        group.beat_ids,
+        group.source_span_ids,
+        group.shot_ids,
+        (group.layout.rows, group.layout.columns, group.layout.capacity),
+        tuple((item.cell, item.beat_id) for item in group.cell_to_beat),
+    )
+
+
+def _assert_video_reference_update_allowed(
+    group: NarrativeGroup, expected_revision: int
+) -> None:
+    if group.video_reference_settings.revision != int(expected_revision):
+        raise RuntimeError("narrative group video reference settings revision is stale")
+    video_stage = group.stages.get("video", GroupStageState())
+    if video_stage.status in {"queued", "running"}:
+        raise RuntimeError(
+            f"cannot update video reference settings while video stage is {video_stage.status}"
+        )
+
+
+def _load_video_reference_update_group(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+) -> NarrativeGroup:
+    groups = load_materialized_groups(project_dir, episode_number)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise KeyError(group_id)
+    _assert_video_reference_update_allowed(group, expected_revision)
+    return group
+
+
+def _commit_video_reference_settings(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+    expected_group_fingerprint: tuple[Any, ...],
+    references: tuple[VideoReferenceItem, ...],
+) -> NarrativeGroup:
     with _sidecar_guard(project_dir, episode_number):
         groups = load_materialized_groups(project_dir, episode_number)
         group = next((item for item in groups if item.id == group_id), None)
         if group is None:
             raise KeyError(group_id)
-        if group.video_reference_settings.revision != int(expected_revision):
+        _assert_video_reference_update_allowed(group, expected_revision)
+        if _video_reference_group_fingerprint(group) != expected_group_fingerprint:
             raise RuntimeError(
-                "narrative group video reference settings revision is stale"
-            )
-        video_stage = group.stages.get("video", GroupStageState())
-        if video_stage.status in {"queued", "running"}:
-            raise RuntimeError(
-                "cannot update video reference settings while video stage is "
-                f"{video_stage.status}"
+                "narrative group structure changed while resolving video references"
             )
         updated_group = replace(
             group,
