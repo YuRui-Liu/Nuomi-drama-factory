@@ -836,7 +836,7 @@ async def update_video_reference_settings(
         )
         for selection in requested
     )
-    return await asyncio.to_thread(
+    return await _finish_started_sync_commit(
         _commit_video_reference_settings,
         project_dir,
         episode_number,
@@ -845,6 +845,21 @@ async def update_video_reference_settings(
         _video_reference_group_fingerprint(initial_group),
         references,
     )
+
+
+async def _finish_started_sync_commit(
+    function: Callable[..., NarrativeGroup], /, *args: Any
+) -> NarrativeGroup:
+    """Delay cancellation until an already-started atomic commit has settled."""
+    pending = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        try:
+            await pending
+        except Exception:
+            pass
+        raise
 
 
 def _video_reference_group_fingerprint(group: NarrativeGroup) -> tuple[Any, ...]:

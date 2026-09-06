@@ -8,6 +8,7 @@ import inspect
 import os
 import re
 import stat
+import sys
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ _REFERENCE_NUMBERING = re.compile(
 )
 MAX_VIDEO_REFERENCE_BYTES = 20 * 1024 * 1024
 MAX_VIDEO_REFERENCE_PIXELS = 40_000_000
+MAX_VIDEO_REFERENCE_DESCRIPTION_LENGTH = 500
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 
@@ -95,6 +97,21 @@ def validate_max_images(max_images: int) -> int:
     if not 1 <= max_images <= 10:
         raise ValueError("max_images must be between 1 and 10")
     return max_images
+
+
+def _normalize_subject_description(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("video reference subject description must be a string")
+    description = value.strip()
+    if not description:
+        raise ValueError("video reference subject description cannot be blank")
+    if "\n" in description or "\r" in description:
+        raise ValueError("video reference subject description must be a single line")
+    if len(description) > MAX_VIDEO_REFERENCE_DESCRIPTION_LENGTH:
+        raise ValueError(
+            "video reference subject description exceeds the 500 character limit"
+        )
+    return description
 
 
 def _value(value: object, name: str, default: object = "") -> object:
@@ -269,6 +286,27 @@ def _path_within_asset_root(
     return lexical
 
 
+def _lexical_asset_root(project_dir: Path, asset_kind: str) -> Path:
+    return Path(os.path.abspath(project_dir / "assets" / asset_kind))
+
+
+def _path_contains_symlink(allowed_root: Path, path: Path) -> bool:
+    root = Path(os.path.abspath(allowed_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    if current.is_symlink():
+        return True
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            return True
+    return False
+
+
 def _identity_path(
     project_dir: Path, identity_id: str, character_name: str
 ) -> tuple[Path, bool]:
@@ -428,6 +466,13 @@ async def resolve_group_video_reference_preview(
                 f"Character identity {identity_id} is missing its identity image and portrait."
             )
             continue
+        if _path_contains_symlink(
+            _lexical_asset_root(project, "characters"), path
+        ):
+            warnings.append(
+                f"Character identity {identity_id} uses a symlink and cannot be selected."
+            )
+            continue
         if used_portrait:
             warnings.append(
                 f"Character identity {identity_id} is using its portrait fallback."
@@ -452,6 +497,11 @@ async def resolve_group_video_reference_preview(
         if not path.is_file():
             warnings.append(f"Scene {scene_id} is missing its master image.")
             continue
+        if _path_contains_symlink(_lexical_asset_root(project, "scenes"), path):
+            warnings.append(
+                f"Scene {scene_id} uses a symlink and cannot be selected."
+            )
+            continue
         candidates.append(
             _candidate(
                 "scene_master",
@@ -474,6 +524,11 @@ async def resolve_group_video_reference_preview(
             continue
         if not path.is_file():
             warnings.append(f"Prop {prop_id} is missing its reference image.")
+            continue
+        if _path_contains_symlink(_lexical_asset_root(project, "props"), path):
+            warnings.append(
+                f"Prop {prop_id} uses a symlink and cannot be selected."
+            )
             continue
         candidates.append(
             _candidate(
@@ -523,37 +578,49 @@ def _resolve_item_path(
     group: NarrativeGroup,
     item: VideoReferenceItem,
     identities: Mapping[str, tuple[str, str]],
-) -> Path:
+) -> tuple[Path, Path]:
     if item.source_kind == "temporary_upload":
         if item.asset_id:
             raise ValueError("temporary upload reference cannot contain an asset ID")
-        return temporary_upload_path(
-            project, episode_number, group.id, item.temporary_upload_id
+        root = _temporary_group_root(project, episode_number, group.id)
+        return (
+            temporary_upload_path(
+                project, episode_number, group.id, item.temporary_upload_id
+            ),
+            root,
         )
     if item.temporary_upload_id or not item.asset_id:
         raise ValueError("asset reference has invalid stable asset metadata")
     if item.source_kind == "character_identity":
         character_name = identities.get(item.asset_id, ("", ""))[0]
         path, _ = _identity_path(project, item.asset_id, character_name)
-        return path
+        return path, _lexical_asset_root(project, "characters")
     if item.source_kind == "scene_master":
         scene_id = _safe_path_segment(item.asset_id, "scene")
-        return _path_within_asset_root(
-            project,
-            "scenes",
-            canonical_scene_master_path(project, scene_id),
+        return (
+            _path_within_asset_root(
+                project,
+                "scenes",
+                canonical_scene_master_path(project, scene_id),
+            ),
+            _lexical_asset_root(project, "scenes"),
         )
     if item.source_kind == "prop_reference":
         prop_id = _safe_path_segment(item.asset_id, "prop")
-        return _path_within_asset_root(
-            project,
-            "props",
-            canonical_prop_reference_path(project, prop_id),
+        return (
+            _path_within_asset_root(
+                project,
+                "props",
+                canonical_prop_reference_path(project, prop_id),
+            ),
+            _lexical_asset_root(project, "props"),
         )
     raise ValueError(f"unsupported video reference source kind: {item.source_kind}")
 
 
-def _read_no_follow_bytes(project_dir: Path, path: Path, label: str) -> bytes:
+def _read_posix_file_snapshot(
+    allowed_root: Path, path: Path, label: str
+) -> bytes:
     """Read one regular file through directory FDs without following symlinks."""
     if (
         not hasattr(os, "O_DIRECTORY")
@@ -562,7 +629,7 @@ def _read_no_follow_bytes(project_dir: Path, path: Path, label: str) -> bytes:
     ):
         raise ValueError("no-follow reference reads are unsupported on this platform")
 
-    project_root = project_dir.resolve(strict=True)
+    project_root = Path(os.path.abspath(allowed_root))
     lexical_path = Path(os.path.abspath(path))
     try:
         relative = lexical_path.relative_to(project_root)
@@ -628,6 +695,270 @@ def _read_no_follow_bytes(project_dir: Path, path: Path, label: str) -> bytes:
             os.close(descriptor)
 
 
+class _CtypesWin32SnapshotAdapter:
+    """Small ctypes boundary for same-handle, no-follow Windows reads."""
+
+    DIRECTORY = 0x10
+    REPARSE_POINT = 0x400
+    DISK_FILE_TYPE = 1
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class FileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._file_information_type = FileInformation
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateFileW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        self._kernel32.CreateFileW.restype = wintypes.HANDLE
+        self._kernel32.GetFileInformationByHandle.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(FileInformation),
+        )
+        self._kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        self._kernel32.GetFileType.argtypes = (wintypes.HANDLE,)
+        self._kernel32.GetFileType.restype = wintypes.DWORD
+        self._kernel32.GetFinalPathNameByHandleW.argtypes = (
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        )
+        self._kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        self._kernel32.ReadFile.argtypes = (
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        )
+        self._kernel32.ReadFile.restype = wintypes.BOOL
+        self._kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+        self._invalid_handle = ctypes.c_void_p(-1).value
+
+    def _raise_last_error(self) -> None:
+        raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def _information(self, handle: object):
+        information = self._file_information_type()
+        if not self._kernel32.GetFileInformationByHandle(
+            handle, self._ctypes.byref(information)
+        ):
+            self._raise_last_error()
+        return information
+
+    def open_path(self, path: Path, *, directory: bool) -> object:
+        generic_read = 0x80000000
+        share_all = 0x1 | 0x2 | 0x4
+        open_existing = 3
+        open_reparse_point = 0x00200000
+        backup_semantics = 0x02000000
+        flags = open_reparse_point | (backup_semantics if directory else 0)
+        handle = self._kernel32.CreateFileW(
+            str(path),
+            0 if directory else generic_read,
+            share_all,
+            None,
+            open_existing,
+            flags,
+            None,
+        )
+        handle_value = getattr(handle, "value", handle)
+        if handle_value == self._invalid_handle:
+            self._raise_last_error()
+        return handle
+
+    def attributes(self, handle: object) -> int:
+        return int(self._information(handle).dwFileAttributes)
+
+    def file_type(self, handle: object) -> int:
+        return int(self._kernel32.GetFileType(handle))
+
+    def file_size(self, handle: object) -> int:
+        information = self._information(handle)
+        return (int(information.nFileSizeHigh) << 32) | int(
+            information.nFileSizeLow
+        )
+
+    def final_path_for_handle(self, handle: object) -> Path:
+        capacity = 512
+        while True:
+            buffer = self._ctypes.create_unicode_buffer(capacity)
+            length = self._kernel32.GetFinalPathNameByHandleW(
+                handle, buffer, capacity, 0
+            )
+            if length == 0:
+                self._raise_last_error()
+            if length < capacity:
+                raw_path = buffer.value
+                if raw_path.startswith("\\\\?\\UNC\\"):
+                    raw_path = "\\\\" + raw_path[8:]
+                elif raw_path.startswith("\\\\?\\"):
+                    raw_path = raw_path[4:]
+                return Path(raw_path)
+            capacity = int(length) + 1
+
+    def read_file(self, handle: object, max_bytes: int) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        while total < max_bytes:
+            chunk_size = min(1024 * 1024, max_bytes - total)
+            buffer = self._ctypes.create_string_buffer(chunk_size)
+            bytes_read = self._wintypes.DWORD()
+            if not self._kernel32.ReadFile(
+                handle,
+                buffer,
+                chunk_size,
+                self._ctypes.byref(bytes_read),
+                None,
+            ):
+                self._raise_last_error()
+            if bytes_read.value == 0:
+                break
+            chunks.append(buffer.raw[: bytes_read.value])
+            total += int(bytes_read.value)
+        return b"".join(chunks)
+
+    def close(self, handle: object) -> None:
+        if not self._kernel32.CloseHandle(handle):
+            self._raise_last_error()
+
+
+def _path_is_within_root(allowed_root: Path, candidate: Path) -> bool:
+    root = os.path.normcase(os.path.abspath(allowed_root))
+    path = os.path.normcase(os.path.abspath(candidate))
+    try:
+        return os.path.commonpath((root, path)) == root
+    except ValueError:
+        return False
+
+
+def _read_windows_file_snapshot(
+    allowed_root: Path,
+    path: Path,
+    label: str,
+    *,
+    adapter: object | None = None,
+) -> bytes:
+    """Read through Win32 handles while rejecting reparse-point traversal."""
+    try:
+        win32 = adapter or _CtypesWin32SnapshotAdapter()
+    except (AttributeError, OSError) as exc:
+        raise ValueError("secure Windows reference reads are unavailable") from exc
+    root = Path(os.path.abspath(allowed_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            "video reference path must remain inside its canonical root"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("video reference image path is invalid")
+
+    handles: list[object] = []
+    try:
+        current = root
+        directory_paths = [root]
+        for component in relative.parts[:-1]:
+            current /= component
+            directory_paths.append(current)
+        for directory in directory_paths:
+            handle = win32.open_path(directory, directory=True)
+            handles.append(handle)
+            attributes = int(win32.attributes(handle))
+            if attributes & int(win32.REPARSE_POINT):
+                raise ValueError(
+                    f"video reference directory is a reparse point: {label}"
+                )
+            if not attributes & int(win32.DIRECTORY):
+                raise ValueError("video reference parent must be a directory")
+
+        file_handle = win32.open_path(candidate, directory=False)
+        handles.append(file_handle)
+        attributes = int(win32.attributes(file_handle))
+        if attributes & int(win32.REPARSE_POINT):
+            raise ValueError(f"video reference file is a reparse point: {label}")
+        if attributes & int(win32.DIRECTORY):
+            raise ValueError("video reference must be a regular file")
+        if int(win32.file_type(file_handle)) != int(win32.DISK_FILE_TYPE):
+            raise ValueError("video reference must be a regular disk file")
+
+        final_path = Path(win32.final_path_for_handle(file_handle))
+        if not _path_is_within_root(root, final_path):
+            raise ValueError(
+                "video reference final handle path escaped its canonical root"
+            )
+        before_size = int(win32.file_size(file_handle))
+        if before_size <= 0:
+            raise ValueError(f"video reference image is empty: {label}")
+        if before_size > MAX_VIDEO_REFERENCE_BYTES:
+            raise ValueError("video reference image exceeds the byte limit")
+        content = win32.read_file(file_handle, MAX_VIDEO_REFERENCE_BYTES + 1)
+        after_size = int(win32.file_size(file_handle))
+        if len(content) > MAX_VIDEO_REFERENCE_BYTES:
+            raise ValueError("video reference image exceeds the byte limit")
+        if before_size != after_size or len(content) != after_size:
+            raise ValueError("video reference image changed while being read")
+        return bytes(content)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"video reference image violates the Windows no-follow policy: {label}"
+        ) from exc
+    finally:
+        for handle in reversed(handles):
+            try:
+                win32.close(handle)
+            except OSError:
+                pass
+
+
+def _read_file_snapshot(
+    allowed_root: Path,
+    path: Path,
+    label: str,
+    *,
+    win32_adapter: object | None = None,
+    platform_name: str | None = None,
+) -> bytes:
+    platform = (
+        "nt"
+        if platform_name is None and (os.name == "nt" or sys.platform == "win32")
+        else (platform_name or os.name)
+    )
+    if platform == "nt":
+        return _read_windows_file_snapshot(
+            allowed_root, path, label, adapter=win32_adapter
+        )
+    return _read_posix_file_snapshot(allowed_root, path, label)
+
+
 def _validate_decoded_image(content: bytes, label: str) -> None:
     try:
         with warnings.catch_warnings():
@@ -661,9 +992,20 @@ def _validate_decoded_image(content: bytes, label: str) -> None:
 
 
 def _snapshot_reference_image(
-    project_dir: Path, path: Path, label: str
+    allowed_root: Path,
+    path: Path,
+    label: str,
+    *,
+    win32_adapter: object | None = None,
+    platform_name: str | None = None,
 ) -> tuple[bytes, str]:
-    content = _read_no_follow_bytes(project_dir, path, label)
+    content = _read_file_snapshot(
+        allowed_root,
+        path,
+        label,
+        win32_adapter=win32_adapter,
+        platform_name=platform_name,
+    )
     _validate_decoded_image(content, label)
     return content, hashlib.sha256(content).hexdigest()
 
@@ -689,9 +1031,9 @@ async def resolve_saved_video_references(
     project = Path(project_dir)
     resolved: list[ResolvedVideoReference] = []
     for reference in references:
-        description = str(reference.subject_description or "").strip()
-        if not description:
-            raise ValueError("video reference subject description cannot be blank")
+        description = _normalize_subject_description(
+            reference.subject_description
+        )
         stable_id = (
             reference.temporary_upload_id
             if reference.source_kind == "temporary_upload"
@@ -700,11 +1042,11 @@ async def resolve_saved_video_references(
         expected_id = opaque_video_reference_id(reference.source_kind, stable_id)
         if reference.reference_id != expected_id:
             raise ValueError("video reference ID does not match its stable asset ID")
-        path = _resolve_item_path(
+        path, allowed_root = _resolve_item_path(
             project, episode_number, group, reference, identities
         )
         content, content_sha256 = await asyncio.to_thread(
-            _snapshot_reference_image, project, path, reference.label
+            _snapshot_reference_image, allowed_root, path, reference.label
         )
         resolved.append(
             ResolvedVideoReference(
@@ -739,9 +1081,9 @@ def validate_video_reference_selections(
         if not isinstance(selection, VideoReferenceSelection):
             raise TypeError("video reference selection is invalid")
         reference_id = str(selection.reference_id or "").strip()
-        description = str(selection.subject_description or "").strip()
-        if not description:
-            raise ValueError("video reference subject description cannot be blank")
+        description = _normalize_subject_description(
+            selection.subject_description
+        )
         ids.append(reference_id)
         normalized.append(VideoReferenceSelection(reference_id, description))
     if len(ids) != len(set(ids)):

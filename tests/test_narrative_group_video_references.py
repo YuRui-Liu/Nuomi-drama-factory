@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import threading
 
 from PIL import Image
 import pytest
@@ -744,6 +745,138 @@ def test_resolved_enforces_byte_and_pixel_limits(tmp_path, monkeypatch):
         _resolve_saved(_Store(_beats()), tmp_path, group)
 
 
+class _FakeWin32SnapshotAdapter:
+    DIRECTORY = 0x10
+    REPARSE_POINT = 0x400
+    DISK_FILE_TYPE = 1
+
+    def __init__(
+        self,
+        root: Path,
+        file_path: Path,
+        content: bytes,
+        *,
+        parent_reparse: bool = False,
+        file_reparse: bool = False,
+        final_path: Path | None = None,
+    ):
+        self.root = root
+        self.file_path = file_path
+        self.content = content
+        self.parent_reparse = parent_reparse
+        self.file_reparse = file_reparse
+        self.final_path = final_path or file_path
+        self.closed = []
+
+    def open_path(self, path, *, directory):
+        return (Path(path), directory)
+
+    def attributes(self, handle):
+        path, directory = handle
+        attributes = self.DIRECTORY if directory else 0
+        if directory and path != self.root and self.parent_reparse:
+            attributes |= self.REPARSE_POINT
+        if not directory and self.file_reparse:
+            attributes |= self.REPARSE_POINT
+        return attributes
+
+    def file_type(self, handle):
+        return self.DISK_FILE_TYPE
+
+    def file_size(self, handle):
+        return len(self.content)
+
+    def final_path_for_handle(self, handle):
+        return self.final_path
+
+    def read_file(self, handle, max_bytes):
+        return self.content[:max_bytes]
+
+    def close(self, handle):
+        self.closed.append(handle)
+
+
+def _fake_windows_snapshot(tmp_path, **adapter_options):
+    root = tmp_path / "assets" / "props"
+    path = root / "Key" / "reference_3view.png"
+    content = _png(tmp_path / "fixture.png").read_bytes()
+    adapter = _FakeWin32SnapshotAdapter(
+        root, path, content, **adapter_options
+    )
+    return root, path, content, adapter
+
+
+def test_windows_snapshot_reads_bytes_from_verified_handle_and_hashes(tmp_path):
+    root, path, content, adapter = _fake_windows_snapshot(tmp_path)
+
+    snapshot, digest = video_references._snapshot_reference_image(
+        root,
+        path,
+        "Key",
+        win32_adapter=adapter,
+        platform_name="nt",
+    )
+
+    assert snapshot == content
+    assert digest == hashlib.sha256(content).hexdigest()
+    assert len(adapter.closed) == 3
+
+
+@pytest.mark.parametrize(
+    ("adapter_options", "message"),
+    [
+        ({"parent_reparse": True}, "reparse"),
+        ({"file_reparse": True}, "reparse"),
+    ],
+)
+def test_windows_snapshot_rejects_parent_and_final_reparse_points(
+    tmp_path, adapter_options, message
+):
+    root, path, _, adapter = _fake_windows_snapshot(
+        tmp_path, **adapter_options
+    )
+
+    with pytest.raises(ValueError, match=message):
+        video_references._read_windows_file_snapshot(
+            root, path, "Key", adapter=adapter
+        )
+
+    assert adapter.closed
+
+
+def test_windows_snapshot_rejects_final_handle_path_outside_allowed_root(tmp_path):
+    root, path, _, adapter = _fake_windows_snapshot(
+        tmp_path, final_path=tmp_path / "assets" / "scenes" / "stolen.png"
+    )
+
+    with pytest.raises(ValueError, match="canonical|root"):
+        video_references._read_windows_file_snapshot(
+            root, path, "Key", adapter=adapter
+        )
+
+    assert len(adapter.closed) == 3
+
+
+def test_preview_warns_and_omits_symlinked_static_candidate(tmp_path):
+    target = _png(canonical_prop_reference_path(tmp_path, "Other"))
+    path = canonical_prop_reference_path(tmp_path, "Key")
+    path.parent.mkdir(parents=True)
+    path.symlink_to(target)
+
+    preview = _preview(_Store(_beats()), tmp_path, group=_group("beat-1"))
+
+    assert all(candidate.asset_id != "Key" for candidate in preview.candidates)
+    assert any("symlink" in warning.lower() for warning in preview.warnings)
+
+
+@pytest.mark.parametrize("description", ["line one\nline two", "x" * 501])
+def test_selection_rejects_multiline_and_overlong_descriptions(description):
+    with pytest.raises(ValueError, match="description"):
+        video_references.validate_video_reference_selections(
+            (VideoReferenceSelection("reference", description),), 10
+        )
+
+
 def test_update_uses_to_thread_for_both_sidecar_sections(tmp_path, monkeypatch):
     _prepare_assets(tmp_path)
     store = _Store(_beats())
@@ -821,6 +954,57 @@ def test_update_detects_group_structure_change_while_resolving_candidates(tmp_pa
             await updating
 
     _run(scenario())
+
+
+def test_update_cancellation_waits_for_started_commit_to_finish(
+    tmp_path, monkeypatch
+):
+    _prepare_assets(tmp_path)
+    group = _group("beat-1")
+    store = _Store(_beats())
+    service.save_groups(tmp_path, 1, [group])
+    candidate = _preview(store, tmp_path, group=group).candidates[0]
+    commit_started = threading.Event()
+    release_commit = threading.Event()
+    real_commit = service._commit_video_reference_settings
+
+    def delayed_commit(*args):
+        commit_started.set()
+        release_commit.wait(timeout=5)
+        return real_commit(*args)
+
+    monkeypatch.setattr(
+        service, "_commit_video_reference_settings", delayed_commit
+    )
+
+    async def scenario():
+        updating = asyncio.create_task(
+            service.update_video_reference_settings(
+                store=store,
+                project_dir=tmp_path,
+                episode_number=1,
+                group_id="ng-01",
+                expected_revision=0,
+                selections=(
+                    VideoReferenceSelection(candidate.reference_id, "Alice"),
+                ),
+                max_images=10,
+            )
+        )
+        await asyncio.to_thread(commit_started.wait, 5)
+        updating.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not updating.done()
+        finally:
+            release_commit.set()
+        with pytest.raises(asyncio.CancelledError):
+            await updating
+
+    _run(scenario())
+    assert service.load_groups(tmp_path, 1)[
+        0
+    ].video_reference_settings.revision == 1
 
 
 def test_video_reference_models_reject_invalid_runtime_values():
