@@ -113,6 +113,24 @@ def test_signals_for_shot_derives_counts_axes_boundaries_and_props() -> None:
     assert signals.critical_prop_handoff is True
 
 
+def test_direction_changes_count_unique_action_tokens() -> None:
+    signals = signals_for_shot(
+        _shot(action="left right left"),
+        _contract(),
+    )
+
+    assert signals.direction_changes == 1
+
+
+def test_direction_changes_ignore_non_action_shot_text() -> None:
+    signals = signals_for_shot(
+        _shot(action="waits", camera_angle="left", composition="subject on right"),
+        _contract(),
+    )
+
+    assert signals.direction_changes == 0
+
+
 def test_text_heuristics_do_not_clear_unrelated_dimensions() -> None:
     signals = signals_for_shot(
         _shot(action="过肩拍摄，然后人物被遮住，然后向左移动，然后向右移动", camera_motion="环绕"),
@@ -156,8 +174,8 @@ def test_spatial_score_matrix(
     ("signals", "level", "reasons"),
     [
         (ShotRiskSignals(), 0, ()),
-        (ShotRiskSignals(subject_count=2), 1, ("multiple_subjects",)),
-        (ShotRiskSignals(subject_count=3), 2, ("many_subjects",)),
+        (ShotRiskSignals(subject_count=2), 1, ("two_subjects",)),
+        (ShotRiskSignals(subject_count=3), 2, ("three_or_more_subjects",)),
         (ShotRiskSignals(strong_occlusion=True), 2, ("strong_occlusion",)),
     ],
 )
@@ -174,16 +192,16 @@ def test_identity_score_matrix(
         (ShotRiskSignals(), 0, ()),
         (ShotRiskSignals(action_beats=2), 1, ("multi_beat_motion",)),
         (ShotRiskSignals(direction_changes=1), 1, ("multi_beat_motion",)),
-        (ShotRiskSignals(action_beats=4), 2, ("many_action_beats",)),
+        (ShotRiskSignals(action_beats=4), 2, ("too_many_action_beats",)),
         (
             ShotRiskSignals(direction_changes=2),
             2,
-            ("repeated_direction_changes",),
+            ("repeated_direction_change",),
         ),
         (
             ShotRiskSignals(complex_camera=True, action_beats=3),
             2,
-            ("complex_camera_multi_beat",),
+            ("complex_camera_competes_with_action",),
         ),
     ],
 )
@@ -247,3 +265,49 @@ def test_audit_capabilities_only_satisfy_their_own_dimensions() -> None:
     )
 
     assert report.blockers == ("director_world_required",)
+
+
+@pytest.mark.parametrize(
+    ("signals", "levels", "blockers"),
+    [
+        (ShotRiskSignals(subject_count=1), (0, 0, 0, 0), ()),
+        (
+            ShotRiskSignals(over_shoulder=True, exact_axis=True),
+            (2, 0, 0, 0),
+            ("director_world_required",),
+        ),
+        (
+            ShotRiskSignals(subject_count=3, strong_occlusion=True),
+            (1, 2, 0, 0),
+            ("reference_capability_required",),
+        ),
+        (
+            ShotRiskSignals(action_beats=4, complex_camera=True),
+            (0, 0, 2, 0),
+            ("shot_rewrite_required",),
+        ),
+        (
+            ShotRiskSignals(exact_boundary=True, critical_prop_handoff=True),
+            (0, 0, 0, 2),
+            (),
+        ),
+    ],
+)
+def test_audit_plan_matrix_keeps_dimensions_independent(
+    signals: ShotRiskSignals,
+    levels: tuple[int, int, int, int],
+    blockers: tuple[str, ...],
+) -> None:
+    report = audit_h3_shot(
+        signals,
+        ref_available=False,
+        director_world_available=False,
+    )
+
+    assert (
+        report.spatial.level,
+        report.identity.level,
+        report.motion.level,
+        report.continuity.level,
+    ) == levels
+    assert report.blockers == blockers

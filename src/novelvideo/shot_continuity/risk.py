@@ -14,9 +14,7 @@ from .models import (
 )
 
 _CLAUSE_SEPARATOR = re.compile(r"[,，;；]|\bthen\b|随后|然后|同时", re.IGNORECASE)
-_DIRECTION_TOKEN = re.compile(
-    r"\b(?:left|right|forward|backward)\b|左|右|前|后", re.IGNORECASE
-)
+_DIRECTION_WORDS = ("left", "right", "forward", "backward", "左", "右", "前", "后")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +44,6 @@ def _contains(text: str, tokens: tuple[str, ...]) -> bool:
     return any(token in text for token in tokens)
 
 
-def _direction_changes(text: str) -> int:
-    direction_text = text.replace("随后", "").replace("然后", "")
-    directions = tuple(
-        match.group(0).casefold() for match in _DIRECTION_TOKEN.finditer(direction_text)
-    )
-    return sum(left != right for left, right in zip(directions, directions[1:]))
-
-
 def signals_for_shot(
     shot: ShotPlan, contract: ShotContinuityContract
 ) -> ShotRiskSignals:
@@ -70,6 +60,8 @@ def signals_for_shot(
     action_clauses = tuple(
         clause.strip() for clause in _CLAUSE_SEPARATOR.split(shot.action) if clause.strip()
     )
+    action_text = shot.action.casefold()
+    direction_hits = tuple(word for word in _DIRECTION_WORDS if word in action_text)
 
     return ShotRiskSignals(
         subject_count=max(1, len(contract.subjects)),
@@ -87,7 +79,7 @@ def signals_for_shot(
             ("occluded", "occlusion", "遮挡", "遮住"),
         ),
         action_beats=max(1, len(action_clauses)),
-        direction_changes=_direction_changes(text),
+        direction_changes=max(0, len(direction_hits) - 1),
         complex_camera=_contains(
             text,
             ("orbit", "crane", "drone", "handheld", "环绕", "升降", "航拍", "手持"),
@@ -121,7 +113,7 @@ def identity_score(signals: ShotRiskSignals) -> RiskDimensionScore:
     high_reasons = tuple(
         reason
         for active, reason in (
-            (signals.subject_count >= 3, "many_subjects"),
+            (signals.subject_count >= 3, "three_or_more_subjects"),
             (signals.strong_occlusion, "strong_occlusion"),
         )
         if active
@@ -130,7 +122,7 @@ def identity_score(signals: ShotRiskSignals) -> RiskDimensionScore:
         return RiskDimensionScore(dimension="identity", level=2, reasons=high_reasons)
     if signals.subject_count == 2:
         return RiskDimensionScore(
-            dimension="identity", level=1, reasons=("multiple_subjects",)
+            dimension="identity", level=1, reasons=("two_subjects",)
         )
     return RiskDimensionScore(dimension="identity", level=0)
 
@@ -139,11 +131,11 @@ def motion_score(signals: ShotRiskSignals) -> RiskDimensionScore:
     high_reasons = tuple(
         reason
         for active, reason in (
-            (signals.action_beats > 3, "many_action_beats"),
-            (signals.direction_changes > 1, "repeated_direction_changes"),
+            (signals.action_beats > 3, "too_many_action_beats"),
+            (signals.direction_changes > 1, "repeated_direction_change"),
             (
                 signals.complex_camera and signals.action_beats > 2,
-                "complex_camera_multi_beat",
+                "complex_camera_competes_with_action",
             ),
         )
         if active
