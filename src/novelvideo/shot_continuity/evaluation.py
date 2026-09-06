@@ -79,7 +79,7 @@ def evaluate_manifests(
         total_entries=total_entries,
         accepted_shots=accepted_shots,
         scored_entries=scored_entries,
-        unscored_entries=accepted_shots - scored_entries,
+        unscored_entries=total_entries - scored_entries,
         first_pass_usable_rate=(first_pass_shots / total_entries if total_entries else 0.0),
         attempts_per_accepted_shot=(
             total_attempts / accepted_shots if accepted_shots else 0.0

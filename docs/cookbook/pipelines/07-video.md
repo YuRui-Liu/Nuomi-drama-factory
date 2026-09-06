@@ -104,7 +104,7 @@ Base 与 Ref 使用相同的 Contract、风险审计和 Bundle 核心，但 tran
 | Base H3 | 首帧、精简 Prompt；FL2VA 增加尾帧；`S2` 可增加 Director World 控制帧 | 已有 `runninghub:minimax-h3` 路径和不依赖全局 Ref 的镜头 | 不把参考图描述塞进长 Prompt 来假装 Ref |
 | H3 Ref | Base 输入，加叙事组级角色/场景/关键道具 Ref、稳定 Picture 顺序和 Subject/Picture 定义 | `I2` 或显式需要资产锚定的镜头 | Ref 不替代首帧、尾帧、空间控制或端点可达性检查 |
 
-当前 Ref workflow 的组合能力仍标为 `hybrid_input_unverified`：fixture 只能验证 payload 结构，不能证明远端同时接受 Ref 与首/尾帧。开放该路径前，需要用户单独授权一次真实付费的最低成本烟测；未授权或烟测未通过时保持不可用，不能自动删掉 Ref、删掉尾帧或回退 Base。
+当前 Ref workflow 的组合能力仍标为 `hybrid_input_unverified`：fixture 只能验证本地编译语义与引用定义，并明确记录 `provider_payload=false`；它不代表 transport 已接通，也不能证明远端同时接受 Ref 与首/尾帧。开放该路径前，需要用户单独授权一次真实付费的最低成本烟测；未授权或烟测未通过时保持不可用，不能自动删掉 Ref、删掉尾帧或回退 Base。
 
 边界验收区分计划与事实。`planned_carry_out` 来自本次 entry 的最后一个 Contract revision；最终采用 attempt 后，Postflight 才写入 `observed_carry_out`。两者不一致时可以重生成或修改控制；若导演接受偏差，则创建新的 Contract revision，并让引用旧 predecessor revision 的直接后继进入 stale。stale 后继必须基于新 revision 重建，晚到的旧任务不能覆盖当前结果。没有 Contract 或 observed 证据的历史 manifest 保持可读取，但评测时记为 unscored，不能按「缺失等于匹配」放行。
 

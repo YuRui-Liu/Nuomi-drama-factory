@@ -114,6 +114,9 @@ def test_rejected_entry_remains_in_first_pass_denominator() -> None:
 
     assert result.total_entries == 2
     assert result.accepted_shots == 1
+    assert result.scored_entries == 1
+    assert result.unscored_entries == 1
+    assert result.total_entries == result.scored_entries + result.unscored_entries
     assert result.first_pass_usable_rate == 0.5
     assert result.attempts_per_accepted_shot == 1.0
 
