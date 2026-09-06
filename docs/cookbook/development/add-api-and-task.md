@@ -119,13 +119,13 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 
 按下面顺序修改，可以尽早发现跨层字符串或身份不一致：
 
-1. **Schema**：在 `src/novelvideo/api/schemas.py` 增加或修改 Pydantic 请求模型，先固定必填字段、枚举和边界验证。
-2. **Route**：在现有 `src/novelvideo/api/routes/*.py` router 增加端点；完成 API scope、项目角色、资源归属和路径安全检查。新增 router 模块时再到 `src/novelvideo/api/__init__.py` 导入并 `include_router`。
-3. **任务类型与 payload**：确定唯一 `task_type`，定义 `episode` / `beat_num` / `scope` 身份以及可序列化 payload。需要稳定 actor 命名时同步检查 `src/novelvideo/task_identity.py:TASK_IDENTITY_SPECS`。
-4. **Runner**：在 `src/novelvideo/task_backend/runners/` 编写 `runner(envelope, ctx)`，负责业务编排、进度、取消检查点、Store 生命周期和副作用清理。
-5. **注册**：在模块底部调用 `register_project_task_runner`，并确保该模块能从 `run_core.py:_ensure_builtin_runners_registered` 的导入图到达。需要文本路由时同时声明 `text_task_role`。
-6. **前端 task scope 与展示**：同步 `frontend/src/lib/task-types.ts`、发起 mutation、任务选择条件、深链或 stage registry、任务中心 label 和完成后的 Query invalidation。scope 的构造和取消请求必须复用后端同一值。
-7. **测试**：先覆盖 route 校验与响应，再覆盖 Runner 的成功/失败/取消，最后用注册表和前端任务状态测试固定跨层契约。
+1. **Schema**：增加或修改 Pydantic 请求模型，先固定必填字段、枚举和边界验证；导入链的真实落点是 `src/novelvideo/api/schemas.py:IngestStart`。
+2. **Route**：在所属业务的现有 router 模块增加端点；例如导入接口位于 `src/novelvideo/api/routes/ingest.py:start_ingest`。完成 API scope、项目角色、资源归属和路径安全检查。确实需要新增 router 模块时，用业务资源命名文件，并在 `src/novelvideo/api/__init__.py:api_router` 导入、注册。
+3. **任务类型与 payload**：确定唯一 `task_type`，定义 `episode` / `beat_num` / `scope` 身份以及可序列化 payload。`ingest_fast` 的稳定身份定义可在 `src/novelvideo/task_identity.py:TASK_IDENTITY_SPECS` 核对。
+4. **Runner**：按业务资源命名 Runner 模块并编写 `runner(envelope, ctx)`；真实参考是 `src/novelvideo/task_backend/runners/ingest.py:run_ingest_fast`。Runner 负责业务编排、进度、取消检查点、Store 生命周期和副作用清理。
+5. **注册**：在 Runner 模块底部调用 `src/novelvideo/task_backend/registry.py:register_project_task_runner`，并确保该模块能从 `src/novelvideo/task_backend/run_core.py:_ensure_builtin_runners_registered` 的导入图到达。需要文本路由时同时声明 `text_task_role`。
+6. **前端 task scope 与展示**：同步 `frontend/src/lib/task-types.ts:TASK_TYPES`、`frontend/src/lib/queries/ingest.ts:useStartIngest` 所代表的 mutation、任务选择条件、深链或 stage registry、任务中心 label 和完成后的 Query invalidation。scope 的构造和取消请求必须复用后端同一值。
+7. **测试**：先用 `tests/test_api_ingest_chapter_preview.py` 一类 route 测试覆盖校验与响应，再用 `tests/test_task_ingest_knowledge_context.py` 一类 Runner 测试覆盖成功、失败和取消，最后以 `tests/test_task_backend_registry.py` 与 `frontend/src/__tests__/task-center/provider.test.tsx` 固定跨层契约。
 
 ### `ingest_fast` 小型对照例
 
@@ -144,15 +144,15 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 
 | 想改什么 | 常见落点 |
 | --- | --- |
-| 请求/响应字段 | `src/novelvideo/api/schemas.py`、业务 route、`frontend/src/types/` 或对应 query |
-| 新增业务 router | `src/novelvideo/api/routes/<domain>.py`、`src/novelvideo/api/__init__.py` |
-| 权限与项目解析 | `src/novelvideo/api/auth.py`、`src/novelvideo/api/deps.py`、`src/novelvideo/project_context.py` |
-| 入队、lane、项目并发 | `src/novelvideo/ports/tasks.py`、具体 Adapter、`src/novelvideo/task_backend/queues.py`、`limits.py` |
-| Runner 与文本路由 | `src/novelvideo/task_backend/runners/`、`registry.py`、`run_core.py:_ensure_builtin_runners_registered` |
-| 进度、终态、结果 | Runner、`src/novelvideo/task_state.py`、`src/novelvideo/api/routes/tasks.py` |
-| 取消与超时 | `src/novelvideo/task_backend/cancel.py`、Runner 检查点、`subprocesses.py` |
-| 展示、深链、缓存刷新 | `frontend/src/lib/task-types.ts`、`frontend/src/task-center/`、业务页面或 feature、query keys |
-| 计量、积分和 provider task id | `run_core.py`、UsageMeter Port、入队 Adapter、Runner 结果 |
+| 请求/响应字段 | `src/novelvideo/api/schemas.py:IngestStart`、`src/novelvideo/api/routes/ingest.py:start_ingest`、`frontend/src/lib/queries/ingest.ts:useStartIngest` |
+| 注册业务 router | `src/novelvideo/api/routes/ingest.py:router`、`src/novelvideo/api/__init__.py:api_router.include_router` |
+| 权限与项目解析 | `src/novelvideo/api/auth.py:require_scope`、`src/novelvideo/api/deps.py:resolve_project_scope`、`src/novelvideo/project_context.py:ProjectContext` |
+| 入队、lane、项目并发 | `src/novelvideo/ports/tasks.py:TaskBackend`、`src/novelvideo/ports/local/tasks.py:InlineTaskBackend`、`src/novelvideo/task_backend/queues.py:normalize_queue_kind`、`src/novelvideo/task_backend/limits.py:project_lane_effective_active_limit` |
+| Runner 与文本路由 | `src/novelvideo/task_backend/runners/ingest.py:run_ingest_fast`、`src/novelvideo/task_backend/registry.py:register_project_task_runner`、`src/novelvideo/task_backend/run_core.py:_ensure_builtin_runners_registered` |
+| 进度、终态、结果 | `src/novelvideo/task_backend/runners/ingest.py:_run_ingest_fast`、`src/novelvideo/task_state.py:TaskStateManager`、`src/novelvideo/api/routes/tasks.py:_serialize_task` |
+| 取消与超时 | `src/novelvideo/task_backend/cancel.py:await_envelope_with_cancel_watch`、`src/novelvideo/task_backend/cancel.py:raise_if_envelope_cancel_requested`、`src/novelvideo/task_backend/subprocesses.py:project_task_subprocess_context` |
+| 展示、深链、缓存刷新 | `frontend/src/lib/task-types.ts:TASK_TYPES`、`frontend/src/task-center/provider.tsx:TaskCenterProvider`、`frontend/src/routes/_app/projects.$project/ingest.tsx:IngestPageContent` |
+| 计量、积分和 provider task id | `src/novelvideo/task_backend/run_core.py:_emit_project_task_metrics`、`src/novelvideo/ports/usage.py:UsageMeter`、`src/novelvideo/task_backend/run_core.py:_completion_metadata_with_provider_task_id` |
 
 ## 容易漏改的契约
 
@@ -173,18 +173,18 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 
 | 改动面 | 最小测试 | 何时扩大 |
 | --- | --- | --- |
-| 注册与公共执行核心 | `uv run pytest tests/test_task_backend_registry.py tests/test_task_run_core_registration_failure.py -q` | 改注册、导入图、异常映射、计量或终态时，再选 `tests/test_task_run_core_*.py` 和 backend 测试 |
-| API schema / route | 业务对应的 `tests/test_api_<domain>.py` 或 contract 测试 | 改权限、文件上传、错误码时，加未登录、角色不足、非法路径和异常响应用例 |
-| Runner | 对应 `tests/test_task_<name>_runner.py` 或 Runner 单测 | 有外部调用、取消或重试时，分别覆盖成功、provider 失败、超时、取消和重复执行 |
-| 前端 mutation | `frontend/src/__tests__/lib/queries/<domain>.test.tsx` | 请求体、错误映射或 cache invalidation 改动时运行 |
-| 前端任务展示 | `frontend/src/__tests__/task-center/provider.test.tsx`、`store.test.ts` 和对应 route / feature 测试 | 改 task type、scope、SSE 字段、deep link 或终态处理时运行 |
+| 注册与公共执行核心 | `uv run pytest tests/test_task_backend_registry.py tests/test_task_run_core_registration_failure.py -q` | 改文本路由时增加 `tests/test_task_run_core_text_runtime.py`；改 Adapter metadata 时增加 `tests/test_task_backend_celery_metadata.py` |
+| API schema / route | `tests/test_api_ingest_chapter_preview.py::test_start_ingest_rejects_unsupported_extension_before_ray`、`tests/test_structured_ingest_integration.py::test_ingest_start_rejects_stale_pipeline_selection_before_enqueue` | 改权限、文件上传、错误码时，加未登录、角色不足、非法路径和异常响应用例 |
+| Runner | `tests/test_task_ingest_knowledge_context.py::test_ingest_context_covers_store_lifecycle`、`tests/test_structured_ingest_integration.py::test_ingest_runner_routes_structured_project_without_cognee` | 有外部调用、取消或重试时，分别覆盖成功、provider 失败、超时、取消和重复执行 |
+| 前端 mutation | `frontend/src/__tests__/lib/queries/ingest.test.tsx` | 请求体、错误映射或 cache invalidation 改动时运行 |
+| 前端任务展示 | `frontend/src/__tests__/task-center/provider.test.tsx`、`frontend/src/__tests__/task-center/store.test.ts`、`frontend/src/__tests__/routes/ingest-settings-save.test.tsx` | 改 task type、scope、SSE 字段、deep link 或终态处理时运行 |
 
 选择测试时从改动的符号向两侧各走一层：改 route 就覆盖 schema 输入和 TaskBackend 调用；改 Runner 就覆盖 payload 输入和状态/产物输出；改 task type 或 scope 就同时覆盖 API 返回、注册表、SSE/任务中心和业务页面。完整测试策略见[测试策略](testing-strategy.md)。
 
 提交前再做两类静态核对：
 
 ```bash
-rg -n 'new_task_type' src/novelvideo frontend/src tests
+rg -n 'ingest_fast' src/novelvideo frontend/src tests
 rg -n 'enqueue_project_task|register_project_task_runner|taskType|scope' \
   src/novelvideo/api/routes src/novelvideo/task_backend frontend/src tests
 git diff --check -- docs/cookbook/development/add-api-and-task.md
