@@ -768,6 +768,40 @@ async def _wait_lane_idle(backend: InlineTaskBackend, lane: str, *, timeout: flo
     assert backend.lane_snapshot()[lane]["active"] == 0
 
 
+@pytest.mark.asyncio
+async def test_cancelled_background_dispatch_marks_persisted_task_failed(
+    _task_ports, tmp_path,
+):
+    """A server reload must not leave an inline task queued forever."""
+    ctx = _ctx(tmp_path, "reload-interrupted")
+    backend = InlineTaskBackend()
+    started = threading.Event()
+    release = threading.Event()
+    task_type = "l014_reload_interrupted"
+
+    def runner(envelope, run_ctx):
+        started.set()
+        release.wait(3)
+        return {"ok": True}
+
+    register_project_task_runner(task_type, runner)
+    queued = await backend.enqueue_project_task(
+        ctx, task_type=task_type, episode=1, queue_kind="default"
+    )
+    assert await asyncio.to_thread(started.wait, 3) is True
+
+    [background] = list(backend._background_tasks)
+    background.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await background
+
+    failed = await _wait_for_status(_task_ports, ctx, task_type, "failed")
+    assert failed.task_id == queued.task_state.task_id
+    assert failed.error == "TASK_INTERRUPTED"
+    assert failed.metadata["error_code"] == "TASK_INTERRUPTED"
+    release.set()
+
+
 def _spawn_tree_script(tmp_path: Path) -> tuple[Path, Path]:
     pidfile = tmp_path / "process-tree.pid"
     script = tmp_path / "spawn_tree.py"

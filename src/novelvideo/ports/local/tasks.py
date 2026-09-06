@@ -397,7 +397,9 @@ class InlineTaskBackend:
         task = asyncio.create_task(self._run_inline(lane, job))
         self._background_tasks.add(task)
         task.add_done_callback(
-            lambda done, lane_name=lane.name: self._on_background_task_done(done, lane_name)
+            lambda done, lane_name=lane.name, completed_job=job: (
+                self._on_background_task_done(done, lane_name, completed_job)
+            )
         )
 
     def _pop_next_lane_job(self, lane: _InlineLane) -> _InlineLaneJob | None:
@@ -614,11 +616,33 @@ class InlineTaskBackend:
             episode=0, scope=f"revision:{latest['target_revision']}", payload=latest,
         )
 
-    def _on_background_task_done(self, task: asyncio.Task, lane_name: str) -> None:
+    def _on_background_task_done(
+        self,
+        task: asyncio.Task,
+        lane_name: str,
+        job: _InlineLaneJob,
+    ) -> None:
         self._background_tasks.discard(task)
         lane = self._lanes[lane_name]
         lane.active = max(lane.active - 1, 0)
         if task.cancelled():
+            try:
+                job.manager.fail_task_for_project(
+                    job.ctx,
+                    str(job.envelope["task_type"]),
+                    int(job.envelope.get("episode") or 0),
+                    beat_num=job.envelope.get("beat_num"),
+                    scope=job.envelope.get("scope"),
+                    error="TASK_INTERRUPTED",
+                    metadata={**job.metadata, "error_code": "TASK_INTERRUPTED"},
+                    expected_task_id=job.run_task_id,
+                    expected_execution_owner_id=self._execution_owner_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Cancelled inline task could not be persisted as interrupted: %s",
+                    job.run_task_id,
+                )
             self._drain_lane(lane_name)
             return
         try:
