@@ -38,6 +38,43 @@ _PACK_FORMAT_VERSION = 1
 DirectorModelFactory = Callable[[], Any]
 
 
+def _normalize_h3_shot_ids(value: object) -> object:
+    """Renumber only nested H3 shot IDs without repairing other structure."""
+    if not isinstance(value, Mapping):
+        return value
+    segments = value.get("segments")
+    if not isinstance(segments, (list, tuple)):
+        return value
+
+    normalized_segments: list[object] = []
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            normalized_segments.append(segment)
+            continue
+        director_plan = segment.get("director_plan")
+        if not isinstance(director_plan, Mapping):
+            normalized_segments.append(segment)
+            continue
+        shots = director_plan.get("shots")
+        if not isinstance(shots, (list, tuple)):
+            normalized_segments.append(segment)
+            continue
+
+        normalized_shots: list[object] = []
+        for number, shot in enumerate(shots, start=1):
+            if isinstance(shot, Mapping) and "shot_id" in shot:
+                normalized_shots.append({**shot, "shot_id": str(number)})
+            else:
+                normalized_shots.append(shot)
+        normalized_segments.append(
+            {
+                **segment,
+                "director_plan": {**director_plan, "shots": normalized_shots},
+            }
+        )
+    return {**value, "segments": normalized_segments}
+
+
 class H3SegmentPromptPlan(BaseModel):
     model_config = _MODEL_CONFIG
     segment_id: str = Field(min_length=1)
@@ -49,6 +86,11 @@ class H3EpisodePromptPack(BaseModel):
     episode: int = Field(gt=0)
     director_revision_id: str = Field(min_length=1)
     segments: tuple[H3SegmentPromptPlan, ...] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_internal_shot_ids(cls, value: object) -> object:
+        return _normalize_h3_shot_ids(value)
 
     @model_validator(mode="after")
     def unique_segment_ids(self) -> "H3EpisodePromptPack":
@@ -327,6 +369,9 @@ def _episode_task(value: H3EpisodeInput) -> str:
     return (
         "Return one H3EpisodePromptPack covering every supplied VideoSegment. "
         "Keep identity, scene geography, screen direction and pacing continuous. "
+        "Within each director_plan, shots[].shot_id must be continuous string "
+        "numbers starting at \"1\". Never copy the outer business shot_ids into "
+        "director_plan.shots[].shot_id. "
         "Each director_plan must obey the versioned MiniMax H3 director profile.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
