@@ -96,6 +96,12 @@ def test_build_contract_uses_only_explicit_plan_facts() -> None:
             AssetRequirement(kind="prop", entity_key="lantern", visible_change="lit"),
             AssetRequirement(kind="prop", entity_key="lantern", visible_change="ignored"),
             AssetRequirement(kind="prop", entity_key="ledger", visible_change=" "),
+            AssetRequirement(
+                kind="prop",
+                entity_key="map",
+                visible_change="unfolded",
+                required=False,
+            ),
         )
     )
 
@@ -112,7 +118,7 @@ def test_build_contract_uses_only_explicit_plan_facts() -> None:
         },
     )
 
-    assert contract.revision == 1
+    assert contract.revision == 0
     assert contract.scene.scene_state == "stormy night"
     assert contract.scene.space_anchor == "beside the north window"
     assert contract.scene.assets == (scene_asset,)
@@ -124,6 +130,7 @@ def test_build_contract_uses_only_explicit_plan_facts() -> None:
     assert [(prop.prop_id, prop.state, prop.critical) for prop in contract.props] == [
         ("lantern", "lit", True),
         ("ledger", " ", False),
+        ("map", "unfolded", False),
     ]
     assert contract.props[0].assets == (prop_asset,)
     assert contract.camera.model_dump() == {

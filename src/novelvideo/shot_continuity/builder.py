@@ -107,7 +107,7 @@ def build_shot_continuity_contract(
         predecessor.boundary.observed_carry_out if predecessor is not None else None
     )
     return ShotContinuityContract(
-        revision=1,
+        revision=0,
         shot_id=shot.id,
         scene_id=scene_id,
         predecessor_shot_id=predecessor.shot_id if predecessor is not None else None,
