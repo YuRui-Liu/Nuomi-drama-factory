@@ -1,9 +1,11 @@
 # 新增 API 与长任务
 
-> **所属**：[开发与验证](../README.md#开发与验证)<br>
-> **相关手册**：[共享系统地图](../system-map.md) · [功能反查](trace-a-feature.md) · [测试策略](testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：[开发与验证](../README.md#开发与验证)
+- **上游**：[共享系统地图](../system-map.md)
+- **下游**：[核心生产管线](../README.md#核心生产管线)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[功能反查](trace-a-feature.md) · [测试策略](testing-strategy.md)
 
 本页说明怎样在现有边界内增加一个项目 API，或者把耗时操作接入统一任务系统。这里关注的是跨层契约；具体业务数据写到哪里，继续查对应的[生产管线专题](../README.md#核心生产管线)和[存储与项目文件](storage-and-files.md)。
 

@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 剧集图谱管线
 
-> **所属阶段**：核心生产管线 · 02 剧集图谱<br>
-> **上游**：[小说导入](01-ingest.md)<br>
-> **下游**：[生产资产](03-production-assets.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 02 剧集图谱
+- **上游**：[小说导入](01-ingest.md)
+- **下游**：[生产资产](03-production-assets.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪版本化 `episode_sources` 怎样经过固定分组、结构化抽取、确定性合并和候选图写入，最终切换为项目的活动 Cognee runtime。图谱中的角色、身份、场景、道具、事件与关系怎样进入角色和视觉资产生产，在下游[生产资产](03-production-assets.md)继续追踪。
 
@@ -21,6 +21,12 @@
 | 图谱激活 | `CogneeShadowGraph.activate_shadow` / `finalize_activation` | `cognee_active.json` 原子指向新 runtime，embedding 绑定已提交，outbox 已删除 | 不删除旧 build；它们保留在 revision-scoped 目录中 |
 
 `changed_episode_numbers` 会随 outbox 进入任务 payload，但当前 Runner 会读取 `list_sources()` 的完整来源快照，把每个来源都标记为目标 revision，并为该 revision 构建一个全新的 candidate。不要据字段名推断当前是局部重算；Writer 的 provider-neutral 接口支持「移除受影响集贡献」，而实际 `CogneeGraphCandidate` 是 revision 唯一且初始为空，写入的是完整快照。
+
+## 我要改什么
+
+- 改分组、抽取或合并：直接到[常见修改](#常见修改)选择对应场景。
+- 改 revision、检查点或激活恢复：同时核对[失败诊断](#失败诊断)。
+- 改任务身份、scope 或状态通知：复用[新增 API 与长任务](../development/add-api-and-task.md)中的共享契约。
 
 ## 核心原理
 
@@ -74,7 +80,7 @@ Runner 开始时再次读取 `current_revision()`。它与 payload 的 `target_r
 
 Runner 随后用 `CogneeShadowGraph` 原子激活 candidate。激活前先写 `cognee_pointer_pending_commit.json` journal，再替换 `cognee_active.json`；接着提交 Ollama embedding binding（若存在），最后删除 pointer journal。binding 或 finalize 失败会恢复旧指针。全部成功后才关闭 candidate、删除对应 outbox，并返回 group/entity/event/relation 数量。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -140,26 +146,6 @@ sequenceDiagram
 
 图中的并行只覆盖串行 checkpoint 扫描后留下的 missing 组；命中和 miss 的判定都在 `par` 之前完成。合并需要全部组成功后按 group 顺序组装输入；candidate 创建、四类图写入、embedding、指针激活和 outbox 删除依次执行。`on_group_event` 在 `started`、`completed`、`checkpoint`、`failed` 时写任务日志；只有 `completed` 和 `checkpoint` 增加已完成计数，Runner 将分组阶段映射到约 0.10–0.85 的 progress，最终终态仍由通用 task core 记录。
 
-## 数据与产物
-
-| 数据或产物 | 写入方 | 位置 | 读取方与语义 |
-| --- | --- | --- | --- |
-| 正式分集来源 | `EpisodeSourceStore.commit_prepared` | 项目 SQLite `episode_sources` | Runner 的完整输入；每行保留自身 `source_revision`，Runner 构图时统一绑定目标 revision |
-| 项目来源 revision | 同上 | `episode_source_state` | Runner 的 stale guard |
-| 待建图项 | 同上 | `episode_graph_outbox` | revision 与 changed episode numbers；成功激活后删除 |
-| 分组检查点 | `EpisodeGraphCheckpointStore` | `STATE_DIR/<owner>/state/episode_graph/checkpoints/rev_<revision>/<group>.json` | schema version、revision、group key、content hash 全匹配才复用；同一 owner 的项目共用 checkpoint 根 |
-| candidate runtime | `CogneeCandidateManager` | `state/cognee_builds/<revision>-<uuid>/runtime/` | 隔离的 Cognee graph 与 vector 数据 |
-| 活动图指针 | `CogneeShadowGraph` | `state/cognee_active.json` | `CogneeStore` 解析当前活动 runtime；缺失或无效时回退 canonical state 路径 |
-| 指针 journal | 同上 | `state/cognee_pointer_pending_commit.json` | 指针替换的恢复依据；激活完成后删除 |
-| embedding 绑定 | `commit_embedding_binding` | 项目 state 中的 Cognee embedding 配置 | 仅 Ollama binding 在 candidate ready 后提交 |
-| 任务状态 | TaskBackend / `TaskStateManager` | 项目 SQLite `task_states` | Task Center、任务列表与 stream 展示后台状态 |
-
-Runner 把 `Path(ctx.state_dir).parent` 传给 `EpisodeGraphCheckpointStore`，Store 再追加 `state/episode_graph`，所以检查点不在当前项目的 `ctx.state_dir` 内，而位于 owner 级兄弟根 `STATE_DIR/<owner>/state/episode_graph`。同一 owner 下的多个项目会共用这个 checkpoint 根；虽然复用仍要求 revision、group key 与 content hash 全匹配，但目录清理、迁移或权限调整会同时影响这些项目，不能把它当作单项目 state 产物处理。
-
-检查点 JSON 用同目录临时文件写入、`fsync` 后 `os.replace`，进程中断不会把半截 JSON 当成成功结果。损坏 JSON、未知 schema、revision/key/hash 不匹配或无法通过 `EpisodeGraphExtraction` 校验都会被视为 miss 并重新抽取。
-
-候选 build 当前会保留用于诊断，失败时也不会清理活动图。`discard_candidate` 负责关闭 candidate store，不承诺删除 build 目录；运维清理前必须先解析 `cognee_active.json`，不能按 revision 名猜测哪个目录仍在使用。
-
 ## 关键代码索引
 
 | 关注点 | 路径 | 关键符号 |
@@ -181,6 +167,26 @@ Runner 把 `Path(ctx.state_dir).parent` 传给 `EpisodeGraphCheckpointStore`，S
 | 管线编排 | `src/novelvideo/episode_graph/service.py` | `EpisodeGraphBuildService`、`EpisodeGraphGroupsFailed` |
 | 活动指针与恢复 | `src/novelvideo/episode_import_service.py` | `CogneeShadowGraph`、`activate_shadow`、`restore_active`、`resolve_active_cognee_runtime` |
 | Runner 注册与终态 | `src/novelvideo/task_backend/run_core.py`、`src/novelvideo/task_backend/registry.py` | `_ensure_builtin_runners_registered`、`get_project_task_runner_registration` |
+
+## 数据与产物
+
+| 数据或产物 | 写入方 | 位置 | 读取方与语义 |
+| --- | --- | --- | --- |
+| 正式分集来源 | `EpisodeSourceStore.commit_prepared` | 项目 SQLite `episode_sources` | Runner 的完整输入；每行保留自身 `source_revision`，Runner 构图时统一绑定目标 revision |
+| 项目来源 revision | 同上 | `episode_source_state` | Runner 的 stale guard |
+| 待建图项 | 同上 | `episode_graph_outbox` | revision 与 changed episode numbers；成功激活后删除 |
+| 分组检查点 | `EpisodeGraphCheckpointStore` | `STATE_DIR/<owner>/state/episode_graph/checkpoints/rev_<revision>/<group>.json` | schema version、revision、group key、content hash 全匹配才复用；同一 owner 的项目共用 checkpoint 根 |
+| candidate runtime | `CogneeCandidateManager` | `state/cognee_builds/<revision>-<uuid>/runtime/` | 隔离的 Cognee graph 与 vector 数据 |
+| 活动图指针 | `CogneeShadowGraph` | `state/cognee_active.json` | `CogneeStore` 解析当前活动 runtime；缺失或无效时回退 canonical state 路径 |
+| 指针 journal | 同上 | `state/cognee_pointer_pending_commit.json` | 指针替换的恢复依据；激活完成后删除 |
+| embedding 绑定 | `commit_embedding_binding` | 项目 state 中的 Cognee embedding 配置 | 仅 Ollama binding 在 candidate ready 后提交 |
+| 任务状态 | TaskBackend / `TaskStateManager` | 项目 SQLite `task_states` | Task Center、任务列表与 stream 展示后台状态 |
+
+Runner 把 `Path(ctx.state_dir).parent` 传给 `EpisodeGraphCheckpointStore`，Store 再追加 `state/episode_graph`，所以检查点不在当前项目的 `ctx.state_dir` 内，而位于 owner 级兄弟根 `STATE_DIR/<owner>/state/episode_graph`。同一 owner 下的多个项目会共用这个 checkpoint 根；虽然复用仍要求 revision、group key 与 content hash 全匹配，但目录清理、迁移或权限调整会同时影响这些项目，不能把它当作单项目 state 产物处理。
+
+检查点 JSON 用同目录临时文件写入、`fsync` 后 `os.replace`，进程中断不会把半截 JSON 当成成功结果。损坏 JSON、未知 schema、revision/key/hash 不匹配或无法通过 `EpisodeGraphExtraction` 校验都会被视为 miss 并重新抽取。
+
+候选 build 当前会保留用于诊断，失败时也不会清理活动图。`discard_candidate` 负责关闭 candidate store，不承诺删除 build 目录；运维清理前必须先解析 `cognee_active.json`，不能按 revision 名猜测哪个目录仍在使用。
 
 ## 常见修改
 
@@ -239,7 +245,12 @@ Runner 把 `Path(ctx.state_dir).parent` 传给 `EpisodeGraphCheckpointStore`，S
 | 图谱里出现属性数组 | `attributes_json` 的具体结构 | 原生 `tags` / `aliases` 是 list；冲突值是 `{ "values": [...] }`。消费者需要按 `ConflictValues` 结构区分 |
 | 进度总数与日志组数不一致 | 来源是否有集号空洞 | Runner 的 total 用每 5 条来源估算，实际 grouping 遇空洞会增加组数；以具体组日志和终态为准 |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/02-episode-graph.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 从仓库根目录运行：
 
@@ -270,6 +281,8 @@ git diff -- docs/cookbook/pipelines/02-episode-graph.md
 | `tests/test_task_episode_graph_runner.py` | Runner 层的 revision stale guard、进度事件、Cognee DataPoint、激活调用顺序、outbox 合并与失败保留；不覆盖真实文件 pointer journal 的持久化与跨实例恢复 |
 | `tests/test_episode_import_transaction.py` | repository 提交失败后的 pointer restore，以及新 Service 按数据库 revision 对账并恢复 pending pointer journal |
 | `tests/test_cognee_shadow_rebuild.py` | 真实 `cognee_active.json` 的 candidate 切换、runtime 解析、restore/discard 安全边界与 build-root 路径约束 |
+
+</details>
 
 ## 继续追踪
 

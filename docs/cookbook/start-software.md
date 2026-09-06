@@ -1,5 +1,11 @@
 # 启动 Nuomi Drama Factory CE
 
+- **所属**：[开发与验证](README.md#开发与验证)
+- **上游**：本地运行环境与仓库检出
+- **下游**：[共享系统地图](system-map.md) · [核心生产管线](README.md#核心生产管线)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](README.md)
+
 导航：[Cookbook 首页](README.md) · [共享系统地图](system-map.md) · [常见故障](../zh/guides/troubleshooting.md) · [模型配置](../zh/getting-started/configuring-models.md)
 
 本文说明如何从源码启动 Nuomi Drama Factory CE。正常使用推荐 Docker Compose；需要修改和调试代码时使用本地开发模式。完整安装和部署选择见[安装说明](../zh/getting-started/installation.md)与[自托管指南](../zh/guides/self-hosting.md)，这里集中记录开发时常用的启动、端口和诊断命令。

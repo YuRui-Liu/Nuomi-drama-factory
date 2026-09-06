@@ -6,18 +6,18 @@
 - 想先理解整体结构：阅读[共享系统地图](system-map.md)。
 - 已经知道页面、接口或任务名：使用[功能反查手册](development/trace-a-feature.md)。
 
-## 我要修改什么
+## 按修改目标直达
 
 | 修改目标 | 首选入口 | 同时检查 |
 | --- | --- | --- |
-| 小说上传、格式解析、拆章或剧集来源 | [小说导入](pipelines/01-ingest.md) | [存储与项目文件](development/storage-and-files.md) |
-| 剧集实体、关系、合并规则或断点恢复 | [剧集图谱](pipelines/02-episode-graph.md) | [API 与长任务](development/add-api-and-task.md) |
-| 角色、场景、道具或候选资产采用 | [生产资产](pipelines/03-production-assets.md) | [存储与项目文件](development/storage-and-files.md) |
-| 剧本文本、Beat、语义校验或修复 | [剧本与语义](pipelines/04-screenplay.md) | [功能反查](development/trace-a-feature.md) |
-| NarrativeGroup、网格、草图或图像重生成 | [分镜与图像](pipelines/05-storyboard.md) | [API 与长任务](development/add-api-and-task.md) |
-| 配音、旁白、声音选择或音频重生成 | [声音与音频](pipelines/06-audio.md) | [测试策略](development/testing-strategy.md) |
-| 视频后端、参考帧、生成参数或候选采用 | [视频生成](pipelines/07-video.md) | [测试策略](development/testing-strategy.md) |
-| 成片门禁、字幕、FFmpeg 合成或导出包 | [合成与导出](pipelines/08-compose-export.md) | [存储与项目文件](development/storage-and-files.md) |
+| 小说上传、格式解析、拆章或剧集来源 | [小说导入：常见修改](pipelines/01-ingest.md#常见修改) | [存储与项目文件](development/storage-and-files.md) |
+| 剧集实体、关系、合并规则或断点恢复 | [剧集图谱：常见修改](pipelines/02-episode-graph.md#常见修改) | [API 与长任务](development/add-api-and-task.md) |
+| 角色、场景、道具或候选资产采用 | [生产资产：常见修改](pipelines/03-production-assets.md#常见修改) | [存储与项目文件](development/storage-and-files.md) |
+| 剧本文本、Beat、语义校验或修复 | [剧本与语义：常见修改](pipelines/04-screenplay.md#常见修改) | [功能反查](development/trace-a-feature.md) |
+| NarrativeGroup、网格、草图或图像重生成 | [分镜与图像：常见修改](pipelines/05-storyboard.md#常见修改) | [API 与长任务](development/add-api-and-task.md) |
+| 配音、旁白、声音选择或音频重生成 | [声音与音频：常见修改](pipelines/06-audio.md#常见修改) | [测试策略](development/testing-strategy.md) |
+| 视频后端、参考帧、生成参数或候选采用 | [视频生成：常见修改](pipelines/07-video.md#常见修改) | [测试策略](development/testing-strategy.md) |
+| 成片门禁、字幕、FFmpeg 合成或导出包 | [合成与导出：常见修改](pipelines/08-compose-export.md#常见修改) | [存储与项目文件](development/storage-and-files.md) |
 
 如果只能看到故障现象，还不能确定所属模块，先从[共享系统地图](system-map.md)确认状态和数据流，再按[功能反查手册](development/trace-a-feature.md)从页面路由、HTTP 路径、任务类型或输出文件名定位。
 

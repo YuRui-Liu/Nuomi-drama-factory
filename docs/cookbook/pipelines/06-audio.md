@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 声音与音频管线
 
-> **所属阶段**：核心生产管线 · 06 声音与音频<br>
-> **上游**：[分镜与图像](05-storyboard.md)<br>
-> **下游**：[视频生成](07-video.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 06 声音与音频
+- **上游**：[分镜与图像](05-storyboard.md)
+- **下游**：[视频生成](07-video.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪生产 Beat 的对白与旁白怎样选择参考声线、通过 RunningHub IndexTTS2 生成音频，并把文件、来源哈希和尝试记录交给视频与字幕环节。角色工作区的声音设计只负责建立可复用的参考样本；它与剧集音频生成是两类任务。
 
@@ -22,6 +22,12 @@
 旧地址 `/_app/projects/$project/episodes/$episode/audio` 当前只重定向到 Beat 工作台并设置 `sub=audio`。实际播放与重生成交互在 `frontend/src/components/episode/beat-workbench/audio-pane.tsx`；不要在重定向路由里寻找生成表单。
 
 旧 `/tts/generate`、`/tts/preview` 和 `/tts/voices` 都固定返回 `410 Gone`。活跃前端不再列 provider/voice，也不调用旧 TTS 预览；`TTSGenerateRequest` 中遗留的 `provider`、`voice`、`model`、`rate` 字段不会改变当前 IndexTTS2 执行后端。
+
+## 我要改什么
+
+- 改声线选择、生成范围或产物字段：从[常见修改](#常见修改)进入对应场景。
+- 改任务 scope 与页面刷新：共享机制见[新增 API 与长任务](../development/add-api-and-task.md)。
+- 只想定位故障：直接看[失败诊断](#失败诊断)与[最小验证](#最小验证)。
 
 ## 核心原理
 
@@ -115,7 +121,7 @@ Runner 从 `runninghub-main` 读取启用的 provider、credential 和 `tts_inde
 
 前端 compose gate 只对 narrated 项目把缺音频列为阻塞；drama 允许视频内置音轨。文件重生成不会主动删除既有视频、最终成片或 SRT，这些下游产物需要按影响范围重新生成。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -254,7 +260,12 @@ sequenceDiagram
 | 字幕时间仍是 5 秒或整体漂移 | MP3 是否可被 ffprobe 读取、是否存在 Director manifest | 普通路径探测失败回退 5 秒；Director 路径按 manifest 边界，不按 MP3 长度 |
 | 声音设计完成却没有 Beat MP3 | task type 是否 `character_voice_design` | 该任务只保存参考样本；随后运行 `audio_generation_indextts2` |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/06-audio.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对前端入口、API task type、声音优先级、Runtime 与下游：
 
@@ -343,6 +354,8 @@ npm test -- --run \
 这里只记录可复现的测试期望与当前实现差异，不据此断定测试已陈旧或实现存在缺陷。在契约明确前，包含该节点的 `tests/test_indextts2_beat_audio_task.py` 全文件或更大测试组合不能作为“全绿提交门禁”；若运行，须把这项预期失败单独报告。
 
 修改输出格式或时长规则时，再增加真实 ffmpeg/ffprobe 冒烟：生成一个 Beat，确认文件可解码、`GET /beats` 返回正时长、视频重新生成后的时长不短于预期，并导出 SRT 核对累计时间轴。不要用只写任意 bytes 的单元测试代替 codec 验证。
+
+</details>
 
 ## 继续追踪
 

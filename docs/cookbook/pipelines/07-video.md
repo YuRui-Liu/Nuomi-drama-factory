@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 视频生成管线
 
-> **所属阶段**：核心生产管线 · 07 视频生成<br>
-> **上游**：[声音与音频](06-audio.md)<br>
-> **下游**：[合成与导出](08-compose-export.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 07 视频生成
+- **上游**：[声音与音频](06-audio.md)
+- **下游**：[合成与导出](08-compose-export.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪 canonical 首帧、尾帧、Beat 文本与音频怎样进入单 Beat 或 NarrativeGroup 视频任务，以及生成结果怎样成为候选、当前视频或组合视频。这里的「单 segment」是 NarrativeGroup 的失败片段重试入口，不等同于单 Beat；成片合成、字幕与导出包由下一篇负责。
 
@@ -22,6 +22,12 @@
 旧地址 `/_app/projects/$project/episodes/$episode/video` 只重定向到 Beat 工作台并设置 `sub=video`。单 Beat 的实际表单和候选采用在 `frontend/src/components/episode/beat-workbench/video-pane.tsx`；NarrativeGroup 视频在 `frontend/src/components/episode/narrative-workbench/`。
 
 批量 `video_generation` Runner 仍然存在，会逐 Beat 调用与 `single_video` 相同的内部函数；当前本页重点入口是 Beat 工作台的单项任务和 Narrative Workbench 的组任务。不要把 `video_generation`、`single_video` 与 `narrative_group_video` 当成同一个 task scope。
+
+## 我要改什么
+
+- 改 provider、workflow、参考帧或提示词：从[常见修改](#常见修改)进入对应场景。
+- 改候选采用、group revision 或 manifest：同时核对[数据与产物](#数据与产物)。
+- 改任务 scope 与页面刷新：共享机制见[新增 API 与长任务](../development/add-api-and-task.md)。
 
 ## 核心原理
 
@@ -63,7 +69,7 @@ Seedance 2 会把项目角色、场景、道具、用户上传/裁剪素材、�
 
 Runner 的 episode-pack optimizer 会把当前组放到同集已完成 render 的相邻组上下文中，结合 Director blocking、项目 style snapshot、frame hash 与文本模型生成类型化 DirectorPlan。每个计划先经过确定性的 H3 prompt quality gate；失败时只重写不合格 segment，预算耗尽则在调用视频 provider 前失败，并把 `quality_report` 写进 manifest。与单 Beat 不同，组级 optimizer 连接失败不会回退 raw prompt。
 
-通过 prompt gate 后，当前 Runner 对每个 segment 分别调用 adapter，再用本地 FFmpeg 组合成功片段。单段失败被隔离：至少一个成功时 stage 可以成为 `partial_failure`；全部失败才整体抛错。完成后还会检查实际分辨率。只有分辨率不匹配时 runtime 允许先保留候选文件，再由 group Runner 将 stage 标成 `partial_failure`；其他 codec、时长、音频等质量错误会使 transport 路径失败。
+通过 prompt gate 后，当前 Runner 对每个 segment 分别调用 adapter，再用本地 FFmpeg 组合成功片段。单段失败被隔离：至少一个成功时 stage 可以成为 `partial_failure`；全部失败才整体抛错。完成后还会检查实际分辨率；分辨率不匹配时 runtime 允许先保留候选文件，再由 group Runner 将 stage 标成 `partial_failure`。当前 `VideoProbe` / `validate_video` 不检查 codec，不能据此推断 codec 质量是否合格。
 
 组内任何 segment 采用 `external_tts` 时，Runner 尝试用 Demucs 分离原视频对白与 ambience。Demucs 未安装会记录 `unavailable` 并保留视频，但后续要求外部 TTS 的严格合成会因为缺少成功 ambience stem 而拒绝；全组 `h3_native` 不做 stem 分离。
 
@@ -88,7 +94,7 @@ NarrativeGroup 不写单 Beat pool。它保存 group/revision scoped 的物理�
 - `NewApiVideoGenerator` 有 `video_request_usage` 与额度预留、确认、退款；H3 runtime 路径未调用这组 usage meter helper。调整 H3 计量时需要新增明确接点，不能假设共用 generator 基类便会自动计费。
 - Higgsfield 没有 provider、profile、adapter 或 API option；当前只保留方法借鉴材料。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -247,7 +253,12 @@ sequenceDiagram
 | 视频调用没有预期的额度记录 | 先区分 NewAPI generator 与 H3 media runtime；当前只有前者接入 `video_request_usage` 和 UsageMeter helper |
 | Higgsfield 配置找不到 | 当前没有 Higgsfield runtime backend；相关计划不是线上 provider 配置 |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/07-video.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对三类入口、两套 H3 标识、resolver/adapter、候选与计量边界：
 
@@ -344,6 +355,8 @@ git diff --name-only -- docs/cookbook/pipelines/07-video.md
 ```
 
 修改 provider 参数或 codec 处理时，再增加一个真实生成冒烟：确认 provider task id、MP4 可被 ffprobe 读取、分辨率/时长/音轨符合分支契约，选择旧候选后 canonical 文件确实变化，并让下一阶段用同一 manifest 或 Beat MP4 完成合成。只写任意 bytes 的单元测试不能替代媒体探测。
+
+</details>
 
 ## 继续追踪
 

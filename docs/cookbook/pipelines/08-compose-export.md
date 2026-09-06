@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 合成与导出管线
 
-> **所属阶段**：核心生产管线 · 08 合成与导出<br>
-> **上游**：[视频生成](07-video.md)<br>
-> **下游**：无；成片与导出包是核心生产管线的末端产物<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 08 合成与导出
+- **上游**：[视频生成](07-video.md)
+- **下游**：无；成片与导出包是核心生产管线的末端产物
+- **代码基线**：`c170582`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪 Compose 页怎样判断一集能否合成，`compose_episode` 怎样选择 Director 与逐 Beat 视频、重建音轨并用 FFmpeg 发布固定成片，以及 SRT、成片和 ZIP 三类导出怎样读取这些文件。这里有三套相邻但不相同的“就绪”判断：页面门禁、`pipeline/status` 的导航状态和后端 Runner 的真实校验。排错和修改时不能把其中一套当成另外两套。
 
@@ -20,6 +20,12 @@
 | 导出素材包 | Compose 页“导出 ZIP” | `POST .../export/zip` 现场生成 SRT 和 ZIP | 可收集到至少一个音频、已解析视频、成片或 SRT | 不是历史快照；同名 ZIP 会覆盖，且使用 `ZIP_STORED` 不压缩 |
 
 `src/novelvideo/generators/video_composer.py` 中还保留 `VideoComposer`、`MoviePyComposer`、片头片尾、Ken Burns 和 `add_subtitles()` 等通用工具，但当前 `/videos/compose` → `compose_episode` 路径没有创建或调用这些类。修改该文件不会自动改变 Compose 页的成片行为；当前活跃实现位于 `src/novelvideo/task_backend/runners/video.py`。
+
+## 我要改什么
+
+- 改成片门禁、FFmpeg 参数、字幕或导出包：从[常见修改](#常见修改)进入对应场景。
+- 改来源选择、音轨回退或产物路径：同时核对[数据与产物](#数据与产物)。
+- 改 `compose_episode` 任务和前端刷新：共享生命周期见[新增 API 与长任务](../development/add-api-and-task.md)。
 
 ## 核心原理
 
@@ -114,15 +120,15 @@ SRT 每次请求都从 Store 读取 Beats，并调用 `build_srt_content()`：
 | `audio/beat_NN.mp3` | 当前 Beats 中实际存在的逐 Beat 音频 |
 | `video/group_NNN_<源文件名>` | `resolve_episode_composition_sources()` 得到的每个 Director 或旧逐 Beat 物理视频 |
 | `manifests/group_NNN_<manifest文件名>` | Director manifest（存在时） |
-| `stems/group_NNN_<stem文件名>` | Director ambience / original audio stem（存在时） |
+| `stems/group_NNN_<stem文件名>` | original stem 存在时收集；ambience 只在 span 含 `external_tts` 且严格来源校验成功后收集，native-only span 的 `ambience_stem_path` 为空 |
 | `epNNN_final.mp4` | 固定成片（存在时） |
 | `epNNN.srt` | 现场生成且非空的字幕（存在时） |
 
 服务端 ZIP 文件名为 `<project_name>_第<episode>集.zip`，同名导出会覆盖上一次文件。前端使用 `<project>_ep<episode>.zip` 作为浏览器下载名；SRT 前端名同理为 `<project>_ep<episode>.srt`。视频接口响应名是 `epNNN_final.mp4`，前端下载名为 `<project>_epNNN_final.mp4`。
 
-ZIP 与 SRT 都复用来源解析器的默认严格模式。因此 Director manifest 声明 `external_tts` 却缺 ambience stem 时，即使只想导字幕或打包，也可能在解析阶段失败。ZIP 不是简单遍历目录：未被当前 Beats / manifest 解析到的旧文件和临时候选不会进入包。
+ZIP 与 SRT 都复用来源解析器的默认严格模式。因此 Director manifest 声明 `external_tts` 却缺 ambience stem 时，即使只想导字幕或打包，也可能在解析阶段失败。严格校验通过后，ZIP 才收集含 `external_tts` span 的 ambience；native-only span 会把 `ambience_stem_path` 置空，不收集 ambience。`original_audio_path` 则按文件存在性收集。ZIP 不是简单遍历目录：未被当前 Beats / manifest 解析到的旧文件和临时候选不会进入包。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -189,7 +195,7 @@ Compose 页用 `useTaskController` 跟踪 episode 级 `compose_episode`。任务
 | 逐 Beat 视频 | 视频生成 / 候选采用 | `videos/beats/epNNN/beat_NN.mp4` | 未被 Director span 覆盖时作为普通合成来源 |
 | 逐 Beat 音频 | 音频生成 | `audio/epNNN/beat_NN.mp3` | 普通 Beat 优先音轨、Director `external_tts`、字幕时长与 ZIP |
 | Director manifest | NarrativeGroup 视频生产 | manifest 的 materialized stage 路径 | 决定物理视频、逻辑 Beat 边界、音源类型与 stems |
-| Director 物理视频 / stems | Director 视频生产 | manifest 内的 `physical_video`、`ambience_stem_path`、`original_audio_path` | Director 合成、混合字幕时间线和 ZIP |
+| Director 物理视频 / stems | Director 视频生产 | manifest 内的 `physical_video`、`ambience_stem_path`、`original_audio_path` | ambience 仅供含 `external_tts` 且严格校验成功的 span；original stem 存在即供 ZIP 收集 |
 | 最终成片 | `compose_episode` | `videos/episodes/epNNN_final.mp4` | `pipeline/status`、`GET /final`、播放、视频下载和 ZIP |
 | 服务端 SRT 文件 | ZIP 导出 | `videos/episodes/epNNN.srt` | ZIP 根目录；单独 SRT 导出只生成响应文本，不保证写此文件 |
 | ZIP | ZIP 导出 | `videos/episodes/<project_name>_第<episode>集.zip` | API `FileResponse`；下次同名导出原地覆盖 |
@@ -261,7 +267,12 @@ Compose 页用 `useTaskController` 跟踪 episode 级 `compose_episode`。任务
 | ZIP 里视频名多了 `group_001_` | `build_episode_zip_file()` 的 arcname | 当前对 Director 和 legacy span 都加稳定组前缀，用来避免同名资源冲突 |
 | GET `/final` 显示存在但视频损坏或过期 | 固定文件大小、ffprobe、Beat/来源更新时间 | GET 只做 `Path.exists()`；需要内容新鲜度或健康度时应新增元数据/探测，不能依赖 exists |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/08-compose-export.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对入口、三套门禁、任务参数和导出文件名：
 
@@ -328,6 +339,8 @@ npm test -- --run src/__tests__/routes/compose-export-contract.test.ts
 这里只记录测试目标与当前实现不一致的可复现边界，不据此替任何一方判定预期契约。修正前，不要把上述两个 Director 文件或整个 `test_api_compose_export_contract.py` 放进绿色门禁。
 
 若修改真实 FFmpeg 参数，再做一轮媒体冒烟：准备至少一个带内置音轨的 Beat、一个带独立 MP3 的 Beat，以及一个混合 `h3_native` / `external_tts` 的 Director span。合成后用 `ffprobe` 核对目标尺寸、音视频流、帧率、采样率和总时长；随后分别下载 SRT、MP4、ZIP，并解包核对 manifest、stems、视频、音频、成片和字幕。单元测试中的任意字节占位文件不能替代这轮 codec 验证。
+
+</details>
 
 ## 继续追踪
 

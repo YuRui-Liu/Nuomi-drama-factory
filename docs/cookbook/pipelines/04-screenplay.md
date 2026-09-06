@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 剧本与语义管线
 
-> **所属阶段**：核心生产管线 · 04 剧本与语义<br>
-> **上游**：[生产资产](03-production-assets.md)<br>
-> **下游**：[分镜与图像](05-storyboard.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 04 剧本与语义
+- **上游**：[生产资产](03-production-assets.md)
+- **下游**：[分镜与图像](05-storyboard.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪两组容易被「Beat」一词混在一起的状态。生产层的 `VisualBeat` 是可直接生成草图、音频和视频的逐行单元，保存在 SQLite `beats` 表；语义层的 `DramaticBeat` 是带原文行号、事实约束、校验报告和激活指针的导演拆解 revision，保存在项目文件中。两者目前没有自动投影关系。语义 revision 激活后由导演方案读取，再进入下游[分镜与图像](05-storyboard.md)。
 
@@ -20,6 +20,12 @@
 | 激活状态 | 当前允许下游采用的 passing semantic revision | `active.json` 指针 | `POST .../{revision_id}/activate` | 导演方案同时校验当前 source revision 与 active semantic revision |
 
 页面入口是 `frontend/src/routes/_app/projects.$project/episodes.$episode/script.lazy.tsx`。它把 `ScreenplayWorkbench`、资产规划、`EpisodeSourceEditor` 和 `ScriptBeatPreview` 放在同一页，但这些组件背后有不同的数据源：工作台走 `screenplay-semantics.ts`，生产 Beat 走 `episodes` / `scripts.ts`，来源编辑走 episode PATCH。排查「页面明明保存了文本，语义仍解析旧稿」时，应先确认改的是 `beat_source_text` 还是 `episode_sources.content`。
+
+## 我要改什么
+
+- 改文本解析、生产 Beat 或语义 Beat：从[常见修改](#常见修改)选择对应 schema。
+- 改 revision 激活、校验或修复：同时核对[失败诊断](#失败诊断)。
+- 改异步任务与页面刷新：共享生命周期见[新增 API 与长任务](../development/add-api-and-task.md)。
 
 ## 核心原理
 
@@ -45,7 +51,7 @@
 
 `parse_screenplay_document` 不调用模型。它逐行完成以下工作：
 
-1. frontmatter、Markdown 章节卡、空格式行、HTML 注释和场次外文本进入 `metadata_blocks`。
+1. 场次外的 frontmatter、Markdown 章节卡、分隔格式行、HTML 注释和其他非空文本进入 `metadata_blocks`。空行不创建 block，但保留的 block 继续使用原始行号；活动场次内的 Markdown 标题会成为剧情/action block。
 2. 场次头生成 Scene；location、time-of-day 和内外景来自 relaxed location parser。
 3. 紧跟场次头、位于首个剧情 block 之前的人物行进入 `Scene.characters`，不成为 Beat 候选。
 4. 动作、对白、括号说明和转场成为单行 `SourceBlock`，保留原始行号。
@@ -121,7 +127,7 @@ stateDiagram-v2
 
 激活不会重写 revision JSON，而是写 `active.json` 中的 revision id、source revision 和时间。`load_active` 读取指针后动态把返回模型覆盖为 `status=active`；list API 也只把指针命中的那一项展示为 active。旧 revision 文件不会被改写为 `superseded`，所以磁盘 JSON 的 status 不是活动状态的唯一真值。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -171,7 +177,7 @@ sequenceDiagram
     Director-->>Page: 待审核导演方案
 ```
 
-## 同步、任务与前端刷新
+### 同步、任务与前端刷新
 
 | 操作 | 执行方式 | task identity / scope | 当前刷新行为 |
 | --- | --- | --- | --- |
@@ -207,7 +213,7 @@ sequenceDiagram
 | 长任务 Runner | `src/novelvideo/task_backend/runners/screenplay_semantics.py`、`screenplay_semantic_repair.py` | `_run_screenplay_semantics`、`_run_screenplay_semantic_repair` |
 | 下游消费 | `src/novelvideo/task_backend/runners/director_plan.py` | `_build_director_plan_input`、`_load_active_semantic_revision`、`_semantic_source_spans` |
 
-## 数据与文件
+## 数据与产物
 
 | 状态 | 位置 | 更新语义 |
 | --- | --- | --- |
@@ -283,7 +289,12 @@ sequenceDiagram
 | 生成镜头方案报 semantic required/conflict | `active.json`、active source revision、当前 EpisodeSource revision | director Runner 只读 active semantic，并再次要求 source revision 一致 |
 | 历史 revision 从列表消失 | 文件 JSON/Pydantic 校验日志 | Store 会跳过损坏文件。保留原文件用于恢复，不要用新 revision 覆盖同 id |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/04-screenplay.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对页面、Query、API、领域包、Runner 和下游：
 
@@ -339,6 +350,8 @@ npm test -- --run src/__tests__/components/episode/screenplay-workbench.test.tsx
 git diff --check -- docs/cookbook/pipelines/04-screenplay.md
 rg -n 'TO[D]O|TB[D]|/Us[e]rs/|C:[\\]' docs/cookbook/pipelines/04-screenplay.md
 ```
+
+</details>
 
 ## 继续追踪
 

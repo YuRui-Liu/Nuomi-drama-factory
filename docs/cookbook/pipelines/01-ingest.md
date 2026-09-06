@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 小说导入管线
 
-> **所属阶段**：核心生产管线 · 01 小说导入<br>
-> **上游**：[启动与本地开发](../start-software.md) · [项目作用域与三类目录](../system-map.md#项目作用域与三类目录)<br>
-> **下游**：[剧集图谱](02-episode-graph.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 01 小说导入
+- **上游**：[启动与本地开发](../start-software.md) · [项目作用域与三类目录](../system-map.md#项目作用域与三类目录)
+- **下游**：[剧集图谱](02-episode-graph.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪原始小说或已有分集剧本进入项目后的第一段处理：文件接收、文本解析、格式检查、`ingest_fast`、章节预览，以及版本化 `episode_sources` 写入。剧集图谱怎样从分集来源抽取实体、事件与关系，进入下游[剧集图谱](02-episode-graph.md)继续追踪。
 
@@ -22,6 +22,12 @@
 | 提交分集来源 | `useCommitEpisodeImport` → `commit_episode_imports` | `episode_import` 长任务 | 版本化来源与兼容 episodes 原文已提交；需要建图时留下 outbox | 图谱索引由后续 `episode_graph_index` 完成 |
 
 `episode-imports` 明确要求 `input_intent="existing_script"`。小说改编输入必须走 `/ingest/upload` 与 `/ingest/start`；把已有剧本导入接口当成另一种小说上传入口，会绕过知识管线选择、项目类型设置和 `ingest_fast` 的成功语义。
+
+## 我要改什么
+
+- 改上传格式或解析规则：先看[新增输入格式](#新增输入格式)。
+- 改拆章、拆分集或输出字段：看[修改拆章或拆分集规则](#修改拆章或拆分集规则)和[新增或修改输出字段](#新增或修改输出字段)。
+- 改任务进度与恢复：看[调整进度阶段](#调整进度阶段)，共享任务机制见[新增 API 与长任务](../development/add-api-and-task.md)。
 
 ## 核心原理
 
@@ -52,7 +58,7 @@
 
 这三层可能短暂不同步。例如 `episode_import` 已 completed 时，来源已经可读，但 `episode_graph_index` 仍可能 queued、running 或 failed；诊断时应分别检查来源 revision 和图谱任务。
 
-## 端到端调用链
+## 一张概览图
 
 ```mermaid
 sequenceDiagram
@@ -261,7 +267,12 @@ flowchart LR
 
 分集导入还要区分 `EPISODE_IMPORT_PREVIEW_STALE`、`EPISODE_IMPORT_REVISION_CONFLICT` 和未解决集号冲突。前两者都要求重新预检，后者要求给每个候选明确集号与 import / overwrite / skip 动作。
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/01-ingest.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对页面、API、任务和两类来源边界：
 
@@ -338,6 +349,8 @@ rg -n '\[[^]]+\]\([^)]+\)' docs/cookbook/pipelines/01-ingest.md
 git diff --check HEAD -- docs/cookbook/pipelines/01-ingest.md
 git diff HEAD -- docs/cookbook/pipelines/01-ingest.md
 ```
+
+</details>
 
 ## 继续追踪
 

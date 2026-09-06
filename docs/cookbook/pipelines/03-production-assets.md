@@ -1,11 +1,11 @@
 # Nuomi Drama Factory 生产资产管线
 
-> **所属阶段**：核心生产管线 · 03 生产资产<br>
-> **上游**：[剧集图谱](02-episode-graph.md)<br>
-> **下游**：[剧本与语义](04-screenplay.md)<br>
-> **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：核心生产管线 · 03 生产资产
+- **上游**：[剧集图谱](02-episode-graph.md)
+- **下游**：[剧本与语义](04-screenplay.md)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪剧集图谱中的角色、场景和道具怎样进入资产中心，怎样生成可比较的图片候选，以及候选怎样成为下游读取的 canonical 资产。这里有两组需要分别理解的状态：角色的叙事身份与 `VisualBible` 决定「允许生成什么」，`production_workflow.json` 中的 slot、version 和 adoption event 决定「当前采用哪一个文件」。剧本文本和 Beat 怎样引用这些资产，进入下游[剧本与语义](04-screenplay.md)继续追踪。
 
@@ -21,6 +21,12 @@
 | 道具 | 全局 `props`；以及从每集 `prop_menu` 投影出的 local 道具 | 单个或批量三视图 reference | `prop_reference_asset` 与 `batch_prop_ref` 输出进入 `prop_reference` slot | local 道具只有 episode-specific 展示字段，没有 global Store 记录和 canonical reference，不能直接走全局生成接口 |
 
 页面入口是 `frontend/src/routes/_app/projects.$project/characters.lazy.tsx`。路由内部用 `characters / scenes / props / voices` 四个 tab 组织资产；角色卡片直接编排角色和身份操作，场景与道具分别委托给 `ScenesPanel` 和 `PropsPanel`。三类版本 UI 则由 `CharacterStateVersions`、`SceneReferenceVersions`、`PropReferenceVersions` 读取统一的 production-assets API。
+
+## 我要改什么
+
+- 改角色、场景或道具的生成输入：从[常见修改](#常见修改)进入对应资产类型。
+- 改候选采用、slot 或版本记录：同时阅读[数据与产物](#数据与产物)。
+- 改异步任务或前端刷新：共享部分见[新增 API 与长任务](../development/add-api-and-task.md)。
 
 ## 核心原理
 
@@ -128,7 +134,7 @@ Runner 用「文件存在且大小大于零」作为当前 QC passed 条件。sl
 
 这里的 `legacy_import` 表示「canonical 文件先于版本 sidecar 存在」，不只表示旧版本软件导入。直接上传的新文件如果没有同步注册版本，版本组件首次读取它时也会按 delayed legacy migration 展示。修改来源类型时，需要同时改变 request schema、Store 注册方法、前端 union、上传调用和迁移测试；只在 `AssetOrigin` 增加枚举不会形成可用链路。
 
-## 端到端调用链
+## 一张概览图
 
 以人物身份三视图为例，完整路径如下；场景与道具复用相同的 TaskBackend、任务状态和采用层，只替换 query、API、Runner 与 slot 规则。
 
@@ -277,7 +283,12 @@ sequenceDiagram
 | 重命名后旧版本图片 404 | sidecar 中 `asset_path` / `canonical_path` 与新目录 | CRUD rename 只移动目录，不迁移 production workflow 引用；需要显式迁移 sidecar 和 slot id |
 | task completed 但页面仍是旧版本 | task result 的 `slot_id/version_id`、版本 query cache、canonical 文件 | 任务成功只说明 candidate 已注册；刷新 production asset slot。若它不是 current，页面和下游继续使用旧 canonical 是预期行为 |
 
-## 验证
+## 最小验证
+
+最小门禁：从[关键代码索引](#关键代码索引)选择直接受影响的一组测试，并运行 `git diff --check -- docs/cookbook/pipelines/03-production-assets.md`；预期目标测试通过且文档无空白错误。
+
+<details>
+<summary>完整验证矩阵</summary>
 
 先用稳定符号核对页面、四组 Query、API、Runner 和领域状态：
 
@@ -339,6 +350,8 @@ npm test -- --run \
 git diff --check -- docs/cookbook/pipelines/03-production-assets.md
 rg -n 'TO[D]O|TB[D]|/Us[e]rs/|C:[\\]' docs/cookbook/pipelines/03-production-assets.md
 ```
+
+</details>
 
 ## 继续追踪
 

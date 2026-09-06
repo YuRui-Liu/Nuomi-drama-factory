@@ -1,10 +1,11 @@
 # Nuomi Drama Factory 测试策略
 
-> **所属**：[开发与验证](../README.md#开发与验证)<br>
-> **相关手册**：[共享系统地图](../system-map.md) · [功能反查](trace-a-feature.md) · [新增 API 与长任务](add-api-and-task.md) · [存储与项目文件](storage-and-files.md)<br>
-> **相关管线**：[核心生产管线入口](../README.md#核心生产管线) · [剧本与语义](../pipelines/04-screenplay.md) · [视频生成](../pipelines/07-video.md) · [合成与导出](../pipelines/08-compose-export.md)<br>
-> **代码核对基线**：`55504a0`<br>
-> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **所属**：[开发与验证](../README.md#开发与验证)
+- **上游**：[共享系统地图](../system-map.md)
+- **下游**：[核心生产管线](../README.md#核心生产管线)
+- **代码基线**：`55504a0`
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **相关手册**：[功能反查](trace-a-feature.md) · [新增 API 与长任务](add-api-and-task.md) · [存储与项目文件](storage-and-files.md)
 
 本页按改动层选择验证集合。目标是先用最小测试固定改动点，再补它上下游的真实契约；测试文件名和命令均对应当前仓库。
 
