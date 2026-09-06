@@ -920,14 +920,55 @@ class SQLiteStore:
         )
         await db.commit()
 
-    async def get_scene(self, name: str) -> Optional[NovelScene]:
-        """获取场景（支持别名查找）。"""
+    async def add_scene_if_absent(self, scene: NovelScene) -> bool:
+        """Atomically insert a scene without changing an existing record."""
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await configure_sqlite_connection_async(db)
+            try:
+                cursor = await db.execute(
+                    """INSERT INTO scenes (name, aliases_json, scene_type,
+                       base_scene_id, variant_id, time_of_day,
+                       environment_prompt, variant_prompt, description, spatial_layout_image,
+                       stale_reference_kinds_json, notes)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(name) DO NOTHING""",
+                    (
+                        scene.name,
+                        json.dumps(scene.aliases, ensure_ascii=False),
+                        scene.scene_type,
+                        scene.base_scene_id,
+                        scene.variant_id,
+                        scene.time_of_day,
+                        scene.environment_prompt,
+                        scene.variant_prompt,
+                        scene.description,
+                        scene.spatial_layout_image,
+                        json.dumps(scene.stale_reference_kinds, ensure_ascii=False),
+                        scene.notes,
+                    ),
+                )
+                await db.commit()
+                return cursor.rowcount == 1
+            except BaseException:
+                await asyncio.shield(db.rollback())
+                raise
+
+    async def get_scene_exact(self, name: str) -> Optional[NovelScene]:
+        """Get a scene by canonical name without resolving aliases."""
         db = await self._ensure_db()
         async with db.execute("SELECT * FROM scenes WHERE name = ?", (name,)) as cursor:
             row = await cursor.fetchone()
-        if row:
-            return self._row_to_scene(row)
+        return self._row_to_scene(row) if row else None
 
+    async def get_scene(self, name: str) -> Optional[NovelScene]:
+        """获取场景（支持别名查找）。"""
+        exact = await self.get_scene_exact(name)
+        if exact:
+            return exact
+
+        db = await self._ensure_db()
         lookup = self._normalize_alias_lookup(name)
         async with db.execute("SELECT * FROM scenes") as cursor:
             rows = await cursor.fetchall()

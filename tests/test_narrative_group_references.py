@@ -9,7 +9,10 @@ from novelvideo.narrative_groups.references import (
     UnknownGroupReferenceIds,
     apply_group_reference_selection,
     resolve_group_reference_preview,
+    resolve_requirement_reference_preview,
 )
+
+from novelvideo.narrative_groups.reference_requirements import ReferenceRequirement
 
 
 def _asset(path: Path) -> str:
@@ -37,6 +40,46 @@ def _portrait(project_dir: Path, character: str) -> str:
 
 def _scene(project_dir: Path, scene_id: str) -> str:
     return _asset(project_dir / "assets" / "scenes" / scene_id / "master.png")
+
+
+@pytest.mark.asyncio
+async def test_requirement_preview_adapter_keeps_legacy_resolver_api(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+
+    class Store:
+        async def get_prop(self, _name):
+            return None
+
+    store = Store()
+    store.project_dir = str(project_dir)
+
+    preview = await resolve_requirement_reference_preview(
+        store,
+        [ReferenceRequirement(id="prop:信", kind="prop", entity_id="信")],
+    )
+
+    assert preview.style.name
+    assert preview.requirements[0].status == "missing_asset"
+    assert resolve_group_reference_preview(project_dir, []).image_references == ()
+
+
+@pytest.mark.asyncio
+async def test_requirement_preview_adapter_rejects_untyped_requirements(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.references.load_project_config_file", lambda *args: {}
+    )
+
+    class Store:
+        pass
+
+    store = Store()
+    store.project_dir = str(project_dir)
+    with pytest.raises(TypeError, match="ReferenceRequirement"):
+        await resolve_requirement_reference_preview(store, [{"kind": "prop"}])
 
 
 def test_anime_style_uses_preset_positive_and_negative_constraints(tmp_path, monkeypatch):

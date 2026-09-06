@@ -13,6 +13,11 @@ from novelvideo.models import (
     extract_char_identities_from_markers,
     real_detected_identities,
 )
+from novelvideo.narrative_groups.reference_matching import (
+    MatchedReferenceRequirement,
+    ReferenceBinding,
+)
+from novelvideo.narrative_groups.reference_requirements import ReferenceRequirement
 from novelvideo.project_config import load_project_config_file
 from novelvideo.utils.path_resolver import (
     compute_identity_path,
@@ -64,6 +69,15 @@ class GroupReferenceSelection:
     image_paths: tuple[str, ...]
     style_prompt: str
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RequirementReferencePreview:
+    style: GroupStyleReference
+    requirements: tuple[MatchedReferenceRequirement, ...]
+    bindings: tuple[ReferenceBinding, ...]
+    warnings: tuple[str, ...] = ()
+    asset_root: str = ""
 
 
 class UnknownGroupReferenceIds(ValueError):
@@ -242,6 +256,32 @@ def resolve_group_reference_preview(
         image_references=tuple(references),
         warnings=warnings,
         asset_root=str(asset_root.resolve(strict=False)),
+    )
+
+
+async def resolve_requirement_reference_preview(
+    store: object,
+    requirements: Sequence[ReferenceRequirement],
+    stage: str = "render",
+) -> RequirementReferencePreview:
+    """Adapt the richer requirement matcher while preserving the legacy API."""
+    del stage
+    from novelvideo.narrative_groups.reference_matching import match_reference_requirements
+
+    project_dir = Path(store.project_dir)
+    if any(not isinstance(item, ReferenceRequirement) for item in requirements):
+        raise TypeError("requirements must contain only ReferenceRequirement values")
+    matched = await match_reference_requirements(store, requirements)
+    style = _style_reference(project_dir)
+    warnings = tuple(
+        warning for warning in (style.warning, *matched.warnings) if warning
+    )
+    return RequirementReferencePreview(
+        style=style,
+        requirements=matched.requirements,
+        bindings=matched.bindings,
+        warnings=warnings,
+        asset_root=str((project_dir / "assets").resolve(strict=False)),
     )
 
 
