@@ -236,6 +236,41 @@ def _identity_path(
     return portrait, True
 
 
+def _temporary_group_root(
+    project_dir: Path, episode_number: int, group_id: str
+) -> Path:
+    raw_group_id = str(group_id or "").strip()
+    try:
+        is_absolute = Path(raw_group_id).is_absolute()
+    except (OSError, ValueError):
+        is_absolute = True
+    if (
+        not raw_group_id
+        or raw_group_id in {".", ".."}
+        or is_absolute
+        or "/" in raw_group_id
+        or "\\" in raw_group_id
+        or Path(raw_group_id).name != raw_group_id
+    ):
+        raise ValueError("temporary reference group ID is invalid")
+
+    references_root = _path_within_project(
+        project_dir,
+        project_dir
+        / "videos"
+        / f"ep{int(episode_number):03d}"
+        / "narrative_groups"
+        / "references",
+    )
+    lexical_group_root = references_root / raw_group_id
+    if lexical_group_root.is_symlink():
+        raise ValueError("temporary reference group directory cannot be a symlink")
+    group_root = lexical_group_root.resolve(strict=False)
+    if group_root.parent != references_root:
+        raise ValueError("temporary reference group directory is invalid")
+    return group_root
+
+
 def temporary_upload_path(
     project_dir: str | Path,
     episode_number: int,
@@ -250,16 +285,13 @@ def temporary_upload_path(
     ):
         raise ValueError("temporary upload ID is invalid")
     project = Path(project_dir)
-    path = (
-        project
-        / "videos"
-        / f"ep{int(episode_number):03d}"
-        / "narrative_groups"
-        / "references"
-        / str(group_id)
-        / f"{upload_id}.png"
-    )
-    return _path_within_project(project, path)
+    group_root = _temporary_group_root(project, episode_number, group_id)
+    path = (group_root / f"{upload_id}.png").resolve(strict=False)
+    if path.parent != group_root:
+        raise ValueError(
+            "temporary upload path must remain inside the current group directory"
+        )
+    return path
 
 
 def _candidate(
@@ -294,6 +326,9 @@ async def resolve_group_video_reference_preview(
     """Discover current-group assets without exposing their filesystem paths."""
     limit = validate_max_images(max_images)
     project = Path(project_dir)
+    safe_upload_root = _temporary_group_root(
+        project, episode_number, group.id
+    )
     beats = await _group_beats(store, episode_number, group)
     identity_metadata, scene_descriptions, prop_descriptions = (
         await _asset_descriptions(store, episode_number)
@@ -385,40 +420,27 @@ async def resolve_group_video_reference_preview(
             )
         )
 
-    upload_root = (
-        project
-        / "videos"
-        / f"ep{int(episode_number):03d}"
-        / "narrative_groups"
-        / "references"
-        / group.id
-    )
-    try:
-        safe_upload_root = _path_within_project(project, upload_root)
-    except ValueError:
-        warnings.append("Temporary upload directory is outside the project.")
-    else:
-        if safe_upload_root.is_dir():
-            for upload in sorted(safe_upload_root.glob("*.png"), key=lambda item: item.name):
-                upload_id = upload.stem
-                try:
-                    safe_path = temporary_upload_path(
-                        project, episode_number, group.id, upload_id
-                    )
-                except ValueError:
-                    warnings.append(f"Temporary upload {upload.name} has an invalid ID.")
-                    continue
-                if not safe_path.is_file():
-                    warnings.append(f"Temporary upload {upload.name} is missing or unsafe.")
-                    continue
-                candidates.append(
-                    _candidate(
-                        "temporary_upload",
-                        upload_id,
-                        upload_id,
-                        _join_description(upload_id, "temporary uploaded reference image"),
-                    )
+    if safe_upload_root.is_dir():
+        for upload in sorted(safe_upload_root.glob("*.png"), key=lambda item: item.name):
+            upload_id = upload.stem
+            try:
+                safe_path = temporary_upload_path(
+                    project, episode_number, group.id, upload_id
                 )
+            except ValueError:
+                warnings.append(f"Temporary upload {upload.name} has an invalid ID.")
+                continue
+            if not safe_path.is_file():
+                warnings.append(f"Temporary upload {upload.name} is missing or unsafe.")
+                continue
+            candidates.append(
+                _candidate(
+                    "temporary_upload",
+                    upload_id,
+                    upload_id,
+                    _join_description(upload_id, "temporary uploaded reference image"),
+                )
+            )
 
     deduplicated = {candidate.reference_id: candidate for candidate in candidates}
     ordered = tuple(sorted(deduplicated.values(), key=_candidate_sort_key))

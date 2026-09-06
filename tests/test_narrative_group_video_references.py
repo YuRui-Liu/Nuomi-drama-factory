@@ -13,6 +13,7 @@ from novelvideo.narrative_groups.video_references import (
     VideoReferenceSelection,
     resolve_group_video_reference_preview,
     resolve_saved_video_references,
+    temporary_upload_path,
 )
 from novelvideo.utils.path_resolver import (
     canonical_identity_path,
@@ -565,3 +566,50 @@ def test_temporary_upload_resolution_is_safe_and_decodable(tmp_path):
     escaped = _saved_group("temporary_upload", "../upload-a")
     with pytest.raises(ValueError, match="upload"):
         _resolve_saved(_Store(_beats()), tmp_path, escaped)
+
+
+@pytest.mark.parametrize(
+    "group_id",
+    ["../sibling", "nested/group", r"nested\group"],
+)
+def test_temporary_upload_path_rejects_unsafe_group_id(tmp_path, group_id):
+    with pytest.raises(ValueError, match="group"):
+        temporary_upload_path(tmp_path, 1, group_id, "upload-a")
+
+
+def test_temporary_upload_path_rejects_absolute_group_id_inside_project(tmp_path):
+    with pytest.raises(ValueError, match="group"):
+        temporary_upload_path(tmp_path, 1, str(tmp_path / "stolen"), "upload-a")
+
+
+def test_preview_rejects_malicious_group_id_before_scanning_sibling(tmp_path):
+    stolen = _png(
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "sibling"
+        / "stolen.png"
+    )
+    group = replace(_group("beat-1"), id="../sibling")
+
+    with pytest.raises(ValueError, match="group"):
+        _preview(_Store([]), tmp_path, group=group)
+    assert stolen.is_file()
+
+
+def test_temporary_upload_path_rejects_symlink_outside_current_group(tmp_path):
+    references_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+    )
+    sibling_file = _png(references_root / "sibling" / "upload-a.png")
+    group_root = references_root / "ng-01"
+    group_root.mkdir(parents=True)
+    (group_root / "upload-a.png").symlink_to(sibling_file)
+
+    with pytest.raises(ValueError, match="group"):
+        temporary_upload_path(tmp_path, 1, "ng-01", "upload-a")
