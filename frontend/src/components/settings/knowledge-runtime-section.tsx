@@ -21,6 +21,7 @@ import {
 } from "@/lib/queries/knowledge-runtime";
 import { cn } from "@/lib/utils";
 import { TextTaskRoutingPanel } from "@/components/settings/text-task-routing-panel";
+import { TaskConcurrencyCard } from "@/components/settings/task-concurrency-card";
 
 function StatusPill({ ready, children }: { ready: boolean; children: React.ReactNode }) {
   return (
@@ -99,6 +100,8 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
       ) : null}
 
       <TextTaskRoutingPanel open={open} />
+
+      <TaskConcurrencyCard open={open} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="bg-white/[0.025]">

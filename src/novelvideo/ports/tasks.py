@@ -74,6 +74,8 @@ class TaskBackend(Protocol):
 
     async def cancel_project_task(self, ctx, task_state) -> bool: ...
 
+    def lane_runtime_status(self) -> dict[str, dict[str, int]]: ...
+
 
 class CancellationStore(Protocol):
     async def request_cancel(

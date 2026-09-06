@@ -227,6 +227,14 @@ uv run novelvideo api --port 8780   # start the REST API (CE defaults to inline 
 
 <br/>
 
+### Global task concurrency (CE)
+
+For CE deployments, the recommended way to tune background-task concurrency is **Settings → Runtime & Media → Task concurrency**. The four lane limits apply globally to every project on the deployment, not just the project currently open.
+
+Environment variables take priority over values saved in the UI. A lane managed by an environment variable is shown as read-only, and changing it requires updating that environment variable instead. Saved UI values do not hot-reload: after saving, restart the CE services with `scripts/start-ce.sh` for the new limits to take effect.
+
+<br/>
+
 ## Supported Models & Providers
 
 Nuomi Drama Factory stays model-neutral — all text/image/video/audio models connect through a single **OpenAI-compatible gateway**, in two ways:
