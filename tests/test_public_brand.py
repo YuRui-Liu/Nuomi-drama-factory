@@ -226,7 +226,7 @@ def test_repository_scan_reports_a_public_file_that_disappears(
         ),
         (
             "frontend/src/lib/queries/model-gateway.ts",
-            'type Provider = "deepseek" | "dramaclaw";',
+            'export type TextRuntimeProvider = "deepseek" | "dramaclaw" | "openai_compatible";',
         ),
         (
             "frontend/src/components/settings/text-runtime-panel.tsx",
@@ -246,7 +246,7 @@ def test_repository_scan_reports_a_public_file_that_disappears(
         ),
         (
             "frontend/src/__tests__/lib/gateway-error-classify.test.ts",
-            "const oldError = 'DramaClawAPI image generation failed';",
+            "'DramaClawAPI image generation failed: HTTP 400: request_id=req-123; ' +",
         ),
         (
             "frontend/src/__tests__/components/brand/brand-mark.test.tsx",
@@ -279,6 +279,26 @@ def test_repository_scan_reports_a_public_file_that_disappears(
         (
             "frontend/src/__tests__/components/login/login-stage.test.tsx",
             r"expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);",
+        ),
+        (
+            "frontend/src/__tests__/components/settings/text-runtime-panel.test.tsx",
+            'await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ provider: "dramaclaw", baseUrl: "https://custom.example/v1", model: "DC-scene-builder-LLM" }));',
+        ),
+        (
+            "frontend/src/__tests__/lib/queries/text-runtime.test.tsx",
+            'return HttpResponse.json({ ok: true, data: { source: "database", provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM", configured: true, apiKeyConfigured: true, apiKeyPreview: "dc-***" } });',
+        ),
+        (
+            "frontend/src/__tests__/lib/queries/text-runtime.test.tsx",
+            'saved.result.current.mutate({ provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM" });',
+        ),
+        (
+            "frontend/src/__tests__/lib/queries/text-runtime.test.tsx",
+            'expect(received).toEqual({ provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM" });',
+        ),
+        (
+            "frontend/src/__tests__/task-center/task-errors.test.ts",
+            "'DramaClawAPI image generation failed: HTTP 400: request_id=req-123; ' +",
         ),
     ],
 )
@@ -434,3 +454,38 @@ def test_explicit_allowlist_does_not_allow_arbitrary_test_fixtures() -> None:
         Path("frontend/src/__tests__/new-brand.test.ts"),
         'const fixture = "DramaClaw-Setup-1.1.0.exe";',
     ) == ["frontend/src/__tests__/new-brand.test.ts:1"]
+
+
+@pytest.mark.parametrize(
+    ("path", "line"),
+    [
+        (
+            "frontend/src/components/settings/text-runtime-panel.tsx",
+            '<h1>{"dramaclaw"}</h1>',
+        ),
+        (
+            "frontend/src/lib/queries/model-gateway.ts",
+            'const publicLabel = "dramaclaw";',
+        ),
+        (
+            "frontend/src/__tests__/lib/gateway-error-classify.test.ts",
+            'const publicLabel = "DramaClawAPI image generation failed";',
+        ),
+    ],
+)
+def test_path_specific_machine_values_do_not_allow_public_labels(
+    path: str, line: str
+) -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(Path(path), line) == [f"{path}:1"]
+
+
+def test_exact_provider_line_does_not_hide_appended_public_brand() -> None:
+    scanner = _load_scanner()
+    path = "frontend/src/lib/queries/model-gateway.ts"
+
+    assert scanner.scan_text(
+        Path(path),
+        'export type TextRuntimeProvider = "deepseek" | "dramaclaw" | "openai_compatible"; // DramaClaw',
+    ) == [f"{path}:1"]

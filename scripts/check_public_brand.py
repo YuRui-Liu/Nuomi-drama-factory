@@ -70,46 +70,78 @@ _ALLOWED_OCCURRENCES = re.compile(
     r"|(?<![A-Za-z0-9_])/__dramaclaw(?![A-Za-z0-9_])"
 )
 
-_PROVIDER_VALUE_PATHS = {
-    "frontend/src/lib/queries/model-gateway.ts",
-    "frontend/src/components/settings/text-runtime-panel.tsx",
-    "frontend/src/__tests__/components/settings/text-runtime-panel.test.tsx",
-    "frontend/src/__tests__/lib/queries/text-runtime.test.tsx",
-}
-_ERROR_FIXTURE_PATHS = {
-    "frontend/src/__tests__/lib/gateway-error-classify.test.ts",
-    "frontend/src/__tests__/task-center/task-errors.test.ts",
-}
 _DESKTOP_FIXTURE = re.compile(
     r"DramaClaw-(?:Setup-)?1\.1\.0(?:-arm64)?\.(?:exe|zip|dmg)"
     r"|NuomiDrama-dRaMaClAw-Setup-2\.0\.0\.exe"
 )
-_ERROR_FIXTURE = re.compile(r"DramaClawAPI(?= image generation failed)")
 _SUPERCHAT_COMPATIBILITY_DESCRIPTION = re.compile(
     r"strips internal (?P<brand>DramaClaw) context blocks from displayed text"
 )
 _INTERNAL_CONTEXT_PATTERN = re.compile(r"DRAMACLAW_(?=\[A-Z0-9_\]\+)")
-_EXACT_BRAND_PROTECTION_LINES = {
+_EXACT_PATH_LINE_TOKENS = {
     "frontend/src/__tests__/components/brand/brand-mark.test.tsx": {
-        "expect(html).not.toMatch(/DramaClaw|SuperTale/);",
+        "expect(html).not.toMatch(/DramaClaw|SuperTale/);": ("DramaClaw",),
     },
     "frontend/src/__tests__/components/login/login-stage.test.tsx": {
-        r"expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);",
+        r"expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);": (
+            "DRAMACLAW",
+        ),
     },
     "frontend/src/__tests__/components/settings/text-runtime-panel.test.tsx": {
-        'expect(screen.queryByText("DramaClawAPI")).not.toBeInTheDocument();',
+        'expect(screen.queryByText("DramaClawAPI")).not.toBeInTheDocument();': (
+            "DramaClawAPI",
+        ),
+        'await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ provider: "dramaclaw", baseUrl: "https://custom.example/v1", model: "DC-scene-builder-LLM" }));': (
+            "dramaclaw",
+        ),
     },
     "frontend/src/__tests__/features/brand/runtime-brand-contract.test.ts": {
-        r"expect(source).not.toMatch(/SuperTale(?:_N)?|DramaClaw\/SuperTale/);",
+        r"expect(source).not.toMatch(/SuperTale(?:_N)?|DramaClaw\/SuperTale/);": (
+            "DramaClaw",
+        ),
     },
     "frontend/src/__tests__/i18n/locales-json.test.ts": {
-        r"/DramaClaw|SuperTale|Xia Director|Xia(?:Hua|Liao|Tang|Jing|Dao|Ge)|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;",
+        r"/DramaClaw|SuperTale|Xia Director|Xia(?:Hua|Liao|Tang|Jing|Dao|Ge)|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;": (
+            "DramaClaw",
+        ),
+    },
+    "frontend/src/__tests__/lib/gateway-error-classify.test.ts": {
+        "'DramaClawAPI image generation failed: HTTP 400: request_id=req-123; ' +": (
+            "DramaClawAPI",
+        ),
+    },
+    "frontend/src/__tests__/lib/queries/text-runtime.test.tsx": {
+        'return HttpResponse.json({ ok: true, data: { source: "database", provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM", configured: true, apiKeyConfigured: true, apiKeyPreview: "dc-***" } });': (
+            "dramaclaw",
+        ),
+        'saved.result.current.mutate({ provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM" });': (
+            "dramaclaw",
+        ),
+        'expect(received).toEqual({ provider: "dramaclaw", baseUrl: "https://relayclaw.cdnfg.com/v1", model: "DC-scene-builder-LLM" });': (
+            "dramaclaw",
+        ),
+    },
+    "frontend/src/__tests__/task-center/task-errors.test.ts": {
+        "'DramaClawAPI image generation failed: HTTP 400: request_id=req-123; ' +": (
+            "DramaClawAPI",
+        ),
     },
     "frontend/src/lib/desktop-download.test.ts": {
-        "expect(browserDownloadUrl).not.toMatch(/DramaClaw/i);",
+        "expect(browserDownloadUrl).not.toMatch(/DramaClaw/i);": ("DramaClaw",),
     },
     "frontend/src/lib/desktop-download.ts": {
-        "&& !/(?:DramaClaw|SuperTale)/i.test(candidate.name)",
+        "&& !/(?:DramaClaw|SuperTale)/i.test(candidate.name)": ("DramaClaw",),
+    },
+    "frontend/src/lib/queries/model-gateway.ts": {
+        'export type TextRuntimeProvider = "deepseek" | "dramaclaw" | "openai_compatible";': (
+            "dramaclaw",
+        ),
+    },
+    "frontend/src/components/settings/text-runtime-panel.tsx": {
+        "dramaclaw: {": ("dramaclaw",),
+        '<SelectItem value="dramaclaw">Nuomi Drama Factory API</SelectItem>': (
+            "dramaclaw",
+        ),
     },
 }
 
@@ -212,11 +244,6 @@ def _path_specific_spans(
     normalized = path.as_posix()
     patterns: list[re.Pattern[str]] = []
 
-    if normalized in _PROVIDER_VALUE_PATHS:
-        patterns.append(re.compile(r'(?<![A-Za-z0-9_])["\']dramaclaw["\']'))
-        patterns.append(re.compile(r"(?<![A-Za-z0-9_])dramaclaw(?=\s*:\s*\{)"))
-    if normalized in _ERROR_FIXTURE_PATHS:
-        patterns.append(_ERROR_FIXTURE)
     if normalized == "frontend/src/lib/desktop-download.test.ts":
         patterns.append(_DESKTOP_FIXTURE)
     if normalized == "frontend/src/__tests__/features/superchat/use-superchat.test.ts":
@@ -224,17 +251,20 @@ def _path_specific_spans(
     if normalized == "frontend/src/features/superchat/message.ts":
         patterns.append(_INTERNAL_CONTEXT_PATTERN)
     spans = [match.span() for pattern in patterns for match in pattern.finditer(line)]
-    if in_code_context and line.strip() in _EXACT_BRAND_PROTECTION_LINES.get(
-        normalized, set()
-    ):
-        spans.extend(match.span() for match in _BRAND.finditer(line))
+    allowed_tokens = _EXACT_PATH_LINE_TOKENS.get(normalized, {}).get(line.strip(), ())
+    if in_code_context:
+        spans.extend(
+            match.span()
+            for token in allowed_tokens
+            for match in re.finditer(re.escape(token), line)
+        )
     return spans
 
 
 def scan_text(path: Path, text: str) -> list[str]:
     """Return ``path:line`` findings for disallowed legacy-brand occurrences."""
     findings: list[str] = []
-    track_context = path.as_posix() in _EXACT_BRAND_PROTECTION_LINES
+    track_context = path.as_posix() in _EXACT_PATH_LINE_TOKENS
     in_block_comment = False
     in_template = False
     for line_number, line in enumerate(text.splitlines(), start=1):
