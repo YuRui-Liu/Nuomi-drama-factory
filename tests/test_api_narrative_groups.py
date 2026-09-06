@@ -1089,8 +1089,49 @@ def test_h3_reference_reservation_rechecks_reference_revision_atomically(
     assert group.stages["video"].revision == 0
 
 
-def test_h3_reference_enqueue_failure_retains_snapshot_for_partial_submission(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("task_status", "task_metadata", "expected_stage_status", "expected_revision"),
+    [
+        pytest.param(None, None, "pending", 0, id="no-task-state"),
+        pytest.param(
+            "failed",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "pending",
+            0,
+            id="inline-lane-full-failed",
+        ),
+        pytest.param(
+            "submitting",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "queued",
+            1,
+            id="partial-submit-active",
+        ),
+        pytest.param(
+            "queued",
+            {
+                "reference_snapshot_id": "foreign-snapshot",
+                "reference_snapshot_digest": "foreign-digest",
+            },
+            "pending",
+            0,
+            id="unrelated-active-task",
+        ),
+    ],
+)
+def test_h3_reference_enqueue_failure_recovers_reservation_by_task_state(
+    monkeypatch,
+    tmp_path,
+    task_status,
+    task_metadata,
+    expected_stage_status,
+    expected_revision,
 ):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -1124,6 +1165,18 @@ def test_h3_reference_enqueue_failure_retains_snapshot_for_partial_submission(
     monkeypatch.setattr(
         narrative_groups, "get_task_backend", lambda: FailingBackend()
     )
+    task_state = (
+        None
+        if task_status is None
+        else SimpleNamespace(status=task_status, metadata=task_metadata)
+    )
+    monkeypatch.setattr(
+        narrative_groups,
+        "get_task_manager",
+        lambda: SimpleNamespace(
+            get_task_for_project=lambda *args, **kwargs: task_state
+        ),
+    )
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1134,12 +1187,15 @@ def test_h3_reference_enqueue_failure_retains_snapshot_for_partial_submission(
     )
 
     assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Narrative group video queue is unavailable"
+    }
     assert retained == [{
         "state_root": str(tmp_path), "snapshot_id": "2" * 32,
     }]
     group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
-    assert group.stages["video"].status == "queued"
-    assert group.stages["video"].revision == 1
+    assert group.stages["video"].status == expected_stage_status
+    assert group.stages["video"].revision == expected_revision
 
 
 def test_h3_reference_snapshot_bind_failure_retains_inputs_for_enqueued_task(
