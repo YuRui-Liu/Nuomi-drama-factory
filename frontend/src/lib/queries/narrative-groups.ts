@@ -13,6 +13,65 @@ export type NarrativeStageStatus =
   | "partial_failure" | "failed";
 export type NarrativeGridStage = "sketch" | "render";
 export type NarrativeGroupAction = "generate" | "split" | "regenerate";
+export type NarrativeReferenceStatus =
+  | "matched" | "fallback" | "draft_variant" | "missing_asset"
+  | "missing_image" | "temporary" | "ignored" | "invalid";
+
+export interface NarrativeReferenceBinding {
+  requirement_id: string;
+  decision: "project_asset" | "fallback";
+  asset_id: string;
+  asset_kind: string;
+  thumbnail_url?: string | null;
+}
+
+export interface NarrativeReferenceRequirement {
+  id: string;
+  kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
+  entity_id: string;
+  base_entity_id?: string | null;
+  variant_id?: string | null;
+  shot_ids: string[];
+  required: boolean;
+  label: string;
+  status: NarrativeReferenceStatus;
+  candidate_asset_ids: string[];
+  available_actions: string[];
+  bindings: NarrativeReferenceBinding[];
+  warning?: string | null;
+}
+
+export interface NarrativeReferenceDecision {
+  requirement_id: string;
+  action: "keep" | "accept_fallback" | "use_base" | "confirm_draft"
+    | "choose_identity" | "choose_scene" | "choose_variant" | "choose_prop"
+    | "upload" | "ignore";
+  asset_id?: string;
+  upload_id?: string;
+}
+
+export interface NarrativeReferenceResolution {
+  decisions: NarrativeReferenceDecision[];
+  style_asset_id?: string;
+}
+
+export interface NarrativeReferenceCandidate {
+  id: string;
+  kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
+  label: string;
+  available: boolean;
+  thumbnail_url?: string | null;
+}
+
+export interface NarrativeReferenceUpload {
+  upload_id: string;
+  mime_type: string;
+  size_bytes: number;
+  temporary: boolean;
+  persisted: boolean;
+  persistence_warning: string;
+  url: string;
+}
 
 export interface NarrativeGroupImageReference {
   id: string;
@@ -29,6 +88,8 @@ export interface NarrativeGroupImageReference {
 }
 
 export interface NarrativeGroupReferencePreview {
+  requirements?: NarrativeReferenceRequirement[];
+  bindings?: NarrativeReferenceBinding[];
   style: {
     id: string;
     label: string;
@@ -55,6 +116,7 @@ export interface NarrativeGroupGenerationSelection {
   imageSize?: NarrativeImageSize;
   allowUnconstrained?: boolean;
   saveAsProjectDefault?: boolean;
+  referenceResolution?: NarrativeReferenceResolution;
 }
 
 export interface NarrativeStageState {
@@ -368,6 +430,18 @@ export function narrativeGroupReferencePath(
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references`;
 }
 
+export function narrativeGroupReferenceCandidatesPath(
+  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references/candidates`;
+}
+
+export function narrativeGroupReferenceUploadPath(
+  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references/upload`;
+}
+
 export function narrativeGroupRollbackPath(
   project: string, episode: number, groupId: string, stage: NarrativeGridStage, revision: number,
 ) {
@@ -389,6 +463,7 @@ export function narrativeGroupActionPayload(input: {
     model?: string;
     image_size?: NarrativeImageSize;
     allow_unconstrained?: boolean;
+    reference_resolution?: NarrativeReferenceResolution;
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
@@ -402,8 +477,65 @@ export function narrativeGroupActionPayload(input: {
     if (input.selection.allowUnconstrained !== undefined) {
       payload.allow_unconstrained = input.selection.allowUnconstrained;
     }
+    if (input.selection.referenceResolution) {
+      payload.reference_resolution = {
+        decisions: input.selection.referenceResolution.decisions,
+        ...(input.selection.referenceResolution.style_asset_id
+          ? { style_asset_id: input.selection.referenceResolution.style_asset_id }
+          : {}),
+      };
+    }
   }
   return payload;
+}
+
+
+export function useNarrativeReferenceCandidates(
+  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
+) {
+  return useQuery({
+    queryKey: ["narrative-reference-candidates", project, episode, groupId, stage],
+    queryFn: ({ signal }) => api.get(
+      narrativeGroupReferenceCandidatesPath(project, episode, groupId, stage), { signal },
+    ).json<ApiResponse<NarrativeReferenceCandidate[]>>(),
+    enabled: !!project && episode > 0 && !!groupId,
+  });
+}
+
+export function useUploadNarrativeReference(
+  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      file, persist = false, requirementId = "", assetKind,
+      targetEntityId = "", baseEntityId = "", variantId = "",
+    }: {
+      file: File;
+      persist?: boolean;
+      requirementId?: string;
+      assetKind?: NarrativeReferenceRequirement["kind"];
+      targetEntityId?: string;
+      baseEntityId?: string;
+      variantId?: string;
+    }) => {
+      const body = new FormData();
+      body.append("file", file, file.name);
+      body.append("persist", String(persist));
+      body.append("requirement_id", requirementId);
+      if (assetKind) body.append("asset_kind", assetKind);
+      body.append("target_entity_id", targetEntityId);
+      body.append("base_entity_id", baseEntityId);
+      body.append("variant_id", variantId);
+      return api.post(
+        narrativeGroupReferenceUploadPath(project, episode, groupId, stage),
+        { body },
+      ).json<ApiResponse<NarrativeReferenceUpload>>();
+    },
+    onSuccess: () => qc.invalidateQueries({
+      queryKey: ["narrative-reference-candidates", project, episode, groupId, stage],
+    }),
+  });
 }
 
 export function useNarrativeGroups(project: string, episode: number) {

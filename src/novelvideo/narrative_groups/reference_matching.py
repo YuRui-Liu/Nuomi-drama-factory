@@ -326,7 +326,7 @@ async def _match_prop(
         return _matched(
             requirement,
             status="missing_asset",
-            actions=("choose_prop", "create_prop", "upload", "ignore"),
+            actions=("choose_prop", "upload", "ignore"),
             warning=f"道具 {requirement.entity_id} 不存在。",
         )
     path = _safe_asset(

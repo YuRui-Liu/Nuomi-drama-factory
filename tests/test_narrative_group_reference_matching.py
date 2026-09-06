@@ -133,7 +133,7 @@ async def test_matcher_keeps_missing_prop_and_creates_variant_draft(project_stor
     )
     assert prop.status == "missing_asset"
     assert prop.bindings == ()
-    assert "ignore" in prop.available_actions
+    assert prop.available_actions == ("choose_prop", "upload", "ignore")
 
 
 @pytest.mark.asyncio
