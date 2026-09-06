@@ -5,12 +5,6 @@
 
 Nuomi Drama Factory 社区版（CE）是一条**单机运行**的「小说 → 成片」流水线：一个 FastAPI 服务承载全部创作能力，任务在进程内执行，数据落本地，模型经一个 OpenAI 兼容网关接入。**无需 PostgreSQL / Redis。**
 
-## 系统架构
-
-<p align="center">
-  <img src="../../../assets/architecture.png" alt="Nuomi Drama Factory CE 系统架构 —— 浏览器、FastAPI 引擎、本地存储、模型网关" width="900"/>
-</p>
-
 ## 处理流程
 
 <p align="center">

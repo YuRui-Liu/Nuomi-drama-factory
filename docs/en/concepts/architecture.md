@@ -5,12 +5,6 @@
 
 Nuomi Drama Factory Community Edition (CE) is a **single-machine** "novel → finished video" pipeline: one FastAPI service hosts every creative capability, tasks run in-process, data lands locally, and models are reached through an OpenAI-compatible gateway. **No PostgreSQL / Redis required.**
 
-## System Architecture
-
-<p align="center">
-  <img src="../../../assets/architecture.png" alt="Nuomi Drama Factory CE system architecture — browser, FastAPI engine, local storage, model gateway" width="900"/>
-</p>
-
 ## Processing Flow
 
 <p align="center">

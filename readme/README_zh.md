@@ -58,10 +58,6 @@ Nuomi Drama Factory 要做的事很简单：<br/>
 
 <br/>
 
-<p align="center">
-  <img src="../assets/hero.png" alt="Nuomi Drama Factory — 讲故事的人，重新走回镜头前" width="820"/>
-</p>
-
 <!--
   演示视频 —— 上传完成后，把 user-attachments 链接单独一行粘到下面。
   上传方式：在 github.com 新建一个 Issue（别提交），把 demo 视频拖进正文，
@@ -148,8 +144,7 @@ Nuomi Drama Factory 是一条**源码可见的漫剧工业化生产线**。丢�
 - **资产库与身份一致性（虾塘）** &mdash; 角色、场景、道具、声线四类资产统一管理；多集之间保持稳定身份，生成角色肖像与单集变体
 - **剧集规划与叙事节奏** &mdash; 自动章节切分、节拍规划、多集叙事弧
 - **剧本生成** &mdash; 多种模式（改编、直译、分镜稿），带审校 / 修复循环
-- **分镜与首帧** &mdash; 按节拍风格化生成图像，网格切分，图像池选优<br/>
-  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/storyboard-sketch.jpg?v=2" width="600" alt="独家线稿草图系统"/>
+- **分镜与首帧** &mdash; 按节拍风格化生成图像，网格切分，图像池选优
 - **配音合成** &mdash; 带情绪的语音合成，可切换多家服务商
 - **视频合成与导出** &mdash; 组装剧集，导出视频 + 字幕文件、整套素材包
 - **无限画布（虾画）** &mdash; 节点式可视化创作台，拖入项目资产生成图片 / 视频 / 音频，候选满意再写回主线；主线流水线与画布探索双轨并行<br/>

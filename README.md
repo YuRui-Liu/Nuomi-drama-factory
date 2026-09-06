@@ -58,10 +58,6 @@ We'll keep tearing down walls.
 
 <br/>
 
-<p align="center">
-  <img src="./assets/hero.png" alt="Nuomi Drama Factory — storytellers, back in front of the camera" width="820"/>
-</p>
-
 <!--
   Demo video — after uploading, paste the user-attachments link on its own line below.
   How to upload: open a new Issue on github.com (don't submit it), drag the demo
@@ -149,8 +145,7 @@ And although it's built around drama production, the same pipeline — character
 - **Asset Library & identity consistency** &mdash; unified management of characters, scenes, props and voices; keep stable identities across episodes, generate character portraits and per-episode variants
 - **Episode planning & narrative pacing** &mdash; automatic chapter segmentation, beat planning, multi-episode arcs
 - **Script generation** &mdash; multiple modes (adaptive, literal, staged) with review / repair loops
-- **Storyboards & first frames** &mdash; beat-driven stylized image generation, grid splitting, image-pool selection<br/>
-  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/storyboard-sketch.jpg?v=2" width="600" alt="独家线稿草图系统 · Line-art Storyboard System"/>
+- **Storyboards & first frames** &mdash; beat-driven stylized image generation, grid splitting, image-pool selection
 - **Voice-over synthesis** &mdash; emotion-aware speech synthesis, switchable across providers
 - **Video composition & export** &mdash; assemble episodes, export video + subtitle files and the full asset pack
 - **Freezone (infinite canvas)** &mdash; node-based visual workbench: drag in project assets to generate images / video / audio, promote satisfying candidates back to the main line; the main pipeline and canvas exploration run as dual tracks<br/>
