@@ -153,10 +153,21 @@ def _compatibility_spans(line: str) -> list[tuple[int, int]]:
     ]
 
 
-def _inline_comment_start(line: str) -> int | None:
+def _code_spans(line: str, in_block_comment: bool) -> tuple[list[tuple[int, int]], bool]:
+    spans: list[tuple[int, int]] = []
     quote: str | None = None
+    code_start: int | None = None if in_block_comment else 0
     index = 0
     while index < len(line):
+        if in_block_comment:
+            comment_end = line.find("*/", index)
+            if comment_end < 0:
+                return spans, True
+            in_block_comment = False
+            index = comment_end + 2
+            code_start = index
+            continue
+
         character = line[index]
         if quote is not None:
             if character == "\\":
@@ -170,13 +181,26 @@ def _inline_comment_start(line: str) -> int | None:
             quote = character
             index += 1
             continue
-        if line.startswith(("//", "/*"), index):
-            return index
+        if line.startswith("//", index):
+            if code_start is not None and code_start < index:
+                spans.append((code_start, index))
+            return spans, False
+        if line.startswith("/*", index):
+            if code_start is not None and code_start < index:
+                spans.append((code_start, index))
+            in_block_comment = True
+            code_start = None
+            index += 2
+            continue
         index += 1
-    return None
+    if not in_block_comment and code_start is not None and code_start < len(line):
+        spans.append((code_start, len(line)))
+    return spans, in_block_comment
 
 
-def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
+def _path_specific_spans(
+    path: Path, line: str, code_spans: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
     normalized = path.as_posix()
     patterns: list[re.Pattern[str]] = []
 
@@ -204,12 +228,14 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
         or normalized.endswith(".test.ts")
         or normalized.endswith(".test.tsx")
     )
-    comment_start = _inline_comment_start(line)
-    if is_test_file and not line.lstrip().startswith(("#", "*")):
+    leading_star_comment = line.lstrip().startswith("*") and any(
+        start == 0 for start, _ in code_spans
+    )
+    if is_test_file and not line.lstrip().startswith("#") and not leading_star_comment:
         spans.extend(
             match.span("literal")
             for match in _TEST_NEGATIVE_ASSERTION.finditer(line)
-            if comment_start is None or match.start() < comment_start
+            if any(start <= match.start() < end for start, end in code_spans)
         )
     return spans
 
@@ -217,14 +243,16 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
 def scan_text(path: Path, text: str) -> list[str]:
     """Return ``path:line`` findings for disallowed legacy-brand occurrences."""
     findings: list[str] = []
+    in_block_comment = False
     for line_number, line in enumerate(text.splitlines(), start=1):
+        code_spans, in_block_comment = _code_spans(line, in_block_comment)
         matches = list(_BRAND.finditer(line))
         if not matches:
             continue
 
         allowed_spans = [match.span() for match in _ALLOWED_OCCURRENCES.finditer(line)]
         allowed_spans.extend(_compatibility_spans(line))
-        allowed_spans.extend(_path_specific_spans(path, line))
+        allowed_spans.extend(_path_specific_spans(path, line, code_spans))
         if any(
             not any(start <= match.start() and match.end() <= end for start, end in allowed_spans)
             for match in matches

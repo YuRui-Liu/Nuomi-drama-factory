@@ -336,6 +336,40 @@ def test_https_before_real_negative_assertion_is_not_a_comment() -> None:
     ) == []
 
 
+def test_negative_assertion_inside_multiline_comment_is_not_allowlisted() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        "/* disabled\nexpect(label).not.toMatch(/DramaClaw/);\n*/",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
+
+
+def test_real_assertion_after_multiline_comment_closes_is_allowlisted() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        "/* disabled\n*/ expect(label).not.toMatch(/DramaClaw/);",
+    ) == []
+
+
+@pytest.mark.parametrize("quote", ['"', "'", "`"])
+def test_comment_marker_inside_string_does_not_start_multiline_comment(
+    quote: str,
+) -> None:
+    scanner = _load_scanner()
+    text = (
+        f"const marker = {quote}/*{quote};\n"
+        "expect(label).not.toMatch(/DramaClaw/);"
+    )
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        text,
+    ) == []
+
+
 def test_explicit_allowlist_rejects_unknown_machine_brand() -> None:
     scanner = _load_scanner()
 
