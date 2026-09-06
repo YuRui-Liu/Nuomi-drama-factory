@@ -33,7 +33,7 @@
 2. 显式 `dialogue` 使用角色/身份声线；未设置 `audio_type` 但 `speaker` 非空时也按对白处理。
 3. 显式 `narration` 使用解说声线；`audio_type` 与 `speaker` 都为空时默认按旁白处理。
 
-对白与旁白都先取 `narration_segment`，再回退到 `dialogue`、`narration`。对白文本如果含 `“”`、`「」` 或英文双引号，只把引号中的话送给模型；引号外的哭泣、愤怒、耳语等描述会确定性映射成一条自然情绪示例。没有引号时，原文本整体作为对白，情绪模式保持 neutral。旁白直接使用完整文本。
+对白文本按 `narration_segment` → `dialogue` → `narration` 回退，旁白文本按 `narration_segment` → `narration` → `dialogue` 回退。对白文本如果含 `“”`、`「」` 或英文双引号，只把引号中的话送给模型；引号外的哭泣、愤怒、耳语等描述会确定性映射成一条自然情绪示例。没有引号时，原文本整体作为对白，情绪模式保持 neutral。旁白直接使用按上述顺序命中的完整文本。
 
 手工插入镜头不因 `is_manual_shot` 被音频 Runner 排除：手工旁白和对白仍可生成，手工静音镜头才跳过。`IndexTTS2BeatAudioTaskResult.skipped_manual` 目前保留在结果结构中，但主循环没有增加它。
 
@@ -84,7 +84,7 @@ API 先读取本集 Beats；为空时直接返回 `ok: false`。随后 `collect_
 | `redo_selected` | 强制覆盖目标 | 不用 current 判定跳过 | 选中 Beat、单 Beat 重生成 |
 | `redo_all` | 强制覆盖目标 | 不用 current 判定跳过 | 兼容的整组重做逻辑 |
 
-未知 mode 会规范化为 `sync_changed`。`beat_numbers` 为空表示本集全部有效编号；有值时会去重、忽略非正数，并只保留本集中存在的 Beat。mode 名本身不改变目标集合，所以调用方仍需让 `redo_selected` 携带选中编号。
+未知 mode 会规范化为 `sync_changed`。只有 `beat_numbers is None`，也就是字段未传或值为 `null`，才表示本集全部有效编号；显式 `[]` 会规范化为空集合，任务的目标数为零。非空数组会去重、忽略非正数，并只保留本集中存在的 Beat。mode 名本身不改变目标集合，所以调用方仍需让 `redo_selected` 携带选中编号。
 
 预检只验证 Beat、文本与参考声线，不验证 RunningHub provider、credential 或 `tts_indextts2_voice_clone` workflow。后几项要到 Runner 创建 `RunningHubIndexTTS2Generator` 时才暴露。
 
@@ -109,9 +109,9 @@ Runner 从 `runninghub-main` 读取启用的 provider、credential 和 `tts_inde
 
 `GET /episodes/{episode}/beats` 按固定路径发现 MP3，附加 `audio_url`，并并发探测 `audio_duration_seconds`。后续影响分三层：
 
-1. **视频时长**：`resolve_target_video_duration` 优先使用 Beat 的正 `duration_seconds`，否则使用实际音频时长，再回退 5 秒。非 Seedance 单 Beat API 如果用户又传了 duration，还会把它提高到不小于 `ceil(audio_duration)`；因此重生成更长音频后，旧视频不会自动延长，需要重新生成视频。
+1. **视频时长**：入口先用 `resolve_target_video_duration` 计算基础值：Beat 的正 `duration_seconds` 优先，其次是实际音频时长，最后回退 5 秒。随后各后端分支会改写它：H3 在请求带 `body.duration` 时直接覆盖，不执行音频下限；Seedance 由 `_prepare_seedance2_api_beat` 重新读取实际音频并返回 prepared duration；HappyHorse 与 Grok 使用各自 prepare 结果。只有 `generation.py` 最后的 legacy/其他后端分支会在应用用户 duration 后，再提高到不小于 `ceil(audio_duration)`。因此重生成更长音频后，旧视频不会自动延长，需要按后端规则重新生成视频。
 2. **合成音轨**：普通 Beat 合成优先使用独立 MP3；没有 MP3 时保留视频内置音轨，再没有则补静音。Director manifest 中 `external_tts` 段要求独立 MP3，并与 ambience stem 混合；`h3_native` 段使用原视频音轨。
-3. **字幕时间**：普通导出按每个 MP3 的实际时长推进时间轴，探测失败或缺文件时用 5 秒；Director 场景按 manifest 的真实帧边界推进，包含静音镜头。字幕文本仍来自 `narration_segment`，音频文件不做语音识别。
+3. **字幕时间与文本**：普通导出按每个 MP3 的实际时长推进时间轴，探测失败或缺文件时用 5 秒，文本只取 Beat `narration_segment`。Director 场景按 manifest 的真实帧边界推进，包含静音镜头；每条字幕先取 `entry.segment.dialogue`，为空才回退到对应 Beat `narration_segment`。音频文件不做语音识别。
 
 前端 compose gate 只对 narrated 项目把缺音频列为阻塞；drama 允许视频内置音轨。文件重生成不会主动删除既有视频、最终成片或 SRT，这些下游产物需要按影响范围重新生成。
 
@@ -250,7 +250,7 @@ sequenceDiagram
 | `missing_only` 没采用新声线 | 目标 MP3 是否非空 | 此 mode 不比较哈希；改用 `sync_changed` 或 `redo_selected` |
 | 强制重生成失败后仍能播放旧声音 | 固定 MP3 的 mtime/内容、task result、provenance | provider 失败可能发生在覆盖前，旧文件仍在，Beats API 只按文件存在返回 `audio_url`；不要把可播放当成本次成功 |
 | 声线文件 path 有值但不生效 | 文件是否实际存在、sha256 是否对应当前内容 | resolver 会跳过丢失文件并向下回退；修复元数据或重新上传，不要伪造 hash |
-| 新音频已生成，视频仍比音频短或仍是旧声音 | 视频文件生成时间、Beat `duration_seconds`、compose 来源 | 音频不自动重做视频；显式 Beat duration 还优先于音频时长。重生成受影响的视频和成片 |
+| 新音频已生成，视频仍比音频短或仍是旧声音 | 视频文件生成时间、视频后端、Beat 与请求 duration、compose 来源 | 音频不自动重做视频；H3 可由请求 duration 直接覆盖，只有最终 legacy/其他后端分支强制 `ceil(audio_duration)` 下限。按所选后端重生成视频和成片 |
 | 字幕时间仍是 5 秒或整体漂移 | MP3 是否可被 ffprobe 读取、是否存在 Director manifest | 普通路径探测失败回退 5 秒；Director 路径按 manifest 边界，不按 MP3 长度 |
 | 声音设计完成却没有 Beat MP3 | task type 是否 `character_voice_design` | 该任务只保存参考样本；随后运行 `audio_generation_indextts2` |
 
@@ -278,6 +278,14 @@ rg -n 'character_voice_design|tts_qwen3_voice_design|tts_indextts2_voice_clone|V
   src/novelvideo/media_capabilities/runtime/configuration.py \
   src/novelvideo/seedance2_i2v/character_voice_storage.py
 
+rg -n 'useCharacterVoiceSamples|useUploadCharacterVoiceSample|useDesignCharacterVoiceSample|CharacterVoicePanel' \
+  frontend/src/lib/queries/characters.ts \
+  frontend/src/components/assets/character-voice-panel.tsx
+
+rg -n 'useNarratorVoiceStatus|useNarratorVoiceSources|useUploadNarratorVoice|NarratorVoicePanel' \
+  frontend/src/lib/queries/video.ts \
+  frontend/src/components/episode/beat-workbench/narrator-voice-panel.tsx
+
 rg -n 'audio_duration_seconds|resolve_target_video_duration|使用独立音频|使用视频内置音轨|build_srt_content' \
   src/novelvideo/api/routes/episodes.py \
   src/novelvideo/manual_shots.py \
@@ -294,6 +302,10 @@ uv run pytest -q \
   tests/test_api_audio_prereq.py \
   tests/test_api_audio_indextts2_cutover.py \
   tests/media_capabilities/tts/test_runninghub_indextts2.py \
+  tests/media_capabilities/tts/test_runninghub_voice_design_runtime.py \
+  tests/test_character_voice_storage.py \
+  tests/test_api_character_voice_samples.py \
+  tests/test_api_narrator_voice.py \
   tests/test_voice_design_runner.py \
   tests/test_compose_episode_audio_source.py
 ```
@@ -304,8 +316,13 @@ uv run pytest -q \
 cd frontend
 npm test -- --run \
   src/__tests__/lib/queries/audio.test.tsx \
+  src/__tests__/lib/queries/character-voice-samples.test.tsx \
+  src/__tests__/lib/queries/narrator-voice.test.tsx \
   src/__tests__/routes/audio-indextts2-contract.test.ts \
-  src/__tests__/components/episode/beat-workbench/audio-pane.test.tsx
+  src/__tests__/components/episode/beat-workbench/audio-pane.test.tsx \
+  src/__tests__/components/assets/character-voice-panel.test.tsx \
+  src/__tests__/components/assets/narrator-voice-panel.test.tsx \
+  src/__tests__/components/assets/narrator-voice-panel.ce.test.tsx
 ```
 
 修改输出格式或时长规则时，再增加真实 ffmpeg/ffprobe 冒烟：生成一个 Beat，确认文件可解码、`GET /beats` 返回正时长、视频重新生成后的时长不短于预期，并导出 SRT 核对累计时间轴。不要用只写任意 bytes 的单元测试代替 codec 验证。
@@ -314,6 +331,5 @@ npm test -- --run \
 
 - Beat 文本、`audio_type`、`speaker` 与手工镜头从[剧本与语义](04-screenplay.md)继续追踪。
 - 图像、首帧和 Beat 工作台上游从[分镜与图像](05-storyboard.md)继续追踪。
-- 音频时长、Seedance2/H3 音轨与视频重生成从[视频生成](07-video.md)继续追踪。
-- 最终音轨选择、字幕与导出包从[合成与导出](08-compose-export.md)继续追踪。
+- 音频时长、Seedance2/H3 音轨、视频重生成，以及后续合成与导出入口从[视频生成](07-video.md)继续追踪。
 - 任务身份、状态流与取消见[新增 API 与长任务](../development/add-api-and-task.md)；项目配置、SQLite 与 output/state 边界见[存储与项目文件](../development/storage-and-files.md)。
