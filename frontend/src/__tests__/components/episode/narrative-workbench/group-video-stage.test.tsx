@@ -37,6 +37,26 @@ describe("GroupVideoStage", () => {
     expect(screen.getByText(/I2V/)).toBeInTheDocument();
   });
 
+  it("hides reference controls for legacy models", () => {
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame reference={{ required: false, count: 2, max: 5, valid: true }} />);
+    expect(screen.queryByRole("button", { name: "管理参考图" })).not.toBeInTheDocument();
+  });
+
+  it("shows selected count and combines reference loading, error, invalid, and dirty generation gates", () => {
+    const { rerender } = render(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame onGenerate={vi.fn()} reference={{ required: true, count: 2, max: 5, valid: true, onManage: vi.fn() }} />);
+    expect(screen.getByText("已选 2/5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeEnabled();
+    for (const reference of [
+      { required: true, count: 2, max: 5, valid: true, loading: true },
+      { required: true, count: 2, max: 5, valid: true, error: true },
+      { required: true, count: 0, max: 5, valid: false },
+      { required: true, count: 2, max: 5, valid: true, dirty: true },
+    ]) {
+      rerender(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame onGenerate={vi.fn()} reference={reference} />);
+      expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+    }
+  });
+
   it("reports the single director task state and never offers tail-frame-only mode", () => {
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} taskStatus="running" />);
     expect(screen.getByText("生成中")).toBeInTheDocument();

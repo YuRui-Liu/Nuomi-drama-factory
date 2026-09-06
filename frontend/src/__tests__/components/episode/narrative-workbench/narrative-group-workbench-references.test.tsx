@@ -11,6 +11,8 @@ const m = vi.hoisted(() => ({
  success: vi.fn(),
  error: vi.fn(),
  generateVideo: vi.fn(),
+ referencePreviewQuery: vi.fn(),
+ stageProps: vi.fn(),
  promptsQuery: vi.fn(),
  updateDefaults: vi.fn(),
  updateProject: vi.fn(),
@@ -18,7 +20,7 @@ const m = vi.hoisted(() => ({
  orientation: "landscape" as "portrait" | "landscape",
  dialogSelection: {useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"} as NarrativeGroupGenerationSelection,
  mediaDefaults: {video_model:"newapi_seedance-1.0-pro-fast",h3_mode:"auto",narrative_sketch_provider:"grsai-main",narrative_sketch_model:"nano-banana-2",narrative_render_provider:"grsai-main",narrative_render_model:"gpt-image-2",narrative_render_image_size:"1K"},
- videoModels: [{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"}],
+ videoModels: [{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"}] as any[],
  groupsLoading: false,
  groups: [] as any[],
 }));
@@ -29,6 +31,7 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
+ useNarrativeGroupVideoReferencePreview:(...args:any[])=>m.referencePreviewQuery(...args),
  useGenerateNarrativeGroupVideoSegment:()=>({mutateAsync:vi.fn()}),
  useChangeNarrativeGroupStyle:()=>({mutateAsync:vi.fn(),isPending:false}),
  useNarrativeGroupVideoPrompts:(...args:any[])=>m.promptsQuery(...args),
@@ -55,9 +58,10 @@ vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}))
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
 vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
- GroupVideoStage:({onGenerate,modelId,mode}:any)=><><span>stage-model:{modelId}</span><span>stage-mode:{mode}</span><button onClick={()=>onGenerate({video_model:modelId,h3_mode:mode==="auto"?"i2va":mode})}>生成组合视频</button></>,
+ GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode==="auto"?"i2va":props.mode})}>生成组合视频</button></>},
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
 }));
+vi.mock("@/components/episode/narrative-workbench/group-video-reference-dialog",()=>({GroupVideoReferenceDialog:({open,onSaved,onDirtyChange}:any)=>open?<div role="dialog" aria-label="管理视频参考图"><button onClick={()=>onDirtyChange(true)}>修改描述</button><button onClick={()=>onSaved({revision:8,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]})}>保存参考图</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/narrative-group-list",()=>({NarrativeGroupList:()=>null}));
 vi.mock("@/stores/aspect-ratio-store",()=>({useProjectAspectRatio:()=>({orientation:m.orientation,spec:{},setOrientation:m.setOrientation})}));
 
@@ -71,6 +75,7 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{units:[]}},isLoading:false,isError:false});
+  m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:false,isError:false,error:null,refetch:vi.fn()});
   m.updateDefaults.mockResolvedValue({ok:true});
   m.updateProject.mockResolvedValue({ok:true});
   m.setOrientation.mockImplementation((next: "portrait" | "landscape")=>{m.orientation=next;});
@@ -199,5 +204,27 @@ describe("NarrativeGroupWorkbench references",()=>{
   expect(screen.getByText("stage-mode:i2va")).toBeInTheDocument();
   fireEvent.click(screen.getByText("生成组合视频"));
   await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({model:"runninghub:future"})));
+ });
+ it("enables the preview only for a required-policy model and sends its saved revision",async()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[
+   {id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
+   {id:"runninghub:minimax-h3-ref",label:"RunningHub MiniMax H3 Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}},
+  ];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isError:false,error:null,refetch:vi.fn()});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(m.referencePreviewQuery).toHaveBeenCalledWith("p",1,"g1",true);
+  fireEvent.click(screen.getByRole("button",{name:"生成组合视频"}));
+  await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({referenceRevision:7})));
+ });
+ it("keeps required-reference generation disabled while invalid or dirty",()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:0,max_images:5,candidates:[],selected:[],warnings:[]}},isLoading:false,isError:false,error:null,refetch:vi.fn()});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.getByRole("button",{name:"生成组合视频"})).toBeDisabled();
+  fireEvent.click(screen.getByRole("button",{name:"管理参考图"}));
+  fireEvent.click(screen.getByRole("button",{name:"修改描述"}));
+  expect(screen.getByRole("button",{name:"生成组合视频"})).toBeDisabled();
  });
 });

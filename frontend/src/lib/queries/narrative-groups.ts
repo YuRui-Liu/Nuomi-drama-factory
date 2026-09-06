@@ -158,6 +158,18 @@ export interface NarrativeGroupVideoPromptUnit {
 }
 
 export interface NarrativeGroupVideoPromptManifest {
+  workflow_id?: string | null;
+  provider_workflow_id?: string | null;
+  reference_settings_revision?: number | null;
+  reference_limit?: number | null;
+  global_references?: Array<{
+    reference_id: string;
+    picture_index: number;
+    subject_description: string;
+    source_kind: VideoReferenceSourceKind;
+    label: string;
+    sha256: string;
+  }>;
   workflow_parameters?: Record<string, string>;
   provider_parameters?: Record<string, unknown>;
   actual_output?: Record<string, number>;
