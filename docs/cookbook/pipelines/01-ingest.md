@@ -144,7 +144,7 @@ sequenceDiagram
 2. `handleStartIngest` 先保存 ingest 设置，再用 `rebuild: true`、当前 `spine_template` 和 `knowledge_pipeline` 调用 `useStartIngest`。
 3. API 返回 `TaskResponse` 后，页面把本地状态改为 importing。`useTaskStream` 绑定真实任务键 `ingest_fast + project + episode 0`，收集 `currentTask` 作为日志。
 4. 页面重新挂载时，`useTasks` 会与服务端对账；活跃状态集合为 submitting、queued、pending、starting、running，避免路由切换后丢失进度视图。
-5. completed 后页面主动 refetch chapters，并 invalidate knowledge graph；failed 会保留错误与「重试导入」，structured 失败还可以显式切换到 legacy 管线。停止按钮调用任务取消 API。
+5. completed 后页面主动 refetch chapters，并 invalidate knowledge graph；failed 会保留错误与「重试导入」。structured 失败后，页面可以发起显式切换 legacy 的请求，但服务端只在 `formal_asset_count == 0` 且持久化状态为 `structured_pending` 或 `structured_failed` 时放行。重导失败时如果事务已恢复旧正式资产，计数仍大于 0，切换会返回 `409 KNOWLEDGE_PIPELINE_LOCKED`，不会无条件降级。停止按钮调用任务取消 API。
 
 分集剧本采用另一条调用链：
 
@@ -164,6 +164,8 @@ flowchart LR
 ```
 
 预检按正文集号优先、文件名集号兜底；合集只有识别到至少两个独立标题边界才拆分。缺集号要求手工指定，批内重复和已有集号要求显式解决。commit 同时校验预检快照、项目 revision 和每项动作，避免预检以后项目已变化仍覆盖新来源。
+
+提交阶段由 `EpisodeSourceStore.commit_prepared` 把预备好的全量 `canonical_novel` 传给 `upsert_sources`。Store 在 SQLite 事务中更新 `episode_sources`、兼容镜像、revision 和 outbox，同时通过临时文件、pending-commit journal 与 `os.replace` 原子替换 `novel.txt`；提交失败则回滚数据库并恢复原文。因此，分集来源提交也是 `novel.txt` 的正式写入方，不只有两条知识导入管线会写它。
 
 ## 关键代码索引
 
@@ -194,7 +196,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 上传原文件 | `upload_novel` | output 根下 `uploads/<filename>` | `start_ingest` 只允许从这里解析安全文件名 |
 | 上传章节预览 | `useUploadNovel.onSuccess` | 浏览器 Query cache | 导入页即时预览；`preview_only` 不是后端字段 |
-| 正式原文标志 | structured 发布或 legacy Cognee 成功收尾 | output 根下 `novel.txt` | `/chapters` 与后续生产步骤；存在才表示正式导入过 |
+| 正式原文标志 | structured 发布、legacy Cognee 成功收尾，或 `EpisodeSourceStore.commit_prepared` → `upsert_sources(canonical_novel=...)` | output 根下 `novel.txt` | `/chapters` 与后续生产步骤；分集提交使用 journal 与临时文件原子替换，与来源 revision 协调恢复 |
 | structured run manifest | `_persist_manifest` | state 根下 `structured_runs/<run_id>.json` | 记录 source hash、schema / pipeline version、template 与 chunk 状态，可识别复用 |
 | structured 正式资产 | `publish_structured_publication` | 项目 SQLite 的 `episodes`、`characters`、`scenes` 及 evidence | 下游资产与剧本生产；同一事务发布 |
 | structured 管线状态 | `transition_structured_pipeline` | 项目 state 配置 | 页面恢复 `structured_failed`，Runner 选择管线 |
@@ -212,7 +214,7 @@ flowchart LR
 ### 新增输入格式
 
 1. **前端类型与交互**：更新文件选择器的 `accept`、提示文案、粘贴转文件策略和 `UploadResult`（如果响应字段变化）。检查 `frontend/src/routes/_app/projects.$project/ingest.tsx` 与分集对话框是否都应接受新格式。
-2. **API**：在 `document_parsers.py` 的支持扩展集合与 `load_novel_text` 增加解析分支；`DocumentParseError` 自身的属性是 `source_format`、`location`、`reason`。`upload_novel` 和 `start_ingest` 捕获异常后，把 `exc.source_format` 映射为 API 响应的 `format` 字段。小说上传与 `episode_imports._read_upload` 共用这套判断。
+2. **API**：在 `document_parsers.py` 的支持扩展集合与 `load_novel_text` 增加解析分支；`DocumentParseError` 自身的属性是 `source_format`、`location`、`reason` 和可选的 `raw_exception`。`upload_novel` 和 `start_ingest` 捕获异常后，把 `exc.source_format` 映射为 API 响应的 `format` 字段。小说上传与 `episode_imports._read_upload` 共用这套判断。
 3. **Runner 解析**：`start_ingest` 为计费会再解析一次，structured 与 Cognee 也会从文件重读；确认三处得到相同规范化纯文本，而不是只让上传预检成功。
 4. **Store / 产物**：确定是否保留原扩展上传文件，`novel.txt` 仍应为 UTF-8 纯文本成功标志。
 5. **测试**：补解析器、上传/计费、structured/legacy Runner，以及 episode import preview 的有效与损坏文件用例。
@@ -251,7 +253,7 @@ flowchart LR
 | 模型或知识运行时失败 | `ingest_fast` 的 current task、logs、error；项目 pipeline 状态 | structured 角色提取可能调用文本模型并要求可核验原文证据；legacy 的 add/cognify/memify 依赖 Cognee、模型与 embedding 配置，cognify/memify 各自动重试一次 |
 | 上传成功但没有正式章节 | `/chapters` 是否仍返回 no novel，任务是否 completed | 上传只写 `uploads/` 和前端预览；`novel.txt` 在知识处理成功后才写。先查 `ingest_fast`，不要只看上传 toast |
 | 任务失败却残留部分产物 | `uploads/`、structured manifest、`novel.txt`、SQLite 正式表分别检查 | 上传文件和 manifest 可以保留用于诊断；structured 正式表事务失败会 rollback，并恢复旧 `novel.txt`。legacy 可能已有未完成的 Cognee 中间数据，但不会提前写新的 `novel.txt` |
-| structured 失败后页面持续显示失败 | 项目配置中的 `knowledge_pipeline_status/error` | 这是持久化失败标记；重试 structured，或用页面显式切换 `cognee_legacy` 后重新启动。API 会拒绝过期的管线选择 |
+| structured 失败后页面持续显示失败 | 项目配置中的 `knowledge_pipeline_status/error`、`formal_asset_count` | 这是持久化失败标记；可重试 structured，也可由页面显式请求切换 `cognee_legacy`。切换只在正式资产数为 0 且状态为 pending/failed 时成功；重导失败但旧正式资产仍在时返回 `KNOWLEDGE_PIPELINE_LOCKED` |
 | 分集来源已更新但图谱未更新 | `episode_import` result、`episode_graph_outbox`、`episode_graph_index` | `episode_import` 只保证来源提交；CE 随后异步排下游任务。图谱失败不应回滚已经提交的来源，应从 outbox / revision 继续诊断 |
 | 重试后像是复用了旧任务 | 任务 key 与活跃状态 | `ingest_fast` 身份固定为 project + episode 0；活跃任务去重。页面的「重试导入」重新调用 start，但应先确认旧任务已进入终态 |
 | 点击停止后后端仍短暂有工作 | 任务状态、Runner 当前步骤 | 页面会先本地显示 stopped，再请求取消；Runner 用 cancel watch 协作取消，但正在执行的第三方调用是否立即停止取决于取消检查点。最终以服务端 cancelled 为准 |
@@ -285,9 +287,25 @@ rg -n 'preview_episode_imports|commit_episode_imports|split_episode_candidates|e
   src/novelvideo/ports/local/tasks.py
 ```
 
+任务流的验证要区分项目列表 stream、单任务 stream 和前端 mock 三种边界：
+
+| 契约 | 真实测试节点 | 覆盖边界 |
+| --- | --- | --- |
+| 单任务 SSE 载荷 | `tests/test_tasks_stream_list.py::test_project_task_stream_includes_logs` | `/tasks/{task_type}/{episode}/stream` 返回 `logs`；这个节点不证明终态关流 |
+| 单任务有效状态与终态关流 | `tests/contract/test_m07_tasks.py::test_single_task_stream_uses_effective_status_and_closes_on_terminal` | 分别校验 running、completed、failed、cancelled 事件，以及三种终态的 `result/error/error_code` 和 stream 结束 |
+| 取消的后端协作契约 | `tests/contract/test_m07_tasks.py::test_inline_cancel_is_cooperative_runner_stop` | Inline backend 写入 cancel flag，Runner 观察后停止，最终任务为 cancelled |
+| 前端单任务 SSE completed | `frontend/src/__tests__/features/freezone/m06-l2-contract.test.tsx` 中 `keeps the legacy ingest task stream cookie-backed and closes on terminal event` | `useTaskStream` 使用 cookie credentials，消费 completed 的 result/logs，调用 `onComplete` 并关闭 `EventSource` |
+| 前端单任务 SSE failed | 同文件中 `maps billing rule task stream failures to the unified billing message` | 消费 failed 终态、映射错误、调用 `onError` 并关闭 `EventSource` |
+
+`frontend/src/__tests__/routes/ingest-settings-save.test.tsx` 把 `useTaskStream` 固定 mock 为 idle，同时 mock `useTasks` 来验证页面的设置保存、启动参数、失败恢复与挂载对账。它不会创建 `EventSource`，因而不能作为单任务 SSE 的事件名、终态回调、关流或取消契约证据；这些边界由上表的 M06 L2 与 M07 测试承担。
+
 按改动范围选择小测试：
 
 ```bash
+uv run pytest \
+  tests/contract/test_m07_tasks.py \
+  tests/test_tasks_stream_list.py
+
 uv run pytest \
   tests/test_api_ingest_chapter_preview.py \
   tests/test_structured_ingest.py \
@@ -306,6 +324,7 @@ uv run pytest \
   tests/test_task_episode_import_runner.py
 
 npm --prefix frontend test -- \
+  src/__tests__/features/freezone/m06-l2-contract.test.tsx \
   src/__tests__/lib/queries/ingest.test.tsx \
   src/__tests__/components/ingest/episode-import-dialog.test.tsx \
   src/__tests__/routes/ingest-credit-cost-contract.test.ts \
