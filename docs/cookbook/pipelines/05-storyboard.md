@@ -38,6 +38,8 @@
 
 `GET .../{stage}/revisions` 返回历史快照和当前 revision。rollback 并不把指针倒退：`rollback_stage_revision` 将目标快照复制成一个新的 revision，并把回滚前状态继续追加到 history。例如当前 r2 回滚到 r1 后得到 r3。该历史记录属于 `.narrative_groups` sidecar；逐 Beat 图片池仍以候选文件、pool id 和 canonical 文件表达版本。
 
+这里的 snapshot 不是 `GroupStageState` 的完整序列化。当前 `_stage_snapshot` 与 `rollback_stage_revision` 都没有保存或恢复 `requested_image_size`、`requested_pixel_size`、`actual_pixel_size`、`resolution_warning`、`cleanup_reports`。因此回滚会恢复目标 revision 的 Grid/cell、状态、实际 provider/model、workflow/provider 参数等有限字段，但新建的 revision 会把上述分辨率与清理元数据置回默认空值；不能据此断言回滚后的图片曾按什么尺寸请求、是否发生分辨率降级或逐 cell 做过哪些清理。若要把回滚升级为完整 stage 恢复，必须同时扩展快照写入与恢复构造，并覆盖旧 sidecar 缺字段时的兼容读取。
+
 ### 候选入池与 pool 选择
 
 `save_grid_and_split` 保存整图、按 `beat_nums` 切 cell、以内容 hash 去重并注册 `PoolImage`。批量草图默认 `force_promote=False`，已有 canonical 草图不会因新一轮抽卡被自动覆盖；`sketch_regen`、`selected_regen` 和 render grid 再生属于明确重生成，通常以 `force_promote=True` 覆盖相应 canonical 文件。
@@ -173,7 +175,7 @@ sequenceDiagram
 
 | 数据或产物 | 位置 | 更新语义 |
 | --- | --- | --- |
-| NarrativeGroup sidecar | `.narrative_groups/epNNN.json` | 带进程内锁和文件锁；保存 group 映射、stage revision/history/error 与实际模型元数据 |
+| NarrativeGroup sidecar | `.narrative_groups/epNNN.json` | 带进程内锁和文件锁；当前 stage 保存完整运行结果，但 revision snapshot 只含有限字段；回滚不会恢复 requested/actual pixel size、resolution warning 与 cleanup reports |
 | 逐 Beat Grid 与 cell | `grids/epNNN/{custom,sketch,render,...}` | 整图保留，cell 以 Beat/时间戳命名并去重、入池 |
 | 叙事组 Grid 与 cell | Grid 在 `grids/epNNN/narrative_groups/`；小布局临时切片后直接复制到 canonical，大布局 cell 进入 `grids/epNNN/{sketch,render}` | 所有布局写 group stage；只有调用 `save_grid_and_split` 的大布局更新 pool |
 | pool index | 生产环境映射到 state 树的 `grids/epNNN/pool_index.json` | 逐 Beat 路径和叙事组大布局更新；原子写入，首次读取会迁移旧 output-side index |
@@ -209,7 +211,7 @@ sequenceDiagram
 
 1. group `regenerate` 必须先保存当前 stage snapshot，再以新 revision 入队；Runner 完成写入必须带 `expected_revision`，避免晚到结果覆盖新版本。
 2. `split` 只能复用当前 `grid_asset`，不应重新调用 provider 或解析引用。若要支持部分失败恢复，需要先让生产 splitter 逐 cell 捕获错误并返回 errors；目前任一异常会使整个 stage failed。
-3. rollback 创建新 revision，不要直接删 history 或覆盖为旧编号；完成后前端需同时刷新 groups、grids 与 beats。
+3. rollback 创建新 revision，不要直接删 history 或覆盖为旧编号；完成后前端需同时刷新 groups、grids 与 beats。新增或依赖 stage 字段时要同步检查 `_stage_snapshot` 和 `rollback_stage_revision`：当前回滚会丢失 `requested_image_size`、`requested_pixel_size`、`actual_pixel_size`、`resolution_warning`、`cleanup_reports`，修复时还要兼容不含这些键的旧快照。
 4. pool rebuild 只能重建索引，不能承诺恢复已经删除的 Grid/cell；canonical 文件也不等同于完整候选历史。
 5. 覆盖 `tests/test_narrative_group_service.py::test_stale_revision_completion_cannot_overwrite_new_revision`、`tests/test_api_narrative_groups.py::test_stage_history_and_rollback_routes`、`tests/test_task_narrative_group_runners.py::test_split_runner_recovers_grid_from_sidecar_without_generator`。
 
@@ -222,6 +224,7 @@ sequenceDiagram
 | 选择草图提示过期 | 检查候选 `original_beat` 的当前内容/颜色，不是目标 `beat_num`；只有确认跨 Beat 复用旧构图时才传 `force=true` |
 | Group Grid 有图但 cell/canonical 为空 | 检查 stage error 与 cleanup；当前生产 splitter 不生成逐 cell partial_failure，可用 `split` 重试整次确定性切分 |
 | 重生成后又出现旧结果 | sidecar current revision 与任务 scope 中 rN 是否一致；旧 Runner 写入会被 expected revision 忽略 |
+| 回滚后图片仍在，但分辨率或清理信息为空 | 这是当前有限快照的已知缺口：`_stage_snapshot` / `rollback_stage_revision` 未覆盖 requested image/pixel size、actual pixel size、resolution warning 和 cleanup reports；结合目标 revision 的原始任务日志与实际文件复核，不能把空值解释为没有降级或没有清理 |
 | render plan 执行 409 | 使用响应中的 new plan/hash/fingerprint 重新确认，不要在客户端自行改旧计划继续提交 |
 | 叙事组有 canonical 图但图片池看不到 | 先看布局；`1×1`、`1×2`、`1×3`、`2×2` 分支不建 PoolImage，属于当前预期行为 |
 | 图片池丢了 assignment | 检查 state-side `pool_index.json`、cell 是否仍存在、rebuild 时旧 id 是否能映射到新 alias |
@@ -241,9 +244,47 @@ sequenceDiagram
 | 图片池 | `src/novelvideo/generators/pool_indexer.py`、`models.py` | `save_grid_and_split`、`compute_beat_content_hash`、`PoolImage`、`PoolIndex` |
 | 长任务 Runner | `src/novelvideo/task_backend/runners/sketch.py`、`render.py`、`narrative_group.py` | `run_sketch_generation`、`run_sketch_regen`、`run_selected_regen`、`run_grid_regenerate`、`run_narrative_group_grid`、`run_narrative_group_split` |
 
-## 测试入口
+## 验证
 
-- API、scope 与 pool 选择：`tests/test_api_generation_sketches.py`、`tests/test_api_sketch_regenerate.py`、`tests/test_api_render_regenerate.py`、`tests/test_api_narrative_groups.py`、`tests/test_api_beat_image_upload.py`。
-- 分组、revision 与回滚：`tests/test_narrative_group_service.py`。
-- Runner 生成/切分、引用与失败：`tests/test_task_sketch_runner.py`、`tests/test_task_narrative_group_runners.py`、`tests/test_narrative_group_runner_references.py`。
-- 前端请求与刷新契约：`frontend/src/__tests__/lib/queries/sketches.test.tsx`、`narrative-groups.test.ts`、`render-plan.test.tsx`、`frontend/src/__tests__/hooks/use-episode-image-task-invalidation.test.tsx`、`frontend/src/__tests__/routes/beats-sketch-render-contract.test.ts`。
+后端聚焦分组/revision、参考图、Runner 切分和图片上传；API 只点跑与本链路直接相关的节点，避免把视频生成用例混入图像管线验证：
+
+```bash
+.venv/bin/pytest -q \
+  tests/test_narrative_group_service.py \
+  tests/test_task_narrative_group_runners.py \
+  tests/test_narrative_group_runner_references.py \
+  tests/test_api_beat_image_upload.py \
+  tests/test_api_narrative_groups.py::test_stage_history_and_rollback_routes \
+  tests/test_api_narrative_groups.py::test_reference_preview_is_safe_project_scoped_and_group_bounded \
+  tests/test_api_narrative_groups.py::test_generate_preserves_explicit_reference_selection_and_empty_list \
+  tests/test_api_narrative_groups.py::test_regenerate_validates_and_forwards_reference_selection \
+  tests/test_api_narrative_groups.py::test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection \
+  -k 'not video'
+```
+
+前端聚焦草图/叙事组 Query、任务终态失效和 group 引用/网格 UI：
+
+```bash
+cd frontend
+pnpm exec vitest run \
+  src/__tests__/lib/queries/sketches.test.tsx \
+  src/__tests__/lib/queries/narrative-groups.test.ts \
+  src/__tests__/hooks/use-episode-image-task-invalidation.test.tsx \
+  src/__tests__/components/episode/narrative-workbench/narrative-group-workbench-references.test.tsx \
+  src/__tests__/components/episode/narrative-workbench/group-grid-stage-v2.test.tsx
+```
+
+提交前检查本页空白错误、未完成标记与本机绝对路径；最后一条 `rg` 应无输出（退出码 1 表示未命中）：
+
+```bash
+git diff --check -- docs/cookbook/pipelines/05-storyboard.md
+rg -n 'T[O]DO|T[B]D|待[补]|占[位]|/(U[s]ers|h[o]me|private|tmp|var)/|[A-Za-z]:[\\][\\]' \
+  docs/cookbook/pipelines/05-storyboard.md
+```
+
+## 继续追踪
+
+- 上游：[剧本与语义](04-screenplay.md)，继续追踪 DramaticBeat、VisualBeat 与 Director Shot 如何形成图像输入。
+- 下游：[视频与合成](06-video-compose.md)，继续追踪 canonical frame 与 group render 如何进入视频生产。
+- 横向入口：[共享系统地图](../system-map.md)、[功能反查](../development/trace-a-feature.md)、[新增 API 与长任务](../development/add-api-and-task.md)、[存储与项目文件](../development/storage-and-files.md)、[测试策略](../development/testing-strategy.md)。
+- 返回 [Cookbook 首页](../README.md)。
