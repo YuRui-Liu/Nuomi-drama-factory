@@ -132,6 +132,7 @@ sequenceDiagram
         Graph->>Pointer: journal → activate
         Graph->>Candidate: commit embedding binding
         Graph->>Pointer: finalize journal
+        Graph->>Candidate: close candidate
         Graph->>Source: delete_graph_outbox(revision)
         Graph-->>Queue: counts / completed
     end
