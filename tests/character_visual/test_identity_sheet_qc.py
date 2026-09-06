@@ -49,12 +49,17 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
     assert "identity sheet" in captured["prompt"].lower()
     assert "2D" in captured["prompt"]
     assert "不要求毛孔" in captured["prompt"]
-    assert "head safety zone" in captured["prompt"].lower()
-    assert "unique visible face source" in captured["prompt"].lower()
-    assert "turned face" in captured["prompt"].lower()
-    assert "reflected face" in captured["prompt"].lower()
-    assert "text, labels, watermark" in captured["prompt"].lower()
-    assert "extra faces" in captured["prompt"].lower()
+    qc_prompt = captured["prompt"].lower()
+    assert "complete head" in qc_prompt
+    assert "hair outline" in qc_prompt
+    assert "facial features" in qc_prompt
+    assert "head safety zone" not in qc_prompt
+    assert "any face, facial feature, head" not in qc_prompt
+    assert "unique visible face source" in qc_prompt
+    assert "turned face" in qc_prompt
+    assert "reflected face" in qc_prompt
+    assert "text, labels, watermark" in qc_prompt
+    assert "extra faces" in qc_prompt
 
 
 @pytest.mark.asyncio

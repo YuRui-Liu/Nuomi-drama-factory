@@ -60,10 +60,14 @@ Style family: {style_family.value}
 {_material_policy(style_family)}
 
 The large three-quarter portrait must be the unique visible face source. The front
-full-body panel must keep its head safety zone empty: front_face_detected is a defect
-when any face, facial feature, head, or substitute object appears there. The back
-full-body panel must face fully away: back_face_visible is a defect when it contains
-any turned face, profile, reflected face, mirror face, or other visible facial detail.
+full-body panel must preserve the complete head, hair outline, ears, neck, body, and
+feet without cropping. A complete head is required and is not itself a defect.
+front_face_detected is a defect only when identifiable facial features appear there,
+including eyes, eyebrows, nose, lips, beard, face-like markings, or another recognizable
+face. A smooth neutral featureless facial plane is valid. If the top of the head or the
+feet are cropped, report state_inconsistent. The back full-body panel must face fully
+away: back_face_visible is a defect when it contains any turned face, profile,
+reflected face, mirror face, or other visible facial detail.
 Reject text, labels, watermark, poster markings, and extra faces anywhere on the sheet;
 report the closest stable layout defect code (front_face_detected, back_face_visible,
 or non_neutral_presentation) rather than inventing a new code.

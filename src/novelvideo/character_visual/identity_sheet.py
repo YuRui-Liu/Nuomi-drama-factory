@@ -24,7 +24,6 @@ IDENTITY_SHEET_PANEL_BOUNDS = {
     "front_headless": (768, 0, 1152, 1024),
     "back_fullbody": (1152, 0, 1536, 1024),
 }
-FRONT_HEAD_SAFE_ZONE_RATIO = 0.22
 _DYNAMIC_PROMPT_SEPARATOR = re.compile(
     r"(?:[\n\r。!！?？;；]+|(?<!\d)\.(?!\d))"
 )
@@ -204,7 +203,7 @@ COSTUME REFERENCE (CRITICAL):
     return f"""Identity Sheet v2 for {character_tag} ({character_name}).
 Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions:
 - LEFT 50%: LARGE THREE-QUARTER PORTRAIT. Use the confirmed Portrait exactly as the identity anchor; this is the only visible face source in the entire sheet.
-- CENTER 25%: HEADLESS FRONT FULL BODY in a neutral standing pose, head to feet. Keep everything from the neck up empty: no head, face, facial features, floating face, or substitute object. This is a clean identity-isolation presentation with no wound, blood, gore, or horror.
+- CENTER 25%: FACELESS FRONT FULL BODY in a neutral standing pose, fully visible from the complete top of the head to the soles of the feet. Preserve the complete head, hairstyle and hair outline, ears, neck, body proportions, outfit, and footwear without cropping. Render the facial plane as a smooth neutral surface consistent with the project style, with no identifiable facial features: no eyes, eyebrows, nose, lips, beard, or face-like markings. Do not replace the face with a mask, veil, prop, wound, hole, or horror element. This is a clean identity-isolation presentation with no wound, blood, gore, or horror.
 - RIGHT 25%: BACK FULL BODY, naturally facing fully away, head to feet. Never turn back; show no profile, visible face, mirror face, or reflection.
 
 IDENTITY AND STATE LOCK:
@@ -272,7 +271,7 @@ def compose_identity_sheet_v2(
     portrait_path: str | Path,
     output_path: str | Path,
 ) -> IdentitySheetComposition:
-    """Create a v2 sheet using only deterministic Pillow crop, mask, and paste operations."""
+    """Create a v2 sheet using deterministic Pillow resize, crop, and paste operations."""
     candidate_path = Path(candidate_path)
     portrait_path = Path(portrait_path)
     output_path = Path(output_path)
@@ -297,9 +296,6 @@ def compose_identity_sheet_v2(
     canvas.paste(fit_crop(portrait, (768, 1024)), portrait_bounds[:2])
     canvas.paste(fit_crop(front_source, (384, 1024)), front_bounds[:2])
     canvas.paste(fit_crop(back_source, (384, 1024)), back_bounds[:2])
-
-    mask_bottom = int(IDENTITY_SHEET_SIZE[1] * FRONT_HEAD_SAFE_ZONE_RATIO)
-    canvas.paste(neutral_gray, (front_bounds[0], 0, front_bounds[2], mask_bottom))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, format="PNG")

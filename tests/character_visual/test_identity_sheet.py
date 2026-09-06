@@ -96,14 +96,18 @@ def test_v2_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
     prompt = _prompt("anime_2d")
 
     assert "LARGE THREE-QUARTER PORTRAIT" in prompt
-    assert "HEADLESS FRONT FULL BODY" in prompt
+    assert "FACELESS FRONT FULL BODY" in prompt
     assert "BACK FULL BODY" in prompt
     assert "the only visible face source" in prompt
+    assert "complete head, hairstyle and hair outline" in prompt
+    assert "no identifiable facial features" in prompt
     assert "no wound, blood, gore, or horror" in prompt
     assert "neutral gray background" in prompt
     assert "no film grain" in prompt
     assert "no cinematic lens" in prompt
     assert "visible pores" not in prompt
+    assert "HEADLESS" not in prompt
+    assert "neck up empty" not in prompt
     assert "FRONT VIEW" not in prompt
     assert "SIDE VIEW" not in prompt
 
@@ -238,7 +242,7 @@ def _candidate(path: Path) -> Path:
     return path
 
 
-def test_compose_v2_uses_confirmed_portrait_and_gray_head_safe_zone(
+def test_compose_v2_uses_confirmed_portrait_and_preserves_body_panels(
     tmp_path: Path,
 ) -> None:
     candidate = _candidate(tmp_path / "candidate.png")
@@ -253,7 +257,7 @@ def test_compose_v2_uses_confirmed_portrait_and_gray_head_safe_zone(
         image = opened.convert("RGB")
         assert image.size == (1536, 1024)
         assert image.getpixel((384, 512)) == (12, 34, 56)
-        assert image.getpixel((900, 40)) == result.neutral_gray
+        assert image.getpixel((900, 40)) == (128, 128, 128)
         assert image.getpixel((900, 300)) == (30, 210, 40)
         assert image.getpixel((1300, 512)) == (30, 40, 210)
         assert not opened.getexif()
@@ -270,17 +274,20 @@ def test_compose_v2_uses_confirmed_portrait_and_gray_head_safe_zone(
     assert "client" not in inspect.signature(compose_identity_sheet_v2).parameters
 
 
-def test_compose_v2_masks_exactly_top_twenty_two_percent(tmp_path: Path) -> None:
-    candidate = _candidate(tmp_path / "candidate.png")
+def test_compose_v2_preserves_front_head_region_without_masking(tmp_path: Path) -> None:
+    candidate_image = Image.new("RGB", (800, 600), (128, 128, 128))
+    candidate_image.paste((210, 30, 40), (0, 0, 400, 600))
+    candidate_image.paste((30, 210, 40), (400, 0, 600, 600))
+    candidate_image.paste((30, 40, 210), (600, 0, 800, 600))
+    candidate = tmp_path / "candidate.png"
+    candidate_image.save(candidate)
     portrait = _solid(tmp_path / "portrait.png", (64, 64), (12, 34, 56))
     output = tmp_path / "sheet.png"
 
-    result = compose_identity_sheet_v2(candidate, portrait, output)
+    compose_identity_sheet_v2(candidate, portrait, output)
 
     image = Image.open(output).convert("RGB")
-    mask_bottom = int(1024 * 0.22)
-    assert image.getpixel((800, mask_bottom - 1)) == result.neutral_gray
-    assert image.getpixel((800, mask_bottom)) == (30, 210, 40)
+    assert image.getpixel((900, 40)) == (30, 210, 40)
 
 
 def _assert_relaxed_portrait_framing(prompt: str) -> None:

@@ -450,7 +450,7 @@ class NanoBananaCharacterGenerator:
 
         使用角色的正面基准图作为身份锚点，保持面部一致性，
         只变换服装、背景等身份特定的外观。
-        统一生成 Identity Sheet v2（3/4 肖像 + 无头正面全身 + 背面全身）。
+        统一生成 Identity Sheet v2（3/4 肖像 + 完整无面部正面全身 + 背面全身）。
 
         Args:
             character_name: 角色名称
@@ -616,7 +616,7 @@ class NanoBananaCharacterGenerator:
             )
 
             if image_bytes:
-                # 保留 raw candidate；正式输出仅由确定性裁切、遮罩和拼版写入。
+                # 保留 raw candidate；正式输出仅由确定性面板适配和拼版写入。
                 compose_identity_sheet_v2(
                     candidate_path=temp_body_path,
                     portrait_path=reference_image_path,
