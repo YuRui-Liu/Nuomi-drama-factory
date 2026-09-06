@@ -90,11 +90,13 @@ sequenceDiagram
     participant Candidate as Cognee candidate
     participant Pointer as active pointer
 
-    Page->>API: POST /episode-imports/commit
+    Page->>API: POST /api/v1/projects/{project}/episode-imports/commit
     API->>Queue: enqueue episode_import
     Import->>Source: commit_prepared(source revision + outbox)
-    Source-->>Import: source_committed=true, graph_index=pending
-    Import-->>Page: episode_import completed
+    Source-->>Import: None（来源事务提交完成）
+    Import->>Import: 组装 source_committed=true, graph_index=pending
+    Import-->>Queue: task result
+    Queue-->>Page: episode_import completed
     Queue->>Source: list_graph_outbox()
     Queue->>Source: 删除非最新 revision outbox
     Queue->>Graph: enqueue episode_graph_index(scope=revision:N)
@@ -206,7 +208,7 @@ sequenceDiagram
 2. **标识**：明确实体、事件和关系端点的稳定 ID 规则。当前 relation 的 `source_key` / `target_key` 必须能映射到 `_node_id` 使用的 key。
 3. **事务边界**：写入失败必须可 discard；写入成功后才激活。若新后端没有文件指针，需要提供等价的原子切换和回滚 token。
 4. **Runner runtime**：同步 `_build_graph_service`、`_build_activation_graph` 与知识 runtime 解析；确认下游 Store 读取的是新活动 candidate。
-5. **测试**：保留 `test_writer.py` 的调用顺序、受影响集和 batch 语义；在 `test_service.py` 覆盖写入失败 discard，在 `test_task_episode_graph_runner.py` 覆盖激活、binding、finalize、outbox 删除顺序。
+5. **测试**：保留 `test_writer.py` 对 removed 集合、实体/事件/关系内容、64 条 embedding batch 和不调用 cognify 的断言；若要把调用顺序固定为契约，应另加记录调用序列的测试。在 `test_service.py` 覆盖写入失败 discard，在 `test_task_episode_graph_runner.py` 覆盖激活、binding、finalize、outbox 删除顺序。
 
 ### 修改断点与恢复
 
@@ -214,7 +216,7 @@ sequenceDiagram
 2. **原子性**：继续使用同目录临时文件、flush、`fsync` 和 `os.replace`；读取端把损坏或不兼容内容当 miss。
 3. **部分失败**：成功组先保存，失败组聚合后抛错；不要在首个失败时丢弃已完成结果。重试应只调用 miss / failed 组。
 4. **指针恢复**：活动切换与分组 checkpoint 是两套恢复机制。修改 `CogneeShadowGraph` 时还要覆盖 journal 中 old/new revision 与数据库 revision 的对账。
-5. **测试**：`test_checkpoints.py` 覆盖 revision/hash/schema/损坏文件，`test_service.py` 覆盖部分失败重试与取消后已完成组保留；指针行为继续追踪 `tests/test_episode_import_service.py` 中的 activation/recovery 用例。
+5. **测试**：`test_checkpoints.py` 覆盖 revision/hash/schema/损坏文件，`test_service.py` 覆盖部分失败重试与取消后已完成组保留；数据库 revision 与 pointer journal 的恢复见 `tests/test_episode_import_transaction.py::test_new_service_recovers_graph_pointer_from_database_revision`，仓库提交失败后的 restore 见同文件的 `test_repository_failure_restores_active_pointer_after_overwrite`，具体 candidate 激活与恢复见 `tests/test_cognee_shadow_rebuild.py::test_successful_shadow_switch_is_consumed_by_runtime_resolver` 和 `test_concrete_restore_and_discard_never_remove_active_runtime`。
 
 ## 失败诊断
 
@@ -257,7 +259,7 @@ git diff -- docs/cookbook/pipelines/02-episode-graph.md
 | `tests/episode_graph/test_grouping.py` | 五集固定窗口、空洞、稳定 hash、重复集拒绝 |
 | `tests/episode_graph/test_extractor.py` | 六路并发、prompt 数据边界、来源约束、runtime structured call |
 | `tests/episode_graph/test_merge.py` | 稳定键、来源并集、属性冲突、原生 list、输入顺序无关 |
-| `tests/episode_graph/test_writer.py` | 写入端口顺序、受影响集、64 条 embedding batch、不调用 cognify |
+| `tests/episode_graph/test_writer.py` | removed 集合、实体/事件/关系内容、64 条 embedding batch、不调用 cognify |
 | `tests/episode_graph/test_checkpoints.py` | revision/hash 命中与损坏 checkpoint 忽略 |
 | `tests/episode_graph/test_service.py` | 部分失败、仅失败组重试、并发峰值、取消检查点、candidate discard |
 | `tests/test_task_episode_graph_runner.py` | revision stale guard、进度事件、Cognee DataPoint、激活顺序、outbox 合并与失败保留 |
