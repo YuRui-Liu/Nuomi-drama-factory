@@ -306,6 +306,58 @@ def test_reference_definitions_reject_model_constructed_source_kind(
         compiler_module.compile_reference_definitions((invalid,))
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("reference_id", ""),
+        ("label", ""),
+        ("subject_index", 0),
+        ("picture_index", object()),
+        ("asset", object()),
+    ],
+)
+def test_reference_definitions_revalidate_model_constructed_binding_fields(
+    field: str,
+    invalid_value: object,
+) -> None:
+    values = {
+        "reference_id": "character:shen-li",
+        "source_kind": "character_identity",
+        "subject_index": 1,
+        "picture_index": 1,
+        "label": "Shen Li",
+        "asset": _frame("asset-shen-li", "a"),
+    }
+    values[field] = invalid_value
+    invalid = H3ReferenceBinding.model_construct(**values)
+
+    with pytest.raises(ValueError):
+        compiler_module.compile_reference_definitions((invalid,))
+
+
+@pytest.mark.parametrize(
+    "asset",
+    [
+        FrameEvidence.model_construct(asset_id="", sha256="a" * 64),
+        FrameEvidence.model_construct(asset_id="asset-shen-li", sha256="bad"),
+    ],
+)
+def test_reference_definitions_revalidate_model_constructed_nested_asset(
+    asset: FrameEvidence,
+) -> None:
+    invalid = H3ReferenceBinding.model_construct(
+        reference_id="character:shen-li",
+        source_kind="character_identity",
+        subject_index=1,
+        picture_index=1,
+        label="Shen Li",
+        asset=asset,
+    )
+
+    with pytest.raises(ValueError):
+        compiler_module.compile_reference_definitions((invalid,))
+
+
 def test_continuity_locks_preserve_contract_and_domain_order() -> None:
     first = _contract("shot-1")
     second = _contract("shot-2")

@@ -29,6 +29,33 @@ _REF_SUFFIX = {
 }
 
 
+def _revalidate_reference_binding(
+    binding: H3ReferenceBinding,
+) -> H3ReferenceBinding:
+    try:
+        asset = binding.asset
+        payload = {
+            "reference_id": binding.reference_id,
+            "source_kind": binding.source_kind,
+            "subject_index": binding.subject_index,
+            "picture_index": binding.picture_index,
+            "label": binding.label,
+            "asset": {
+                "asset_id": asset.asset_id,
+                "sha256": asset.sha256,
+            },
+        }
+    except (AttributeError, TypeError) as exc:
+        raise ValueError("invalid reference binding structure") from exc
+
+    source_kind = payload["source_kind"]
+    if not isinstance(source_kind, str) or source_kind not in _REF_SUFFIX:
+        raise ValueError(
+            "reference source kind must be character_identity, scene_base, or prop"
+        )
+    return H3ReferenceBinding.model_validate(payload)
+
+
 def compile_reference_definitions(
     bindings: tuple[H3ReferenceBinding, ...],
 ) -> str:
@@ -36,16 +63,8 @@ def compile_reference_definitions(
     if not bindings:
         raise ValueError("reference bindings must be non-empty")
 
-    for binding in bindings:
-        if (
-            not isinstance(binding.source_kind, str)
-            or binding.source_kind not in _REF_SUFFIX
-        ):
-            raise ValueError(
-                "reference source kind must be character_identity, scene_base, or prop"
-            )
-
-    ordered = tuple(sorted(bindings, key=lambda binding: binding.picture_index))
+    validated = tuple(_revalidate_reference_binding(binding) for binding in bindings)
+    ordered = tuple(sorted(validated, key=lambda binding: binding.picture_index))
     expected_indices = tuple(range(1, len(ordered) + 1))
     if tuple(binding.picture_index for binding in ordered) != expected_indices:
         raise ValueError("reference picture indices must be contiguous from 1")
