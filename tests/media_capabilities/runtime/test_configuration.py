@@ -63,6 +63,13 @@ def test_runninghub_reference_workflow_defaults_are_shipped() -> None:
     assert settings.video_minimax_h3_ref_max_images == 5
 
 
+@pytest.mark.parametrize("valid", [1, 10])
+def test_runninghub_reference_max_images_accepts_integer_boundaries(valid) -> None:
+    settings = RunningHubWorkflowSettings(video_minimax_h3_ref_max_images=valid)
+
+    assert settings.video_minimax_h3_ref_max_images == valid
+
+
 @pytest.mark.parametrize("invalid", [0, 11, True, False, 1.5])
 def test_runninghub_reference_max_images_requires_strict_integer_range(invalid) -> None:
     with pytest.raises(ValueError):
