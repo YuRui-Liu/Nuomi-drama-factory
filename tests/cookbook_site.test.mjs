@@ -74,3 +74,36 @@ test('cookbook configuration enables local search and Mermaid', () => {
   assert.match(cookbookConfig, /withMermaid\s*\(/);
   assert.match(cookbookConfig, /provider:\s*['\"]local['\"]/);
 });
+
+test('cookbook configuration keeps the approved Chinese information architecture', () => {
+  assert.match(cookbookConfig, /defineConfig\s*\(/);
+  assert.match(cookbookConfig, /lang:\s*['\"]zh-CN['\"]/);
+  assert.match(cookbookConfig, /ignoreDeadLinks:\s*false/);
+
+  for (const label of [
+    'Cookbook 首页',
+    '系统地图',
+    '启动与调试',
+    '中文文档',
+    '入门',
+    '开发维护',
+    '生产管线',
+  ]) {
+    assert.match(cookbookConfig, new RegExp("text:\\s*['\"]" + label + "['\"]"));
+  }
+
+  assert.match(
+    cookbookConfig,
+    /https:\/\/github\.com\/YuRui-Liu\/Nuomi-drama-factory\/blob\/main\/docs\/zh\/README\.md/,
+  );
+  assert.match(cookbookConfig, /level:\s*\[2,\s*3\]/);
+  assert.match(cookbookConfig, /label:\s*['\"]本页目录['\"]/);
+  assert.match(cookbookConfig, /prev:\s*['\"]上一篇['\"]/);
+  assert.match(cookbookConfig, /next:\s*['\"]下一篇['\"]/);
+});
+
+test('cookbook configuration defines light Mermaid styling and dark-mode support', () => {
+  assert.match(cookbookConfig, /withMermaid\s*\(/);
+  assert.match(cookbookConfig, /mermaid:\s*{[\s\S]*?theme:\s*['\"]default['\"]/);
+  assert.ok(cookbookPackageJson.devDependencies['vitepress-plugin-mermaid']);
+});
