@@ -117,8 +117,10 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert calls["grsai"]["aspect_ratio"] == "1:1"
     generated_prompt = str(calls["grsai"]["prompt"])
     assert "Gender constraint: female" in generated_prompt
-    assert "complete hair, both ears, the entire face, and the full chin" in generated_prompt
-    assert "no neck, shoulders, chest, clothing, hands, or props" in generated_prompt
+    assert "complete hair, both ears, the entire face, the full chin, and the complete neck" in generated_prompt
+    assert "a small amount of upper-shoulder outline" in generated_prompt
+    assert "collar confined to roughly the bottom 10-15%" in generated_prompt
+    assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in generated_prompt
     assert "head and shoulders" not in generated_prompt
     assert "newapi_gpt_image2" not in str(calls["grsai"])
 
@@ -229,6 +231,29 @@ def test_portrait_prompt_does_not_infer_gender_or_human_identity(raw_gender):
     assert "Do not infer or assign gender, sex, or a human species" in prompt
 
 
+def test_portrait_prompt_uses_square_head_neck_and_upper_shoulder_framing():
+    from novelvideo.task_backend.runners.character_image import (
+        _build_face_portrait_prompt,
+    )
+
+    prompt = _build_face_portrait_prompt(
+        face_details="Face shape: 窄鹅蛋脸",
+        gender="女",
+        ethnicity="Chinese",
+        style="金石证痕",
+    )
+
+    assert "Square 1:1" in prompt
+    assert "complete hair, both ears, the entire face, the full chin, and the complete neck" in prompt
+    assert "a small amount of upper-shoulder outline" in prompt
+    assert "collar confined to roughly the bottom 10-15%" in prompt
+    assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in prompt
+    assert "the frame ends immediately below the chin" not in prompt
+    assert "no neck, shoulders" not in prompt
+    assert "pure head-and-face" not in prompt.lower()
+    assert "face-only" not in prompt.lower()
+
+
 @pytest.mark.asyncio
 async def test_identity_portrait_uses_character_gender_face_only_and_square_output(
     monkeypatch, tmp_path
@@ -305,6 +330,9 @@ async def test_identity_portrait_uses_character_gender_face_only_and_square_outp
     assert captured["aspect_ratio"] == "1:1"
     prompt = str(captured["prompt"])
     assert "Gender constraint: female" in prompt
-    assert "no neck, shoulders, chest, clothing, hands, or props" in prompt
+    assert "complete hair, both ears, the entire face, the full chin, and the complete neck" in prompt
+    assert "a small amount of upper-shoulder outline" in prompt
+    assert "collar confined to roughly the bottom 10-15%" in prompt
+    assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in prompt
     assert "高挑纤细" not in prompt
     assert "黑色长袍" not in prompt

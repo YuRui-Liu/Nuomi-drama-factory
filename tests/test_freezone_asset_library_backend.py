@@ -2655,7 +2655,14 @@ async def test_character_asset_preset_emits_missing_identity_slot_placeholders(
     assert nodes["ref_character_identity_1"]["data"]["autoCommitOnGenerate"] is False
     assert nodes["ref_character_identity_1"]["data"]["aspectRatio"] == "3:2"
     portrait_prompt = nodes["ref_character_portrait_1"]["data"]["prompt"]
-    assert "Generate a face-only character identity reference portrait" in portrait_prompt
+    assert "CLOSE IDENTITY PORTRAIT" in portrait_prompt
+    assert "entire chin, and complete neck" in portrait_prompt
+    assert "small upper-shoulder outline" in portrait_prompt
+    assert "bottom 10-15% of the frame" in portrait_prompt
+    assert (
+        "No chest, lower shoulders, torso, large clothing areas, hands, or props visible"
+        in portrait_prompt
+    )
     assert "FACIAL FEATURES TO CAPTURE" in portrait_prompt
     assert "二十多岁男性，眼神冷静" in portrait_prompt
     assert "VISUAL STYLE:" in portrait_prompt
@@ -3136,7 +3143,14 @@ async def test_character_asset_preset_emits_age_variant_portrait_placeholder(
     }
     assert nodes["ref_identity_portrait_1"]["data"]["autoCommitOnGenerate"] is True
     identity_portrait_prompt = nodes["ref_identity_portrait_1"]["data"]["prompt"]
-    assert "Generate a face-only character identity reference portrait" in identity_portrait_prompt
+    assert "CLOSE IDENTITY PORTRAIT" in identity_portrait_prompt
+    assert "entire chin, and complete neck" in identity_portrait_prompt
+    assert "small upper-shoulder outline" in identity_portrait_prompt
+    assert "bottom 10-15% of the frame" in identity_portrait_prompt
+    assert (
+        "No chest, lower shoulders, torso, large clothing areas, hands, or props visible"
+        in identity_portrait_prompt
+    )
     assert "FACIAL FEATURES TO CAPTURE" in identity_portrait_prompt
     assert "中年形态，眼角有细纹" in identity_portrait_prompt
     assert "VISUAL STYLE:" in identity_portrait_prompt
