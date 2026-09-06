@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import enTranslation from "../../../../../public/locales/en/translation.json";
+import zhTranslation from "../../../../../public/locales/zh/translation.json";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
 import type { NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
 
@@ -66,6 +69,11 @@ vi.mock("@/components/episode/narrative-workbench/narrative-group-list",()=>({Na
 vi.mock("@/stores/aspect-ratio-store",()=>({useProjectAspectRatio:()=>({orientation:m.orientation,spec:{},setOrientation:m.setOrientation})}));
 
 describe("NarrativeGroupWorkbench references",()=>{
+ beforeAll(async()=>{
+  if(!i18n.isInitialized) await i18n.init({lng:"zh",fallbackLng:"zh",resources:{en:{translation:enTranslation},zh:{translation:zhTranslation}}});
+  i18n.addResourceBundle("en","translation",enTranslation,true,true);
+  i18n.addResourceBundle("zh","translation",zhTranslation,true,true);
+ });
  beforeEach(()=>{
   vi.clearAllMocks();
   m.groups=[group];
@@ -75,7 +83,7 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{units:[]}},isLoading:false,isError:false});
-  m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:false,isError:false,error:null,refetch:vi.fn()});
+  m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
   m.updateDefaults.mockResolvedValue({ok:true});
   m.updateProject.mockResolvedValue({ok:true});
   m.setOrientation.mockImplementation((next: "portrait" | "landscape")=>{m.orientation=next;});
@@ -226,5 +234,28 @@ describe("NarrativeGroupWorkbench references",()=>{
   fireEvent.click(screen.getByRole("button",{name:"管理参考图"}));
   fireEvent.click(screen.getByRole("button",{name:"修改描述"}));
   expect(screen.getByRole("button",{name:"生成组合视频"})).toBeDisabled();
+ });
+ it("blocks the generation callback during cached background refresh",async()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isFetching:true,isError:false,error:null,refetch:vi.fn()});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  const props=m.stageProps.mock.calls[m.stageProps.mock.calls.length-1]?.[0];
+  expect(props.reference.loading).toBe(true);
+  await props.onGenerate({video_model:"runninghub:minimax-h3-ref",h3_mode:"auto"});
+  expect(m.generateVideo).not.toHaveBeenCalled();
+ });
+ it("rejects ok:false after a cached preview and direct callback requests for a different model",async()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  const valid={ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}};
+  m.referencePreviewQuery.mockReturnValue({data:valid,isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
+  const view=render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  m.referencePreviewQuery.mockReturnValue({data:{ok:false,error:"failed"},isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
+  view.rerender(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  const props=m.stageProps.mock.calls[m.stageProps.mock.calls.length-1]?.[0];
+  await props.onGenerate({video_model:"runninghub:minimax-h3-ref",h3_mode:"auto"});
+  await props.onGenerate({video_model:"runninghub:minimax-h3",h3_mode:"auto"});
+  expect(m.generateVideo).not.toHaveBeenCalled();
  });
 });

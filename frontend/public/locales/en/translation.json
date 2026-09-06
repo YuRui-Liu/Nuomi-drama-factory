@@ -4173,6 +4173,7 @@
     "openRouterConfigMessage": "This model requires OpenRouter, but the backend API key is not configured. Please contact an administrator."
   },
   "narrativeVideoReferences": {
+    "title": "Manage video references",
     "modelLabel": "MiniMax H3 Multi-reference",
     "manage": "Manage references",
     "selectedCount": "Selected {{count}}/{{max}}",
@@ -4180,7 +4181,9 @@
     "selected": "Selected references",
     "upload": "Upload temporary reference",
     "uploadFailed": "Reference upload failed",
+    "saveFailed": "Failed to save references",
     "save": "Save references",
+    "cancel": "Cancel",
     "saving": "Saving…",
     "loading": "Loading references…",
     "loadFailed": "Failed to load references. Refresh and try again.",
@@ -4190,6 +4193,7 @@
     "remove": "Remove",
     "picture": "Picture {{index}}",
     "subject": "Subject {{index}}",
+    "description": "Subject description {{label}}",
     "source": {"character_identity": "Character identity", "scene_master": "Scene master", "prop_reference": "Prop reference", "temporary_upload": "Temporary upload"},
     "validation": {"min": "Select at least {{min}} references", "max": "Select at most {{max}} references", "duplicate": "References must be unique", "empty": "Subject description is required", "singleLine": "Subject description must be one line", "tooLong": "Subject description must be at most 500 characters"},
     "conflict": "The reference configuration was updated elsewhere. Refresh and try again.",

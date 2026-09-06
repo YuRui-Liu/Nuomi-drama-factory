@@ -1,5 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import enTranslation from "../../../../../public/locales/en/translation.json";
+import zhTranslation from "../../../../../public/locales/zh/translation.json";
 
 import { GroupVideoStage } from "@/components/episode/narrative-workbench/group-video-stage";
 import { groupFrameSummary } from "@/components/episode/narrative-workbench/group-video-stage";
@@ -13,6 +16,13 @@ const recommendedPlan = {
   ],
   total_duration_seconds: 10,
 };
+
+beforeAll(async () => {
+  if (!i18n.isInitialized) await i18n.init({ lng: "zh", fallbackLng: "zh", resources: { en: { translation: enTranslation }, zh: { translation: zhTranslation } } });
+  i18n.addResourceBundle("en", "translation", enTranslation, true, true);
+  i18n.addResourceBundle("zh", "translation", zhTranslation, true, true);
+});
+beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
   it("shows inherited H3 and the actual automatic mode", () => {
@@ -55,6 +65,13 @@ describe("GroupVideoStage", () => {
       rerender(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame onGenerate={vi.fn()} reference={reference} />);
       expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
     }
+  });
+
+  it("renders reference controls in English", async () => {
+    await i18n.changeLanguage("en");
+    render(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame reference={{ required: true, count: 2, max: 5, valid: true }} />);
+    expect(screen.getByText("Selected 2/5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage references" })).toBeInTheDocument();
   });
 
   it("reports the single director task state and never offers tail-frame-only mode", () => {

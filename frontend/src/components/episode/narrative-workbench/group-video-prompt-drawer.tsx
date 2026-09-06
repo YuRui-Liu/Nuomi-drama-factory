@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { useState } from "react";
 import { Download, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,6 +19,7 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
   episode: number;
   groupId: string;
 }) {
+  const { t } = useTranslation();
   const [copyFeedback, setCopyFeedback] = useState<"success" | "error" | null>(null);
   const query = useNarrativeGroupVideoPrompts(project, episode, groupId, open);
   const manifest = query.data?.ok ? query.data.data : undefined;
@@ -45,9 +47,9 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
       {!query.isLoading && !query.isError && units.length === 0 ? <p className="text-sm text-muted-foreground">暂无可复盘的生成提示词。</p> : null}
       {manifest ? <section className="rounded-lg border border-white/10 bg-black/20 p-4">
         <h3 className="font-medium">本次生成参数</h3>
-        {manifest.workflow_id ? <p className="mt-2 text-xs">模型 ID：<span className="font-mono">{manifest.workflow_id}</span></p> : null}
-        {manifest.provider_workflow_id ? <p className="mt-1 text-xs">实际工作流 ID：<span className="font-mono">{manifest.provider_workflow_id}</span></p> : null}
-        {manifest.global_references?.length ? <section className="mt-3 rounded border border-white/10 p-3"><h4 className="text-xs font-medium">参考图快照 · {manifest.global_references.length}/{manifest.reference_limit ?? manifest.global_references.length}</h4><div className="mt-2 space-y-2">{manifest.global_references.map((reference, index) => <div key={`${reference.reference_id}-${index}`} className="text-xs"><p>Picture {reference.picture_index} · Subject {reference.picture_index} · {reference.label}</p><p className="text-muted-foreground">{reference.source_kind} · {reference.subject_description} · SHA {reference.sha256.slice(0, 8)}</p></div>)}</div></section> : null}
+        {manifest.workflow_id ? <p className="mt-2 text-xs">{t("narrativeVideoReferences.history.modelId")}：<span className="font-mono">{manifest.workflow_id}</span></p> : null}
+        {manifest.provider_workflow_id ? <p className="mt-1 text-xs">{t("narrativeVideoReferences.history.workflowId")}：<span className="font-mono">{manifest.provider_workflow_id}</span></p> : null}
+        {manifest.global_references?.length ? <section className="mt-3 rounded border border-white/10 p-3"><h4 className="text-xs font-medium">{t("narrativeVideoReferences.history.title")} · {manifest.global_references.length}/{manifest.reference_limit ?? manifest.global_references.length}</h4><div className="mt-2 space-y-2">{manifest.global_references.map((reference) => <div key={reference.reference_id} className="text-xs"><p>{t("narrativeVideoReferences.picture", { index: reference.picture_index })} · {t("narrativeVideoReferences.subject", { index: reference.picture_index })} · {reference.label}</p><p className="text-muted-foreground">{t(`narrativeVideoReferences.source.${reference.source_kind}`)} · {reference.subject_description} · {t("narrativeVideoReferences.history.sha")} {reference.sha256.slice(0, 8)}</p></div>)}</div></section> : null}
         <PromptSection title="产品参数" value={Object.keys(manifest.workflow_parameters ?? {}).length ? manifest.workflow_parameters : null} empty="历史任务未记录" />
         <PromptSection title="RunningHub 工作流参数" value={Object.keys(manifest.provider_parameters ?? {}).length ? manifest.provider_parameters : null} empty="历史任务未记录" />
         <PromptSection title="实际输出尺寸" value={Object.keys(manifest.actual_output ?? {}).length ? manifest.actual_output : null} empty="历史任务未记录" />

@@ -4173,6 +4173,7 @@
     "openRouterConfigMessage": "当前模型需要 OpenRouter 服务，但后端还没有配置 API Key。请联系管理员处理。"
   },
   "narrativeVideoReferences": {
+    "title": "管理视频参考图",
     "modelLabel": "MiniMax H3 多参考图",
     "manage": "管理参考图",
     "selectedCount": "已选 {{count}}/{{max}}",
@@ -4180,7 +4181,9 @@
     "selected": "已选参考图",
     "upload": "上传临时参考图",
     "uploadFailed": "参考图上传失败",
+    "saveFailed": "参考图保存失败",
     "save": "保存参考图",
+    "cancel": "取消",
     "saving": "保存中…",
     "loading": "正在加载参考图…",
     "loadFailed": "参考图加载失败，请刷新后重试。",
@@ -4190,6 +4193,7 @@
     "remove": "移除",
     "picture": "Picture {{index}}",
     "subject": "Subject {{index}}",
+    "description": "主体描述 {{label}}",
     "source": {"character_identity": "角色身份", "scene_master": "场景母版", "prop_reference": "道具参考", "temporary_upload": "临时上传"},
     "validation": {"min": "至少选择 {{min}} 张参考图", "max": "最多选择 {{max}} 张参考图", "duplicate": "参考图不能重复", "empty": "主体描述不能为空", "singleLine": "主体描述必须为单行", "tooLong": "主体描述不能超过 500 字符"},
     "conflict": "参考图配置已被其他操作更新，请刷新后重试。",
