@@ -74,4 +74,6 @@ RUNNINGHUB_REAL_SMOKE=1 uv run python scripts/smoke_runninghub_h3_ref.py \
   --output /absolute/path/to/h3-ref-smoke.mp4
 ```
 
-The command prints workflow `2096502793044582401`, the input digest, provider task ID, final status, and local result path. Do not set the opt-in variable in CI or ordinary local checks. A remote rejection is reported once without fallback or retry.
+The output path must be absolute, its real (non-symlink) parent must already exist, and the target must not exist; the gate never overwrites a previous result. Every invocation uses a new temporary runtime ledger and reports `runtime_cache=fresh`, so a persistent cache hit cannot count as release evidence. After the runtime returns, the gate independently requires a readable non-empty artifact, uses `ffprobe` to require the exact selected H3 dimensions, and prints the output SHA-256 and actual size before `status=succeeded`. The temporary ledger is then discarded without touching application runtime data.
+
+The command also prints workflow `2096502793044582401`, the input digest, provider task ID, final status, and local result path. Do not set the opt-in variable in CI or ordinary local checks. A remote rejection, missing/quality-failed artifact, or size mismatch is reported once without fallback or retry. Ref and frame images are preflighted as PNG/JPEG/WEBP with 20 MiB and 40-megapixel limits before submission.
