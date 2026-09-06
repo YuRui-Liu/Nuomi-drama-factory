@@ -62,14 +62,14 @@ flowchart TD
 - `m01` 到 `m10` 是 OSS 拆分模块标签，用于选择一组契约测试，不改变测试自身依赖。
 - `norecursedirs` 排除 `archive`、`external`、`.venv` 和 `node_modules`。
 
-显式运行被默认过滤的集合时，先清空配置中的 addopts：
+显式运行被默认过滤的集合时，可先清空配置中的全部 addopts，再传入目标 marker：
 
 ```bash
 uv run pytest -o addopts='' -m ee
 uv run pytest -o addopts='' -m e2e
 ```
 
-这两类测试可能需要企业模块、外部服务或完整运行环境。失败前先读测试 fixture 和 marker，不要把环境缺失直接归类为产品回归。只按模块选择时可运行 `uv run pytest -m m07`；它仍受默认 `not ee and not e2e` 限制。
+这两类测试可能需要企业模块、外部服务或完整运行环境。失败前先读测试 fixture 和 marker，不要把环境缺失直接归类为产品回归。命令行 `-m` 会覆盖 addopts 中配置的 `-m` 表达式，不会与它自动取交集；因此 `uv run pytest -m m07` 的最终表达式只有 `m07`，也可能收集同时标有 `ee` 或 `e2e` 的用例。若模块回归需要保留 CE 的默认排除条件，应显式运行 `uv run pytest -m 'm07 and not ee and not e2e'`。
 
 ## Vitest、Query 和页面测试
 
