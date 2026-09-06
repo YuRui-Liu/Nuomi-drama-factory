@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -145,6 +146,53 @@ def test_adopting_character_state_candidate_updates_compatibility_asset(
 
     assert adopted.status_code == 200
     assert canonical.read_bytes() == b"new-state"
+
+
+def test_character_state_adoption_replace_failure_rolls_back_workflow_and_canonical(
+    tmp_path, monkeypatch
+):
+    from novelvideo.api.routes import production_assets
+
+    client, project_dir, state_dir = _client(tmp_path, monkeypatch)
+    canonical_path = "assets/characters/lin/identities/duty.png"
+    candidate_path = "assets/characters/lin/identities/duty/versions/state-2.png"
+    canonical = project_dir / canonical_path
+    candidate = project_dir / candidate_path
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"old-state")
+    candidate.write_bytes(b"new-state")
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/legacy-import",
+        json={"asset_kind": "character_state", "asset_path": canonical_path},
+    )
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions",
+        json={
+            "asset_kind": "character_state",
+            "version_id": "state-2",
+            "asset_path": candidate_path,
+            "qc_passed": True,
+            "generation_metadata": {"canonical_path": canonical_path},
+        },
+    )
+    before = (state_dir / "production_workflow.json").read_bytes()
+    real_replace = production_assets.os.replace
+
+    def fail_canonical_replace(source, target):
+        if Path(target) == canonical:
+            raise OSError("canonical replace failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(production_assets.os, "replace", fail_canonical_replace)
+    with pytest.raises(OSError, match="canonical replace failed"):
+        client.post(
+            "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions/state-2/adopt",
+            json={"reason": "better"},
+        )
+
+    assert canonical.read_bytes() == b"old-state"
+    assert (state_dir / "production_workflow.json").read_bytes() == before
 
 
 def test_adopting_scene_candidate_clears_matching_stale_reference(

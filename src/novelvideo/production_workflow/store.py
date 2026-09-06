@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,23 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def production_workflow_project_lock(state_dir: str | Path):
+    """Serialize every workflow read-modify-write transaction for one project."""
+    directory = Path(state_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".production_workflow.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+# Compatibility name for callers introduced with character-state transactions.
+character_state_project_lock = production_workflow_project_lock
 
 
 class ProductionWorkflowStore:
@@ -91,6 +110,25 @@ class ProductionWorkflowStore:
                 ],
             },
         )
+
+    def capture_file_snapshot(self) -> bytes | None:
+        """Capture the exact persisted state for transaction rollback."""
+        return self.state_path.read_bytes() if self.state_path.exists() else None
+
+    def restore_file_snapshot(self, snapshot: bytes | None) -> None:
+        """Restore a snapshot without exposing a partially-written JSON file."""
+        if snapshot is None:
+            self.state_path.unlink(missing_ok=True)
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.state_path.with_name(
+            f"{self.state_path.name}.rollback-{os.getpid()}-{uuid.uuid4().hex}"
+        )
+        try:
+            temporary.write_bytes(snapshot)
+            os.replace(temporary, self.state_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def get_slot(self, slot_id: str) -> tuple[AssetSlot, dict[str, AssetVersion]]:
         slot = self._slots.get(slot_id)

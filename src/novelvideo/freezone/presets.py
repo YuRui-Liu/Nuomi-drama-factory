@@ -18,9 +18,11 @@ from typing import Any, Iterable
 
 from PIL import Image
 
+from novelvideo.character_visual.identity_sheet import IDENTITY_SHEET_LAYOUT_VERSION
 from novelvideo.config import IMAGE_DEFAULT_STYLE as PROP_REF_DEFAULT_STYLE
 from novelvideo.freezone.skill_registry import SKILL_SCHEMA_VERSION
 from novelvideo.generators.nanobanana_prop import build_prop_reference_prompt
+from novelvideo.generators.nanobanana_character import build_character_state_sheet_prompt
 from novelvideo.generators.scene_reference_images import build_scene_reference_prompt
 from novelvideo.models import (
     NO_CHARACTER_MARKER,
@@ -432,6 +434,35 @@ def _identity_name(identity_id: str, character: str) -> str:
     return identity_id[len(prefix) :] if identity_id.startswith(prefix) else identity_id
 
 
+def _current_identity_layout_metadata(
+    store: Any,
+    *,
+    character: str,
+    identity_id: str,
+) -> dict[str, str]:
+    """Read the current version's declared layout without image or filename heuristics."""
+    state_dir = getattr(store, "state_dir", None)
+    if not state_dir:
+        return {}
+    try:
+        from novelvideo.production_workflow import ProductionWorkflowStore
+
+        workflow = ProductionWorkflowStore(Path(state_dir) / "production_workflow.json")
+        slot, versions = workflow.get_slot(f"character:{character}:state:{identity_id}")
+        current = versions.get(slot.current_version_id or "")
+        metadata = current.generation_metadata if current is not None else None
+    except (KeyError, OSError, TypeError, ValueError):
+        return {}
+    if not isinstance(metadata, dict) or metadata.get("layout_version") != IDENTITY_SHEET_LAYOUT_VERSION:
+        return {}
+    return {
+        "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+        "face_source_panel": "portrait_3q",
+        "front_panel_role": "body_and_outfit_only",
+        "back_panel_role": "silhouette_and_outfit_back_only",
+    }
+
+
 def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -471,6 +502,7 @@ def _add_character_refs(
     project_dir: Path,
     character: str,
     identity_id: str | None,
+    identity_meta: dict[str, Any] | None = None,
 ) -> None:
     if not character:
         return
@@ -493,7 +525,7 @@ def _add_character_refs(
                 ),
             ),
             required=True,
-            meta={"character": character, "identity_id": identity_id},
+            meta={"character": character, "identity_id": identity_id, **(identity_meta or {})},
         )
     _add_file_ref(
         refs,
@@ -518,6 +550,7 @@ def _add_character_identity_ref(
     project_dir: Path,
     character: str,
     identity_id: str,
+    identity_meta: dict[str, Any] | None = None,
 ) -> None:
     if not character or not identity_id:
         return
@@ -539,7 +572,7 @@ def _add_character_identity_ref(
             ),
         ),
         required=True,
-        meta={"character": character, "identity_id": identity_id},
+        meta={"character": character, "identity_id": identity_id, **(identity_meta or {})},
     )
 
 
@@ -3189,17 +3222,16 @@ async def build_asset_preset_context(
             if character_prompt_builder is None:
                 return identity_prompt
             character_tag = character_prompt_builder._generate_character_tag(character)
-            return character_prompt_builder._build_identity_locked_prompt(
+            return build_character_state_sheet_prompt(
                 character_name=character,
-                character_prompt=identity_prompt,
                 character_tag=character_tag,
-                target_view="front",
-                style_name=project_style,
-                project_dir=str(project_dir),
-                style_keywords=style_keywords,
-                negative_keywords=negative_keywords,
+                appearance=identity_prompt,
+                project_style=project_style,
+                style_instructions=style_keywords,
+                avoid_instructions=negative_keywords,
                 ethnicity=project_ethnicity,
                 has_costume_reference=has_costume_image,
+                project_dir=project_dir,
             )
 
         def _build_identity_generation_context(identity_obj: Any) -> dict[str, Any]:
@@ -3316,6 +3348,11 @@ async def build_asset_preset_context(
                     project_dir=project_dir,
                     character=character,
                     identity_id=existing_identity_id,
+                    identity_meta=_current_identity_layout_metadata(
+                        store,
+                        character=character,
+                        identity_id=existing_identity_id,
+                    ),
                 )
             for identity_ctx in identity_generation_contexts:
                 identity_name = str(identity_ctx.get("identity_name") or "").strip()
@@ -3366,6 +3403,15 @@ async def build_asset_preset_context(
                 project_dir=project_dir,
                 character=character,
                 identity_id=identity_id,
+                identity_meta=(
+                    _current_identity_layout_metadata(
+                        store,
+                        character=character,
+                        identity_id=identity_id,
+                    )
+                    if identity_id
+                    else None
+                ),
             )
             target_identity_ctx = next(
                 (
@@ -4856,7 +4902,7 @@ def build_canvas_payload_from_context(
                         lane_y + 90,
                         f"{identity_name} generation",
                         prompt,
-                        aspect_ratio="3:4",
+                        aspect_ratio="3:2",
                         source_meta={
                             "kind": "identity",
                             "role": "identity_workflow",
@@ -4865,6 +4911,10 @@ def build_canvas_payload_from_context(
                                 "character": character,
                                 "identity_id": current_identity_id,
                                 "identity_name": identity_name,
+                                "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+                                "face_source_panel": "portrait_3q",
+                                "front_panel_role": "body_and_outfit_only",
+                                "back_panel_role": "silhouette_and_outfit_back_only",
                             },
                         },
                     )
@@ -4885,8 +4935,10 @@ def build_canvas_payload_from_context(
                         "identity_id": current_identity_id,
                     },
                     "prompt": prompt,
-                    "aspectRatio": "3:4",
-                    "autoCommitOnGenerate": True,
+                    "aspectRatio": "3:2",
+                    # Every replacement generated by this workflow is v2 and
+                    # requires QC, regardless of the historical asset format.
+                    "autoCommitOnGenerate": False,
                 },
             )
             # Age variant identity 没自己 identity_portrait 时,不 fallback 主

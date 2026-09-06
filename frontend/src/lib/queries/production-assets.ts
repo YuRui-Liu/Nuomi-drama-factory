@@ -16,7 +16,18 @@ export type ProductionAssetAdoptionStatus =
   | "rejected"
   | "superseded";
 
-export type ProductionAssetGenerationMetadata = Record<string, unknown>;
+export interface ProductionAssetQualityReport {
+  passed: boolean;
+  checks: Record<string, unknown>;
+  issues: string[];
+  style_family: string | null;
+}
+
+export interface ProductionAssetGenerationMetadata extends Record<string, unknown> {
+  layout_version?: string;
+  panel_layout?: string[];
+  quality_report?: ProductionAssetQualityReport;
+}
 
 export interface ProductionAssetQc {
   qc_passed: boolean;

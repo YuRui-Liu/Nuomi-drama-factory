@@ -17,6 +17,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, Field
 
+from novelvideo.character_visual.identity_sheet import IDENTITY_SHEET_LAYOUT_VERSION
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
     get_character_image_selection,
@@ -1268,7 +1269,8 @@ async def generate_identity_image_unified(
     usage_scope: str = "",
     identity_name: str = "",
     raise_on_error: bool = False,
-) -> dict:
+    structured: bool = False,
+) -> bool | dict:
     """基于角色基准图生成身份参考图（Identity Locking）。
 
     使用角色的正面基准图作为身份锚点，保持面部一致性，
@@ -1286,8 +1288,7 @@ async def generate_identity_image_unified(
         model: 模型选择，"nanobanana" 或 "seedream"，默认从环境变量 CHARACTER_IMAGE_MODEL 读取
 
     Returns:
-        dict: {"success": bool, "prompt": str, "prompt_file": str} (dry_run 模式返回 prompt)
-              或 bool (兼容旧代码)
+        默认保持旧版 bool 契约；``structured=True`` 返回带 v2 元数据的字典。
     """
     # model 参数优先，否则从配置读取；支持旧值 nanobanana/seedream 和统一 selection key。
     model = normalize_character_image_selection(model or get_character_image_selection())
@@ -1323,14 +1324,20 @@ async def generate_identity_image_unified(
                     raise RuntimeError("INSUFFICIENT_CREDITS")
                 if raise_on_error:
                     raise RuntimeError(result.error or "身份图生成失败")
-            return result.success
+            structured_result = {
+                "success": result.success,
+                "error": result.error,
+                "image_path": output_path if result.success else None,
+                "layout_version": IDENTITY_SHEET_LAYOUT_VERSION if result.success else None,
+            }
+            return structured_result if structured else result.success
 
         except ImportError as e:
             print(f"[Identity] 无法导入 NanoBanana 生成器: {e}")
-            return False
+            return {"success": False, "error": str(e)} if structured else False
         except ValueError as e:
             print(f"[Identity] NanoBanana 配置错误: {e}")
-            return False
+            return {"success": False, "error": str(e)} if structured else False
 
     if model in IMAGE_GENERATION_SELECTIONS:
         try:
@@ -1363,38 +1370,22 @@ async def generate_identity_image_unified(
                     raise RuntimeError("INSUFFICIENT_CREDITS")
                 if raise_on_error:
                     raise RuntimeError(result.error or f"{model} 身份图生成失败")
-            return result.success
+            structured_result = {
+                "success": result.success,
+                "error": result.error,
+                "image_path": output_path if result.success else None,
+                "layout_version": IDENTITY_SHEET_LAYOUT_VERSION if result.success else None,
+            }
+            return structured_result if structured else result.success
         except ImportError as e:
             print(f"[Identity] 无法导入统一角色生成器: {e}")
-            return False
+            return {"success": False, "error": str(e)} if structured else False
         except ValueError as e:
             print(f"[Identity] {model} 配置错误: {e}")
-            return False
+            return {"success": False, "error": str(e)} if structured else False
 
-    # Seedream 或其他模型：回退到原来的逻辑（不支持 Identity Locking）
-    print(f"[Identity] {model} 不支持 Identity Locking，使用独立生成")
-    import os
-    output_dir = os.path.dirname(output_path)
-    paths = await generate_character_reference_unified(
-        character_name=character_name,
-        appearance_prompt=identity_prompt,
-        output_dir=output_dir,
-        character_tag=character_tag,
-        count=1,
-        style=style,
-        model=model,
-        project_dir=project_dir,
-        usage_task_type=usage_task_type,
-        usage_scope=usage_scope,
-        identity_name=identity_name,
-    )
-    if paths:
-        import shutil
-        from pathlib import Path
-        first = Path(paths[0])
-        if first.exists() and str(first) != output_path:
-            shutil.copy(first, output_path)
-        return True
+    # 不再降级为旧版独立生成：无法产出 v2 的模型必须 fail closed。
+    error = f"{model} 不支持 Identity Sheet v2"
     if raise_on_error:
-        raise RuntimeError("身份图生成失败")
-    return False
+        raise RuntimeError(error)
+    return {"success": False, "error": error} if structured else False

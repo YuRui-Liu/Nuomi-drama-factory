@@ -611,6 +611,48 @@
       "loading": "读取风格",
       "configureHint": "在导入页面配置项目风格"
     },
+    "stateVersions": {
+      "ariaLabel": "人物状态三视图版本",
+      "title": "人物状态三视图",
+      "description": "正面、侧面、背面保持同一人物与服装；生成后先作为候选，可手动采用。",
+      "v2Title": "人物 Identity Sheet v2",
+      "v2Description": "3/4 脸部母版锁定身份；无头正面全身表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
+      "loading": "加载人物状态版本…",
+      "versionCount": "{{count}} 个版本",
+      "imageAlt": "{{characterName}} {{identityId}} 三视图 {{versionId}}",
+      "isolationHint": "无头正面是模型身份隔离策略，并非图片缺损。",
+      "issueSeparator": "；",
+      "adopt": "采用此版本",
+      "adoptReason": "人物身份卡手动采用",
+      "adoptSuccess": "已采用人物状态版本",
+      "adoptFailed": "采用失败，请检查任务日志",
+      "status": {
+        "current": "当前采用",
+        "qcFailed": "QC 未通过",
+        "candidate": "候选版本",
+        "superseded": "历史版本"
+      },
+      "panels": {
+        "front": "正面",
+        "side": "侧面",
+        "back": "背面",
+        "portrait": "3/4脸部母版",
+        "headlessFront": "无头正面全身",
+        "fullBack": "背面全身"
+      },
+      "qcIssues": {
+        "portrait_too_small": "肖像区域过小",
+        "front_face_detected": "正面身体仍检测到脸部",
+        "back_face_visible": "背面人物发生回头",
+        "state_inconsistent": "正背面角色状态不一致",
+        "non_neutral_presentation": "背景或光线不是中性展示",
+        "style_mismatch": "风格与项目设置不一致",
+        "dead_eyes": "眼神缺乏生命感",
+        "unnatural_skin_texture": "皮肤纹理不自然",
+        "plastic_material": "材质呈现塑料感",
+        "qc_unavailable": "QC 暂不可用"
+      }
+    },
     "voiceSamples": {
       "title": "声线管理 (IndexTTS2)",
       "hint": "通常只需上传默认声线；只有年龄变体需要不同声音时再覆盖。",

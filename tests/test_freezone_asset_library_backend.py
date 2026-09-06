@@ -26,6 +26,7 @@ from novelvideo.freezone.presets import (
     build_canvas_payload_from_context,
 )
 from novelvideo.generators.nanobanana_prop import build_prop_reference_prompt
+from novelvideo.generators.nanobanana_character import build_character_state_sheet_prompt
 
 
 def test_preset_file_refs_include_media_type_for_beat_video_and_audio(tmp_path: Path) -> None:
@@ -2288,6 +2289,16 @@ def test_beat_render_preset_current_frame_is_canonical_source_node() -> None:
 
 
 def test_character_preset_keeps_portrait_as_identity_workflow_source() -> None:
+    v2_prompt = build_character_state_sheet_prompt(
+        character_name="林昭",
+        character_tag="CHAR_LIN_ZHAO",
+        appearance="黑色作战服，身形挺拔",
+        style_instructions="cinematic realism",
+        avoid_instructions="no duplicate people",
+        ethnicity="Chinese",
+        has_costume_reference=False,
+        project_style="cinematic",
+    )
     context = {
         "scope": "asset",
         "asset_kind": "character",
@@ -2340,12 +2351,7 @@ def test_character_preset_keeps_portrait_as_identity_workflow_source() -> None:
                 {
                     "identity_id": "林昭_青年",
                     "identity_name": "青年",
-                    "prompt": (
-                        "Character identity reference sheet. Neutral studio setup.\n"
-                        "create a 4-panel character reference sheet arranged LEFT to RIGHT\n"
-                        "CHARACTER DETAILS (CRITICAL - use this for clothing and appearance):\n"
-                        "黑色作战服，身形挺拔"
-                    ),
+                    "prompt": v2_prompt,
                     "identity_prompt": "黑色作战服，身形挺拔",
                 }
             ],
@@ -2379,9 +2385,12 @@ def test_character_preset_keeps_portrait_as_identity_workflow_source() -> None:
     assert ("ref_character_portrait_1", "ref_character_identity_1") in edges
     assert not any(node_id.startswith("flow_identity_") for node_id in nodes)
     identity_prompt = nodes["ref_character_identity_1"]["data"]["prompt"]
-    assert "Character identity reference sheet" in identity_prompt
+    assert "Identity Sheet v2" in identity_prompt
     assert "黑色作战服，身形挺拔" in identity_prompt
-    assert "create a 4-panel character reference sheet arranged LEFT to RIGHT" in identity_prompt
+    assert "LEFT 50%: LARGE THREE-QUARTER PORTRAIT" in identity_prompt
+    assert "CENTER 25%: HEADLESS FRONT FULL BODY" in identity_prompt
+    assert "RIGHT 25%: BACK FULL BODY" in identity_prompt
+    assert nodes["ref_character_identity_1"]["data"]["aspectRatio"] == "3:2"
     assert (
         node_positions["prompt_character_portrait"]["x"]
         < node_positions["ref_character_portrait_1"]["x"]
@@ -2643,7 +2652,8 @@ async def test_character_asset_preset_emits_missing_identity_slot_placeholders(
         "character": "林昭",
         "identity_id": "林昭_青年",
     }
-    assert nodes["ref_character_identity_1"]["data"]["autoCommitOnGenerate"] is True
+    assert nodes["ref_character_identity_1"]["data"]["autoCommitOnGenerate"] is False
+    assert nodes["ref_character_identity_1"]["data"]["aspectRatio"] == "3:2"
     portrait_prompt = nodes["ref_character_portrait_1"]["data"]["prompt"]
     assert "Generate a face-only character identity reference portrait" in portrait_prompt
     assert "FACIAL FEATURES TO CAPTURE" in portrait_prompt
@@ -2662,12 +2672,174 @@ async def test_character_asset_preset_emits_missing_identity_slot_placeholders(
     assert nodes["ref_identity_costume_1"]["data"]["autoCommitOnGenerate"] is True
     identity_prompt = nodes["ref_character_identity_1"]["data"]["prompt"]
     costume_prompt = nodes["ref_identity_costume_1"]["data"]["prompt"]
-    assert "Character identity reference sheet" in identity_prompt
+    assert "Identity Sheet v2" in identity_prompt
     assert "黑色作战服，身形挺拔" in identity_prompt
-    assert "PLAIN SOLID WHITE or LIGHT GRAY background ONLY" in identity_prompt
+    assert "Portrait is the sole facial identity authority" in identity_prompt
+    assert "two body panels supply body, outfit, and rear-silhouette information only" in identity_prompt
     assert costume_prompt == identity_prompt
     assert ("ref_character_portrait_1", "ref_character_identity_1") in edges
     assert ("ref_identity_costume_1", "ref_character_identity_1") in edges
+
+
+@pytest.mark.asyncio
+async def test_character_identity_ref_projects_current_v2_face_source_metadata(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    state_dir = tmp_path / "state"
+    _write_fake_image(project_dir / "assets/characters/林昭/portrait.png")
+    _write_fake_image(project_dir / "assets/characters/林昭/identities/青年.png")
+    state_dir.mkdir(parents=True)
+    (state_dir / "production_workflow.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "slots": {
+                    "character:林昭:state:林昭_青年": {
+                        "slot_id": "character:林昭:state:林昭_青年",
+                        "asset_kind": "character_state",
+                        "current_version_id": "identity-v2-current",
+                        "version_ids": ["identity-v2-current"],
+                    }
+                },
+                "versions": [
+                    {
+                        "version_id": "identity-v2-current",
+                        "slot_id": "character:林昭:state:林昭_青年",
+                        "asset_path": "assets/characters/林昭/identities/青年.png",
+                        "generation_metadata": {
+                            "layout_version": "identity_sheet_v2",
+                            "face_source_panel": "portrait_3q",
+                            "front_panel_role": "body_and_outfit_only",
+                            "back_panel_role": "silhouette_and_outfit_back_only",
+                        },
+                        "adoption_status": "adopted",
+                        "qc_passed": True,
+                    }
+                ],
+                "adoption_events": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class Store:
+        def __init__(self) -> None:
+            self.state_dir = state_dir
+
+        def get_character(self, name: str):
+            return SimpleNamespace(
+                name=name,
+                aliases=[],
+                role="主角",
+                is_main=True,
+                gender="男",
+                age_group="youth",
+                body_type="挺拔",
+                description="冷静克制",
+                face_prompt="二十多岁男性，眼神冷静",
+                identities=[
+                    SimpleNamespace(
+                        identity_id="林昭_青年",
+                        identity_name="青年",
+                        appearance_details="黑色作战服，身形挺拔",
+                        face_prompt="",
+                        age_group="youth",
+                        portrait_image="",
+                        costume_image="",
+                    )
+                ],
+            )
+
+    context = await build_asset_preset_context(
+        project_id="proj_demo",
+        username="admin",
+        project="demo",
+        project_dir=project_dir,
+        store=Store(),
+        asset_kind="character",
+        character="林昭",
+    )
+
+    identity_ref = next(ref for ref in context["refs"] if ref["role"] == "character_identity")
+    assert identity_ref["meta"] == {
+        "character": "林昭",
+        "identity_id": "林昭_青年",
+        "layout_version": "identity_sheet_v2",
+        "face_source_panel": "portrait_3q",
+        "front_panel_role": "body_and_outfit_only",
+        "back_panel_role": "silhouette_and_outfit_back_only",
+    }
+    payload = build_canvas_payload_from_context(
+        context=context,
+        preset_key="asset:character:林昭::",
+        default_push_target={"kind": "portrait", "character": "林昭"},
+    )
+    nodes = {node["id"]: node for node in payload["nodes"]}
+    # This ref is the adopted/current canonical v2 asset, so its declared
+    # layout proves that a newly generated replacement needs QC before adoption.
+    assert nodes["ref_character_identity_1"]["data"]["autoCommitOnGenerate"] is False
+
+
+@pytest.mark.asyncio
+async def test_character_identity_ref_does_not_guess_v2_metadata_for_legacy_current(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    _write_fake_image(project_dir / "assets/characters/林昭/identities/青年.png")
+
+    class Store:
+        state_dir = tmp_path / "missing-state"
+
+        def get_character(self, name: str):
+            return SimpleNamespace(
+                name=name,
+                aliases=[],
+                role="",
+                is_main=True,
+                gender="男",
+                age_group="youth",
+                body_type="",
+                description="",
+                face_prompt="",
+                identities=[
+                    SimpleNamespace(
+                        identity_id="林昭_青年",
+                        identity_name="青年",
+                        appearance_details="",
+                        face_prompt="",
+                        age_group="youth",
+                        portrait_image="",
+                        costume_image="",
+                    )
+                ],
+            )
+
+    context = await build_asset_preset_context(
+        project_id="proj_demo",
+        username="admin",
+        project="demo",
+        project_dir=project_dir,
+        store=Store(),
+        asset_kind="character",
+        character="林昭",
+    )
+
+    identity_ref = next(ref for ref in context["refs"] if ref["role"] == "character_identity")
+    assert identity_ref["meta"] == {
+        "character": "林昭",
+        "identity_id": "林昭_青年",
+    }
+    payload = build_canvas_payload_from_context(
+        context=context,
+        preset_key="asset:character:林昭::",
+        default_push_target={"kind": "portrait", "character": "林昭"},
+    )
+    nodes = {node["id"]: node for node in payload["nodes"]}
+    # Historical v1 remains readable without invented v2 metadata, but any
+    # replacement generated by this workflow uses v2 and must pass QC.
+    assert nodes["ref_character_identity_1"]["data"]["autoCommitOnGenerate"] is False
 
 
 @pytest.mark.asyncio
@@ -2677,10 +2849,19 @@ async def test_character_asset_preset_style_lookup_uses_project_context(
 ) -> None:
     captured: dict[str, object] = {}
 
+    def fake_style_service_get_style(style_id: str, *, project_dir=None, **_kwargs):
+        assert style_id == "custom_anime_realistic"
+        assert Path(project_dir) == tmp_path
+        return SimpleNamespace(
+            style_family="live_action",
+            animation_subtype="",
+            style_instructions="custom cinematic material language",
+        )
+
     def fake_load_project_config(username: str, project: str) -> dict[str, str]:
         captured["config_username"] = username
         captured["config_project"] = project
-        return {"visual_style": "custom_style", "ethnicity": "Chinese"}
+        return {"visual_style": "custom_anime_realistic", "ethnicity": "Chinese"}
 
     def fake_get_style_preset(style: str, **kwargs: object) -> dict[str, str]:
         captured["style"] = style
@@ -2698,6 +2879,10 @@ async def test_character_asset_preset_style_lookup_uses_project_context(
         "novelvideo.config.get_style_preset",
         fake_get_style_preset,
     )
+    monkeypatch.setattr(
+        "novelvideo.services.style_service.StyleService.get_style",
+        fake_style_service_get_style,
+    )
 
     class Store:
         def get_character(self, name: str):
@@ -2711,7 +2896,17 @@ async def test_character_asset_preset_style_lookup_uses_project_context(
                 body_type="挺拔",
                 description="冷静克制",
                 face_prompt="二十多岁男性，眼神冷静",
-                identities=[],
+                identities=[
+                    SimpleNamespace(
+                        identity_id="林昭_青年",
+                        identity_name="青年",
+                        appearance_details="黑色作战服，身形挺拔",
+                        face_prompt="",
+                        age_group="youth",
+                        portrait_image="",
+                        costume_image="",
+                    )
+                ],
             )
 
     context = await build_asset_preset_context(
@@ -2726,7 +2921,7 @@ async def test_character_asset_preset_style_lookup_uses_project_context(
 
     assert captured["config_username"] == "admin"
     assert captured["config_project"] == "demo"
-    assert captured["style"] == "custom_style"
+    assert captured["style"] == "custom_anime_realistic"
     assert captured["kwargs"] == {
         "username": "admin",
         "project": "demo",
@@ -2735,6 +2930,8 @@ async def test_character_asset_preset_style_lookup_uses_project_context(
     portrait_prompt = context["generation_context"]["portrait"]["prompt"]
     assert "custom cinematic material language" in portrait_prompt
     assert "avoid generic flat lighting" in portrait_prompt
+    identity_prompt = context["generation_context"]["identities"][0]["prompt"]
+    assert "credible skin and fabric detail" in identity_prompt
 
 
 def test_scene_preset_default_push_targets_use_requested_scene_kind() -> None:

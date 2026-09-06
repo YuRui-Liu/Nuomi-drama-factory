@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -12,7 +13,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from novelvideo.character_visual.identity_sheet import (
+    IDENTITY_SHEET_LAYOUT_VERSION,
+    IDENTITY_SHEET_PANEL_LAYOUT,
+    IdentitySheetQualityReport,
+    build_identity_sheet_v2_prompt,
+    compose_identity_sheet_v2,
+)
+from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.project_context import ProjectContext
+from novelvideo.production_workflow import production_workflow_project_lock
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
@@ -25,10 +35,14 @@ class CharacterStateGeneration:
     reference_paths: tuple[Path, ...]
     prompt: str
     state_id: str
+    raw_candidate_path: Path
+    face_source: Path
+    quality_report: IdentitySheetQualityReport
 
 
 def _safe_asset_name(name: str) -> str:
-    return re.sub(r'[/\\:*?"<>|]', "_", str(name or "").strip()) or "untitled"
+    safe_name = re.sub(r'[/\\:*?"<>|]', "_", str(name or "").strip())
+    return "untitled" if safe_name in {"", ".", ".."} else safe_name
 
 
 def _strip_known_style_prefix(prompt: str) -> str:
@@ -409,7 +423,7 @@ def _register_character_state_candidate(
     generation: CharacterStateGeneration,
     source_attempt_id: str | None,
     recipe_revision: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     from novelvideo.production_workflow import ProductionWorkflowStore
 
     root = output_dir.resolve()
@@ -420,38 +434,85 @@ def _register_character_state_candidate(
         for path in generation.reference_paths
         if path.resolve().is_relative_to(root)
     ]
+    face_source = generation.face_source.resolve().relative_to(root).as_posix()
+    raw_candidate_path = (
+        generation.raw_candidate_path.resolve().relative_to(root).as_posix()
+    )
+    quality_report = generation.quality_report.model_dump(mode="json")
     slot_id = f"character:{character_name}:state:{generation.state_id}"
     version_id = generation.output_path.stem
-    workflow = ProductionWorkflowStore(Path(ctx.state_dir) / "production_workflow.json")
-    slot, version, _event = workflow.register_candidate_version(
-        slot_id=slot_id,
-        asset_kind="character_state",
-        version_id=version_id,
-        asset_path=candidate_path,
-        source_attempt_id=source_attempt_id,
-        qc_passed=(
-            generation.output_path.is_file()
-            and generation.output_path.stat().st_size > 0
-        ),
-        generation_metadata={
-            "character_name": character_name,
-            "identity_id": identity_id,
-            "state_id": generation.state_id,
-            "panel_layout": ["front", "side", "back"],
-            "recipe_revision": recipe_revision,
-            "reference_sources": reference_sources,
-            "canonical_path": canonical_path,
-        },
-        actor=str(getattr(ctx, "requester_username", "") or "system"),
-        at=datetime.now(timezone.utc),
-    )
-    if slot.current_version_id == version.version_id:
-        generation.canonical_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(generation.output_path, generation.canonical_path)
+    staged_canonical: Path | None = None
+    state_dir = Path(ctx.state_dir)
+    with production_workflow_project_lock(state_dir):
+        if generation.quality_report.passed:
+            generation.canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            staged_canonical = generation.canonical_path.with_name(
+                f".{generation.canonical_path.name}.{version_id}.stage"
+            )
+            try:
+                shutil.copy2(generation.output_path, staged_canonical)
+                with staged_canonical.open("rb") as staged_file:
+                    os.fsync(staged_file.fileno())
+            except Exception:
+                staged_canonical.unlink(missing_ok=True)
+                raise
+
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        workflow_snapshot = workflow.capture_file_snapshot()
+        canonical_snapshot = (
+            generation.canonical_path.read_bytes()
+            if generation.canonical_path.exists()
+            else None
+        )
+        try:
+            slot, version, _event = workflow.register_candidate_version(
+                slot_id=slot_id,
+                asset_kind="character_state",
+                version_id=version_id,
+                asset_path=candidate_path,
+                source_attempt_id=source_attempt_id,
+                qc_passed=generation.quality_report.passed,
+                soft_issues=(
+                    []
+                    if generation.quality_report.passed
+                    else generation.quality_report.issues
+                ),
+                generation_metadata={
+                    "character_name": character_name,
+                    "identity_id": identity_id,
+                    "state_id": generation.state_id,
+                    "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+                    "panel_layout": list(IDENTITY_SHEET_PANEL_LAYOUT),
+                    "face_source": face_source,
+                    "face_source_panel": "portrait_3q",
+                    "quality_report": quality_report,
+                    "raw_candidate_path": raw_candidate_path,
+                    "recipe_revision": recipe_revision,
+                    "reference_sources": reference_sources,
+                    "canonical_path": canonical_path,
+                },
+                actor=str(getattr(ctx, "requester_username", "") or "system"),
+                at=datetime.now(timezone.utc),
+            )
+            if staged_canonical is not None and slot.current_version_id == version.version_id:
+                os.replace(staged_canonical, generation.canonical_path)
+                staged_canonical = None
+        except Exception:
+            workflow.restore_file_snapshot(workflow_snapshot)
+            if canonical_snapshot is None:
+                generation.canonical_path.unlink(missing_ok=True)
+            else:
+                generation.canonical_path.write_bytes(canonical_snapshot)
+            raise
+        finally:
+            if staged_canonical is not None:
+                staged_canonical.unlink(missing_ok=True)
     return {
         "slot_id": slot_id,
         "version_id": version.version_id,
         "adoption_status": version.adoption_status.value,
+        "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+        "qc_passed": generation.quality_report.passed,
     }
 
 
@@ -498,36 +559,15 @@ async def _generate_identity_image(
     version_id = f"character-state-{_asset_suffix()}"
     versions_dir = identity_dir / safe_name / "versions"
     output_path = versions_dir / f"{version_id}.png"
-    temp_output_path = versions_dir / f".{version_id}.tmp.png"
+    raw_candidate_path = versions_dir / f"{version_id}.raw.png"
 
     identity_age = str(identity.age_group or "").strip()
     char_age = str(character.age_group or "youth").strip() or "youth"
     if identity_age and identity_age != char_age:
-        if has_identity_portrait:
-            identity_prompt = "" if has_costume_image else appearance_details
-            reference_image_path = identity_portrait
-        else:
-            from novelvideo.character_visual import (
-                CharacterVisualWorkspaceStore,
-                compile_visual_prompt_snapshot,
-            )
-
-            visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
-                character.name
-            )
-            if visual_bible is None:
-                raise RuntimeError("请先确认角色 VisualBible 或上传年龄身份 Portrait")
-            face_override = compile_visual_prompt_snapshot(
-                bible=visual_bible,
-                project_style=style,
-                reference_paths=[],
-            ).prompt
-            identity_prompt = (
-                face_override
-                if has_costume_image
-                else "\n".join(part for part in [face_override, appearance_details] if part)
-            )
-            reference_image_path = ""
+        if not has_identity_portrait:
+            raise RuntimeError("年龄变体必须先生成或上传 Identity Portrait")
+        identity_prompt = "" if has_costume_image else appearance_details
+        reference_image_path = identity_portrait
     else:
         portrait_path = char_assets_dir / "portrait.png"
         if not portrait_path.exists():
@@ -536,42 +576,43 @@ async def _generate_identity_image(
         reference_image_path = str(portrait_path)
 
     update(0.45, "调用图像模型生成身份图...")
-    try:
-        references = [reference_image_path] + ([costume_image] if has_costume_image else [])
-        from novelvideo.generators.nanobanana_character import (
-            build_character_state_sheet_prompt,
-        )
-
-        prompt = build_character_state_sheet_prompt(
+    references = [reference_image_path] + ([costume_image] if has_costume_image else [])
+    prompt = build_identity_sheet_v2_prompt(
             character_name=character.name,
             character_tag=str(identity.character_tag or character.name),
             appearance=_strip_known_style_prefix(
                 identity_prompt or appearance_details
             ),
+            project_style=style,
             style_instructions=style,
             avoid_instructions="no identity drift, no inconsistent clothing",
             ethnicity=ethnicity,
             has_costume_reference=has_costume_image,
+            project_dir=output_dir,
         )
-        await _generate_grsai_image(
+    await _generate_grsai_image(
             model=model,
             prompt=prompt,
-            output_path=temp_output_path,
+            output_path=raw_candidate_path,
             reference_paths=[path for path in references if path],
-            aspect_ratio="16:9",
+            aspect_ratio="3:2",
         )
-        _replace_canonical_asset(temp_output_path, output_path)
-        return CharacterStateGeneration(
-            output_path=output_path,
-            canonical_path=canonical_path,
-            reference_paths=tuple(Path(path) for path in references if path),
-            prompt=prompt,
-            state_id=state_id,
-        )
-    finally:
-        temp_output_path.unlink(missing_ok=True)
-        temp_body_path = temp_output_path.with_name(f"{temp_output_path.stem}_body_temp.png")
-        temp_body_path.unlink(missing_ok=True)
+    compose_identity_sheet_v2(raw_candidate_path, reference_image_path, output_path)
+    quality_report = await assess_identity_sheet_quality(
+        image_data=output_path.read_bytes(),
+        style=style,
+        project_dir=output_dir,
+    )
+    return CharacterStateGeneration(
+        output_path=output_path,
+        canonical_path=canonical_path,
+        reference_paths=tuple(Path(path) for path in references if path),
+        prompt=prompt,
+        state_id=state_id,
+        raw_candidate_path=raw_candidate_path,
+        face_source=Path(reference_image_path),
+        quality_report=quality_report,
+    )
 
 
 register_project_task_runner("character_portrait", run_character_image)
