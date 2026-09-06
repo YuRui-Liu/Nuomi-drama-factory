@@ -327,6 +327,7 @@ class NanoBananaCharacterGenerator:
                 client=client,
                 prompt=front_prompt,
                 output_path=portrait_ref_path,
+                aspect_ratio="1:1",
                 image_size="0.5K",
             )
 
@@ -739,10 +740,10 @@ LEFT HALF = Face close-up (identity source)
 RIGHT HALF = Full body (proportions & costume source)
 
 LEFT HALF (Face Close-up):
-- TIGHT HEAD-AND-FACE CLOSE-UP
-- Include the complete hairstyle and top of head, both ears, full face, and entire chin
-- Frame ends immediately below the chin
-- No neck, shoulders, chest, clothing, hands, or props visible
+- CLOSE IDENTITY PORTRAIT
+- Include the complete hairstyle and top of head, both ears, full face, entire chin, and complete neck
+- Keep only a small upper-shoulder outline; the clothing collar must stay within the bottom 10-15% of the frame
+- No chest, lower shoulders, torso, large clothing areas, hands, or props visible
 - Neutral soft gradient background
 - Focus on facial features: eyes, nose, lips, skin texture
 - Well-lit face with clear details
@@ -906,7 +907,7 @@ MUST AVOID:
         )
         if family == "animation":
             medium = self._animation_medium_phrase(style_name, project_dir=project_dir)
-            prompt = f"""Generate a face-only animated character identity portrait for production reference.
+            prompt = f"""Generate an animated character identity portrait for production reference.
 
 CHARACTER: {character_tag} ({character_name})
 
@@ -914,10 +915,10 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & PRESENTATION (CRITICAL):
-- TIGHT HEAD-AND-FACE CLOSE-UP, near-frontal view
-- Include the complete hairstyle and top of head, both ears, full face, and entire chin
-- Frame ends immediately below the chin
-- No neck, shoulders, chest, clothing, hands, or props visible
+- CLOSE IDENTITY PORTRAIT, near-frontal view
+- Include the complete hairstyle and top of head, both ears, full face, entire chin, and complete neck
+- Keep only a small upper-shoulder outline; the clothing collar must stay within the bottom 10-15% of the frame
+- No chest, lower shoulders, torso, large clothing areas, hands, or props visible
 - Neutral expression, mouth closed
 - Plain solid neutral background only
 - Use flat, even, neutral lighting with natural eye highlights
@@ -946,7 +947,7 @@ MUST AVOID:
 """
             return prompt.strip()
 
-        prompt = f"""Generate a face-only character identity reference portrait for identity locking.
+        prompt = f"""Generate a character identity reference portrait for identity locking.
 
 CHARACTER: {character_tag} ({character_name})
 
@@ -954,10 +955,10 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & CAMERA (CRITICAL):
-- TIGHT HEAD-AND-FACE CLOSE-UP, near-frontal view
-- Include the complete hairstyle and top of head, both ears, full face, and entire chin
-- Frame ends immediately below the chin
-- No neck, shoulders, chest, clothing, hands, or props visible
+- CLOSE IDENTITY PORTRAIT, near-frontal view
+- Include the complete hairstyle and top of head, both ears, full face, entire chin, and complete neck
+- Keep only a small upper-shoulder outline; the clothing collar must stay within the bottom 10-15% of the frame
+- No chest, lower shoulders, torso, large clothing areas, hands, or props visible
 - Neutral expression, mouth closed
 - Solid matte gray seamless studio background — NO environment, NO scenery, NO props
 - Use flat, even, neutral lighting with natural eye highlights

@@ -119,21 +119,22 @@ def _build_face_portrait_prompt(
         context_parts.append(f"Visual style: {str(style).strip()}")
     if str(face_details or "").strip():
         context_parts.append(
-            "Confirmed face-only identity details: "
+            "Confirmed facial identity details: "
             f"{_strip_known_style_prefix(face_details)}"
         )
 
     return " ".join(
         [
-            "Square 1:1 pure head-and-face identity portrait on a neutral clean background.",
+            "Square 1:1 close identity portrait on a neutral clean background.",
             gender_constraint,
             (
-                "Composition: show the complete hair, both ears, the entire face, and the full chin; "
-                "the frame ends immediately below the chin."
+                "Composition: show the complete hair, both ears, the entire face, the full chin, "
+                "and the complete neck, with a small amount of upper-shoulder outline; keep any "
+                "collar confined to roughly the bottom 10-15% of the square frame."
             ),
             (
-                "Strict framing exclusion: no neck, shoulders, chest, clothing, hands, or props; "
-                "no text or watermark."
+                "Strict framing exclusion: no chest, lower shoulders, torso, large areas of "
+                "clothing, hands, or props; no text or watermark."
             ),
             *context_parts,
         ]

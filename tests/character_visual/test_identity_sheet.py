@@ -283,7 +283,24 @@ def test_compose_v2_masks_exactly_top_twenty_two_percent(tmp_path: Path) -> None
     assert image.getpixel((800, mask_bottom)) == (30, 210, 40)
 
 
-def test_portrait_prompts_use_face_only_identity_presentation(monkeypatch) -> None:
+def _assert_relaxed_portrait_framing(prompt: str) -> None:
+    assert "face-only" not in prompt.lower()
+    assert (
+        "complete hairstyle and top of head, both ears, full face, entire chin, "
+        "and complete neck"
+    ) in prompt
+    assert "small upper-shoulder outline" in prompt
+    assert "bottom 10-15% of the frame" in prompt
+    assert (
+        "No chest, lower shoulders, torso, large clothing areas, hands, or props visible"
+        in prompt
+    )
+    assert "TIGHT HEAD-AND-FACE CLOSE-UP" not in prompt
+    assert "Frame ends immediately below the chin" not in prompt
+    assert "No neck, shoulders, chest, clothing, hands, or props visible" not in prompt
+
+
+def test_portrait_prompts_use_relaxed_identity_presentation(monkeypatch) -> None:
     from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
 
     generator = NanoBananaCharacterGenerator.__new__(NanoBananaCharacterGenerator)
@@ -304,17 +321,91 @@ def test_portrait_prompts_use_face_only_identity_presentation(monkeypatch) -> No
         )
 
     for prompt in (build("animation"), build("live_action")):
-        assert "TIGHT HEAD-AND-FACE CLOSE-UP" in prompt
-        assert "complete hairstyle and top of head, both ears, full face, and entire chin" in prompt
-        assert "Frame ends immediately below the chin" in prompt
-        assert "No neck, shoulders, chest, clothing, hands, or props visible" in prompt
+        _assert_relaxed_portrait_framing(prompt)
         assert "flat, even, neutral lighting" in prompt
         assert "subtle natural facial asymmetry" in prompt
         assert "natural eye highlights" in prompt
-        assert "head-and-shoulders" not in prompt
         assert "THREE-QUARTER" not in prompt
         assert "Minimal visible clothing" not in prompt
         assert "Plain simple dark top" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_character_portrait_generation_requests_square_images(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
+
+    generator = NanoBananaCharacterGenerator.__new__(NanoBananaCharacterGenerator)
+    generator.provider = "newapi"
+    captured_calls: list[dict] = []
+
+    async def fake_generate_single_image(**kwargs):
+        captured_calls.append(kwargs)
+        return b"portrait"
+
+    generator._generate_single_image = fake_generate_single_image
+    monkeypatch.setattr(
+        "novelvideo.generators.nanobanana_character.get_style_preset",
+        lambda *_args, **_kwargs: {
+            "style_instructions": "configured style",
+            "avoid_instructions": "no text",
+        },
+    )
+    monkeypatch.setattr(
+        "novelvideo.generators.nanobanana_character.StyleService.get_style_branch",
+        lambda style, **_kwargs: (
+            ("animation", "2d") if style == "anime_2d" else ("live_action", "")
+        ),
+    )
+
+    for style in ("anime_2d", "realistic_3d"):
+        result = await generator.generate_character_portrait(
+            character_name="林昭",
+            character_prompt="细长眼睛",
+            character_tag="[LinZ]",
+            style=style,
+            output_dir=str(tmp_path / style / "assets" / "characters"),
+        )
+        assert result.success is True
+
+    assert [call.get("aspect_ratio") for call in captured_calls] == ["1:1", "1:1"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_composite_prompt_uses_relaxed_portrait_framing(
+    monkeypatch,
+) -> None:
+    from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
+
+    generator = NanoBananaCharacterGenerator.__new__(NanoBananaCharacterGenerator)
+    generator.provider = "newapi"
+    captured_prompt = ""
+
+    async def fake_generate_single_image(**kwargs):
+        nonlocal captured_prompt
+        captured_prompt = kwargs["prompt"]
+        return b"candidate"
+
+    generator._generate_single_image = fake_generate_single_image
+    monkeypatch.setattr(
+        "novelvideo.generators.nanobanana_character.get_style_preset",
+        lambda *_args, **_kwargs: {
+            "style_instructions": "configured style",
+            "avoid_instructions": "no text",
+        },
+    )
+
+    result = await generator.generate_composite_reference(
+        character_name="林昭",
+        character_prompt="细长眼睛",
+        character_tag="[LinZ]",
+        style="anime_2d",
+    )
+
+    assert result.success is True
+    assert "Create a 1:2 aspect ratio image divided into TWO EQUAL halves" in captured_prompt
+    _assert_relaxed_portrait_framing(captured_prompt)
 
 
 @pytest.mark.asyncio
