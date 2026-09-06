@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai import PromptedOutput
 
 import novelvideo.media_capabilities.video.h3_episode_pack as episode_pack
@@ -156,6 +157,41 @@ def test_episode_optimizer_factory_uses_prompted_output_without_tool_choice(
     assert isinstance(captured["output_type"], PromptedOutput)
     assert captured["output_type"].outputs is H3EpisodePromptPack
     assert "tool_choice" not in captured
+
+
+def test_episode_task_distinguishes_internal_and_business_shot_ids():
+    task = episode_pack._episode_task(_input())
+
+    assert 'director_plan.shots[].shot_id' in task
+    assert 'continuous string numbers starting at "1"' in task
+    assert 'Never copy the outer business shot_ids' in task
+
+
+@pytest.mark.asyncio
+async def test_episode_pack_normalizes_business_shot_id_copied_into_plan(tmp_path):
+    value = _input()
+    raw_pack = _pack(
+        tuple((entry.segment_id, _plan()) for entry in value.segments)
+    ).model_dump(mode="json")
+    for segment in raw_pack["segments"]:
+        segment["director_plan"]["shots"][0]["shot_id"] = "shot-01"
+    agent = FakeAgent((raw_pack,))
+
+    result = await H3EpisodePackOptimizer(agent, tmp_path).optimize(value)
+
+    assert value.segments[0].shot_ids == ("shot-1",)
+    assert all(
+        tuple(shot.shot_id for shot in item.plan.shots) == ("1",)
+        for item in result.segments
+    )
+
+
+def test_episode_pack_does_not_repair_missing_shot_id():
+    raw_pack = _pack((("seg-1", _plan()),)).model_dump(mode="json")
+    del raw_pack["segments"][0]["director_plan"]["shots"][0]["shot_id"]
+
+    with pytest.raises(ValidationError, match="Field required"):
+        H3EpisodePromptPack.model_validate(raw_pack)
 
 
 @pytest.mark.asyncio
