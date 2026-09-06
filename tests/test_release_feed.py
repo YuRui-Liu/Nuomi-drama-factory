@@ -252,6 +252,13 @@ def test_release_feed_uses_nuomi_github_latest_release_api() -> None:
         "https://github.com/dramaclaw/dramaclaw/releases/tag/v1.0.5",
         "https://example.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/v1.0.5",
         "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/%2e%2e/%2e%2e/evil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/%2e%2e%5cevil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/%252e%252e%255cevil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%0aevil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%250aevil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\nil",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\ril",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\til",
         "https://[::1",
     ],
 )

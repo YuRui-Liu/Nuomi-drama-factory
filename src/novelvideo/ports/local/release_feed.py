@@ -185,27 +185,44 @@ def _is_newer(candidate: str, current: str) -> bool:
 
 
 def _trusted_release_url(value: Any) -> str | None:
-    url = str(value or "").strip()
+    raw_url = str(value or "")
+    if _has_ascii_control(raw_url):
+        return None
+    url = raw_url.strip()
     if not url:
         return None
     try:
         parsed = urlsplit(url)
     except ValueError:
         return None
-    decoded_path = parsed.path
-    while True:
-        next_path = unquote(decoded_path)
-        if next_path == decoded_path:
-            break
-        decoded_path = next_path
     if (
         parsed.scheme != "https"
         or parsed.netloc != "github.com"
         or not parsed.path.startswith(GITHUB_RELEASE_PATH_PREFIX)
-        or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+        or _has_unsafe_decoded_path(parsed.path)
     ):
         return None
     return url
+
+
+def _has_unsafe_decoded_path(path: str) -> bool:
+    decoded = path
+    for _ in range(8):
+        if (
+            "\\" in decoded
+            or _has_ascii_control(decoded)
+            or any(segment in {".", ".."} for segment in decoded.split("/"))
+        ):
+            return True
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return False
+        decoded = next_decoded
+    return True
+
+
+def _has_ascii_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
 def _to_port_item(item) -> ReleaseItem:
