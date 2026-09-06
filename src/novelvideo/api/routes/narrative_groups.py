@@ -35,10 +35,10 @@ from novelvideo.media_capabilities.video.parameters import (
     resolve_workflow_parameters,
 )
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
-    activate_h3_reference_snapshot,
-    delete_h3_reference_input_snapshot,
+    bind_h3_reference_snapshot_owner,
     freeze_h3_reference_frames,
     persist_h3_reference_input_snapshot,
+    retain_h3_reference_snapshot,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowScene,
@@ -1324,50 +1324,39 @@ async def _enqueue_group_video(
             "reference_snapshot_id": reference_snapshot_id,
             "reference_snapshot_digest": persisted_snapshot.digest,
         })
-        try:
-            activate_h3_reference_snapshot(
-                state_root=resolved.ctx.state_dir,
-                snapshot_id=reference_snapshot_id,
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            restore_video_reservation(resolved.project_dir, episode, reservation)
-            try:
-                delete_h3_reference_input_snapshot(
-                    state_root=resolved.ctx.state_dir,
-                    snapshot_id=reference_snapshot_id,
-                )
-            except (OSError, ValueError):
-                pass
-            raise HTTPException(
-                status_code=422,
-                detail="Video reference input snapshot cannot be activated",
-            ) from exc
-        except Exception:
-            restore_video_reservation(resolved.project_dir, episode, reservation)
-            try:
-                delete_h3_reference_input_snapshot(
-                    state_root=resolved.ctx.state_dir,
-                    snapshot_id=reference_snapshot_id,
-                )
-            except (OSError, ValueError):
-                pass
-            raise
     try:
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",
             episode=episode, scope=scope, payload=payload,
         )
     except Exception as exc:
-        restore_video_reservation(resolved.project_dir, episode, reservation)
         if reference_snapshot_id is not None:
             try:
-                delete_h3_reference_input_snapshot(
+                retain_h3_reference_snapshot(
                     state_root=resolved.ctx.state_dir,
                     snapshot_id=reference_snapshot_id,
                 )
             except (OSError, ValueError):
                 pass
+        else:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
         raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
+    if reference_snapshot_id is not None:
+        try:
+            bind_h3_reference_snapshot_owner(
+                state_root=resolved.ctx.state_dir,
+                snapshot_id=reference_snapshot_id,
+                snapshot_digest=persisted_snapshot.digest,
+                task_id=str(queued.task_state.task_id),
+            )
+        except Exception:
+            try:
+                retain_h3_reference_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,

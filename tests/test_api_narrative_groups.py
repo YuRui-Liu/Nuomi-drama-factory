@@ -986,8 +986,11 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
         snapshots.append(kwargs)
         return SimpleNamespace(snapshot_id="1" * 32, digest="a" * 64)
 
-    def activate_snapshot(**kwargs):
-        lifecycle.append("activate")
+    bound = []
+
+    def bind_snapshot(**kwargs):
+        lifecycle.append("bind")
+        bound.append(kwargs)
 
     original_enqueue = backend.enqueue_project_task
 
@@ -1001,7 +1004,7 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
         persist_snapshot,
     )
     monkeypatch.setattr(
-        narrative_groups, "activate_h3_reference_snapshot", activate_snapshot
+        narrative_groups, "bind_h3_reference_snapshot_owner", bind_snapshot
     )
     monkeypatch.setattr(backend, "enqueue_project_task", tracked_enqueue)
     no_frames = client.post(endpoint, json=request)
@@ -1031,7 +1034,13 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
     assert snapshots[0]["provider_workflow_id"] == "2096502793044582401"
     assert tuple(snapshots[0]["references"])[0].reference_id == "opaque"
     assert snapshots[0]["frames"]
-    assert lifecycle == ["persist", "activate", "enqueue"]
+    assert lifecycle == ["persist", "enqueue", "bind"]
+    assert bound == [{
+        "state_root": str(tmp_path),
+        "snapshot_id": "1" * 32,
+        "snapshot_digest": "a" * 64,
+        "task_id": "task-1",
+    }]
 
 
 def test_h3_reference_reservation_rechecks_reference_revision_atomically(
@@ -1080,7 +1089,7 @@ def test_h3_reference_reservation_rechecks_reference_revision_atomically(
     assert group.stages["video"].revision == 0
 
 
-def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
+def test_h3_reference_enqueue_failure_retains_snapshot_for_partial_submission(
     monkeypatch, tmp_path
 ):
     client, _ = make_client(monkeypatch, tmp_path)
@@ -1098,7 +1107,7 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
             temporary_upload_id="upload",
         ),)
 
-    deleted = []
+    retained = []
     monkeypatch.setattr(
         narrative_groups, "resolve_saved_video_references", resolved_references
     )
@@ -1109,11 +1118,8 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
         ),
     )
     monkeypatch.setattr(
-        narrative_groups, "delete_h3_reference_input_snapshot",
-        lambda **kwargs: deleted.append(kwargs) or True,
-    )
-    monkeypatch.setattr(
-        narrative_groups, "activate_h3_reference_snapshot", lambda **kwargs: None
+        narrative_groups, "retain_h3_reference_snapshot",
+        lambda **kwargs: retained.append(kwargs),
     )
     monkeypatch.setattr(
         narrative_groups, "get_task_backend", lambda: FailingBackend()
@@ -1128,15 +1134,15 @@ def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
     )
 
     assert response.status_code == 503
-    assert deleted == [{
+    assert retained == [{
         "state_root": str(tmp_path), "snapshot_id": "2" * 32,
     }]
     group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
-    assert group.stages["video"].status == "pending"
-    assert group.stages["video"].revision == 0
+    assert group.stages["video"].status == "queued"
+    assert group.stages["video"].revision == 1
 
 
-def test_h3_reference_snapshot_activation_failure_rolls_back_without_enqueue(
+def test_h3_reference_snapshot_bind_failure_retains_inputs_for_enqueued_task(
     monkeypatch, tmp_path
 ):
     client, backend = make_client(monkeypatch, tmp_path)
@@ -1154,7 +1160,7 @@ def test_h3_reference_snapshot_activation_failure_rolls_back_without_enqueue(
             temporary_upload_id="upload",
         ),)
 
-    deleted = []
+    retained = []
     monkeypatch.setattr(
         narrative_groups, "resolve_saved_video_references", resolved_references
     )
@@ -1165,12 +1171,12 @@ def test_h3_reference_snapshot_activation_failure_rolls_back_without_enqueue(
         ),
     )
     monkeypatch.setattr(
-        narrative_groups, "activate_h3_reference_snapshot",
-        lambda **kwargs: (_ for _ in ()).throw(ValueError("activation failed")),
+        narrative_groups, "bind_h3_reference_snapshot_owner",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("bind failed")),
     )
     monkeypatch.setattr(
-        narrative_groups, "delete_h3_reference_input_snapshot",
-        lambda **kwargs: deleted.append(kwargs) or True,
+        narrative_groups, "retain_h3_reference_snapshot",
+        lambda **kwargs: retained.append(kwargs),
     )
 
     response = client.post(
@@ -1181,14 +1187,14 @@ def test_h3_reference_snapshot_activation_failure_rolls_back_without_enqueue(
         },
     )
 
-    assert response.status_code == 422
-    assert backend.calls == []
-    assert deleted == [{
+    assert response.status_code == 202
+    assert len(backend.calls) == 1
+    assert retained == [{
         "state_root": str(tmp_path), "snapshot_id": "3" * 32,
     }]
     group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
-    assert group.stages["video"].status == "pending"
-    assert group.stages["video"].revision == 0
+    assert group.stages["video"].status == "queued"
+    assert group.stages["video"].revision == 1
 
 
 def test_h3_reference_successfully_enqueues_an_activated_snapshot(
@@ -1231,6 +1237,7 @@ def test_h3_reference_successfully_enqueues_an_activated_snapshot(
     ).read_text(encoding="utf-8"))
     assert lease["state"] == "queued"
     assert lease["expires_at"] is None
+    assert lease["owner_task_id"] == "task-1"
 
 
 def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):
