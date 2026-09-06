@@ -616,11 +616,11 @@
       "title": "人物状态三视图",
       "description": "正面、侧面、背面保持同一人物与服装；生成后先作为候选，可手动采用。",
       "v2Title": "人物 Identity Sheet v2",
-      "v2Description": "3/4 脸部母版锁定身份；无头正面全身表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
+      "v2Description": "3/4 脸部母版锁定身份；无面部正面全身保留完整头身并表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
       "loading": "加载人物状态版本…",
       "versionCount": "{{count}} 个版本",
       "imageAlt": "{{characterName}} {{identityId}} 三视图 {{versionId}}",
-      "isolationHint": "无头正面是模型身份隔离策略，并非图片缺损。",
+      "isolationHint": "正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。",
       "issueSeparator": "；",
       "adopt": "采用此版本",
       "adoptReason": "人物身份卡手动采用",
@@ -637,7 +637,7 @@
         "side": "侧面",
         "back": "背面",
         "portrait": "3/4脸部母版",
-        "headlessFront": "无头正面全身",
+        "headlessFront": "无面部正面全身",
         "fullBack": "背面全身"
       },
       "qcIssues": {

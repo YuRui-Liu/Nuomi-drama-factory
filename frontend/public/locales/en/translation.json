@@ -616,11 +616,11 @@
       "title": "Character state turnaround",
       "description": "Keep the same character and outfit across front, side, and back views. Generated results remain candidates until manually adopted.",
       "v2Title": "Character Identity Sheet v2",
-      "v2Description": "The 3/4 face master anchors identity; the headless front full body defines body shape and front outfit details; the back full body defines the rear silhouette and outfit structure.",
+      "v2Description": "The 3/4 face master anchors identity; the faceless front full body preserves the complete head-to-toe figure while defining body shape and front outfit details; the back full body defines the rear silhouette and outfit structure.",
       "loading": "Loading character state versions…",
       "versionCount": "{{count}} versions",
       "imageAlt": "{{characterName}} {{identityId}} turnaround {{versionId}}",
-      "isolationHint": "The headless front view is a model identity-isolation strategy, not a damaged image.",
+      "isolationHint": "The front full-body view keeps the complete head outline and isolates only identifiable facial features; it is not cropped or damaged.",
       "issueSeparator": "; ",
       "adopt": "Adopt this version",
       "adoptReason": "Manually adopted from the character identity sheet",
@@ -637,7 +637,7 @@
         "side": "Side",
         "back": "Back",
         "portrait": "3/4 face master",
-        "headlessFront": "Headless front full body",
+        "headlessFront": "Faceless front full body",
         "fullBack": "Back full body"
       },
       "qcIssues": {

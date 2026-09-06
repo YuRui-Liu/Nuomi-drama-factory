@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CharacterStateVersions } from "@/components/assets/character-state-versions";
+import enTranslation from "../../../../public/locales/en/translation.json";
+import zhTranslation from "../../../../public/locales/zh/translation.json";
 
 const adoptMock = vi.hoisted(() => vi.fn());
 const fixtureState = vi.hoisted(() => ({ currentVersionId: "state-v1" }));
@@ -16,8 +18,8 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.title": "人物状态三视图",
         "characters.stateVersions.description": "正面、侧面、背面保持同一人物与服装；生成后先作为候选，可手动采用。",
         "characters.stateVersions.v2Title": "人物 Identity Sheet v2",
-        "characters.stateVersions.v2Description": "3/4 脸部母版锁定身份；无头正面全身表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
-        "characters.stateVersions.isolationHint": "无头正面是模型身份隔离策略，并非图片缺损。",
+        "characters.stateVersions.v2Description": "3/4 脸部母版锁定身份；无面部正面全身保留完整头身并表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
+        "characters.stateVersions.isolationHint": "正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。",
         "characters.stateVersions.issueSeparator": "；",
         "characters.stateVersions.status.current": "当前采用",
         "characters.stateVersions.status.qcFailed": "QC 未通过",
@@ -27,7 +29,7 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.panels.side": "侧面",
         "characters.stateVersions.panels.back": "背面",
         "characters.stateVersions.panels.portrait": "3/4脸部母版",
-        "characters.stateVersions.panels.headlessFront": "无头正面全身",
+        "characters.stateVersions.panels.headlessFront": "无面部正面全身",
         "characters.stateVersions.panels.fullBack": "背面全身",
         "characters.stateVersions.qcIssues.portrait_too_small": "肖像区域过小",
         "characters.stateVersions.qcIssues.front_face_detected": "正面身体仍检测到脸部",
@@ -132,6 +134,13 @@ describe("CharacterStateVersions", () => {
     fixtureState.currentVersionId = "state-v1";
   });
 
+  it("describes the complete faceless front body in both locales", () => {
+    expect(zhTranslation.characters.stateVersions.panels.headlessFront).toBe("无面部正面全身");
+    expect(zhTranslation.characters.stateVersions.isolationHint).toContain("保留完整头部轮廓");
+    expect(enTranslation.characters.stateVersions.panels.headlessFront).toBe("Faceless front full body");
+    expect(enTranslation.characters.stateVersions.isolationHint).toContain("complete head outline");
+  });
+
   it("shows front-side-back candidates and only allows QC-passed adoption", async () => {
     const user = userEvent.setup();
     render(
@@ -174,12 +183,12 @@ describe("CharacterStateVersions", () => {
     expect(screen.getByText("3/4脸部母版")).toBeInTheDocument();
     expect(screen.getByText("人物 Identity Sheet v2")).toBeInTheDocument();
     expect(
-      screen.getByText("3/4 脸部母版锁定身份；无头正面全身表达体型与服装正面；背面全身表达背部轮廓与服装结构。"),
+      screen.getByText("3/4 脸部母版锁定身份；无面部正面全身保留完整头身并表达体型与服装正面；背面全身表达背部轮廓与服装结构。"),
     ).toBeInTheDocument();
-    expect(screen.getByText("无头正面全身")).toBeInTheDocument();
+    expect(screen.getByText("无面部正面全身")).toBeInTheDocument();
     expect(screen.getByText("背面全身")).toBeInTheDocument();
     expect(
-      screen.getByText("无头正面是模型身份隔离策略，并非图片缺损。"),
+      screen.getByText("正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。"),
     ).toBeInTheDocument();
 
     for (const issue of [
