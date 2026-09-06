@@ -340,6 +340,9 @@ def test_director_timeline_matches_packaged_node12_v5_contract() -> None:
         resolution="720p",
     )
 
+    assert __import__("hashlib").sha256(payload.encode()).hexdigest() == (
+        "6efce85e7edc860c26481149a49f4c7f174bf073df808d7b06c24bc8c13bc007"
+    )
     data = __import__("json").loads(payload)
     assert data["version"] == 5
     assert data["video"] == {

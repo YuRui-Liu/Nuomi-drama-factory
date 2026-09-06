@@ -1,0 +1,81 @@
+{
+  "input_node": {
+    "node_id": "12",
+    "class_type": "MiniMaxH3Director",
+    "field_names": [
+      "task_type",
+      "global_prompt",
+      "frame_rate",
+      "width",
+      "height",
+      "ref_max_size",
+      "total_frames",
+      "timeline_data"
+    ]
+  },
+  "output_node": {
+    "node_id": "7",
+    "class_type": "SaveVideo",
+    "field_names": [
+      "codec",
+      "filename_prefix",
+      "format",
+      "fw_video_preview",
+      "video"
+    ]
+  },
+  "timeline_contract": {
+    "version": 5,
+    "edit_mode": "segment",
+    "task_type": "r2v — 参考主体生视频(Reference to Video)",
+    "timeline_mode": "prompt_batch",
+    "global_reference_field_names": [
+      "index",
+      "imageFile",
+      "fileName",
+      "type",
+      "subfolder"
+    ],
+    "segment_field_names": [
+      "continuityFromPrev",
+      "durationSec",
+      "frameCount",
+      "genImage",
+      "id",
+      "length",
+      "negativePrompt",
+      "prompt",
+      "refAudios",
+      "refImageSize",
+      "refVideos",
+      "refs",
+      "start",
+      "taskType"
+    ],
+    "keyframe_field_names": [
+      "durationSec",
+      "frameCount",
+      "height",
+      "id",
+      "imageFile",
+      "isEndFrame",
+      "isStartFrame",
+      "length",
+      "negativePrompt",
+      "prompt",
+      "start",
+      "width"
+    ],
+    "shot_field_names": [
+      "durationSec",
+      "endImage",
+      "id",
+      "negativePrompt",
+      "prompt",
+      "startImage"
+    ],
+    "common_enabled": true,
+    "common_collapsed": true,
+    "compatibility_evidence": "reference-only-example"
+  }
+}
