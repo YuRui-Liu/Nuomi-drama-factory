@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Protocol
 
+from novelvideo.media_capabilities.video.h3_reference_runtime import H3FrozenFrame
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.media_capabilities.video.runtime import H3GenerationResult
@@ -14,6 +15,8 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowUnavailable,
 )
 from novelvideo.project_context import ProjectContext
+
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,17 +28,25 @@ class NarrativeGroupVideoRequest:
         default_factory=lambda: MappingProxyType({})
     )
     resolution: str | None = None
+    on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None
     mode: str = "auto"
     reference_revision: int | None = None
     global_references: tuple[ResolvedVideoReference, ...] = ()
     reference_limit: int | None = None
     provider_workflow_id: str | None = None
-    on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None
+    frozen_frames: Mapping[str, H3FrozenFrame] | None = None
 
     def __post_init__(self) -> None:
         parameters = dict(self.workflow_parameters)
         parameters.setdefault("resolution", str(self.resolution or "720p"))
         object.__setattr__(self, "workflow_parameters", MappingProxyType(parameters))
+        object.__setattr__(self, "global_references", tuple(self.global_references))
+        if self.frozen_frames is not None and not isinstance(
+            self.frozen_frames, _MAPPING_PROXY_TYPE
+        ):
+            object.__setattr__(
+                self, "frozen_frames", MappingProxyType(dict(self.frozen_frames))
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +96,7 @@ class H3ReferenceDirectorGenerator(Protocol):
         global_references: tuple[ResolvedVideoReference, ...],
         reference_limit: int,
         workflow_id: str,
+        frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
 
@@ -198,6 +210,12 @@ class H3ReferenceWorkflowAdapter:
 
         if not request.global_references:
             raise ValueError("H3 reference workflow requires global references")
+        if (
+            isinstance(request.reference_revision, bool)
+            or not isinstance(request.reference_revision, int)
+            or request.reference_revision < 0
+        ):
+            raise ValueError("H3 reference workflow requires a valid reference revision")
         if request.reference_limit is None:
             raise ValueError("H3 reference workflow requires a reference limit")
         if request.provider_workflow_id is None:
@@ -215,6 +233,7 @@ class H3ReferenceWorkflowAdapter:
             "global_references": request.global_references,
             "reference_limit": request.reference_limit,
             "workflow_id": request.provider_workflow_id,
+            "frozen_frames": request.frozen_frames,
         }
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted

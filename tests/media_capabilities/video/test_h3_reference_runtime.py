@@ -175,6 +175,15 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     frozen_reference = ref_path.read_bytes()
     reference = _reference(ref_path, frozen_reference)
     ref_path.write_bytes(b"changed-after-resolution")
+    segment = H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="走近",
+        duration_seconds=2, first_frame=str(first), last_frame=str(last),
+    )
+    frozen_frames = runtime.freeze_h3_reference_frames((segment,))
+    frozen_first = first.read_bytes()
+    frozen_last = last.read_bytes()
+    first.write_bytes(b"changed-after-group-preflight")
+    last.write_bytes(b"changed-after-group-preflight")
     uploads = []
     captured = {}
     submitted = []
@@ -224,19 +233,17 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
 
     result = await runtime.generate_h3_reference_director_video(
         SimpleNamespace(runtime_dir=runtime_root),
-        segments=(H3DirectorSegment(
-            segment_id="s1", beat_number=1, prompt="走近",
-            duration_seconds=2, first_frame=str(first), last_frame=str(last),
-        ),),
+        segments=(segment,),
         output_path=str(tmp_path / "out.mp4"),
         aspect_ratio="9:16", resolution="720p", mode="auto",
         global_references=(reference,), reference_limit=5,
         workflow_id="2096502793044582401",
+        frozen_frames=frozen_frames,
         on_provider_submitted=on_submitted,
     )
 
     assert uploads[0] == frozen_reference
-    assert set(uploads[1:]) == {first.read_bytes(), last.read_bytes()}
+    assert set(uploads[1:]) == {frozen_first, frozen_last}
     assert captured["profile"].workflow_id == "2096502793044582401"
     assert not captured["request"].reference_images
     assert captured["request"].capability.value == "video.fl2va"
@@ -254,3 +261,92 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     assert submitted == ["provider-7"]
     assert Path(result.output_path).read_bytes() == b"video"
     assert not (runtime_root / "media_h3_ref" / "staging").exists()
+
+
+@pytest.mark.asyncio
+async def test_reference_runtime_removes_partial_staging_when_chmod_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (5, 5), "black").save(frame)
+    configured = SimpleNamespace(
+        account=SimpleNamespace(
+            id="cleanup-test", max_concurrency=1, capability_limits={}, queue_limit=2
+        ),
+        create_client=lambda: pytest.fail("client must not be created"),
+    )
+    monkeypatch.setattr(runtime, "_load_runtime", lambda: configured)
+    original_chmod = Path.chmod
+
+    def fail_staging_chmod(path, mode):
+        if path.parent.name == "staging":
+            raise OSError("chmod failed")
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr(Path, "chmod", fail_staging_chmod)
+
+    with pytest.raises(OSError, match="chmod failed"):
+        await runtime.generate_h3_reference_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+                first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"), aspect_ratio="9:16",
+            resolution="720p", global_references=(
+                _reference(tmp_path / "gone.png", _png_bytes()),
+            ), reference_limit=5, workflow_id="2096502793044582401",
+        )
+
+    assert not (tmp_path / "runtime" / "media_h3_ref" / "staging").exists()
+
+
+@pytest.mark.asyncio
+async def test_reference_runtime_preserves_primary_error_when_close_fails_and_cleans(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (5, 5), "black").save(frame)
+
+    class Client:
+        async def upload(self, _path):
+            return "uploaded://asset"
+
+        async def close(self):
+            raise OSError("close failed")
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, *_args, **_kwargs):
+            raise RuntimeError("primary transport failure")
+
+    configured = SimpleNamespace(
+        account=SimpleNamespace(
+            id="cleanup-close-test", max_concurrency=1,
+            capability_limits={}, queue_limit=2,
+        ),
+        create_client=Client,
+    )
+    monkeypatch.setattr(runtime, "_load_runtime", lambda: configured)
+    monkeypatch.setattr(runtime, "H3VideoPipeline", Pipeline)
+
+    with pytest.raises(RuntimeError, match="primary transport failure"):
+        await runtime.generate_h3_reference_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+                first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"), aspect_ratio="9:16",
+            resolution="720p", global_references=(
+                _reference(tmp_path / "gone.png", _png_bytes()),
+            ), reference_limit=5, workflow_id="2096502793044582401",
+        )
+
+    assert not (tmp_path / "runtime" / "media_h3_ref" / "staging").exists()

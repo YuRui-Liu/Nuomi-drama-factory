@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shutil
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from types import MappingProxyType
 from uuid import uuid4
 
 from PIL import Image
@@ -43,7 +45,7 @@ _COMPILER_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
-class _FrozenFrame:
+class H3FrozenFrame:
     source: str
     content: bytes
     sha256: str
@@ -66,7 +68,61 @@ def _image_metadata(content: bytes, *, label: str) -> tuple[int, int, str]:
         raise ValueError(f"{label} is not a valid image") from exc
 
 
-def _freeze_inputs(segments, references, *, reference_limit: int):
+def freeze_h3_reference_frames(segments) -> MappingProxyType:
+    """Read and validate every frame in a physical group before transport."""
+    frozen_frames: dict[str, H3FrozenFrame] = {}
+    for segment in tuple(segments):
+        for raw_source in (segment.first_frame, segment.last_frame):
+            if not raw_source or raw_source in frozen_frames:
+                continue
+            source = str(raw_source)
+            path = Path(source)
+            if not path.is_file():
+                raise FileNotFoundError(f"H3 frame is unavailable: {path}")
+            content = path.read_bytes()
+            width, height, suffix = _image_metadata(content, label=f"frame {path}")
+            frozen_frames[source] = H3FrozenFrame(
+                source=source,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+                width=width,
+                height=height,
+                suffix=suffix,
+            )
+    return MappingProxyType(frozen_frames)
+
+
+def _selected_frozen_frames(segments, frozen_frames) -> dict[str, H3FrozenFrame]:
+    selected: dict[str, H3FrozenFrame] = {}
+    for segment in segments:
+        for raw_source in (segment.first_frame, segment.last_frame):
+            if not raw_source or raw_source in selected:
+                continue
+            source = str(raw_source)
+            try:
+                frame = frozen_frames[source]
+            except KeyError as exc:
+                raise ValueError(f"frame snapshot is missing: {source}") from exc
+            if not isinstance(frame, H3FrozenFrame):
+                raise TypeError("frozen_frames must contain H3FrozenFrame values")
+            if hashlib.sha256(frame.content).hexdigest() != frame.sha256:
+                raise ValueError(f"frame snapshot sha256 does not match content: {source}")
+            width, height, suffix = _image_metadata(
+                frame.content, label=f"frame snapshot {source}"
+            )
+            if (width, height, suffix) != (frame.width, frame.height, frame.suffix):
+                raise ValueError(f"frame snapshot metadata does not match content: {source}")
+            selected[source] = frame
+    return selected
+
+
+def _freeze_inputs(
+    segments,
+    references,
+    *,
+    reference_limit: int,
+    frozen_frames=None,
+):
     if isinstance(reference_limit, bool) or not isinstance(reference_limit, int):
         raise ValueError("reference_limit must be an integer from 1 to 10")
     if not 1 <= reference_limit <= 10:
@@ -99,30 +155,17 @@ def _freeze_inputs(segments, references, *, reference_limit: int):
             sha256=digest,
         ))
 
-    frozen_frames: dict[str, _FrozenFrame] = {}
-    for segment in segments:
-        for raw_source in (segment.first_frame, segment.last_frame):
-            if not raw_source or raw_source in frozen_frames:
-                continue
-            source = str(raw_source)
-            path = Path(source)
-            if not path.is_file():
-                raise FileNotFoundError(f"H3 frame is unavailable: {path}")
-            content = path.read_bytes()
-            width, height, suffix = _image_metadata(content, label=f"frame {path}")
-            frozen_frames[source] = _FrozenFrame(
-                source=source,
-                content=content,
-                sha256=hashlib.sha256(content).hexdigest(),
-                width=width,
-                height=height,
-                suffix=suffix,
-            )
+    snapshot = (
+        freeze_h3_reference_frames(segments)
+        if frozen_frames is None
+        else frozen_frames
+    )
+    selected_frames = _selected_frozen_frames(segments, snapshot)
     return (
         frozen_references,
         tuple(reference_models),
         tuple(reference_suffixes),
-        frozen_frames,
+        selected_frames,
     )
 
 
@@ -144,7 +187,7 @@ def _idempotency_input(
     *,
     timeline,
     references: tuple[ResolvedVideoReference, ...],
-    frames: dict[str, _FrozenFrame],
+    frames: dict[str, H3FrozenFrame],
     workflow_id: str,
     reference_limit: int,
     mode: str,
@@ -199,15 +242,18 @@ async def generate_h3_reference_director_video(
     global_references,
     reference_limit: int,
     workflow_id: str,
+    frozen_frames=None,
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> H3GenerationResult:
     """Submit H3 Ref using immutable bytes captured before remote I/O."""
     from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_data
-
     normalized_segments = tuple(segments)
     timeline = build_h3_timeline_data(normalized_segments, strict_first_frame=True)
     references, preflight_references, reference_suffixes, frames = _freeze_inputs(
-        normalized_segments, global_references, reference_limit=reference_limit
+        normalized_segments,
+        global_references,
+        reference_limit=reference_limit,
+        frozen_frames=frozen_frames,
     )
     output_settings = _director_output_settings(aspect_ratio, resolution)
     preflight_frames = {
@@ -235,10 +281,10 @@ async def generate_h3_reference_director_video(
     artifact_root = runtime_root / "artifacts"
     staging_parent = runtime_root / "staging"
     staging = staging_parent / uuid4().hex
-    staging.mkdir(parents=True, mode=0o700)
-    staging.chmod(0o700)
     client = None
     try:
+        staging.mkdir(parents=True, mode=0o700)
+        staging.chmod(0o700)
         client = runtime.create_client()
         uploaded_references = []
         for index, (reference, validated, suffix) in enumerate(
@@ -365,13 +411,32 @@ async def generate_h3_reference_director_video(
             ),
         )
     finally:
+        primary_error_active = sys.exc_info()[0] is not None
+        cleanup_errors: list[BaseException] = []
         if client is not None:
-            await client.close()
-        shutil.rmtree(staging, ignore_errors=True)
+            try:
+                await client.close()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        try:
+            shutil.rmtree(staging, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except BaseException as exc:
+            cleanup_errors.append(exc)
         try:
             staging_parent.rmdir()
-        except OSError:
+        except FileNotFoundError:
             pass
+        except OSError:
+            if staging_parent.exists() and not any(staging_parent.iterdir()):
+                cleanup_errors.append(OSError("H3 staging directory cleanup failed"))
+        if cleanup_errors and not primary_error_active:
+            raise cleanup_errors[0]
 
 
-__all__ = ["generate_h3_reference_director_video"]
+__all__ = [
+    "H3FrozenFrame",
+    "freeze_h3_reference_frames",
+    "generate_h3_reference_director_video",
+]

@@ -122,6 +122,63 @@ async def test_reference_adapter_requires_frozen_reference_arguments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reference_adapter_requires_reference_revision_before_generator() -> None:
+    import hashlib
+
+    from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+
+    calls = []
+    content = b"frozen"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=Path("gone.png"),
+        content=content, sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    async def generate(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+            first_frame="first.png",
+        ),),
+        output_path="out.mp4", aspect_ratio="9:16",
+        global_references=(reference,), reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+
+    with pytest.raises(ValueError, match="reference revision"):
+        await H3ReferenceWorkflowAdapter(generator=generate).generate_narrative_group(
+            object(), request
+        )
+    assert calls == []
+
+
+def test_narrative_group_request_preserves_legacy_six_positional_fields() -> None:
+    from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoRequest
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    def callback(_task_id):
+        return None
+    segment = H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+        first_frame="first.png",
+    )
+    request = NarrativeGroupVideoRequest(
+        (segment,), "out.mp4", "9:16", {"resolution": "1080p"}, "1080p", callback
+    )
+
+    assert request.on_provider_submitted is callback
+    assert request.mode == "auto"
+
+
+@pytest.mark.asyncio
 async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow() -> None:
     import hashlib
 
@@ -245,7 +302,9 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     from novelvideo.task_backend.runners import narrative_group_video_compose
 
     frame = tmp_path / "frame.png"
-    frame.write_bytes(b"frame")
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), "black").save(frame)
     reference_content = b"frozen-reference"
     reference = ResolvedVideoReference(
         reference_id="ref-1", source_kind="character_identity", label="阿明",
@@ -272,6 +331,7 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     requests = []
     snapshot_calls = []
     manifests = []
+    freeze_calls = []
 
     async def resolve_snapshot(**_kwargs):
         snapshot_calls.append(True)
@@ -307,6 +367,13 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     monkeypatch.setattr(
         narrative_group_video, "_reference_execution_snapshot", resolve_snapshot
     )
+    real_freeze = narrative_group_video.freeze_h3_reference_frames
+
+    def freeze_once(values):
+        freeze_calls.append(tuple(values))
+        return real_freeze(values)
+
+    monkeypatch.setattr(narrative_group_video, "freeze_h3_reference_frames", freeze_once)
     monkeypatch.setattr(
         narrative_group_video, "_video_workflow_adapters",
         lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
@@ -358,13 +425,29 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
 
     assert result["status"] == "completed"
     assert snapshot_calls == [True]
+    assert len(freeze_calls) == 1
     assert len(requests) == 2
     assert requests[0].global_references is requests[1].global_references
+    assert requests[0].frozen_frames is requests[1].frozen_frames
     assert requests[0].global_references == (reference,)
     assert {item.provider_workflow_id for item in requests} == {"2096502793044582401"}
     assert manifests[-1].provider_workflow_id == "2096502793044582401"
     assert manifests[-1].reference_settings_revision == 7
     assert manifests[-1].global_references[0].sha256 == reference.sha256
+    requests.clear()
+    missing = tmp_path / "missing.png"
+    segments[1] = segments[1].model_copy(update={"first_frame": str(missing)})
+
+    with pytest.raises(FileNotFoundError, match="frame"):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {
+                "group_id": "ng-01", "revision": 2, "plan_revision": 1,
+                "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+            }},
+            ctx,
+        )
+
+    assert requests == []
 
 
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):

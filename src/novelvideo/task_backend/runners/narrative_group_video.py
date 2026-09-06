@@ -48,6 +48,7 @@ from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    freeze_h3_reference_frames,
     generate_h3_reference_director_video,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
@@ -1007,6 +1008,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             )
             raise
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+        frozen_frames = (
+            freeze_h3_reference_frames(segments)
+            if global_references
+            else None
+        )
         evidenced_entries = _entries_with_evidence(
             timeline.entries, evidence_by_segment, default_status="submitted"
         )
@@ -1063,6 +1069,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             global_references=global_references,
                             reference_limit=reference_limit,
                             provider_workflow_id=provider_workflow_id,
+                            frozen_frames=frozen_frames,
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )
