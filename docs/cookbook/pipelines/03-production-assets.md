@@ -16,7 +16,7 @@
 | 对象 | 编辑事实 | 生成资产 | 版本化覆盖 | 当前边界 |
 | --- | --- | --- | --- | --- |
 | 角色 | `characters` 中的姓名、别名、性别、年龄组、体型、剧情描述、身份列表 | 角色 Portrait、身份 Portrait、服装参考、身份三视图 | 只有异步 `identity_image` 把身份三视图注册为 `character_state` 版本 | 角色 Portrait 与身份 Portrait 仍直接替换 canonical 文件并保留文件备份，不进入 production workflow slot |
-| 角色视觉设定 | `CharacterVisualWorkspace` 中的叙事事实、三套设计提案、选中提案和 `VisualBible` | confirmed `VisualBible` 编译为 Portrait 或跨年龄身份的提示词 | 不属于图片版本；它是生成输入的可追溯 revision | legacy `face_prompt` 被隔离为 `legacy_untrusted`，不能自动变成生成约束 |
+| 角色视觉设定 | `CharacterVisualWorkspace` 中的叙事事实、设计提案列表、选中提案和 `VisualBible` | confirmed `VisualBible` 编译为 async Portrait 或跨年龄身份的提示词 | 不属于图片版本；它是生成输入的可追溯 revision | 当前 UI 使用 async 路径并隔离 legacy `face_prompt`；同步兼容 API 仍会直接读取旧 prompt |
 | 场景 | `scenes` 中的 base、variant、time-of-day、环境提示词和变体提示词 | master、reverse master、spatial layout；另有 pano/3GS 管线 | 三种 `scene_reference_asset` 输出进入 `scene_base` 或 `scene_state` slot | pano 上传/生成和 3GS 属于导演世界资产路径，不由这三个版本组件统一管理 |
 | 道具 | 全局 `props`；以及从每集 `prop_menu` 投影出的 local 道具 | 单个或批量三视图 reference | `prop_reference_asset` 与 `batch_prop_ref` 输出进入 `prop_reference` slot | local 道具只有 episode-specific 展示字段，没有 global Store 记录和 canonical reference，不能直接走全局生成接口 |
 
@@ -29,11 +29,15 @@
 角色记录是叙事实体。`CharacterIdentity` 表示同一人物的年龄、职业或服装状态，`identity_id` 也成为人物状态 slot 的稳定键。`CharacterVisualWorkspace` 则把以下内容分开保存：
 
 1. `CharacterNarrativeProfile`：人物生平、职业、关系、性格，以及带原文行号、证据、置信度和 explicit/inferred 标记的事实。
-2. `CharacterDesignProposal`：创作性设计方向。当前质量门禁要求一组三套方案、恰好一套 recommended，并检查面部结构、至少三个身份锚点、个体结构、泛化审美词和名人参照。
+2. `CharacterDesignProposal`：创作性设计方向。领域函数 `validate_design_proposals` 定义了「一组三套、恰好一套 recommended」以及面部结构、至少三个身份锚点、个体结构、泛化审美词和名人参照等检查。
 3. `CharacterVisualBible`：从选中提案形成的草稿。人工确认时必须有 `confirmed_by`、face shape、至少两个 facial features 和至少三个 identity anchors。
 4. `LegacyVisualField`：来源无法证明的旧视觉文本，固定为 `legacy_untrusted` 且 `allowed_for_generation=false`。
 
-`update_character_visual_workspace` 选中 proposal 时会重建 draft bible；直接更新 bible 也会把状态退回 draft 并清空确认人。只有 `confirm_character_visual_bible` 成功以后，`compile_visual_prompt_snapshot` 才会把 confirmed bible、项目 style 和显式 reference paths 编译成提示词。`character_portrait` Runner 在调用媒体传输前检查这个门禁；缺失时返回 `CHARACTER_VISUAL_BIBLE_REQUIRED`。因此 `characters.face_prompt` 即使仍在兼容 schema 和页面字段中，也不能被当成可信的视觉身份设定。
+自动 workspace builder 会调用 `validate_design_proposals`，但该函数目前没有接入 visual-workspace PATCH 或 confirm API。`CharacterVisualWorkspaceUpdate.design_proposals` 接受 `list[dict]`，`update_character_visual_workspace` 最终只做 Pydantic workspace 校验；API 契约测试明确允许先写入单个 proposal，再选中并确认。`confirm_character_visual_bible` 检查的是 bible 的确认人、face shape、至少两个 facial features 和至少三个 identity anchors，不会重新检查提案数量、recommended 数量或 proposal quality issues。因此这些提案集合规则约束自动构建路径，不是当前在线编辑与确认 API 的门禁。
+
+`update_character_visual_workspace` 选中 proposal 时会重建 draft bible；直接更新 bible 也会把状态退回 draft 并清空确认人。只有 `confirm_character_visual_bible` 成功以后，`compile_visual_prompt_snapshot` 才会把 confirmed bible、项目 style 和显式 reference paths 编译成提示词。当前 UI 调用的 async `character_portrait` Runner 在媒体传输前检查这个门禁；缺失时返回 `CHARACTER_VISUAL_BIBLE_REQUIRED`，Runner 的 `_character_portrait_face_prompt` 也明确不信任 legacy `characters.face_prompt`。
+
+同步兼容路径尚未完成同一切换：`generate_single_portrait` 仍把 `character.face_prompt` 传给生成器，`generate_identity_portrait` 和同步 `generate_identity_image` 仍读取 `identity.face_prompt`；`frontend/src/lib/queries/characters.ts` 也继续导出 `useGeneratePortrait`、`useGenerateIdentityPortrait` 和 `useGenerateIdentityImage`。当前资产中心路由使用对应 async hooks，但其他调用方若使用同步 hooks，仍可绕过 confirmed `VisualBible` 语义。这是兼容缺口，不能把「legacy prompt 不参与生成」写成全局保证。
 
 身份图再增加一层状态约束：
 
@@ -173,19 +177,19 @@ sequenceDiagram
     PAPI-->>Versions: slot + versions + event
 ```
 
-场景采用多一步约束：`_scene_slot_canonical_relative_path` 会从 slot id、`scene_id` 和 `anchor_kind` 重新计算允许的 canonical 路径，元数据不匹配或试图覆盖别的场景时返回 409。master、reverse master 或 pano 采用成功后，还会清除对应的 `stale_reference_kinds`。人物状态与道具依赖候选元数据中的 project-relative `canonical_path`，API 仍会拒绝绝对路径、越出项目根的路径和不存在的候选文件。
+场景采用多一步约束：`_scene_slot_canonical_relative_path` 会从 slot id、`scene_id` 和 `anchor_kind` 重新计算允许的 canonical 路径，元数据不匹配或试图覆盖别的场景时返回 409。master、reverse master 或 pano 采用成功后，还会清除对应的 `stale_reference_kinds`。此外，`upload_scene_master` 和 `upload_scene_pano` 不经过 candidate/adoption：它们直接备份并更新 canonical，随后分别清除 `master` 或 `pano` stale；pano 上传还会把 stage manifest 的 `source` 更新为 `uploaded_360`。人物状态与道具依赖候选元数据中的 project-relative `canonical_path`，API 仍会拒绝绝对路径、越出项目根的路径和不存在的候选文件。
 
 ## 关键代码索引
 
 | 关注点 | 路径 | 关键符号 |
 | --- | --- | --- |
 | 资产中心路由与任务恢复 | `frontend/src/routes/_app/projects.$project/characters.lazy.tsx` | `ASSET_TABS`、`PortraitBlock`、`IdentityCard`、`CharactersPageContent`、`useTaskController`、`useTaskStream` |
-| 角色 Query | `frontend/src/lib/queries/characters.ts` | `useCharacterVisualWorkspace`、`useConfirmCharacterVisualBible`、`useGeneratePortraitAsync`、`useGenerateIdentityImageAsync`、`useUploadIdentityImage`、`useCharacterAssetHistory` |
+| 角色 Query | `frontend/src/lib/queries/characters.ts` | `useCharacterVisualWorkspace`、`useConfirmCharacterVisualBible`、`useGeneratePortraitAsync`、`useGenerateIdentityImageAsync`；同步兼容 `useGeneratePortrait`、`useGenerateIdentityPortrait`、`useGenerateIdentityImage` |
 | 场景 Query | `frontend/src/lib/queries/scenes.ts` | `ScenePayload`、`useScenes`、`useGenerateSceneMasterAsync`、`useGenerateSceneReverseAsync`、`useUploadSceneMaster` |
 | 道具 Query | `frontend/src/lib/queries/props.ts` | `PropPayload`、`useProps`、`useGeneratePropReferenceAsync`、`useUploadPropReference`、`useBatchGeneratePropReferences` |
 | 版本 Query 与前端契约 | `frontend/src/lib/queries/production-assets.ts` | `ProductionAssetVersion`、`useProductionAssetSlot`、`useAdoptProductionAssetVersion` |
 | 三类版本组件 | `frontend/src/components/assets/character-state-versions.tsx`、`scene-reference-versions.tsx`、`prop-reference-versions.tsx` | `CharacterStateVersions`、`SceneReferenceVersions`、`PropReferenceVersions` |
-| 角色 API | `src/novelvideo/api/routes/characters.py` | `get_character_visual_workspace`、`update_character_visual_workspace`、`confirm_character_visual_bible`、`generate_single_portrait_async`、`generate_identity_image_async`、`list_character_asset_history`、`restore_character_asset_history` |
+| 角色 API | `src/novelvideo/api/routes/characters.py` | visual workspace 三接口；async `generate_single_portrait_async`、`generate_identity_image_async`；同步兼容 `generate_single_portrait`、`generate_identity_portrait`、`generate_identity_image`；资产 history/restore |
 | 场景 API | `src/novelvideo/api/routes/scenes.py` | `_scene_payload`、`create_scene`、`update_scene`、`_start_scene_reference_task`、`upload_scene_master`、`upload_scene_pano` |
 | 道具 API | `src/novelvideo/api/routes/props.py` | `list_props`、`_local_episode_prop_payloads`、`generate_prop_reference`、`batch_generate_prop_references` |
 | 版本 API | `src/novelvideo/api/routes/production_assets.py` | `get_production_asset_slot`、`materialize_legacy_asset`、`register_production_asset_candidate`、`adopt_production_asset_version`、`_scene_slot_canonical_relative_path` |
@@ -194,6 +198,7 @@ sequenceDiagram
 | 场景与道具领域规则 | `src/novelvideo/production_workflow/scene_assets.py`、`prop_assets.py` | `plan_scene_state`、`SceneAnchorPack`、`plan_prop_asset`、`PropContentLayer` |
 | 三类生成 Runner | `src/novelvideo/task_backend/runners/character_image.py`、`scene_reference.py`、`prop_reference.py` | `_register_character_state_candidate`、`_register_scene_reference_candidate`、`_register_prop_candidate` |
 | 场景提示词生成 | `src/novelvideo/generators/scene_reference_images.py` | `_scene_context`、`build_scene_reference_prompt`、`generate_scene_reference_image` |
+| 角色视觉 API 契约 | `tests/test_api_characters_asset_contract.py` | `test_selecting_visual_proposal_builds_draft_bible_that_can_be_confirmed` 固化「单个 proposal 也能写入、选中和确认」的当前行为；`test_incomplete_visual_bible_cannot_be_confirmed` 覆盖 bible 完整性门禁 |
 
 ## 数据与产物
 
@@ -206,7 +211,7 @@ sequenceDiagram
 | 生成候选图片 | 三类 Runner | 对应资产目录的 `versions/` 子目录 | 版本组件预览；采用前不会替换已有 current |
 | production workflow sidecar | `ProductionWorkflowStore` | 项目 state 根的 `production_workflow.json` | slot、version、current version 和 adoption events；原子临时文件替换写入 |
 | canonical 图片 | 首个 provisional candidate、adopt API、旧上传接口 | `assets/characters/`、`assets/scenes/`、`assets/props/`；pano 位于 `director_worlds/` | 下游 path resolver 和媒体 URL 的兼容读取位置 |
-| 场景 stale 标志 | `AssetCompiler` 修复历史 prompt，以及场景上传/采用路径 | SQLite `scenes.stale_reference_kinds` | 页面提示 reference 需要重建；匹配的 master/reverse/pano 更新会清除标志 |
+| 场景 stale 标志 | `AssetCompiler` 修复历史 prompt，以及场景生成、上传和采用路径 | SQLite `scenes.stale_reference_kinds` | 首个 provisional reference、匹配版本的人工采用、master upload 或 pano upload 更新 canonical 后清除对应标志 |
 | 任务状态 | TaskBackend / `TaskStateManager` | 项目 task state | `useTaskController`、`useTaskStream` 和 Task Center 恢复进度、终态与错误 |
 
 `production_workflow.json` 损坏时，Store 清空内存状态并设置 `read_only_reason`。此时已有 canonical 文件仍可通过 legacy 只读视图展示，但注册、迁移和采用都会被拒绝；不要为了恢复写入而直接覆盖损坏 sidecar，先保留文件并确认可重建的 slot 与候选路径。
@@ -218,7 +223,7 @@ sequenceDiagram
 1. **前端类型与表单**：更新 `ScenePayload`、`SceneAsset`、`ScenesPanel` 的 create/edit draft 与展示。区分 base 字段和状态 delta；`effective_environment_prompt` 是 API 计算字段，不应从前端回写。
 2. **API schema 与命名**：同步 `SceneCreate`、`SceneUpdate`、`_scene_payload` 和 `_compose_scene_asset_name`。改变 `base_scene_id / variant_id / time_of_day` 会改变派生场景名称和 slot 身份，不能只更新 SQLite 字段。
 3. **提示词与 Runner**：检查 `build_scene_effective_prompt`、`_scene_context`、base reference 选择，以及 `generation_metadata` 是否需要冻结新字段。状态字段如果影响画面，还应决定它触发 relight 还是物化新 state。
-4. **Store / 产物**：更新场景后哪些 `stale_reference_kinds` 需要标记必须明确；重新生成只在首个 provisional 或人工采用后更新 canonical。已存在的旧 slot 不会随字段改名自动迁移。
+4. **Store / 产物**：更新场景后哪些 `stale_reference_kinds` 需要标记必须明确。版本化重新生成只在首个 provisional 或人工采用后更新 canonical；master/pano 上传则绕过版本采用层，直接更新 canonical 并清 stale。已存在的旧 slot 不会随字段改名自动迁移。
 5. **测试**：覆盖 base、variant、time plate、缺少 base master、stale 标记、slot id 和采用路径校验。
 
 ### 修改角色、场景或道具提示词
@@ -226,7 +231,7 @@ sequenceDiagram
 1. **输入来源**：角色先确认是 narrative fact、creative proposal、confirmed bible、identity appearance 还是 explicit reference；场景保持 base description 与 variant delta 分离；道具把外观和权威可读内容分离。
 2. **编译位置**：角色改 `compile_visual_prompt_snapshot` 或 `build_character_state_sheet_prompt`，场景改 `_scene_context` / `build_scene_reference_prompt`，道具改 `_prop_reference_prompt`。不要只改页面预览文案。
 3. **快照**：身份图把完整 prompt 放进 task result，prop 把 `prompt_snapshot` 放进 generation metadata；scene metadata 当前保存 scene/variant/time/recipe 和 anchor kind，但不保存完整 prompt。若补齐快照，需要同步 Runner 返回、版本类型和旧记录兼容。
-4. **门禁**：角色不得重新信任 legacy `face_prompt`；道具提示词不得允许模型输出成为权威文字；scene reference 仍固定走 persisted GRSAI runtime。
+4. **门禁**：若要求所有角色生成都不再信任 legacy `face_prompt`，还要迁移或移除三条同步兼容 API 与前端 sync hooks；当前只有 UI 使用的 async Runner 实施了这项约束。道具提示词不得允许模型输出成为权威文字；scene reference 仍固定走 persisted GRSAI runtime。
 5. **测试**：优先补纯 prompt/compiler 测试，再补 Runner 的 reference、metadata 和传输调用断言。
 
 ### 新增来源类型或让上传进入版本历史
@@ -260,7 +265,7 @@ sequenceDiagram
 | 角色 Portrait 在调用模型前失败 | visual workspace 的 `visual_bible.status`、确认人和身份锚点 | async Portrait 要求 confirmed bible；`CHARACTER_VISUAL_BIBLE_REQUIRED` 带 `transport_called=false`，先补全并确认，不要反复重试模型 |
 | 身份三视图提示缺 Portrait 或服装描述 | identity age、identity Portrait、角色 `portrait.png`、costume image、`appearance_details` | 同年龄默认需要角色 Portrait；跨年龄优先身份 Portrait，否则需要 confirmed bible；服装参考和描述至少有一个 |
 | 场景生成出来像基础场景，变体不明显 | `base_scene_id`、`variant_prompt`、`time_of_day`、实际 base master | delta 单独进入提示词；没有 base master 时只能靠文本保持空间，先核对 `_scene_context` 和 Runner 的 base lookup |
-| 场景图更新后仍显示 stale | `stale_reference_kinds`、本次是否真的更新 canonical | 后续 candidate 不清 stale；只有首个 provisional 更新 canonical，或人工采用匹配的 master/reverse/pano 后清除对应标志 |
+| 场景图更新后仍显示 stale | `stale_reference_kinds`、本次是否真的更新 canonical、操作是生成还是上传 | 后续 candidate 不清 stale；首个 provisional、人工采用匹配的 master/reverse/pano、master upload 和 pano upload 会在 canonical 更新后清除对应标志 |
 | 道具图片中文字不可读 | 是否把模型图当成最终可读内容 | Runner 有意禁止权威文字；应使用 `PropContentLayer` 的确定性后期合成，不能靠增加 prompt 重试解决 |
 | 本集 local 道具点击生成后找不到实体 | `/props` 的 `scope` 和 `source_episode` | local 记录来自 episode `prop_menu`，不在全局 props Store；先确认是否需要提升为全局正式资产 |
 | 第一次生成覆盖了 canonical，第二次没有 | slot current 与两个版本的 adoption status | 首个 QC-passed candidate 自动 provisional；后续只注册 candidate。这是防止重生成静默替换 current 的预期行为 |
@@ -293,7 +298,8 @@ rg -n '_register_character_state_candidate|_register_scene_reference_candidate|_
 
 rg -n 'CharacterVisualBible|legacy_untrusted|compile_visual_prompt_snapshot|plan_scene_state|plan_prop_asset|PropContentLayer' \
   src/novelvideo/character_visual \
-  src/novelvideo/production_workflow
+  src/novelvideo/production_workflow \
+  tests/test_api_characters_asset_contract.py
 ```
 
 修改采用、迁移或三类 Runner 时，运行这组小测试：
@@ -308,6 +314,7 @@ uv run pytest tests/character_visual
 
 ```bash
 uv run pytest \
+  tests/test_api_characters_asset_contract.py \
   tests/test_api_production_assets.py \
   tests/test_character_state_assets.py \
   tests/test_scene_reference_runner.py \
