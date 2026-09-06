@@ -353,8 +353,12 @@ Compiler 的输出不是裸 Prompt，而是版本化 Bundle：
 ```json
 {
   "schema_version": 1,
-  "shot_id": "shot-12",
-  "contract_revision": 3,
+  "segment_id": "shot-12--shot-13",
+  "source_shot_ids": ["shot-12", "shot-13"],
+  "contracts": [
+    {"shot_id": "shot-12", "revision": 3, "sha256": "..."},
+    {"shot_id": "shot-13", "revision": 2, "sha256": "..."}
+  ],
   "compiler_id": "minimax-h3-shot-compiler",
   "compiler_version": 1,
   "adapter": "base-h3",
@@ -368,6 +372,8 @@ Compiler 的输出不是裸 Prompt，而是版本化 Bundle：
   "diagnostics": []
 }
 ```
+
+`ShotContinuityContract` 始终按逻辑 `ShotPlan` 保存。一个物理 H3 segment 可以包含一到两个逻辑镜头，因此 Bundle 按 `source_shot_ids` 顺序冻结对应的多个 Contract revision；不能把双镜头单元折叠成一份契约并丢失内部边界。
 
 Bundle 内容变化必须产生新的 bundle hash。Provider 瞬时重试复用冻结的同一 Bundle，不能重新读取当前项目资产或当前 Contract。
 
