@@ -1,0 +1,46 @@
+schema_version: "nuomi-drama-scripts/0.3"
+skill: "nuomi-drama-scripts"
+project_name: "待定剧名"
+project_status: "brief"
+platform_adapter: "hongguo_manju"
+rule_checked_at: "2026-08-02"
+rule_recheck_before_delivery: true
+
+delivery:
+  first_episodes: 30
+  target_total_episodes: 80
+  markdown: true
+  screenplay_handoff: true
+  docx: optional
+  formats:
+    - markdown
+    - docx
+    - pdf
+  handoff_file: "deliverables/screenplay.md"
+  docx_template_profile: "templates/redfruit-68-wedding-profile.md"
+  output_basename: "待定剧名_前30集剧本_v1"
+  single_episode_docx: "剧名_E017_单集剧本.docx"
+  episode_duration_default_seconds: 90
+
+quality:
+  episode_body_min_chars: 300
+  episode_body_target_chars: 600
+  require_event_conflict_progress_hook: true
+  require_continuity_review: true
+  require_compliance_review: true
+  require_visual_render_qa: true
+
+rights:
+  story_source: "original_pending"
+  original_or_authorized: "pending"
+  adaptation_license: "not_applicable_pending"
+  image_voice_brand_clearance: "pending"
+  ai_assistance_disclosure: "pending"
+
+workflow:
+  current_gate: "S0"
+  approved_idea: false
+  approved_bible: false
+  approved_beats: false
+  episodes_written: 0
+  last_delivery_version: null
