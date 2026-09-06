@@ -7,3 +7,4 @@ onlyBuiltDependencies:
   - electron-winstaller
 
 blockExoticSubdeps: false
+verifyDepsBeforeRun: false

@@ -8,6 +8,10 @@ const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 );
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+const pnpmWorkspace = readFileSync(
+  new URL('../pnpm-workspace.yaml', import.meta.url),
+  'utf8',
+);
 const cookbookPackageJson = JSON.parse(
   readFileSync(new URL('../docs/cookbook/package.json', import.meta.url), 'utf8'),
 );
@@ -29,9 +33,13 @@ test('gitignore excludes VitePress build artifacts', () => {
   assert.ok(rules.has('/docs/cookbook/.vitepress/cache/'));
 });
 
+test('root scripts do not auto-install the whole workspace before running', () => {
+  assert.match(pnpmWorkspace, /^verifyDepsBeforeRun:\s*false$/m);
+});
+
 test('cookbook package exposes VitePress commands and Mermaid dependencies', () => {
   assert.deepEqual(cookbookPackageJson.scripts, {
-    dev: 'vitepress .',
+    dev: 'vitepress dev .',
     build: 'vitepress build .',
     preview: 'vitepress preview .',
   });
