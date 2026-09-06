@@ -940,14 +940,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             # one-beat-per-segment interpretation.
             render_state = {**render_state, "video_plan": {}}
         raw_segments = _build_segments(payload, beats, render_state)
-        if materialized_group is None:
-            materialized_group = next(
-                group for group in load_materialized_groups(project_dir, episode)
-                if group.id == group_id
-            )
-        durable_segment_ids = [
-            str(item.get("id")) for item in materialized_group.video_segments
-        ]
+        durable_segment_ids = (
+            [str(item.get("id")) for item in materialized_group.video_segments]
+            if materialized_group is not None
+            else [segment.segment_id for segment in raw_segments]
+        )
         if requested_segment_id:
             try:
                 requested_index = durable_segment_ids.index(requested_segment_id)
@@ -1108,18 +1105,20 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         ),
                     )
                     generated_segments.append((segment_index, segment, item))
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_id,
-                        status="completed", provider_task_id=item.provider_task_id,
-                        result={"output_path": str(item.output_path)},
-                    )
+                    if materialized_group is not None:
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_id,
+                            status="completed", provider_task_id=item.provider_task_id,
+                            result={"output_path": str(item.output_path)},
+                        )
                 except Exception as exc:
                     message = f"{type(exc).__name__}: {exc}"
                     segment_errors.append({"segment_id": segment.segment_id, "error": message})
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_id,
-                        status="failed", error=message,
-                    )
+                    if materialized_group is not None:
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_id,
+                            status="failed", error=message,
+                        )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")
             from novelvideo.task_backend.runners.narrative_group_video_compose import (
