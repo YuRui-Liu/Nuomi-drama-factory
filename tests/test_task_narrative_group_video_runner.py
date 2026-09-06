@@ -279,6 +279,10 @@ def test_runner_rejects_stale_reference_revision_before_running_or_transport(
                 "revision": 2,
                 "plan_revision": 1,
                 "reference_revision": 3,
+                "reference_contract_version": 1,
+                "reference_limit": 5,
+                "provider_workflow_id": "2096502793044582401",
+                "reference_snapshot_id": "a" * 32,
             },
         },
         ctx,
@@ -288,6 +292,34 @@ def test_runner_rejects_stale_reference_revision_before_running_or_transport(
     assert records == []
     assert reference_calls == []
     assert transport_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reference_execution_contract_rejects_runtime_workflow_drift(
+    monkeypatch,
+) -> None:
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    workflow = SimpleNamespace(
+        reference_policy=SimpleNamespace(max_images=5),
+        workflow_settings_key="minimax_h3_ref_workflow_id",
+    )
+    configured = SimpleNamespace(
+        workflow_id_for_key=lambda _key: "new-provider-workflow"
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_load_reference_runtime_configuration",
+        lambda *_args: configured,
+    )
+
+    with pytest.raises(ValueError, match="provider workflow.*changed"):
+        await narrative_group_video._reference_execution_snapshot(
+            workflow=workflow,
+            reference_limit=5,
+            provider_workflow_id="queued-provider-workflow",
+            reference_snapshot_id="a" * 32,
+        )
 
 
 def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
@@ -331,11 +363,30 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     requests = []
     snapshot_calls = []
     manifests = []
-    freeze_calls = []
+    load_calls = []
+
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+    frozen_frames = freeze_h3_reference_frames(segments, project_root=tmp_path)
 
     async def resolve_snapshot(**_kwargs):
         snapshot_calls.append(True)
-        return (reference,), 5, "2096502793044582401"
+
+    def load_snapshot(**kwargs):
+        load_calls.append(kwargs)
+        requested_sources = {
+            str(source) for source in kwargs["frame_sources"] if source
+        }
+        if not requested_sources.issubset(frozen_frames):
+            raise ValueError("frame snapshot is missing")
+        return SimpleNamespace(
+            reference_revision=7,
+            reference_limit=5,
+            provider_workflow_id="2096502793044582401",
+            references=(reference,),
+            frames=frozen_frames,
+        )
 
     class Adapter:
         async def generate_narrative_group(self, _ctx, request):
@@ -371,13 +422,9 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     monkeypatch.setattr(
         narrative_group_video, "_reference_execution_snapshot", resolve_snapshot
     )
-    real_freeze = narrative_group_video.freeze_h3_reference_frames
-
-    def freeze_once(values):
-        freeze_calls.append(tuple(values))
-        return real_freeze(values)
-
-    monkeypatch.setattr(narrative_group_video, "freeze_h3_reference_frames", freeze_once)
+    monkeypatch.setattr(
+        narrative_group_video, "load_h3_reference_input_snapshot", load_snapshot
+    )
     monkeypatch.setattr(
         narrative_group_video, "_video_workflow_adapters",
         lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
@@ -423,13 +470,16 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
         {"episode": 1, "payload": {
             "group_id": "ng-01", "revision": 2, "plan_revision": 1,
             "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+            "reference_contract_version": 1, "reference_limit": 5,
+            "provider_workflow_id": "2096502793044582401",
+            "reference_snapshot_id": "a" * 32,
         }},
         ctx,
     )
 
     assert result["status"] == "completed"
     assert snapshot_calls == [True]
-    assert len(freeze_calls) == 1
+    assert len(load_calls) == 1
     assert len(requests) == 2
     assert requests[0].global_references is requests[1].global_references
     assert requests[0].frozen_frames is requests[1].frozen_frames
@@ -452,11 +502,14 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     missing = tmp_path / "missing.png"
     segments[1] = segments[1].model_copy(update={"first_frame": str(missing)})
 
-    with pytest.raises(FileNotFoundError, match="frame"):
+    with pytest.raises(ValueError, match="frame snapshot"):
         narrative_group_video.run_narrative_group_video(
             {"episode": 1, "payload": {
                 "group_id": "ng-01", "revision": 2, "plan_revision": 1,
                 "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+                "reference_contract_version": 1, "reference_limit": 5,
+                "provider_workflow_id": "2096502793044582401",
+                "reference_snapshot_id": "a" * 32,
             }},
             ctx,
         )

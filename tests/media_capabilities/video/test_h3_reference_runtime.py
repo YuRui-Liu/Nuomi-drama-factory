@@ -57,7 +57,7 @@ def test_reference_idempotency_snapshot_changes_with_order_content_and_descripti
 
     def snapshot(references):
         frozen, _, _, frames = _freeze_inputs(
-            (segment,), references, reference_limit=5
+            (segment,), references, reference_limit=5, project_root=tmp_path
         )
         return _idempotency_input(
             timeline=timeline, references=frozen, frames=frames,
@@ -129,12 +129,12 @@ def test_frame_snapshot_enforces_single_file_byte_limit(tmp_path: Path, monkeypa
         runtime.freeze_h3_reference_frames((H3DirectorSegment(
             segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
             first_frame=str(frame),
-        ),))
+        ),), project_root=tmp_path)
     monkeypatch.setattr(runtime, "H3_FRAME_MAX_BYTES", frame.stat().st_size)
     assert runtime.freeze_h3_reference_frames((H3DirectorSegment(
         segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
         first_frame=str(frame),
-    ),))[str(frame)].content == frame.read_bytes()
+    ),), project_root=tmp_path)[str(frame)].content == frame.read_bytes()
 
 
 def test_frame_snapshot_enforces_pixel_and_format_limits(tmp_path: Path, monkeypatch) -> None:
@@ -147,12 +147,12 @@ def test_frame_snapshot_enforces_pixel_and_format_limits(tmp_path: Path, monkeyp
         runtime.freeze_h3_reference_frames((H3DirectorSegment(
             segment_id="large", beat_number=1, prompt="one", duration_seconds=2,
             first_frame=str(large),
-        ),))
+        ),), project_root=tmp_path)
     monkeypatch.setattr(runtime, "H3_FRAME_MAX_PIXELS", 16)
     assert runtime.freeze_h3_reference_frames((H3DirectorSegment(
         segment_id="large", beat_number=1, prompt="one", duration_seconds=2,
         first_frame=str(large),
-    ),))[str(large)].width == 4
+    ),), project_root=tmp_path)[str(large)].width == 4
 
     gif = tmp_path / "frame.gif"
     Image.new("RGB", (2, 2), "black").save(gif, format="GIF")
@@ -160,7 +160,7 @@ def test_frame_snapshot_enforces_pixel_and_format_limits(tmp_path: Path, monkeyp
         runtime.freeze_h3_reference_frames((H3DirectorSegment(
             segment_id="gif", beat_number=1, prompt="one", duration_seconds=2,
             first_frame=str(gif),
-        ),))
+        ),), project_root=tmp_path)
 
 
 def test_frame_snapshot_enforces_group_cumulative_byte_limit(
@@ -188,7 +188,7 @@ def test_frame_snapshot_enforces_group_cumulative_byte_limit(
                 segment_id="s2", beat_number=2, prompt="two", duration_seconds=2,
                 first_frame=str(second),
             ),
-        ))
+        ), project_root=tmp_path)
     monkeypatch.setattr(
         runtime,
         "H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES",
@@ -203,7 +203,220 @@ def test_frame_snapshot_enforces_group_cumulative_byte_limit(
             segment_id="s2", beat_number=2, prompt="two", duration_seconds=2,
             first_frame=str(second),
         ),
-    ))) == 2
+    ), project_root=tmp_path)) == 2
+
+
+@pytest.mark.parametrize("link_kind", ["ancestor", "final"])
+def test_frame_snapshot_rejects_symlinks_below_project_root(
+    tmp_path: Path, link_kind: str
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    frames = project / "frames"
+    outside = tmp_path / "outside"
+    frames.mkdir(parents=True)
+    outside.mkdir()
+    outside_frame = outside / "frame.png"
+    Image.new("RGB", (3, 3), "red").save(outside_frame)
+    if link_kind == "ancestor":
+        source = project / "linked" / "frame.png"
+        (project / "linked").symlink_to(outside, target_is_directory=True)
+    else:
+        source = frames / "frame.png"
+        source.symlink_to(outside_frame)
+
+    with pytest.raises(ValueError, match="no-follow|symlink|reparse"):
+        runtime.freeze_h3_reference_frames(
+            (H3DirectorSegment(
+                segment_id="unsafe", beat_number=1, prompt="one",
+                duration_seconds=2, first_frame=str(source),
+            ),),
+            project_root=project,
+        )
+
+
+def test_frame_snapshot_keeps_open_handle_content_when_path_is_replaced(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+    from novelvideo.narrative_groups import video_references
+
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "frame.png"
+    outside = tmp_path / "outside.png"
+    Image.new("RGB", (3, 3), "green").save(source)
+    Image.new("RGB", (3, 3), "red").save(outside)
+    original = source.read_bytes()
+    original_read = video_references.os.read
+    replaced = False
+
+    def replace_after_open(descriptor, size):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            source.unlink()
+            source.symlink_to(outside)
+        return original_read(descriptor, size)
+
+    monkeypatch.setattr(video_references.os, "read", replace_after_open)
+    frozen = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="race", beat_number=1, prompt="one",
+            duration_seconds=2, first_frame=str(source),
+        ),),
+        project_root=project,
+    )
+
+    assert frozen[str(source)].content == original
+    assert source.read_bytes() != original
+
+
+@pytest.mark.parametrize("reparse_target", ["parent", "file"])
+def test_frame_snapshot_rejects_windows_reparse_components(
+    tmp_path: Path, reparse_target: str
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    parent = project / "frames"
+    parent.mkdir(parents=True)
+    frame = parent / "first.png"
+    Image.new("RGB", (3, 3), "green").save(frame)
+
+    class Win32:
+        DIRECTORY = 0x10
+        REPARSE_POINT = 0x400
+        DISK_FILE_TYPE = 1
+
+        def open_path(self, path, *, directory):
+            return (Path(path), directory)
+
+        def attributes(self, handle):
+            path, directory = handle
+            reparse = (
+                reparse_target == "parent" and path == parent
+            ) or (reparse_target == "file" and path == frame)
+            return (self.DIRECTORY if directory else 0) | (
+                self.REPARSE_POINT if reparse else 0
+            )
+
+        def file_type(self, _handle):
+            return self.DISK_FILE_TYPE
+
+        def final_path_for_handle(self, handle):
+            return handle[0]
+
+        def file_size(self, _handle):
+            return frame.stat().st_size
+
+        def read_file(self, _handle, _max_bytes):
+            return frame.read_bytes()
+
+        def close(self, _handle):
+            return None
+
+    with pytest.raises(ValueError, match="reparse"):
+        runtime.freeze_h3_reference_frames(
+            (H3DirectorSegment(
+                segment_id="windows", beat_number=1, prompt="one",
+                duration_seconds=2, first_frame=str(frame),
+            ),),
+            project_root=project,
+            win32_adapter=Win32(),
+            platform_name="nt",
+        )
+
+
+def test_reference_input_snapshot_store_round_trips_without_source_paths(
+    tmp_path: Path,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    state = tmp_path / "state"
+    project.mkdir()
+    frame = project / "frames" / "first.png"
+    frame.parent.mkdir()
+    Image.new("RGB", (4, 5), "green").save(frame)
+    reference_content = _png_bytes()
+    references = (_reference(project / "private-ref.png", reference_content),)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+    frozen_frame_content = frame.read_bytes()
+
+    snapshot_id = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=references,
+        frames=frames,
+        reference_revision=7,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    Image.new("RGB", (4, 5), "red").save(frame)
+    loaded = runtime.load_h3_reference_input_snapshot(
+        state_root=state,
+        snapshot_id=snapshot_id,
+        frame_sources=(str(frame),),
+    )
+
+    assert loaded.reference_revision == 7
+    assert loaded.reference_limit == 5
+    assert loaded.provider_workflow_id == "2096502793044582401"
+    assert loaded.references[0].content == reference_content
+    assert loaded.frames[str(frame)].content == frozen_frame_content
+    assert loaded.frames[str(frame)].content != frame.read_bytes()
+    descriptor = next((state / "h3_reference_input_snapshots").rglob("snapshot.json"))
+    descriptor_text = descriptor.read_text(encoding="utf-8")
+    assert str(frame) not in descriptor_text
+    assert str(references[0].path) not in descriptor_text
+    assert "content" not in descriptor_text
+    assert runtime.delete_h3_reference_input_snapshot(
+        state_root=state, snapshot_id=snapshot_id
+    ) is True
+    assert runtime.delete_h3_reference_input_snapshot(
+        state_root=state, snapshot_id=snapshot_id
+    ) is False
+
+
+def test_reference_input_snapshot_store_rejects_tampered_blob(tmp_path: Path) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    frame = project / "frame.png"
+    Image.new("RGB", (3, 3), "green").save(frame)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+    state = tmp_path / "state"
+    snapshot_id = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=(_reference(project / "ref.png", _png_bytes()),),
+        frames=frames,
+        reference_revision=1,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    snapshot_dir = state / "h3_reference_input_snapshots" / snapshot_id
+    next((snapshot_dir / "frames").iterdir()).write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="sha256|image"):
+        runtime.load_h3_reference_input_snapshot(
+            state_root=state,
+            snapshot_id=snapshot_id,
+            frame_sources=(str(frame),),
+        )
 
 
 @pytest.mark.asyncio
@@ -232,7 +445,7 @@ async def test_reference_runtime_validates_all_local_inputs_before_upload(
     missing = tmp_path / "missing.png"
     reference = _reference(tmp_path / "deleted-reference.png", _png_bytes())
 
-    with pytest.raises(FileNotFoundError, match="frame"):
+    with pytest.raises(ValueError, match="missing.*H3 frame"):
         await runtime.generate_h3_reference_director_video(
             SimpleNamespace(runtime_dir=tmp_path / "runtime"),
             segments=(H3DirectorSegment(
@@ -267,7 +480,9 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
         segment_id="s1", beat_number=1, prompt="走近",
         duration_seconds=2, first_frame=str(first), last_frame=str(last),
     )
-    frozen_frames = runtime.freeze_h3_reference_frames((segment,))
+    frozen_frames = runtime.freeze_h3_reference_frames(
+        (segment,), project_root=tmp_path
+    )
     frozen_first = first.read_bytes()
     frozen_last = last.read_bytes()
     first.write_bytes(b"changed-after-group-preflight")

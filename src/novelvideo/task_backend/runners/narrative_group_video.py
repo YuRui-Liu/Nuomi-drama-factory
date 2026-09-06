@@ -48,8 +48,8 @@ from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
-    freeze_h3_reference_frames,
     generate_h3_reference_director_video,
+    load_h3_reference_input_snapshot,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
@@ -115,40 +115,36 @@ def _video_workflow_adapters():
 
 async def _reference_execution_snapshot(
     *,
-    ctx: ProjectContext,
-    project_dir: Path,
-    episode: int,
-    group: object,
     workflow: VideoWorkflowDefinition,
+    reference_limit: int,
+    provider_workflow_id: str,
+    reference_snapshot_id: str,
 ):
     from novelvideo.api.deps import (
         get_media_capability_store,
         get_media_credential_resolver,
-        make_sqlite_store_for_context,
     )
+
+    if int(reference_limit) != int(workflow.reference_policy.max_images):
+        raise ValueError("queued reference limit changed from workflow definition")
+    if not str(reference_snapshot_id).strip():
+        raise ValueError("reference_snapshot_id is required")
+    runtime = _load_reference_runtime_configuration(
+        get_media_capability_store(), get_media_credential_resolver()
+    )
+    current_workflow_id = runtime.workflow_id_for_key(
+        workflow.workflow_settings_key
+    )
+    if str(current_workflow_id) != str(provider_workflow_id):
+        raise ValueError("queued provider workflow changed from runtime configuration")
+
+
+def _load_reference_runtime_configuration(*args):
     from novelvideo.media_capabilities.runtime.configuration import (
         load_runninghub_runtime_configuration,
     )
-    from novelvideo.narrative_groups.video_references import (
-        resolve_saved_video_references,
-    )
 
-    reference_limit = workflow.reference_policy.max_images
-    store = await make_sqlite_store_for_context(ctx)
-    references = await resolve_saved_video_references(
-        store=store,
-        project_dir=project_dir,
-        episode_number=episode,
-        group=group,
-        max_images=reference_limit,
-    )
-    runtime = load_runninghub_runtime_configuration(
-        get_media_capability_store(), get_media_credential_resolver()
-    )
-    provider_workflow_id = runtime.workflow_id_for_key(
-        workflow.workflow_settings_key
-    )
-    return references, reference_limit, provider_workflow_id
+    return load_runninghub_runtime_configuration(*args)
 
 
 def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, ...]:
@@ -892,8 +888,24 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     reference_revision = None
     reference_limit = None
     provider_workflow_id = None
+    reference_snapshot_id = None
+    frozen_frames = None
     reference_policy = getattr(workflow, "reference_policy", None)
     if getattr(reference_policy, "required", False):
+        contract_version = payload.get("reference_contract_version")
+        if isinstance(contract_version, bool) or contract_version != 1:
+            raise ValueError("reference_contract_version 1 is required")
+        try:
+            raw_reference_limit = payload["reference_limit"]
+            if isinstance(raw_reference_limit, bool):
+                raise TypeError
+            reference_limit = int(raw_reference_limit)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("reference_limit is required") from exc
+        provider_workflow_id = str(payload.get("provider_workflow_id") or "").strip()
+        if not provider_workflow_id:
+            raise ValueError("provider_workflow_id is required")
+        reference_snapshot_id = str(payload.get("reference_snapshot_id") or "").strip()
         materialized_group = next(
             group for group in load_materialized_groups(project_dir, episode)
             if group.id == group_id
@@ -905,16 +917,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             or int(requested_reference_revision) != int(reference_revision)
         ):
             return {"status": "stale", "group_id": group_id, "revision": revision}
-        (
-            global_references,
-            reference_limit,
-            provider_workflow_id,
-        ) = await _reference_execution_snapshot(
-            ctx=ctx,
-            project_dir=project_dir,
-            episode=episode,
-            group=materialized_group,
+        await _reference_execution_snapshot(
             workflow=workflow,
+            reference_limit=reference_limit,
+            provider_workflow_id=provider_workflow_id,
+            reference_snapshot_id=reference_snapshot_id,
         )
     reference_manifest_fields = {
         "provider_workflow_id": provider_workflow_id,
@@ -965,6 +972,29 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 "status": "skipped", "reason": "nonvisual_beats",
                 "group_id": group_id, "revision": revision,
             }
+        if getattr(reference_policy, "required", False):
+            frame_sources = tuple(
+                str(source)
+                for segment in raw_segments
+                for source in (segment.first_frame, segment.last_frame)
+                if source
+            )
+            input_snapshot = load_h3_reference_input_snapshot(
+                state_root=ctx.state_dir,
+                snapshot_id=reference_snapshot_id,
+                frame_sources=frame_sources,
+            )
+            if (
+                input_snapshot.reference_revision != reference_revision
+                or input_snapshot.reference_limit != reference_limit
+                or input_snapshot.provider_workflow_id != provider_workflow_id
+            ):
+                raise ValueError("queued H3 reference snapshot contract does not match payload")
+            global_references = input_snapshot.references
+            frozen_frames = input_snapshot.frames
+            reference_manifest_fields["global_references"] = (
+                _reference_manifest_entries(global_references)
+            )
         segment_beats = _canonical_beats_for_segments(raw_segments, beats)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         segment_suffix = (
@@ -1036,11 +1066,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             )
             raise
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
-        frozen_frames = (
-            freeze_h3_reference_frames(segments)
-            if global_references
-            else None
-        )
+        if global_references and frozen_frames is None:
+            raise ValueError("queued H3 reference frame snapshot is required")
         evidenced_entries = _entries_with_evidence(
             timeline.entries, evidence_by_segment, default_status="submitted"
         )
