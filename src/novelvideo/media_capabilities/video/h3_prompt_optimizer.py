@@ -38,8 +38,19 @@ from .models import H3Mode
 
 _FORMAT_VERSION = 4
 _MAX_CONTINUITY_JSON_BYTES = 64 * 1024
+_RESERVED_CONTINUITY_RENDER_TOKENS = (
+    "begin_untrusted_continuity_data",
+    "end_untrusted_continuity_data",
+    "continuity_locks_json",
+    "continuity_contracts_json",
+    "risk_report_json",
+)
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 DirectorModelFactory = Callable[[], Any]
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 class H3PromptOptimizationError(RuntimeError):
@@ -75,9 +86,18 @@ class H3PromptContext(BaseModel):
         if any(unicodedata.category(char) == "Cc" for char in value):
             raise ValueError("continuity JSON must not contain a control character")
         try:
-            json.loads(value)
+            decoded = json.loads(
+                value,
+                parse_constant=_reject_non_finite_json_constant,
+            )
         except json.JSONDecodeError as exc:
             raise ValueError("continuity data must be valid JSON") from exc
+        decoded_text = json.dumps(decoded, ensure_ascii=False).casefold()
+        if any(
+            token in decoded_text
+            for token in _RESERVED_CONTINUITY_RENDER_TOKENS
+        ):
+            raise ValueError("continuity JSON contains a reserved rendering token")
         return value
 
 
