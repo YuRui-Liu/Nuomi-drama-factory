@@ -61,7 +61,15 @@ def signals_for_shot(
         clause.strip() for clause in _CLAUSE_SEPARATOR.split(shot.action) if clause.strip()
     )
     action_text = shot.action.casefold()
-    direction_hits = tuple(word for word in _DIRECTION_WORDS if word in action_text)
+    direction_hits = tuple(
+        word
+        for word in _DIRECTION_WORDS
+        if (
+            word in action_text
+            if not word.isascii()
+            else re.search(rf"\b{re.escape(word)}\b", action_text) is not None
+        )
+    )
 
     return ShotRiskSignals(
         subject_count=max(1, len(contract.subjects)),

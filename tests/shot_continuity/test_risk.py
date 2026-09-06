@@ -122,6 +122,20 @@ def test_direction_changes_count_unique_action_tokens() -> None:
     assert signals.direction_changes == 1
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        "leftovers brighten",
+        "The leftovers brighten straightforwardly.",
+    ],
+)
+def test_direction_changes_ignore_english_direction_substrings(action: str) -> None:
+    signals = signals_for_shot(_shot(action=action), _contract())
+
+    assert signals.direction_changes == 0
+    assert motion_score(signals).level == 0
+
+
 def test_direction_changes_ignore_non_action_shot_text() -> None:
     signals = signals_for_shot(
         _shot(action="waits", camera_angle="left", composition="subject on right"),
