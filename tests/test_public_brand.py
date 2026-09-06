@@ -311,6 +311,31 @@ def test_commented_negative_assertion_is_not_allowlisted() -> None:
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "const x = 1; // expect(label).not.toMatch(/DramaClaw/);",
+        "const x = 1; /* expect(label).not.toMatch(/DramaClaw/) */",
+    ],
+)
+def test_inline_commented_negative_assertion_is_not_allowlisted(line: str) -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        line,
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
+
+
+def test_https_before_real_negative_assertion_is_not_a_comment() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        'const url = "https://example.test"; expect(label).not.toMatch(/DramaClaw/);',
+    ) == []
+
+
 def test_explicit_allowlist_rejects_unknown_machine_brand() -> None:
     scanner = _load_scanner()
 

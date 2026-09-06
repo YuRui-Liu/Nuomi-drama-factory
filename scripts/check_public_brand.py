@@ -153,6 +153,29 @@ def _compatibility_spans(line: str) -> list[tuple[int, int]]:
     ]
 
 
+def _inline_comment_start(line: str) -> int | None:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if character == "\\":
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {'"', "'", "`"}:
+            quote = character
+            index += 1
+            continue
+        if line.startswith(("//", "/*"), index):
+            return index
+        index += 1
+    return None
+
+
 def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
     normalized = path.as_posix()
     patterns: list[re.Pattern[str]] = []
@@ -181,9 +204,12 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
         or normalized.endswith(".test.ts")
         or normalized.endswith(".test.tsx")
     )
-    if is_test_file and not line.lstrip().startswith(("//", "#", "/*", "*")):
+    comment_start = _inline_comment_start(line)
+    if is_test_file and not line.lstrip().startswith(("#", "*")):
         spans.extend(
-            match.span("literal") for match in _TEST_NEGATIVE_ASSERTION.finditer(line)
+            match.span("literal")
+            for match in _TEST_NEGATIVE_ASSERTION.finditer(line)
+            if comment_start is None or match.start() < comment_start
         )
     return spans
 
