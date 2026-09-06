@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
@@ -26,6 +27,16 @@ _ASPECT_LABELS = {
 }
 
 
+def _normalize_single_line_identifier(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context} must be a non-empty string")
+    if value.splitlines() != [value] or any(
+        unicodedata.category(character) == "Cc" for character in value
+    ):
+        raise ValueError(f"{context} must be a single line without control characters")
+    return value.strip()
+
+
 class H3GlobalReference(BaseModel):
     """One ordered reference asset after upload, before payload compilation."""
 
@@ -42,8 +53,6 @@ class H3GlobalReference(BaseModel):
         "reference_id",
         "source_kind",
         "label",
-        "uploaded_url",
-        "sha256",
         mode="before",
     )
     @classmethod
@@ -53,6 +62,18 @@ class H3GlobalReference(BaseModel):
             if not value:
                 raise ValueError("value must not be blank")
         return value
+
+    @field_validator("uploaded_url", mode="before")
+    @classmethod
+    def validate_uploaded_url(cls, value: object) -> str:
+        return _normalize_single_line_identifier(value, context="uploaded_url")
+
+    @field_validator("sha256", mode="before")
+    @classmethod
+    def validate_sha256(cls, value: object) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError("sha256 must contain exactly 64 hexadecimal characters")
+        return value.lower()
 
     @field_validator("subject_description", mode="before")
     @classmethod
@@ -88,10 +109,24 @@ def _output_settings(aspect_ratio: str, resolution: str) -> dict[str, object]:
     }
 
 
-def _image(value: object) -> dict[str, object] | None:
+def _normalize_image_payload(
+    value: object,
+    *,
+    segment_id: str,
+    frame_kind: Literal["first", "last"],
+) -> dict[str, object]:
+    context = f"segment {segment_id} {frame_kind} frame"
     if isinstance(value, Mapping):
-        return dict(value)
-    return {"imageFile": value} if value else None
+        normalized = dict(value)
+    elif isinstance(value, str):
+        normalized = {"imageFile": value}
+    else:
+        raise ValueError(f"{context} must be a string or mapping")
+    normalized["imageFile"] = _normalize_single_line_identifier(
+        normalized.get("imageFile"),
+        context=f"{context} imageFile",
+    )
+    return normalized
 
 
 def _normalize_references(
@@ -112,6 +147,7 @@ def _normalize_references(
 
     reference_ids: set[str] = set()
     uploaded_urls: set[str] = set()
+    content_hashes: set[str] = set()
     for reference in normalized:
         if not isinstance(reference, H3GlobalReference):
             raise TypeError("references must contain H3GlobalReference values")
@@ -119,8 +155,11 @@ def _normalize_references(
             raise ValueError(f"duplicate reference_id: {reference.reference_id}")
         if reference.uploaded_url in uploaded_urls:
             raise ValueError(f"duplicate uploaded_url: {reference.uploaded_url}")
+        if reference.sha256 in content_hashes:
+            raise ValueError(f"duplicate sha256: {reference.sha256}")
         reference_ids.add(reference.reference_id)
         uploaded_urls.add(reference.uploaded_url)
+        content_hashes.add(reference.sha256)
     return normalized
 
 
@@ -133,6 +172,10 @@ def _segment_mode(
     if requested_mode == "auto":
         return "Ref-FL2V" if last_frame else "Ref-I2V"
     if requested_mode == "i2va":
+        if last_frame:
+            raise ValueError(
+                f"i2va mode does not allow a last frame for segment {segment_id}"
+            )
         return "Ref-I2V"
     if not last_frame:
         raise ValueError(f"segment {segment_id} requires a last frame in fl2va mode")
@@ -164,19 +207,36 @@ def build_h3_reference_timeline_payload(
     if requested_mode not in {"auto", "i2va", "fl2va"}:
         raise ValueError("mode must be auto, i2va, or fl2va")
 
-    frame_uploads = uploaded_frames or {}
     shots: list[dict[str, Any]] = []
     segments: list[dict[str, Any]] = []
     for index, entry in enumerate(timeline.entries):
         source = entry.segment
         if not source.first_frame:
             raise ValueError(f"segment {source.segment_id} requires a first frame")
-        first = _image(frame_uploads.get(source.first_frame, source.first_frame))
-        last = _image(
-            frame_uploads.get(source.last_frame, source.last_frame)
-            if source.last_frame
-            else None
+        if uploaded_frames is not None and source.first_frame not in uploaded_frames:
+            raise ValueError(
+                f"segment {source.segment_id} first frame is missing from uploaded_frames"
+            )
+        first = _normalize_image_payload(
+            source.first_frame
+            if uploaded_frames is None
+            else uploaded_frames[source.first_frame],
+            segment_id=source.segment_id,
+            frame_kind="first",
         )
+        last = None
+        if source.last_frame:
+            if uploaded_frames is not None and source.last_frame not in uploaded_frames:
+                raise ValueError(
+                    f"segment {source.segment_id} last frame is missing from uploaded_frames"
+                )
+            last = _normalize_image_payload(
+                source.last_frame
+                if uploaded_frames is None
+                else uploaded_frames[source.last_frame],
+                segment_id=source.segment_id,
+                frame_kind="last",
+            )
         segment_mode = _segment_mode(
             requested_mode,
             segment_id=source.segment_id,
