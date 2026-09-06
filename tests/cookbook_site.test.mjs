@@ -146,6 +146,7 @@ test('cookbook home documents the HTML reading commands', () => {
   for (const command of ['pnpm docs:dev', 'pnpm docs:build', 'pnpm docs:preview']) {
     assert.match(home, new RegExp(command.replace(':', '\\:')));
   }
+  assert.match(home, /pnpm --dir docs\/cookbook install/);
   assert.match(home, /HTML 阅读入口/);
   assert.match(home, /仓库根目录/);
   assert.match(home, /Markdown 仍是唯一内容源/);
