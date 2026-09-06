@@ -39,6 +39,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     DialogueSource,
     H3DirectorOutputManifest,
     H3DirectorSegment,
+    H3GenerationAttemptEvidence,
     H3TimelineEntry,
     build_h3_timeline_data,
     save_h3_director_manifest,
@@ -498,6 +499,34 @@ def _manifest_with_status(
     return H3DirectorOutputManifest.model_validate(payload)
 
 
+def _append_attempt(
+    manifest: H3DirectorOutputManifest,
+    segment_id: str,
+    evidence: H3GenerationAttemptEvidence,
+) -> H3DirectorOutputManifest:
+    if not any(
+        entry.segment.segment_id == segment_id for entry in manifest.entries
+    ):
+        raise ValueError(f"unknown segment: {segment_id}")
+    entries = []
+    for entry in manifest.entries:
+        if entry.segment.segment_id != segment_id:
+            entries.append(entry)
+            continue
+        expected = len(entry.attempts) + 1
+        if evidence.attempt != expected:
+            raise ValueError(
+                f"next attempt for segment {segment_id} must be {expected}"
+            )
+        entries.append(entry.model_copy(update={
+            "attempts": (*entry.attempts, evidence),
+        }))
+    return H3DirectorOutputManifest.model_validate({
+        **manifest.model_dump(mode="python"),
+        "entries": tuple(entries),
+    })
+
+
 def _finalize_segment_manifest(
     manifest: H3DirectorOutputManifest,
     *,
@@ -930,15 +959,6 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             NarrativeGroupVideoRequest,
         )
 
-        async def on_provider_submitted(provider_task_id: str) -> None:
-            nonlocal manifest
-            manifest = _manifest_with_status(
-                manifest,
-                "submitted",
-                provider_task_id=provider_task_id,
-            )
-            save_h3_director_manifest(manifest_path, manifest)
-
         try:
             generated_segments = []
             segment_errors = []
@@ -947,6 +967,29 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 segment_output = output.with_name(
                     f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
                 )
+
+                async def on_provider_submitted(provider_task_id: str) -> None:
+                    nonlocal manifest
+                    manifest = _manifest_with_status(
+                        manifest,
+                        "submitted",
+                        provider_task_id=provider_task_id,
+                    )
+                    entry = next(
+                        item for item in manifest.entries
+                        if item.segment.segment_id == segment.segment_id
+                    )
+                    manifest = _append_attempt(
+                        manifest,
+                        segment.segment_id,
+                        H3GenerationAttemptEvidence(
+                            attempt=len(entry.attempts) + 1,
+                            status="submitted",
+                            provider_task_id=provider_task_id,
+                        ),
+                    )
+                    save_h3_director_manifest(manifest_path, manifest)
+
                 try:
                     item = await adapter.generate_narrative_group(
                         ctx,
@@ -958,18 +1001,52 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    entry = next(
+                        current for current in manifest.entries
+                        if current.segment.segment_id == segment.segment_id
+                    )
+                    provider_task_id = (
+                        entry.attempts[-1].provider_task_id
+                        if entry.attempts else None
+                    )
+                    manifest = _append_attempt(
+                        manifest,
+                        segment.segment_id,
+                        H3GenerationAttemptEvidence(
+                            attempt=len(entry.attempts) + 1,
+                            status="transport_failed",
+                            provider_task_id=provider_task_id,
+                            error_code=type(exc).__name__,
+                        ),
+                    )
+                    save_h3_director_manifest(manifest_path, manifest)
+                    segment_errors.append({"segment_id": segment.segment_id, "error": message})
+                    record_video_segment_result(
+                        project_dir, episode, group_id, durable_segment_id,
+                        status="failed", error=message,
+                    )
+                else:
+                    entry = next(
+                        current for current in manifest.entries
+                        if current.segment.segment_id == segment.segment_id
+                    )
+                    manifest = _append_attempt(
+                        manifest,
+                        segment.segment_id,
+                        H3GenerationAttemptEvidence(
+                            attempt=len(entry.attempts) + 1,
+                            status="completed",
+                            provider_task_id=item.provider_task_id,
+                        ),
+                    )
+                    save_h3_director_manifest(manifest_path, manifest)
                     generated_segments.append((segment_index, segment, item))
                     record_video_segment_result(
                         project_dir, episode, group_id, durable_segment_id,
                         status="completed", provider_task_id=item.provider_task_id,
                         result={"output_path": str(item.output_path)},
-                    )
-                except Exception as exc:
-                    message = f"{type(exc).__name__}: {exc}"
-                    segment_errors.append({"segment_id": segment.segment_id, "error": message})
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_id,
-                        status="failed", error=message,
                     )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")

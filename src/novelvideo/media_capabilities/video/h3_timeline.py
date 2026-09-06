@@ -32,6 +32,33 @@ class H3TransitionRule(BaseModel):
     source: str = Field(min_length=1)
 
 
+class H3GenerationAttemptEvidence(BaseModel):
+    model_config = _MODEL_CONFIG
+    attempt: int = Field(gt=0)
+    status: Literal[
+        "submitted", "completed", "transport_failed", "quality_rejected"
+    ]
+    provider_task_id: str | None = None
+    error_code: str | None = None
+
+
+class H3ObservedBoundary(BaseModel):
+    model_config = _MODEL_CONFIG
+    value: str = Field(min_length=1)
+    source_contract_revision: int = Field(gt=0)
+    result_contract_revision: int = Field(gt=0)
+    accepted: bool = False
+    deviation_reason: str = ""
+    lock_violations: tuple[
+        Literal["identity", "spatial", "prop", "camera", "lighting"], ...
+    ] = ()
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def trim_value(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 def transition_for(
     relation: str,
     *,
@@ -106,16 +133,40 @@ class H3TimelineEntry(BaseModel):
     prompt_profile: dict[str, Any] | None = None
     quality_report: dict[str, Any] | None = None
     input_summary: dict[str, Any] | None = None
+    continuity_contracts: tuple[dict[str, Any], ...] = ()
+    risk_report: dict[str, Any] | None = None
+    mode_decision: dict[str, Any] | None = None
+    compiled_bundle: dict[str, Any] | None = None
+    attempts: tuple[H3GenerationAttemptEvidence, ...] = ()
+    observed_carry_out: H3ObservedBoundary | None = None
     status: Literal[
         "planned",
         "submitted",
         "generated",
         "completed",
+        "partial_failure",
         "quality_rejected",
         "transport_failed",
         "postprocess_failed",
         "quality_mismatch",
     ] = "completed"
+
+    @field_validator(
+        "continuity_contracts", "risk_report", "mode_decision", "compiled_bundle",
+        mode="before",
+    )
+    @classmethod
+    def snapshot_continuity_evidence(cls, value: object) -> object:
+        return deepcopy(value)
+
+    @field_validator("attempts")
+    @classmethod
+    def validate_attempt_sequence(
+        cls, value: tuple[H3GenerationAttemptEvidence, ...]
+    ) -> tuple[H3GenerationAttemptEvidence, ...]:
+        if [item.attempt for item in value] != list(range(1, len(value) + 1)):
+            raise ValueError("attempts must be contiguous from 1")
+        return value
 
     @model_validator(mode="after")
     def derive_metadata(self) -> "H3TimelineEntry":
@@ -174,7 +225,7 @@ class H3DirectorOutputManifest(BaseModel):
     entries: tuple[H3TimelineEntry, ...] = Field(min_length=1)
     fps: Literal[24] = H3_FPS
     total_frames: int = Field(default=0, ge=0)
-    format_version: int = Field(default=1, gt=0)
+    format_version: int = Field(default=2, gt=0)
     workflow_id: str | None = None
     provider_task_id: str | None = None
     workflow_parameters: dict[str, str] = Field(default_factory=dict)
@@ -193,6 +244,7 @@ class H3DirectorOutputManifest(BaseModel):
         "submitted",
         "generated",
         "completed",
+        "partial_failure",
         "quality_rejected",
         "transport_failed",
         "postprocess_failed",
@@ -333,6 +385,8 @@ __all__ = [
     "H3DirectorManifest",
     "H3DirectorOutputManifest",
     "H3DirectorSegment",
+    "H3GenerationAttemptEvidence",
+    "H3ObservedBoundary",
     "H3CompiledTimeline",
     "H3Timeline",
     "H3TimelineEntry",

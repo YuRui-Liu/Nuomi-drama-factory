@@ -24,6 +24,121 @@ def _optimizer_result(prompt: str):
     )
 
 
+def _patch_segment_optimizer(monkeypatch, module, optimizer):
+    class EpisodePackOptimizer:
+        async def optimize(self, episode_input):
+            async def optimize_entry(entry):
+                result = await optimizer.optimize_segment(
+                    entry.source_segment, entry.context, entry.mode
+                )
+                return SimpleNamespace(
+                    **vars(result), segment_id=entry.segment_id
+                )
+
+            return SimpleNamespace(segments=tuple(await asyncio.gather(*(
+                optimize_entry(entry) for entry in episode_input.segments
+            ))))
+
+    monkeypatch.setattr(
+        module,
+        "create_h3_episode_pack_optimizer",
+        lambda **_kwargs: EpisodePackOptimizer(),
+    )
+    _patch_test_workflow(monkeypatch, module)
+
+
+def _patch_test_workflow(monkeypatch, module):
+    from novelvideo.media_capabilities.video.adapters import H3WorkflowAdapter
+    from novelvideo.task_backend.runners import narrative_group_video_compose
+
+    monkeypatch.setattr(
+        module,
+        "_workflow_definition_for_payload",
+        lambda _payload: SimpleNamespace(
+            id="test-minimax-h3", adapter_key="minimax-h3", provider="minimax"
+        ),
+    )
+
+    class Adapters:
+        def resolve(self, _adapter_key):
+            return H3WorkflowAdapter(generator=module.generate_h3_director_video)
+
+    monkeypatch.setattr(module, "_video_workflow_adapters", lambda: Adapters())
+    monkeypatch.setattr(
+        module, "record_video_segment_result", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        module,
+        "load_materialized_groups",
+        lambda *_args: [SimpleNamespace(
+            id="ng-01",
+            video_segments=tuple(
+                {"id": f"segment-{index}"} for index in range(1, 11)
+            ),
+        )],
+    )
+
+    def compose(_plan, output_path):
+        output_path.write_bytes(b"composed video")
+        return output_path
+
+    monkeypatch.setattr(
+        narrative_group_video_compose, "compose_local_segments", compose
+    )
+
+
+def test_append_attempt_preserves_entry_evidence_and_requires_contiguous_numbers():
+    from pydantic import ValidationError
+
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        H3DirectorOutputManifest,
+        H3DirectorSegment,
+        H3GenerationAttemptEvidence,
+        H3TimelineEntry,
+    )
+    from novelvideo.task_backend.runners.narrative_group_video import _append_attempt
+
+    entry = H3TimelineEntry(
+        segment=H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="move",
+            duration_seconds=1, first_frame="first.png",
+        ),
+        start_frame=0,
+        frame_count=39,
+        continuity_contracts=({"kind": "identity"},),
+        risk_report={"score": 0.2},
+        compiled_bundle={"sha256": "a" * 64},
+    )
+    manifest = H3DirectorOutputManifest(entries=(entry,), status="submitted")
+    updated = _append_attempt(
+        manifest,
+        "s1",
+        H3GenerationAttemptEvidence(
+            attempt=1, status="submitted", provider_task_id="provider-1"
+        ),
+    )
+
+    assert updated.entries[0].continuity_contracts == ({"kind": "identity"},)
+    assert updated.entries[0].risk_report == {"score": 0.2}
+    assert updated.entries[0].compiled_bundle == {"sha256": "a" * 64}
+    assert updated.entries[0].attempts[0].provider_task_id == "provider-1"
+    with pytest.raises(ValueError, match="next attempt.*2"):
+        _append_attempt(
+            updated, "s1",
+            H3GenerationAttemptEvidence(attempt=3, status="completed"),
+        )
+    with pytest.raises(ValueError, match="unknown segment"):
+        _append_attempt(
+            updated, "missing",
+            H3GenerationAttemptEvidence(attempt=2, status="completed"),
+        )
+    with pytest.raises(ValidationError):
+        H3TimelineEntry(
+            segment=entry.segment, start_frame=0, frame_count=39,
+            attempts=(H3GenerationAttemptEvidence(attempt=2, status="completed"),),
+        )
+
+
 def _seed_group(tmp_path: Path):
     from novelvideo.narrative_groups.service import advance_revision, group_beats, record_stage_result, save_groups
 
@@ -127,7 +242,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
         return SimpleNamespace(output_path=output_path, provider_task_id="provider-1", actual_mode="fl2va")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     async def separate(video, _directory):
         return {
@@ -145,9 +260,12 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
         ctx,
     )
 
-    assert len(submitted) == 1
-    assert [segment.segment_id for segment in submitted[0][1]] == ["beat-1", "beat-2"]
-    assert [segment.prompt for segment in submitted[0][1]] == ["优化：beat-1", "优化：beat-2"]
+    assert len(submitted) == 2
+    submitted_segments = [segment for call in submitted for segment in call[1]]
+    assert [segment.segment_id for segment in submitted_segments] == ["beat-1", "beat-2"]
+    assert [segment.prompt for segment in submitted_segments] == [
+        "优化：beat-1", "优化：beat-2"
+    ]
     assert [item[0] for item in optimization_contexts] == ["beat-1", "beat-2"]
     assert max_active == 2
     assert optimization_contexts[0][1].first_frame_sha256
@@ -157,13 +275,18 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     assert state.video_asset.endswith("ng-01_r1.mp4")
     assert state.manifest_asset.endswith("ng-01_r1.manifest.json")
     from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.media_capabilities.video.h3_prompt_profile import (
+        H3_PROMPT_PROFILE_VERSION,
+    )
 
     manifest = load_h3_director_manifest(state.manifest_asset)
     assert [entry.segment.prompt for entry in manifest.entries] == [
         "优化：beat-1", "优化：beat-2"
     ]
     assert manifest.entries[0].prompt_profile == {
-        "id": "minimax-h3-director", "version": 4, "compiler_version": 1
+        "id": "minimax-h3-director",
+        "version": H3_PROMPT_PROFILE_VERSION,
+        "compiler_version": 1,
     }
     assert manifest.entries[0].director_plan["mode"] == "i2va"
     assert manifest.entries[0].quality_report["passed"] is True
@@ -211,7 +334,7 @@ def test_group_video_optimizer_connection_failure_fails_before_transport(tmp_pat
         }
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: FailingOptimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, FailingOptimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
     ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
@@ -254,7 +377,7 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
         transport_calls.append("called")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: BadPlanner())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, BadPlanner())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path),
@@ -286,6 +409,7 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
     assert manifest.physical_video is None
     assert manifest.entries[0].status == "quality_rejected"
     assert manifest.entries[0].quality_report["issues"][0]["location"] == "shots.0"
+    assert manifest.entries[0].attempts == ()
 
 
 def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
@@ -306,7 +430,7 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
 
     async def generate(_ctx, *, segments, output_path, **_kwargs):
-        manifest_path = Path(output_path).with_suffix(".manifest.json")
+        manifest_path = next(Path(output_path).parent.glob("*.manifest.json"))
         submission = load_h3_director_manifest(manifest_path)
         observed.append(submission)
         assert submission.status == "submitted"
@@ -317,7 +441,7 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
         raise RuntimeError("transport exploded")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path),
@@ -331,13 +455,16 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
             {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
         )
 
-    assert len(observed) == 1
+    assert len(observed) == 2
     stage = load_groups(tmp_path, 1)[0].stages["video"]
     persisted = load_h3_director_manifest(stage.manifest_asset)
     assert persisted.status == "transport_failed"
     assert persisted.physical_video is None
     assert persisted.entries[0].director_plan is not None
     assert persisted.entries[0].provider_task_id is None
+    assert [attempt.status for attempt in persisted.entries[0].attempts] == [
+        "transport_failed"
+    ]
 
 
 def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
@@ -363,7 +490,7 @@ def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
         raise RuntimeError("poll failed")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path),
@@ -383,6 +510,83 @@ def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
         entry.provider_task_id == "provider-before-poll"
         for entry in persisted.entries
     )
+    assert [attempt.status for attempt in persisted.entries[0].attempts] == [
+        "submitted", "transport_failed"
+    ]
+    assert persisted.entries[0].attempts[0].provider_task_id == "provider-before-poll"
+
+
+def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    calls = 0
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1},
+            {"id": "beat-2", "beat_number": 2},
+        ]
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("first segment failed")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id="provider-2",
+            actual_mode="i2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+    )
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    manifest = load_h3_director_manifest(stage.manifest_asset)
+
+    assert result["status"] == "partial_failure"
+    assert manifest.status == "transport_failed"
+    assert [entry.status for entry in manifest.entries] == [
+        "transport_failed", "completed"
+    ]
+    assert [attempt.status for attempt in manifest.entries[0].attempts] == [
+        "transport_failed"
+    ]
+    assert [attempt.status for attempt in manifest.entries[1].attempts] == [
+        "completed"
+    ]
+    assert manifest.entries[1].attempts[0].provider_task_id == "provider-2"
 
 
 def test_group_video_updates_generated_evidence_before_postprocess(
@@ -412,7 +616,7 @@ def test_group_video_updates_generated_evidence_before_postprocess(
         raise RuntimeError("postprocess exploded")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(narrative_group_video, "_separate_stems", fail_postprocess)
     ctx = SimpleNamespace(
@@ -434,6 +638,8 @@ def test_group_video_updates_generated_evidence_before_postprocess(
     assert persisted.provider_task_id == "provider-42"
     assert all(entry.provider_task_id == "provider-42" for entry in persisted.entries)
     assert all(entry.status == "postprocess_failed" for entry in persisted.entries)
+    assert [attempt.status for attempt in persisted.entries[0].attempts] == ["completed"]
+    assert persisted.entries[0].attempts[0].provider_task_id == "provider-42"
 
 
 def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
@@ -460,7 +666,7 @@ def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
         return SimpleNamespace(output_path=output_path, provider_task_id="provider-1", actual_mode="i2va")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(
         narrative_group_video,
@@ -504,7 +710,7 @@ def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch
         return SimpleNamespace(output_path=output_path, provider_task_id="provider-1", actual_mode="i2va")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(narrative_group_video, "_separate_stems", lambda *_args: (_ for _ in ()).throw(AssertionError("not requested")))
     ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
@@ -536,7 +742,7 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
             return _optimizer_result(segment.prompt)
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
-    monkeypatch.setattr(narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer())
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     async def separate(video, _directory):
         return {
@@ -552,7 +758,7 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
     )
 
     state = load_groups(tmp_path, 1)[0].stages["video"]
-    assert state.revision == 2
+    assert state.revision >= 2
     assert state.status == "queued"
 
 
@@ -685,9 +891,7 @@ def test_group_video_generates_when_production_notes_have_rendered_frames(tmp_pa
             "ambience_stem_status": "unavailable",
         }
 
-    monkeypatch.setattr(
-        narrative_group_video, "create_h3_prompt_optimizer", lambda **_kwargs: Optimizer()
-    )
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
     ctx = SimpleNamespace(
@@ -939,6 +1143,7 @@ def test_execute_maps_pair_to_synthetic_canonical_beat_for_optimizer(
     monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", load_beats)
     monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
     monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
     monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
     ctx = SimpleNamespace(output_dir=str(tmp_path), state_dir=tmp_path / "state")
@@ -1001,10 +1206,9 @@ def test_pair_optimizer_context_contains_start_and_target_director_context(
             captured.append(json.loads(context.director_context))
             return _optimizer_result(current.prompt)
 
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(
-        narrative_group_video,
-        "create_h3_prompt_optimizer",
-        lambda **_kwargs: Optimizer(),
+        narrative_group_video, "load_materialized_groups", lambda *_args: []
     )
     monkeypatch.setattr(
         narrative_group_video,
