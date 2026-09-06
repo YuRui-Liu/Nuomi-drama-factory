@@ -630,10 +630,13 @@ def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
             {"id": "beat-2", "beat_number": 2},
         ]
 
-    async def generate(_ctx, *, output_path, **_kwargs):
+    async def generate(
+        _ctx, *, output_path, on_provider_submitted, **_kwargs
+    ):
         nonlocal calls
         calls += 1
         if calls == 1:
+            await on_provider_submitted("provider-1")
             raise RuntimeError("first segment failed")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"video")
@@ -675,10 +678,158 @@ def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
     assert [attempt.status for attempt in manifest.entries[0].attempts] == [
         "transport_failed"
     ]
+    assert manifest.entries[0].provider_task_id == "provider-1"
+    assert manifest.entries[0].attempts[0].provider_task_id == "provider-1"
     assert [attempt.status for attempt in manifest.entries[1].attempts] == [
         "completed"
     ]
     assert manifest.entries[1].attempts[0].provider_task_id == "provider-2"
+
+
+def test_group_video_replay_appends_attempt_history_for_same_revision(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    provider_calls = 0
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1},
+            {"id": "beat-2", "beat_number": 2},
+        ]
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id=f"provider-{provider_calls}",
+            actual_mode="i2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+    envelope = {
+        "episode": 1, "payload": {"group_id": "ng-01", "revision": 1}
+    }
+
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    manifest = load_h3_director_manifest(
+        load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
+    )
+
+    assert [[attempt.attempt for attempt in entry.attempts] for entry in manifest.entries] == [
+        [1, 2], [1, 2]
+    ]
+    assert all(attempt.status == "completed" for entry in manifest.entries for attempt in entry.attempts)
+
+
+@pytest.mark.parametrize("fail_boundary", ["callback", "completed"])
+def test_manifest_persistence_failure_is_not_recorded_as_transport_failure(
+    tmp_path, monkeypatch, fail_boundary
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1},
+            {"id": "beat-2", "beat_number": 2},
+        ]
+
+    async def generate(
+        _ctx, *, output_path, on_provider_submitted, **_kwargs
+    ):
+        if fail_boundary == "callback":
+            await on_provider_submitted("provider-persist")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id="provider-persist",
+            actual_mode="i2va",
+        )
+
+    real_save = narrative_group_video.save_h3_director_manifest
+    save_calls = 0
+
+    def fail_boundary_save(path, manifest):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            raise OSError("manifest disk unavailable")
+        real_save(path, manifest)
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(
+        narrative_group_video, "save_h3_director_manifest", fail_boundary_save
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+
+    with pytest.raises(
+        narrative_group_video.H3ManifestPersistenceError,
+        match="manifest disk unavailable",
+    ):
+        narrative_group_video.run_narrative_group_video(
+            {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        )
+    manifest = load_h3_director_manifest(
+        load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
+    )
+    first = manifest.entries[0]
+
+    assert manifest.status == "postprocess_failed"
+    assert first.provider_task_id == "provider-persist"
+    assert all(
+        attempt.status != "transport_failed"
+        for entry in manifest.entries for attempt in entry.attempts
+    )
+    expected_attempt_status = (
+        "submitted" if fail_boundary == "callback" else "completed"
+    )
+    assert first.attempts[0].status == expected_attempt_status
 
 
 def test_group_video_updates_generated_evidence_before_postprocess(

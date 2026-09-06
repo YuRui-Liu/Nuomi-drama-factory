@@ -42,6 +42,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3GenerationAttemptEvidence,
     H3TimelineEntry,
     build_h3_timeline_data,
+    load_h3_director_manifest,
     save_h3_director_manifest,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
@@ -571,6 +572,56 @@ def _manifest_with_segment_status(
     })
 
 
+class H3ManifestPersistenceError(RuntimeError):
+    """A local manifest write failed outside the provider transport."""
+
+
+def _persist_generation_evidence(
+    path: Path,
+    manifest: H3DirectorOutputManifest,
+) -> None:
+    try:
+        save_h3_director_manifest(path, manifest)
+    except Exception as exc:
+        raise H3ManifestPersistenceError(
+            f"failed to persist H3 manifest evidence: {exc}"
+        ) from exc
+
+
+def _merge_replay_evidence(
+    manifest: H3DirectorOutputManifest,
+    previous: H3DirectorOutputManifest,
+) -> H3DirectorOutputManifest:
+    current_ids = tuple(
+        entry.segment.segment_id for entry in manifest.entries
+    )
+    previous_ids = tuple(
+        entry.segment.segment_id for entry in previous.entries
+    )
+    if previous.workflow_id != manifest.workflow_id or previous_ids != current_ids:
+        return manifest
+    previous_by_id = {
+        entry.segment.segment_id: entry for entry in previous.entries
+    }
+    entries = []
+    for entry in manifest.entries:
+        old = previous_by_id[entry.segment.segment_id]
+        last_provider_task_id = (
+            old.attempts[-1].provider_task_id if old.attempts else None
+        )
+        entries.append(entry.model_copy(update={
+            "attempts": old.attempts,
+            "provider_task_id": old.provider_task_id or last_provider_task_id,
+        }))
+    return H3DirectorOutputManifest.model_validate({
+        **manifest.model_dump(mode="python"),
+        "provider_task_id": (
+            previous.provider_task_id if len(entries) == 1 else None
+        ),
+        "entries": tuple(entries),
+    })
+
+
 def _finalize_segment_manifest(
     manifest: H3DirectorOutputManifest,
     *,
@@ -600,8 +651,12 @@ def _finalize_segment_manifest(
     for entry in finalized.entries:
         segment_id = entry.segment.segment_id
         if segment_id in failed_ids:
+            provider_task_id = entry.provider_task_id or (
+                entry.attempts[-1].provider_task_id if entry.attempts else None
+            )
             entries.append(entry.model_copy(update={
-                "status": "transport_failed", "provider_task_id": None,
+                "status": "transport_failed",
+                "provider_task_id": provider_task_id,
                 "physical_video": None,
             }))
             continue
@@ -969,6 +1024,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 workflow_parameters=workflow_parameters,
                 status="quality_rejected",
             )
+            if manifest_path.is_file():
+                rejected_manifest = _merge_replay_evidence(
+                    rejected_manifest, load_h3_director_manifest(manifest_path)
+                )
             save_h3_director_manifest(manifest_path, rejected_manifest)
             error_payload = {
                 "error_code": "H3_PROMPT_QUALITY_REJECTED",
@@ -995,6 +1054,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             workflow_parameters=workflow_parameters,
             status="submitted",
         )
+        if manifest_path.is_file():
+            # The stage revision is encoded in this revision-scoped path.
+            manifest = _merge_replay_evidence(
+                manifest, load_h3_director_manifest(manifest_path)
+            )
         save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
             project_dir, episode, group_id, "video",
@@ -1038,7 +1102,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             provider_task_id=provider_task_id,
                         ),
                     )
-                    save_h3_director_manifest(manifest_path, manifest)
+                    _persist_generation_evidence(manifest_path, manifest)
 
                 try:
                     item = await adapter.generate_narrative_group(
@@ -1051,6 +1115,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )
+                except H3ManifestPersistenceError:
+                    raise
                 except Exception as exc:
                     message = f"{type(exc).__name__}: {exc}"
                     entry = next(
@@ -1083,7 +1149,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             error_code=type(exc).__name__,
                         ),
                     )
-                    save_h3_director_manifest(manifest_path, manifest)
+                    _persist_generation_evidence(manifest_path, manifest)
                     segment_errors.append({"segment_id": segment.segment_id, "error": message})
                     record_video_segment_result(
                         project_dir, episode, group_id, durable_segment_id,
@@ -1115,7 +1181,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             provider_task_id=item.provider_task_id,
                         ),
                     )
-                    save_h3_director_manifest(manifest_path, manifest)
+                    _persist_generation_evidence(manifest_path, manifest)
                     generated_segments.append((segment_index, segment, item))
                     record_video_segment_result(
                         project_dir, episode, group_id, durable_segment_id,
@@ -1147,6 +1213,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 generated = replace(generated_segments[-1][2], output_path=str(output))
             else:
                 generated = generated_segments[0][2]
+        except H3ManifestPersistenceError:
+            manifest = _manifest_with_status(
+                manifest,
+                "postprocess_failed",
+                physical_video=manifest.physical_video,
+                provider_task_id=manifest.provider_task_id,
+            )
+            save_h3_director_manifest(manifest_path, manifest)
+            raise
         except Exception:
             manifest = _manifest_with_status(
                 manifest,
