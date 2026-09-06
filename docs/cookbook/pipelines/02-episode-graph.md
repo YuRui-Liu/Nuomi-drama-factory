@@ -40,7 +40,7 @@ Runner 开始时再次读取 `current_revision()`。它与 payload 的 `target_r
 
 `build_group_prompt` 把组内分集作为 JSON 数据包裹在明确的数据边界中，并声明正文字符串不具有指令权威。默认 `_invoke_deepseek` 并不直接绑定某个 SDK；它从当前 text task runtime 调用 `run_structured`，输出类型固定为 `EpisodeGraphExtraction`，Runner 注册的文本任务角色是 `knowledge_extraction`。
 
-服务层为每个缺失检查点的组创建任务，最多并行 6 组；每个组内部调用 extractor 时使用 `concurrency=1`。抽取结束后还会执行三类校验：
+服务层先串行遍历全部组并调用 `load_success`，把合法命中放入完成集合、把 miss 或内容无效的组放入缺失集合。扫描完成后才为缺失组创建任务，并由 `asyncio.Semaphore(6)` 限制最多 6 组同时抽取；每个组内部调用 extractor 时使用 `concurrency=1`，成功结果在对应任务内写入 checkpoint。抽取结束后还会执行三类校验：
 
 1. 返回的 `group_key` 必须等于当前组键；默认 runtime 即使返回自造键，也会由 `_invoke_deepseek` 覆盖成当前组键。
 2. entity、event 和 relation 的 `source_episodes` 只能引用当前组内集号。
@@ -56,7 +56,7 @@ Runner 开始时再次读取 `current_revision()`。它与 payload 的 `target_r
 | --- | --- | --- |
 | entity | `(kind, NFKC + 空白规整 + casefold(name))` | 合并 `source_episodes`，显示名做 NFKC 与空白规整 |
 | event | `(episode, ordinal)` | 合并来源；描述冲突时按稳定 JSON 排序选择一个，并增加冲突计数 |
-| relation | `(规范化 source_key, relation_type, target_key, episode)` | 合并来源与属性 |
+| relation | `(_normalize(source_key), _normalize(relation_type), _normalize(target_key), episode)` | 合并来源与属性；三个字符串字段都执行 NFKC、空白规整与 casefold |
 
 同一属性出现不同值时，不覆盖旧值，也不把原生 list 误认为冲突集合；结果使用 `ConflictValues(values=[...])` 按稳定顺序保留候选值，并增加 `conflict_count`。当前属性词表是 `description`、`tags`、`aliases`、`state`、`role`、`location`、`time_of_day`、`purpose`、`outcome`、`evidence`。实体 kind 只允许 `character`、`identity`、`scene`、`prop`。
 
@@ -104,19 +104,20 @@ sequenceDiagram
     Graph->>Source: list_sources() 完整快照
     Graph->>Graph: 连续集号每 5 集分组
 
-    par 最多 6 个缺失组并行抽取
+    loop 所有组（串行）
         Graph->>Checkpoint: load_success(revision, key, hash)
-        alt 命中合法检查点
-            Checkpoint-->>Graph: EpisodeGraphExtraction
-        else 未命中或内容无效
-            Graph->>Extract: run_structured(group JSON)
-            Extract-->>Graph: entities + events + relations
-            Graph->>Graph: 校验 group key 与 source episodes
-            Graph->>Checkpoint: save_success（原子替换）
-        end
-    and 其他缺失组
+        Checkpoint-->>Graph: payload 或 None
+        Graph->>Graph: 合法命中加入 completed；miss / 无效结果加入 missing
+    end
+
+    par missing 组 A（Semaphore 上限 6）
+        Graph->>Extract: run_structured(group JSON, concurrency=1)
+        Extract-->>Graph: entities + events + relations
+        Graph->>Graph: 校验 group key 与 source episodes
+        Graph->>Checkpoint: save_success（原子替换）
+    and 其他 missing 组
         Graph->>Extract: 并行 run_structured
-        Extract-->>Graph: extraction 或异常
+        Extract-->>Graph: extraction 或异常；成功后各自 save_success
     end
 
     alt 任一组失败
@@ -136,7 +137,7 @@ sequenceDiagram
     end
 ```
 
-图中的并行只覆盖缺失组抽取。合并需要全部组成功后按 group 顺序组装输入；candidate 创建、四类图写入、embedding、指针激活和 outbox 删除依次执行。`on_group_event` 在 `started`、`completed`、`checkpoint`、`failed` 时写任务日志；只有 `completed` 和 `checkpoint` 增加已完成计数，Runner 将分组阶段映射到约 0.10–0.85 的 progress，最终终态仍由通用 task core 记录。
+图中的并行只覆盖串行 checkpoint 扫描后留下的 missing 组；命中和 miss 的判定都在 `par` 之前完成。合并需要全部组成功后按 group 顺序组装输入；candidate 创建、四类图写入、embedding、指针激活和 outbox 删除依次执行。`on_group_event` 在 `started`、`completed`、`checkpoint`、`failed` 时写任务日志；只有 `completed` 和 `checkpoint` 增加已完成计数，Runner 将分组阶段映射到约 0.10–0.85 的 progress，最终终态仍由通用 task core 记录。
 
 ## 数据与产物
 
@@ -145,12 +146,14 @@ sequenceDiagram
 | 正式分集来源 | `EpisodeSourceStore.commit_prepared` | 项目 SQLite `episode_sources` | Runner 的完整输入；每行保留自身 `source_revision`，Runner 构图时统一绑定目标 revision |
 | 项目来源 revision | 同上 | `episode_source_state` | Runner 的 stale guard |
 | 待建图项 | 同上 | `episode_graph_outbox` | revision 与 changed episode numbers；成功激活后删除 |
-| 分组检查点 | `EpisodeGraphCheckpointStore` | `state/episode_graph/checkpoints/rev_<revision>/<group>.json` | schema version、revision、group key、content hash 全匹配才复用 |
+| 分组检查点 | `EpisodeGraphCheckpointStore` | `STATE_DIR/<owner>/state/episode_graph/checkpoints/rev_<revision>/<group>.json` | schema version、revision、group key、content hash 全匹配才复用；同一 owner 的项目共用 checkpoint 根 |
 | candidate runtime | `CogneeCandidateManager` | `state/cognee_builds/<revision>-<uuid>/runtime/` | 隔离的 Cognee graph 与 vector 数据 |
 | 活动图指针 | `CogneeShadowGraph` | `state/cognee_active.json` | `CogneeStore` 解析当前活动 runtime；缺失或无效时回退 canonical state 路径 |
 | 指针 journal | 同上 | `state/cognee_pointer_pending_commit.json` | 指针替换的恢复依据；激活完成后删除 |
 | embedding 绑定 | `commit_embedding_binding` | 项目 state 中的 Cognee embedding 配置 | 仅 Ollama binding 在 candidate ready 后提交 |
 | 任务状态 | TaskBackend / `TaskStateManager` | 项目 SQLite `task_states` | Task Center、任务列表与 stream 展示后台状态 |
+
+Runner 把 `Path(ctx.state_dir).parent` 传给 `EpisodeGraphCheckpointStore`，Store 再追加 `state/episode_graph`，所以检查点不在当前项目的 `ctx.state_dir` 内，而位于 owner 级兄弟根 `STATE_DIR/<owner>/state/episode_graph`。同一 owner 下的多个项目会共用这个 checkpoint 根；虽然复用仍要求 revision、group key 与 content hash 全匹配，但目录清理、迁移或权限调整会同时影响这些项目，不能把它当作单项目 state 产物处理。
 
 检查点 JSON 用同目录临时文件写入、`fsync` 后 `os.replace`，进程中断不会把半截 JSON 当成成功结果。损坏 JSON、未知 schema、revision/key/hash 不匹配或无法通过 `EpisodeGraphExtraction` 校验都会被视为 miss 并重新抽取。
 
@@ -247,7 +250,8 @@ rg -n "episode_graph_index|episode_graph_outbox|_drain_episode_graph_outbox" \
 rg -n "class (EpisodeGraph|Graph|Conflict)|group_episode_sources|extract_groups|merge_extractions|replace_sources" \
   src/novelvideo/episode_graph tests/episode_graph tests/test_task_episode_graph_runner.py
 
-uv run pytest -q tests/episode_graph tests/test_task_episode_graph_runner.py
+uv run pytest -q tests/episode_graph tests/test_task_episode_graph_runner.py \
+  tests/test_episode_import_transaction.py tests/test_cognee_shadow_rebuild.py
 git diff --check -- docs/cookbook/pipelines/02-episode-graph.md
 git diff -- docs/cookbook/pipelines/02-episode-graph.md
 ```
@@ -262,7 +266,9 @@ git diff -- docs/cookbook/pipelines/02-episode-graph.md
 | `tests/episode_graph/test_writer.py` | removed 集合、实体/事件/关系内容、64 条 embedding batch、不调用 cognify |
 | `tests/episode_graph/test_checkpoints.py` | revision/hash 命中与损坏 checkpoint 忽略 |
 | `tests/episode_graph/test_service.py` | 部分失败、仅失败组重试、并发峰值、取消检查点、candidate discard |
-| `tests/test_task_episode_graph_runner.py` | revision stale guard、进度事件、Cognee DataPoint、激活顺序、outbox 合并与失败保留 |
+| `tests/test_task_episode_graph_runner.py` | Runner 层的 revision stale guard、进度事件、Cognee DataPoint、激活调用顺序、outbox 合并与失败保留；不覆盖真实文件 pointer journal 的持久化与跨实例恢复 |
+| `tests/test_episode_import_transaction.py` | repository 提交失败后的 pointer restore，以及新 Service 按数据库 revision 对账并恢复 pending pointer journal |
+| `tests/test_cognee_shadow_rebuild.py` | 真实 `cognee_active.json` 的 candidate 切换、runtime 解析、restore/discard 安全边界与 build-root 路径约束 |
 
 ## 继续追踪
 
