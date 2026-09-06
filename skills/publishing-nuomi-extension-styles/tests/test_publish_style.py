@@ -127,6 +127,14 @@ def _product_bytes(project: Path) -> dict[str, bytes | None]:
     }
 
 
+def _tree_bytes(project: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+
 def _prepare(publisher, project: Path) -> tuple[dict[str, object], Path]:
     manifest = _manifest(project)
     plan = publisher.prepare_release(project, manifest)
@@ -238,11 +246,19 @@ def test_apply_updates_three_products_and_normalizes_preview(
     audit_before = (
         project / "src/novelvideo/extension_styles/source_audit.json"
     ).read_bytes()
+    tree_before = _tree_bytes(project)
 
     summary = publisher.apply_release(
         project, plan_path, source, _approved_digest(plan_path)
     )
 
+    tree_after = _tree_bytes(project)
+    changed_paths = {
+        path
+        for path in set(tree_before) | set(tree_after)
+        if tree_before.get(path) != tree_after.get(path)
+    }
+    assert changed_paths == set(plan["targets"].values())
     catalog = json.loads(
         (project / plan["targets"]["catalog"]).read_text(encoding="utf-8")
     )
