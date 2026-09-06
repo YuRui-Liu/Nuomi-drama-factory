@@ -345,7 +345,7 @@ def test_negative_assertion_inside_multiline_comment_is_not_allowlisted() -> Non
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
-        "/* disabled\n * expect(html).not.toMatch(/DramaClaw|SuperTale/);\n */",
+        "/* disabled\nexpect(html).not.toMatch(/DramaClaw|SuperTale/);\n*/",
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
 
 
@@ -391,7 +391,31 @@ def test_exact_brand_protection_line_inside_multiline_template_is_not_allowliste
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
-        "const fixture = `\nfixture: expect(html).not.toMatch(/DramaClaw|SuperTale/);\n`;",
+        "const fixture = `\nexpect(html).not.toMatch(/DramaClaw|SuperTale/);\n`;",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
+
+
+@pytest.mark.parametrize("opening", ["/* disabled", "const fixture = `"])
+def test_exact_brand_protection_line_after_context_closes_is_allowlisted(
+    opening: str,
+) -> None:
+    scanner = _load_scanner()
+    closing = "*/" if opening.startswith("/*") else "`;"
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        f"{opening}\n{closing}\nexpect(html).not.toMatch(/DramaClaw|SuperTale/);",
+    ) == []
+
+
+def test_escaped_backtick_does_not_close_multiline_template() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        "const fixture = `open\\`still open\n"
+        "expect(html).not.toMatch(/DramaClaw|SuperTale/);\n"
+        "`;",
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
 
 

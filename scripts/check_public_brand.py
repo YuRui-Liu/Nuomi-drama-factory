@@ -157,7 +157,58 @@ def _compatibility_spans(line: str) -> list[tuple[int, int]]:
     ]
 
 
-def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
+def _advance_lexical_context(
+    line: str, in_block_comment: bool, in_template: bool
+) -> tuple[bool, bool]:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        if in_block_comment:
+            if line.startswith("*/", index):
+                in_block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        if in_template:
+            if line[index] == "\\":
+                index += 2
+            elif line[index] == "`":
+                in_template = False
+                index += 1
+            else:
+                index += 1
+            continue
+
+        character = line[index]
+        if quote is not None:
+            if character == "\\":
+                index += 2
+            elif character == quote:
+                quote = None
+                index += 1
+            else:
+                index += 1
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            index += 1
+        elif character == "`":
+            in_template = True
+            index += 1
+        elif line.startswith("//", index):
+            break
+        elif line.startswith("/*", index):
+            in_block_comment = True
+            index += 2
+        else:
+            index += 1
+    return in_block_comment, in_template
+
+
+def _path_specific_spans(
+    path: Path, line: str, *, in_code_context: bool
+) -> list[tuple[int, int]]:
     normalized = path.as_posix()
     patterns: list[re.Pattern[str]] = []
 
@@ -173,7 +224,9 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
     if normalized == "frontend/src/features/superchat/message.ts":
         patterns.append(_INTERNAL_CONTEXT_PATTERN)
     spans = [match.span() for pattern in patterns for match in pattern.finditer(line)]
-    if line.strip() in _EXACT_BRAND_PROTECTION_LINES.get(normalized, set()):
+    if in_code_context and line.strip() in _EXACT_BRAND_PROTECTION_LINES.get(
+        normalized, set()
+    ):
         spans.extend(match.span() for match in _BRAND.finditer(line))
     return spans
 
@@ -181,19 +234,33 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
 def scan_text(path: Path, text: str) -> list[str]:
     """Return ``path:line`` findings for disallowed legacy-brand occurrences."""
     findings: list[str] = []
+    track_context = path.as_posix() in _EXACT_BRAND_PROTECTION_LINES
+    in_block_comment = False
+    in_template = False
     for line_number, line in enumerate(text.splitlines(), start=1):
+        in_code_context = not in_block_comment and not in_template
+        if track_context:
+            next_block_comment, next_template = _advance_lexical_context(
+                line, in_block_comment, in_template
+            )
         matches = list(_BRAND.finditer(line))
         if not matches:
+            if track_context:
+                in_block_comment, in_template = next_block_comment, next_template
             continue
 
         allowed_spans = [match.span() for match in _ALLOWED_OCCURRENCES.finditer(line)]
         allowed_spans.extend(_compatibility_spans(line))
-        allowed_spans.extend(_path_specific_spans(path, line))
+        allowed_spans.extend(
+            _path_specific_spans(path, line, in_code_context=in_code_context)
+        )
         if any(
             not any(start <= match.start() and match.end() <= end for start, end in allowed_spans)
             for match in matches
         ):
             findings.append(f"{path.as_posix()}:{line_number}")
+        if track_context:
+            in_block_comment, in_template = next_block_comment, next_template
     return findings
 
 
