@@ -83,48 +83,60 @@ sequenceDiagram
     Tasks-->>API: QueuedTask
     API-->>Query: TaskResponse
     Query-->>Page: task_id / backend / queue
-    Tasks->>Core: run_project_task_core_sync(envelope, ctx)
-    Core->>State: running
-    Core->>Runner: run_ingest_fast(envelope, ctx)
-    alt structured_v1
-        Runner->>Work: ingest_source_text_structured
-        Work->>Data: manifest + novel.txt + SQLite 正式资产
-    else cognee_legacy
-        Runner->>Work: add + cognify + memify
-        Work->>Data: Cognee runtime + novel.txt
-    end
-    Runner->>State: progress / logs（处理期间）
-    Runner-->>Core: result / exception
-    Core->>State: completed / failed / cancelled
-    Page->>TaskUI: useTasks({project, episode: 0})
-    TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks
-    TasksAPI->>State: list_tasks_for_project(ctx)
-    State-->>TasksAPI: task state list
-    TasksAPI-->>TaskUI: JSON task list
-    TaskUI-->>Page: 重新挂载时对账
-    Page->>TaskUI: useTaskStream(ingest_fast, project, 0)
-    TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks/ingest_fast/0/stream
-    loop 单任务 SSE 轮询
-        TasksAPI->>State: get_task_for_project(ctx, ingest_fast, 0)
-        State-->>TasksAPI: current task state
-        opt 状态有变化或已进入终态
-            TasksAPI-->>TaskUI: named SSE status event
-            TaskUI-->>Page: progress / logs / terminal state
+
+    par 导入页连接并读取实时状态
+        Page->>TaskUI: useTasks（组件挂载时已启用）
+        TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks
+        TasksAPI->>State: list_tasks_for_project(ctx)
+        State-->>TasksAPI: task state list
+        TasksAPI-->>TaskUI: JSON task list
+        TaskUI-->>Page: 挂载或轮询时对账
+        Page->>TaskUI: ingestStarted=true，启用 useTaskStream
+        TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks/ingest_fast/0/stream
+        loop 单任务 SSE 轮询（运行期间）
+            TasksAPI->>State: get_task_for_project(ctx, ingest_fast, 0)
+            State-->>TasksAPI: active status + progress + logs
+            opt progress 或 current_task 有变化
+                TasksAPI-->>TaskUI: named SSE active-status event
+                TaskUI-->>Page: running / progress / logs 实时更新
+            end
         end
+    and 后端执行并写入任务状态
+        Tasks->>Core: run_project_task_core_sync(envelope, ctx)
+        Core->>State: running
+        Core->>Runner: run_ingest_fast(envelope, ctx)
+        Runner->>State: progress / logs（处理期间多次）
+        alt structured_v1
+            Runner->>Work: ingest_source_text_structured
+            Work->>Data: manifest + novel.txt + SQLite 正式资产
+        else cognee_legacy
+            Runner->>Work: add + cognify + memify
+            Work->>Data: Cognee runtime + novel.txt
+        end
+        Runner-->>Core: result / exception
     end
-    Page->>Query: refetch chapters; invalidate graph
-    Query->>API: GET /api/v1/projects/{project}/chapters
-    API->>Data: detect_chapters 读取 novel.txt
-    Data-->>API: 已持久化原文
-    API-->>Query: ChaptersResult
-    Query->>API: GET /api/v1/projects/{project}/ingest/graph
-    API->>Data: get_ingest_knowledge_graph 调用 get_graph_snapshot
-    Data-->>API: KnowledgeGraphSnapshot
-    API-->>Query: KnowledgeGraphSnapshot
-    Query-->>Page: 刷新章节与知识图谱视图
+    Core->>State: completed / failed / cancelled
+    TasksAPI->>State: get_task_for_project(ctx, ingest_fast, 0)
+    State-->>TasksAPI: completed / failed / cancelled
+    TasksAPI-->>TaskUI: named SSE terminal event
+    alt completed
+        TaskUI-->>Page: onComplete
+        Page->>Query: refetch chapters; invalidate graph
+        Query->>API: GET /api/v1/projects/{project}/chapters
+        API->>Data: detect_chapters 读取 novel.txt
+        Data-->>API: 已持久化原文
+        API-->>Query: ChaptersResult
+        Query->>API: GET /api/v1/projects/{project}/ingest/graph
+        API->>Data: get_ingest_knowledge_graph 调用 get_graph_snapshot
+        Data-->>API: KnowledgeGraphSnapshot
+        API-->>Query: KnowledgeGraphSnapshot
+        Query-->>Page: 刷新章节与知识图谱视图
+    else failed / cancelled
+        TaskUI-->>Page: onError
+    end
 ```
 
-图中状态流按导入页自己的消费方式展开：`useTasks` 通过任务列表 GET 完成重新挂载对账，`useTaskStream` 连接 `ingest_fast + episode 0` 的单任务 SSE。顶层 `TaskCenterProvider` 还会连接 `/api/v1/projects/{project}/tasks/stream`；项目级与单任务 stream 都由 `api/routes/tasks.py` 轮询 `TaskStateManager` 后返回事件，不是 TaskBackend 直接向页面推送。
+图中 `par` 表示任务执行与状态消费同时发生。`useTasks` 随组件挂载启用，它的首次 GET 可能早于任务提交，并用于挂载或重新挂载对账；未由全局 Task Center 接管当前项目缓存时，它还会定时轮询。`useTaskStream` 则在 `TaskResponse` 返回、页面设置 `ingestStarted=true` 后连接 `ingest_fast + episode 0` 的单任务 SSE。顶层 `TaskCenterProvider` 还会连接 `/api/v1/projects/{project}/tasks/stream`；项目级与单任务 stream 都由 `api/routes/tasks.py` 轮询 `TaskStateManager` 后返回事件，不是 TaskBackend 直接向页面推送。
 
 页面的具体编排如下：
 
