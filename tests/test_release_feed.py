@@ -259,6 +259,11 @@ def test_release_feed_uses_nuomi_github_latest_release_api() -> None:
         "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\nil",
         "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\ril",
         "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/ev\til",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%ZZ",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/orphan%",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%E0%A4%A",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%FF",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/%C3%28",
         "https://[::1",
     ],
 )

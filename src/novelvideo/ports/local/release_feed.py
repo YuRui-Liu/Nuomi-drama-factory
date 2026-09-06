@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 import httpx
 from packaging.version import InvalidVersion, Version
@@ -214,7 +214,9 @@ def _has_unsafe_decoded_path(path: str) -> bool:
             or any(segment in {".", ".."} for segment in decoded.split("/"))
         ):
             return True
-        next_decoded = unquote(decoded)
+        next_decoded = _strict_percent_decode(decoded)
+        if next_decoded is None:
+            return True
         if next_decoded == decoded:
             return False
         decoded = next_decoded
@@ -223,6 +225,24 @@ def _has_unsafe_decoded_path(path: str) -> bool:
 
 def _has_ascii_control(value: str) -> bool:
     return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
+def _strict_percent_decode(value: str) -> str | None:
+    index = 0
+    while True:
+        index = value.find("%", index)
+        if index < 0:
+            break
+        escape = value[index + 1 : index + 3]
+        if len(escape) != 2 or any(
+            character not in "0123456789abcdefABCDEF" for character in escape
+        ):
+            return None
+        index += 3
+    try:
+        return unquote_to_bytes(value).decode("utf-8", errors="strict")
+    except UnicodeError:
+        return None
 
 
 def _to_port_item(item) -> ReleaseItem:
