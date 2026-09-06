@@ -2386,3 +2386,256 @@ def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
         manifest.entries[0].mode_decision["reason_codes"]
     )
     assert "shadow secret" not in str(manifest.model_dump(mode="json"))
+
+
+def _execute_policy_boundary(
+    tmp_path,
+    monkeypatch,
+    *,
+    policy,
+    prepare_error=None,
+    blockers=(),
+    shadow_error=None,
+    decided_mode="i2va",
+):
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    first = tmp_path / "policy-first.png"
+    last = tmp_path / "policy-last.png"
+    first.write_bytes(b"first")
+    last.write_bytes(b"last")
+    raw_segment = H3DirectorSegment(
+        segment_id="beat-1",
+        beat_number=1,
+        prompt="raw prompt",
+        duration_seconds=3,
+        first_frame=str(first),
+        last_frame=str(last),
+    )
+    report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+        blockers=blockers,
+    )
+    requests = []
+    stage_failures = []
+    optimize_calls = 0
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1, "video_prompt": "raw prompt"}]
+
+    def prepare(*, segments, **_kwargs):
+        if prepare_error is not None:
+            raise prepare_error
+        decision = H3ModeDecision(
+            requested="auto",
+            mode=None if blockers else decided_mode,
+            blockers=blockers,
+        )
+        return {
+            segment.segment_id: narrative_group_video.PreparedContinuity(
+                provider_segment=segment,
+                contracts=(),
+                risk_report=report,
+                mode_decision=decision,
+            )
+            for segment in segments
+        }
+
+    async def optimize(
+        segments,
+        _beats,
+        *,
+        evidence_by_segment=None,
+        continuity_by_segment=None,
+        **_kwargs,
+    ):
+        nonlocal optimize_calls
+        optimize_calls += 1
+        if continuity_by_segment is None:
+            return [
+                segment.model_copy(update={"prompt": "legacy prompt"})
+                for segment in segments
+            ]
+        if shadow_error is not None:
+            raise shadow_error
+        if evidence_by_segment is not None:
+            for segment in segments:
+                evidence_by_segment[segment.segment_id]["compiled_bundle"] = (
+                    {"prompt": "bundle prompt", "mode": decided_mode}
+                    if not blockers else None
+                )
+        return [
+            segment.model_copy(update={
+                "prompt": "bundle prompt",
+                "last_frame": str(last) if decided_mode == "fl2va" else None,
+            })
+            for segment in segments
+        ]
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            requests.append(request)
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-1",
+                actual_mode=decided_mode,
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    original_record = narrative_group_video.record_stage_result
+
+    def record(*args, **kwargs):
+        if kwargs.get("status") == "failed":
+            stage_failures.append(kwargs)
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_build_segments",
+        lambda *_args, **_kwargs: [raw_segment],
+    )
+    monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
+    monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
+    monkeypatch.setattr(narrative_group_video, "record_stage_result", record)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+    envelope = {
+        "episode": 1,
+        "payload": {
+            "group_id": "ng-01",
+            "revision": 1,
+            "workflow_parameters": {
+                "resolution": "720p",
+                "continuity_policy": policy,
+            },
+        },
+    }
+    try:
+        result = narrative_group_video.run_narrative_group_video(envelope, ctx)
+        error = None
+    except Exception as exc:
+        result = None
+        error = exc
+    return SimpleNamespace(
+        result=result,
+        error=error,
+        requests=requests,
+        stage_failures=stage_failures,
+        optimize_calls=optimize_calls,
+        manifest_path=(
+            tmp_path / "videos" / "ep001" / "narrative_groups"
+            / "ng-01_r1.manifest.json"
+        ),
+    )
+
+
+def test_enforce_prepare_exception_is_fail_closed_before_transport(
+    tmp_path, monkeypatch
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="enforce",
+        prepare_error=ValueError("bad continuity structure"),
+    )
+
+    assert isinstance(outcome.error, ValueError)
+    assert outcome.requests == []
+    assert len(outcome.stage_failures) == 1
+
+
+def test_enforce_shadow_compile_exception_is_fail_closed_before_transport(
+    tmp_path, monkeypatch
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="enforce",
+        shadow_error=RuntimeError("compile failed"),
+    )
+
+    assert isinstance(outcome.error, RuntimeError)
+    assert outcome.optimize_calls == 2
+    assert outcome.requests == []
+    assert len(outcome.stage_failures) == 1
+
+
+def test_observe_blocker_transports_legacy_prompt_and_keeps_evidence(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="observe",
+        blockers=("shot_rewrite_required",),
+    )
+
+    assert outcome.error is None
+    assert outcome.requests[0].segments[0].prompt == "legacy prompt"
+    manifest = load_h3_director_manifest(outcome.result["manifest_asset"])
+    assert manifest.entries[0].risk_report["blockers"] == [
+        "shot_rewrite_required"
+    ]
+
+
+def test_guard_without_blocker_transports_legacy_prompt(tmp_path, monkeypatch):
+    outcome = _execute_policy_boundary(
+        tmp_path, monkeypatch, policy="guard"
+    )
+
+    assert outcome.error is None
+    assert outcome.requests[0].segments[0].prompt == "legacy prompt"
+
+
+@pytest.mark.parametrize(
+    ("decided_mode", "expected_last"),
+    [("i2va", None), ("fl2va", "policy-last.png")],
+)
+def test_enforce_success_uses_decided_frames_at_provider_boundary(
+    tmp_path, monkeypatch, decided_mode, expected_last
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="enforce",
+        decided_mode=decided_mode,
+    )
+
+    assert outcome.error is None
+    provider_segment = outcome.requests[0].segments[0]
+    assert provider_segment.prompt == "bundle prompt"
+    assert (
+        Path(provider_segment.last_frame).name
+        if provider_segment.last_frame else None
+    ) == expected_last
