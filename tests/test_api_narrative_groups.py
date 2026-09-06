@@ -657,6 +657,32 @@ def test_video_reference_upload_rejects_images_over_pixel_limit(
     assert response.status_code == 422
 
 
+def test_video_reference_upload_rejects_normalized_png_over_byte_limit(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(narrative_groups, "MAX_VIDEO_REFERENCE_BYTES", 1_000)
+    monkeypatch.setattr(narrative_groups, "MAX_UPLOAD_BYTES", 2_000)
+    monkeypatch.setattr(
+        narrative_groups,
+        "_normalize_video_reference_upload",
+        lambda content, content_type: b"x" * 1_001,
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("small.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    upload_root = (
+        tmp_path / "videos" / "ep001" / "narrative_groups" / "references" / "ng-01"
+    )
+    assert not upload_root.exists() or list(upload_root.iterdir()) == []
+
+
 def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
     monkeypatch, tmp_path
 ):
@@ -806,7 +832,7 @@ def test_video_reference_upload_surfaces_safe_writer_failure_without_temp_files(
     assert list(group_root.iterdir()) == []
 
 
-@pytest.mark.parametrize("failure_mode", ["resolver-error", "candidate-missing"])
+@pytest.mark.parametrize("failure_mode", ["resolver-validation", "candidate-missing"])
 def test_video_reference_upload_cleans_published_file_when_preview_fails(
     monkeypatch, tmp_path, failure_mode
 ):
@@ -822,8 +848,8 @@ def test_video_reference_upload_cleans_published_file_when_preview_fails(
     )
 
     async def failed_preview(**kwargs):
-        if failure_mode == "resolver-error":
-            raise OSError("simulated preview failure")
+        if failure_mode == "resolver-validation":
+            raise ValueError("simulated preview validation failure")
         return VideoReferencePreview(
             revision=0,
             candidates=(),
@@ -844,6 +870,46 @@ def test_video_reference_upload_cleans_published_file_when_preview_fails(
     )
 
     assert response.status_code == 422
+    assert group_root.is_dir()
+    assert list(group_root.iterdir()) == []
+
+
+def test_video_reference_upload_cleans_internal_failure_without_leaking_detail(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client = TestClient(client.app, raise_server_exceptions=False)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+    secret = "database-password=do-not-leak"
+    original_store_factory = narrative_groups.make_sqlite_store_for_context
+    store_calls = 0
+
+    async def fail_store(*args, **kwargs):
+        nonlocal store_calls
+        store_calls += 1
+        if store_calls == 2:
+            raise RuntimeError(secret)
+        return await original_store_factory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        narrative_groups, "make_sqlite_store_for_context", fail_store
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 500
+    assert secret not in response.text
     assert group_root.is_dir()
     assert list(group_root.iterdir()) == []
 

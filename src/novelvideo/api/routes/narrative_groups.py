@@ -1322,6 +1322,10 @@ async def upload_group_video_reference(
         normalized = _normalize_video_reference_upload(
             content, str(file.content_type or "")
         )
+        if len(normalized) > limit:
+            raise ValueError(
+                "normalized video reference upload exceeds the size limit"
+            )
         upload_id = uuid.uuid4().hex
         target = write_temporary_video_reference(
             project_dir=resolved.project_dir,
@@ -1352,22 +1356,26 @@ async def upload_group_video_reference(
         data = _serialize_video_reference_candidate(
             project, resolved.project_dir, episode, group_id, candidate
         )
-    except Exception as exc:
+    except (ValueError, Image.DecompressionBombError) as exc:
         if target is not None:
-            try:
-                delete_temporary_video_reference(
-                    project_dir=resolved.project_dir,
-                    episode_number=episode,
-                    group_id=group_id,
-                    upload_id=upload_id,
-                    target=target,
-                )
-            except (OSError, TypeError, ValueError) as cleanup_exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"{exc}; upload cleanup failed: {cleanup_exc}",
-                ) from exc
+            delete_temporary_video_reference(
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group_id=group_id,
+                upload_id=upload_id,
+                target=target,
+            )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        if target is not None:
+            delete_temporary_video_reference(
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group_id=group_id,
+                upload_id=upload_id,
+                target=target,
+            )
+        raise
     finally:
         await file.close()
     return {"ok": True, "data": data}
