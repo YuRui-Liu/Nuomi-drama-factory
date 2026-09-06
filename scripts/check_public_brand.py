@@ -86,8 +86,10 @@ _NEGATIVE_PATTERN_ASSIGNMENTS = {
     ),
 }
 _TEST_NEGATIVE_ASSERTION = re.compile(
-    r"expect\([^\n]*?\)\.not\.toMatch\(/(?:\\.|[^/\n])*dramaclaw"
-    r"(?:\\.|[^/\n])*/[a-z]*\)",
+    r"\.not\.toMatch\((?P<literal>"
+    r"/(?:\\.|[^/\n])*dramaclaw(?:\\.|[^/\n])*/[a-z]*"
+    r"|[\"'][^\"'\n]*dramaclaw[^\"'\n]*[\"']"
+    r")\)",
     re.IGNORECASE,
 )
 _SETTINGS_NEGATIVE_ASSERTION = re.compile(
@@ -173,12 +175,17 @@ def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
     assignment = _NEGATIVE_PATTERN_ASSIGNMENTS.get(normalized)
     if assignment is not None:
         patterns.append(assignment)
-    if "/__tests__/" in normalized or normalized.endswith(".test.ts") or normalized.endswith(
-        ".test.tsx"
-    ):
-        patterns.append(_TEST_NEGATIVE_ASSERTION)
-
-    return [match.span() for pattern in patterns for match in pattern.finditer(line)]
+    spans = [match.span() for pattern in patterns for match in pattern.finditer(line)]
+    is_test_file = (
+        "/__tests__/" in normalized
+        or normalized.endswith(".test.ts")
+        or normalized.endswith(".test.tsx")
+    )
+    if is_test_file and not line.lstrip().startswith(("//", "#", "/*", "*")):
+        spans.extend(
+            match.span("literal") for match in _TEST_NEGATIVE_ASSERTION.finditer(line)
+        )
+    return spans
 
 
 def scan_text(path: Path, text: str) -> list[str]:

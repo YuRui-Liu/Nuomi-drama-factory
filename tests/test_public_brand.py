@@ -293,6 +293,24 @@ def test_explicit_allowlist_does_not_hide_public_brand_on_the_same_line() -> Non
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
 
 
+def test_negative_assertion_does_not_hide_brand_in_expect_argument() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        'expect("public DramaClaw label").not.toMatch(/DramaClaw/);',
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
+
+
+def test_commented_negative_assertion_is_not_allowlisted() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        "  // expect(label).not.toMatch(/DramaClaw/);",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
+
+
 def test_explicit_allowlist_rejects_unknown_machine_brand() -> None:
     scanner = _load_scanner()
 
