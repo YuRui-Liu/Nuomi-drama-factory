@@ -4,6 +4,41 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_scene_canonical_replace_failure_rolls_back_workflow_and_canonical(
+    monkeypatch, tmp_path
+):
+    from novelvideo.task_backend.runners import scene_reference
+
+    candidate = tmp_path / "assets/scenes/hall/versions/master-v1.png"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    canonical = tmp_path / "assets/scenes/hall/master.png"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"official")
+    real_replace = scene_reference.os.replace
+
+    def fail_canonical_replace(source, target):
+        if Path(target) == canonical:
+            raise OSError("canonical replace failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(scene_reference.os, "replace", fail_canonical_replace)
+    with pytest.raises(OSError, match="canonical replace failed"):
+        scene_reference._register_scene_reference_candidate(
+            ctx=SimpleNamespace(state_dir=tmp_path, requester_username="system"),
+            output_dir=tmp_path,
+            scene=SimpleNamespace(name="hall", base_scene_id=""),
+            kind="master",
+            output_path=candidate,
+            canonical_path=canonical,
+            source_attempt_id="attempt",
+            recipe_revision="1",
+        )
+
+    assert canonical.read_bytes() == b"official"
+    assert not (tmp_path / "production_workflow.json").exists()
+
+
 @pytest.mark.asyncio
 async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tmp_path):
     from novelvideo.models import NovelScene

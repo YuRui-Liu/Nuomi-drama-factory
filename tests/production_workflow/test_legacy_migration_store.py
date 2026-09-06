@@ -1,5 +1,9 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from novelvideo.production_workflow import (
     AdoptionStatus,
@@ -104,3 +108,68 @@ def test_manual_adoption_persists_selected_candidate(tmp_path):
     assert reloaded_versions["candidate-1"].adoption_status == AdoptionStatus.ADOPTED
     assert versions["candidate-1"].adoption_status == AdoptionStatus.ADOPTED
     assert event.reason == "空间结构正确"
+
+
+def test_prop_and_scene_runner_registrations_share_one_project_lock(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners.prop_reference import _register_prop_candidate
+    from novelvideo.task_backend.runners.scene_reference import (
+        _register_scene_reference_candidate,
+    )
+
+    state_dir = tmp_path / "state"
+    ctx = SimpleNamespace(state_dir=state_dir, requester_username="system")
+    prop_output = tmp_path / "assets/props/key/versions/prop-v1.png"
+    prop_output.parent.mkdir(parents=True)
+    prop_output.write_bytes(b"prop")
+    scene_output = tmp_path / "assets/scenes/hall/versions/master-v1.png"
+    scene_output.parent.mkdir(parents=True)
+    scene_output.write_bytes(b"scene")
+    active = 0
+    max_active = 0
+    active_guard = threading.Lock()
+    real_save = ProductionWorkflowStore._save
+
+    def observed_save(store):
+        nonlocal active, max_active
+        with active_guard:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return real_save(store)
+        finally:
+            with active_guard:
+                active -= 1
+
+    monkeypatch.setattr(ProductionWorkflowStore, "_save", observed_save)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        prop_future = executor.submit(
+            _register_prop_candidate,
+            ctx=ctx,
+            output_dir=tmp_path,
+            prop=SimpleNamespace(name="key", prop_type="object"),
+            output_path=prop_output,
+            canonical_path=tmp_path / "assets/props/key/reference.png",
+            prompt="key",
+            model="image-v1",
+            source_attempt_id="prop-attempt",
+        )
+        scene_future = executor.submit(
+            _register_scene_reference_candidate,
+            ctx=ctx,
+            output_dir=tmp_path,
+            scene=SimpleNamespace(name="hall", base_scene_id=""),
+            kind="master",
+            output_path=scene_output,
+            canonical_path=tmp_path / "assets/scenes/hall/master.png",
+            source_attempt_id="scene-attempt",
+            recipe_revision="1",
+        )
+        prop_future.result()
+        scene_future.result()
+
+    payload = json.loads((state_dir / "production_workflow.json").read_text("utf-8"))
+    assert max_active == 1
+    assert set(payload["slots"]) >= {"prop:key:reference", "scene:hall:base:master"}
