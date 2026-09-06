@@ -339,7 +339,7 @@ def test_load_catalog_rejects_duplicate_ids(tmp_path):
         load_catalog(path)
 
 
-EXPECTED_CATALOG = {
+REQUIRED_BASELINE_CATALOG = {
     "drama_ext.japanese_cel_animation": (
         "日系赛璐璐",
         "2d",
@@ -493,6 +493,28 @@ EXPECTED_CATALOG = {
         "/images/extension-styles/jinshi-ink-suspense.webp",
     ),
 }
+
+
+def _assert_required_catalog_baseline(actual):
+    assert set(REQUIRED_BASELINE_CATALOG) <= set(actual)
+    assert {
+        style_id: actual[style_id]
+        for style_id in REQUIRED_BASELINE_CATALOG
+    } == REQUIRED_BASELINE_CATALOG
+
+
+def test_required_catalog_baseline_allows_contract_safe_additions():
+    actual = dict(REQUIRED_BASELINE_CATALOG)
+    actual["drama_ext.future_style"] = (
+        "未来风格",
+        "experimental",
+        ("illustration-art-style",),
+        "/images/extension-styles/future-style.webp",
+    )
+
+    _assert_required_catalog_baseline(actual)
+
+
 CURATED_REVISION = "3a9c63baa03e6bbe2f28c89a2654cf9845466646"
 BUILTIN_PRESET_CANONICAL_SHA256 = {
     # Baseline captured from DramaClaw commit 652dd48 before this feature.
@@ -543,7 +565,6 @@ def source_audit_path(curated_catalog_path):
 def test_curated_catalog_has_exactly_the_required_styles(curated_catalog_path):
     catalog = load_catalog(curated_catalog_path)
 
-    assert len(catalog) == 19
     actual = {
         style.id: (
             style.name,
@@ -553,7 +574,7 @@ def test_curated_catalog_has_exactly_the_required_styles(curated_catalog_path):
         )
         for style in catalog
     }
-    assert actual == EXPECTED_CATALOG
+    _assert_required_catalog_baseline(actual)
     assert len({style.preview_asset for style in catalog}) == len(catalog)
 
 

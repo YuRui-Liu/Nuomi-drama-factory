@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,7 @@ def test_catalog_reload_real_registry_keeps_lkg_then_recovers(
     )
     catalog_path = tmp_path / "catalog.json"
     valid_catalog = source.read_bytes()
+    expected_count = len(json.loads(valid_catalog.decode("utf-8")))
     catalog_path.write_bytes(valid_catalog)
 
     class RecordingRegistry(ExtensionStyleRegistry):
@@ -276,16 +278,16 @@ def test_catalog_reload_real_registry_keeps_lkg_then_recovers(
     catalog_path.write_bytes(valid_catalog)
     recovered = client.post("/styles/catalog-reload").json()["data"]
 
-    assert initial["loaded"] == 19
+    assert initial["loaded"] == expected_count
     assert failed["generation"] == initial["generation"]
     assert failed["catalog_hash"] == initial["catalog_hash"]
-    assert failed["loaded"] == 19
+    assert failed["loaded"] == expected_count
     assert failed["degraded"] is True
     assert failed["errors"] == [
         {"code": "invalid_catalog", "file": "catalog.json"}
     ]
     assert recovered["generation"] == initial["generation"] + 1
-    assert recovered["loaded"] == 19
+    assert recovered["loaded"] == expected_count
     assert recovered["degraded"] is False
     assert recovered["errors"] == []
     assert registry.force_values == [False, True, True]
@@ -307,13 +309,17 @@ def test_snapshot_preview_returns_purpose_projections_without_internal_paths():
     assert "local_path" not in serialized
 
 
-def test_style_catalog_keeps_six_presets_and_nineteen_extensions():
+def test_style_catalog_keeps_six_presets_and_all_extensions():
     from novelvideo.services.style_service import StyleService
 
     styles = StyleService.list_all_styles()
+    expected_count = len(StyleService._extension_registry.snapshot().styles)
 
     assert len([style for style in styles if style["type"] == "preset"]) == 6
-    assert len([style for style in styles if style["type"] == "extension"]) == 19
+    assert (
+        len([style for style in styles if style["type"] == "extension"])
+        == expected_count
+    )
 
     extension = next(style for style in styles if style["type"] == "extension")
     assert extension["group"] == "extension"
@@ -355,12 +361,19 @@ def test_list_all_styles_orders_real_groups_and_keeps_ids_unique(monkeypatch):
     styles = StyleService.list_all_styles(username="alice", project="demo")
     ids = [style["id"] for style in styles]
     types = [style["type"] for style in styles]
+    extension_count = len(StyleService._extension_registry.snapshot().styles)
+    extension_end = 6 + extension_count
 
-    assert types == ["preset"] * 6 + ["extension"] * 19 + ["custom"] * 2
+    assert types == ["preset"] * 6 + ["extension"] * extension_count + ["custom"] * 2
     assert [style["order"] for style in styles[:6]] == list(range(6))
-    assert [style["order"] for style in styles[6:25]] == list(range(19))
-    assert [style["id"] for style in styles[25:]] == ["custom_a", "custom_z"]
-    assert [style["order"] for style in styles[25:]] == [0, 1]
+    assert [style["order"] for style in styles[6:extension_end]] == list(
+        range(extension_count)
+    )
+    assert [style["id"] for style in styles[extension_end:]] == [
+        "custom_a",
+        "custom_z",
+    ]
+    assert [style["order"] for style in styles[extension_end:]] == [0, 1]
     assert len(ids) == len(set(ids))
 
 

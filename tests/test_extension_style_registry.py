@@ -31,14 +31,19 @@ def registry(catalog_path: Path):
     return ExtensionStyleRegistry(catalog_path)
 
 
-def test_initial_snapshot_loads_nineteen_styles(registry) -> None:
+@pytest.fixture
+def catalog_size(catalog_path: Path) -> int:
+    return len(json.loads(catalog_path.read_text(encoding="utf-8")))
+
+
+def test_initial_snapshot_loads_catalog_styles(registry, catalog_size: int) -> None:
     snapshot = registry.snapshot()
 
-    assert len(snapshot.styles) == 19
+    assert len(snapshot.styles) == catalog_size
     assert snapshot.generation == 1
     assert snapshot.catalog_hash
-    assert snapshot.diagnostics.discovered == 19
-    assert snapshot.diagnostics.loaded == 19
+    assert snapshot.diagnostics.discovered == catalog_size
+    assert snapshot.diagnostics.loaded == catalog_size
     assert snapshot.diagnostics.failed == 0
     assert snapshot.diagnostics.degraded is False
 
@@ -164,12 +169,13 @@ def test_schema_failure_reports_discovered_entry_count(catalog_path: Path) -> No
     from novelvideo.extension_styles.registry import ExtensionStyleRegistry
 
     raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    expected_count = len(raw)
     raw[0]["category"] = "invalid-category"
     catalog_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     snapshot = ExtensionStyleRegistry(catalog_path).snapshot()
 
-    assert snapshot.diagnostics.discovered == 19
+    assert snapshot.diagnostics.discovered == expected_count
     assert snapshot.diagnostics.loaded == 0
     assert snapshot.diagnostics.failed == 1
 

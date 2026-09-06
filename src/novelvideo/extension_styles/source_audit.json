@@ -8,7 +8,7 @@
     "review": "approved",
     "immutable_url": "https://github.com/freestylefly/awesome-gpt-image-2/blob/3a9c63baa03e6bbe2f28c89a2654cf9845466646/LICENSE"
   },
-  "derivation": "DramaClaw's 19 extension styles are original, story-neutral prompt fragments curated from the named upstream template methods. They do not copy upstream community images or case prompts; source_ids record which locked templates informed each local style.",
+  "derivation": "Nuomi Drama Factory's extension styles are original, story-neutral prompt fragments curated from the named upstream template methods. They do not copy upstream community images or case prompts; source_ids record which locked templates informed each local style.",
   "templates": [
     {
       "id": "ink-double-exposure-poster",

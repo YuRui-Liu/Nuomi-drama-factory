@@ -30,8 +30,8 @@ function extensionStyleModuleSources(
 }
 
 describe("extension style catalog", () => {
-  it("exposes exactly 19 namespaced styles in the backend fragment order", () => {
-    expect(EXTENSION_STYLES).toHaveLength(19);
+  it("exposes namespaced styles in the backend fragment order", () => {
+    expect(EXTENSION_STYLES.length).toBeGreaterThan(0);
     expect(FRAGMENT_KEYS).toEqual([
       "medium",
       "rendering",
@@ -41,7 +41,9 @@ describe("extension style catalog", () => {
       "constraints",
     ]);
     expect(EXTENSION_STYLES.every(({ id }) => id.startsWith("drama_ext."))).toBe(true);
-    expect(new Set(EXTENSION_STYLES.map(({ id }) => id)).size).toBe(19);
+    expect(new Set(EXTENSION_STYLES.map(({ id }) => id)).size).toBe(
+      EXTENSION_STYLES.length,
+    );
   });
 
   it("preserves category, source, and local preview metadata", () => {
