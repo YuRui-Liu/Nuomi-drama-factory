@@ -18,12 +18,15 @@ from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterDefinition,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
+    H3_REFERENCE_WORKFLOW_ID,
     H3_WORKFLOW_ID,
+    VideoReferencePolicy,
     build_video_workflow_registry,
 )
 
 
 H3_MODEL_ID = H3_WORKFLOW_ID
+H3_REFERENCE_MODEL_ID = H3_REFERENCE_WORKFLOW_ID
 
 
 class VideoModelCatalogItem(BaseModel):
@@ -36,6 +39,7 @@ class VideoModelCatalogItem(BaseModel):
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
     parameters: tuple[VideoWorkflowParameterDefinition, ...] = ()
+    reference_policy: VideoReferencePolicy = VideoReferencePolicy()
     unavailable_reason: str | None = None
 
 
@@ -52,6 +56,7 @@ def list_video_models(
             supported_modes=definition.supported_modes,
             default_mode=definition.default_mode,
             parameters=definition.parameters,
+            reference_policy=definition.reference_policy,
             unavailable_reason=definition.unavailable_reason,
         )
         for definition in build_video_workflow_registry(store, resolver).list()
@@ -95,6 +100,7 @@ def resolve_video_model_route(
 
 __all__ = [
     "H3_MODEL_ID",
+    "H3_REFERENCE_MODEL_ID",
     "VideoModelCatalogItem",
     "list_video_models",
     "resolve_video_model_route",

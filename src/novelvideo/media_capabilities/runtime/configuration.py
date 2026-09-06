@@ -30,6 +30,15 @@ _WORKFLOW_FIELDS: dict[MediaCapability, str] = {
     MediaCapability.TTS_VOICE_DESIGN: "tts_qwen3_voice_design",
     MediaCapability.TTS_VOICE_CLONE: "tts_indextts2_voice_clone",
 }
+_SUPPORTED_WORKFLOW_SETTINGS_KEYS = frozenset(
+    {
+        "image_upscale",
+        "video_minimax_h3",
+        "video_minimax_h3_ref",
+        "tts_qwen3_voice_design",
+        "tts_indextts2_voice_clone",
+    }
+)
 
 RUNNINGHUB_DOWNLOAD_HOSTS = (
     "rh-images.xiaoyaoyou.com",
@@ -43,6 +52,18 @@ class RunningHubRuntimeConfiguration:
     account: ProviderAccount
     api_key: str
     workflows: RunningHubWorkflowSettings
+
+    def workflow_id_for_key(self, settings_key: str) -> str:
+        if settings_key not in _SUPPORTED_WORKFLOW_SETTINGS_KEYS:
+            raise MediaRuntimeConfigurationError(
+                f"RunningHub does not support workflow settings key: {settings_key}"
+            )
+        value = str(getattr(self.workflows, settings_key)).strip()
+        if not value:
+            raise MediaRuntimeConfigurationError(
+                f"RunningHub workflow is not configured for settings key: {settings_key}"
+            )
+        return value
 
     def workflow_id(self, capability: MediaCapability) -> str:
         field = _WORKFLOW_FIELDS.get(capability)

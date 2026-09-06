@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -13,7 +16,9 @@ from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterDefinition,
     VideoWorkflowParameterOption,
 )
+from novelvideo.media_capabilities.video import workflow_registry as workflow_registry_module
 from novelvideo.media_capabilities.video.workflow_registry import (
+    H3_WORKFLOW_ID,
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
     VideoWorkflowScene,
@@ -45,6 +50,7 @@ def _definition(**updates) -> VideoWorkflowDefinition:
         "label": "Workflow",
         "provider": "provider",
         "adapter_key": "adapter",
+        "workflow_settings_key": "video_minimax_h3",
         "scenes": frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         "supported_modes": ("auto",),
     }
@@ -68,7 +74,8 @@ def test_registry_filters_workflows_by_scene(tmp_path) -> None:
     registry = _configured_registry(tmp_path)
 
     assert [item.id for item in registry.list(VideoWorkflowScene.NARRATIVE_GROUP)] == [
-        "runninghub:minimax-h3"
+        "runninghub:minimax-h3",
+        "runninghub:minimax-h3-ref",
     ]
     assert registry.list(VideoWorkflowScene.SINGLE_BEAT) == ()
     assert registry.list(VideoWorkflowScene.FREEZONE) == ()
@@ -87,9 +94,11 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
         label="RunningHub MiniMax H3",
         provider="runninghub",
         adapter_key="minimax-h3",
+        workflow_settings_key="video_minimax_h3",
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         supported_modes=("auto", "i2va", "fl2va"),
         default_mode="auto",
+        is_default=True,
         parameters=(
             VideoWorkflowParameterDefinition(
                 key="resolution",
@@ -115,6 +124,77 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
     )
 
 
+def test_registry_registers_reference_workflow_after_legacy_h3(tmp_path) -> None:
+    definitions = _configured_registry(tmp_path).list()
+
+    assert [definition.id for definition in definitions] == [
+        H3_WORKFLOW_ID,
+        "runninghub:minimax-h3-ref",
+    ]
+    reference = definitions[1]
+    assert reference.label == "RunningHub MiniMax H3 · Ref"
+    assert reference.provider == "runninghub"
+    assert reference.adapter_key == "minimax-h3-ref"
+    assert reference.workflow_settings_key == "video_minimax_h3_ref"
+    assert reference.scenes == frozenset({VideoWorkflowScene.NARRATIVE_GROUP})
+    assert reference.supported_modes == ("auto", "i2va", "fl2va")
+    assert reference.default_mode == "auto"
+    assert reference.is_default is False
+    assert reference.reference_policy == workflow_registry_module.VideoReferencePolicy(
+        required=True,
+        min_images=1,
+        max_images=5,
+        source_kinds=(
+            "character_identity",
+            "scene_master",
+            "prop_reference",
+            "temporary_upload",
+        ),
+    )
+
+
+def test_reference_policy_uses_provider_max_images_setting(tmp_path) -> None:
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    store.save_provider(
+        ProviderAccount(
+            id="runninghub-main",
+            provider_type="runninghub",
+            credential_ref="env://RUNNINGHUB_API_KEY",
+        )
+    )
+    store.save_runninghub_workflows(
+        RunningHubWorkflowSettings(video_minimax_h3_ref_max_images=9)
+    )
+
+    reference = build_video_workflow_registry(
+        store, CredentialResolver(env={"RUNNINGHUB_API_KEY": "rh-secret"})
+    ).list()[1]
+
+    assert reference.reference_policy.max_images == 9
+
+
+def test_reference_workflow_profile_has_independent_remote_id_and_contract() -> None:
+    profile_path = (
+        Path(__file__).resolve().parents[3]
+        / "src/novelvideo/media_capabilities/video/profiles/minimax_h3_ref.json"
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+
+    assert profile["workflow_id"] == "2096502793044582401"
+    assert profile["bindings"]["timeline_data"]["node_id"] == "12"
+    assert profile["outputs"]["video"]["node_id"] == "7"
+
+
+def test_reference_policy_defaults_are_non_reference() -> None:
+    policy_type = workflow_registry_module.VideoReferencePolicy
+    assert policy_type() == policy_type(
+        required=False,
+        min_images=0,
+        max_images=0,
+        source_kinds=(),
+    )
+
+
 def test_workflow_definition_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         VideoWorkflowDefinition(
@@ -122,6 +202,7 @@ def test_workflow_definition_rejects_extra_fields() -> None:
             label="Workflow",
             provider="provider",
             adapter_key="adapter",
+            workflow_settings_key="video_minimax_h3",
             scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
             supported_modes=("auto",),
             unexpected=True,  # type: ignore[call-arg]
@@ -163,6 +244,18 @@ def test_registry_rejects_duplicate_workflow_ids() -> None:
 
     with pytest.raises(ValueError, match="duplicate workflow id: workflow"):
         VideoWorkflowRegistry((definition, definition))
+
+
+def test_registry_default_uses_explicit_default_marker() -> None:
+    non_default = _definition(id="first")
+    default = _definition(id="second", is_default=True)
+
+    assert (
+        VideoWorkflowRegistry((non_default, default))
+        .default(VideoWorkflowScene.NARRATIVE_GROUP)
+        .id
+        == "second"
+    )
 
 
 def test_workflow_definition_rejects_duplicate_parameter_keys() -> None:
@@ -245,6 +338,27 @@ def test_h3_availability_reports_specific_reason(
 
     assert definition.available is False
     assert definition.unavailable_reason == expected_reason
+
+
+def test_reference_workflow_reports_empty_workflow_as_unavailable(tmp_path) -> None:
+    store = MediaCapabilityStore(tmp_path / "reference.db")
+    store.save_provider(
+        ProviderAccount(
+            id="runninghub-main",
+            provider_type="runninghub",
+            credential_ref="env://RUNNINGHUB_API_KEY",
+        )
+    )
+    store.save_runninghub_workflows(
+        RunningHubWorkflowSettings(video_minimax_h3_ref="")
+    )
+
+    reference = build_video_workflow_registry(
+        store, CredentialResolver(env={"RUNNINGHUB_API_KEY": "rh-secret"})
+    ).list()[1]
+
+    assert reference.available is False
+    assert reference.unavailable_reason == "workflow_not_configured"
 
 
 @pytest.mark.parametrize("unexpected", [TypeError("bug"), AssertionError("bug")])

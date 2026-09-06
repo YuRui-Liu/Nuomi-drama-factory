@@ -10,6 +10,7 @@ from pydantic import (
     field_validator,
     JsonValue,
     PositiveInt,
+    StrictInt,
     StringConstraints,
     model_validator,
 )
@@ -192,12 +193,15 @@ class RunningHubWorkflowSettings(_ExternalModel):
 
     image_upscale: str = ""
     video_minimax_h3: str = "2089723723468328961"
+    video_minimax_h3_ref: str = "2096502793044582401"
+    video_minimax_h3_ref_max_images: StrictInt = Field(default=5, ge=1, le=10)
     tts_qwen3_voice_design: str = ""
     tts_indextts2_voice_clone: str = ""
 
     @field_validator(
         "image_upscale",
         "video_minimax_h3",
+        "video_minimax_h3_ref",
         "tts_qwen3_voice_design",
         "tts_indextts2_voice_clone",
         mode="before",

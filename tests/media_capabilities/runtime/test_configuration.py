@@ -30,6 +30,8 @@ def test_persisted_keyring_key_and_workflow_ids_feed_runninghub_runtime(tmp_path
         RunningHubWorkflowSettings(
             image_upscale="1001",
             video_minimax_h3="2002",
+            video_minimax_h3_ref="2003",
+            video_minimax_h3_ref_max_images=7,
             tts_qwen3_voice_design="3003",
             tts_indextts2_voice_clone="4004",
         )
@@ -47,8 +49,50 @@ def test_persisted_keyring_key_and_workflow_ids_feed_runninghub_runtime(tmp_path
     assert runtime.workflow_id(MediaCapability.VIDEO_I2VA) == "2002"
     assert runtime.workflow_id(MediaCapability.VIDEO_L2VA) == "2002"
     assert runtime.workflow_id(MediaCapability.VIDEO_FL2VA) == "2002"
+    assert runtime.workflow_id_for_key("video_minimax_h3") == "2002"
+    assert runtime.workflow_id_for_key("video_minimax_h3_ref") == "2003"
     assert runtime.workflow_id(MediaCapability.TTS_VOICE_DESIGN) == "3003"
     assert runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE) == "4004"
+
+
+def test_runninghub_reference_workflow_defaults_are_shipped() -> None:
+    settings = RunningHubWorkflowSettings()
+
+    assert settings.video_minimax_h3 == "2089723723468328961"
+    assert settings.video_minimax_h3_ref == "2096502793044582401"
+    assert settings.video_minimax_h3_ref_max_images == 5
+
+
+@pytest.mark.parametrize("invalid", [0, 11, True, False, 1.5])
+def test_runninghub_reference_max_images_requires_strict_integer_range(invalid) -> None:
+    with pytest.raises(ValueError):
+        RunningHubWorkflowSettings(video_minimax_h3_ref_max_images=invalid)
+
+
+def test_runninghub_reference_workflow_id_requires_digits() -> None:
+    with pytest.raises(ValueError, match="digits only"):
+        RunningHubWorkflowSettings(video_minimax_h3_ref="ref-workflow")
+
+
+@pytest.mark.parametrize(
+    "settings_key", ["video_minimax_h3_ref_max_images", "unknown_workflow"]
+)
+def test_runtime_rejects_unsupported_workflow_settings_keys(tmp_path, settings_key) -> None:
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    store.save_provider(
+        ProviderAccount(
+            id="runninghub-main",
+            provider_type="runninghub",
+            credential_ref="env://RUNNINGHUB_API_KEY",
+        )
+    )
+    runtime = load_runninghub_runtime_configuration(
+        store,
+        CredentialResolver(env={"RUNNINGHUB_API_KEY": "rh-key"}),
+    )
+
+    with pytest.raises(MediaRuntimeConfigurationError, match="does not support"):
+        runtime.workflow_id_for_key(settings_key)
 
 
 def test_runtime_rejects_an_empty_workflow_slot(tmp_path) -> None:
