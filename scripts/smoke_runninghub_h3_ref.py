@@ -7,7 +7,9 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -40,6 +42,7 @@ _DEFAULT_REFERENCE_LIMIT = 5
 
 Generator = Callable[..., Awaitable[object]]
 ProbeVideo = Callable[[Path], Awaitable[object]]
+FfprobeCheck = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,23 +178,47 @@ def _prepare_inputs(args: argparse.Namespace) -> _PreparedInputs:
     return _PreparedInputs(references, segment, MappingProxyType(frames))
 
 
-def _reserve_output(path: Path) -> _OutputReservation:
+def receipt_path(output: Path) -> Path:
+    """Return the durable, non-secret submission receipt next to an output."""
+    return output.with_name(f"{output.name}.receipt.json")
+
+
+def require_ffprobe() -> None:
+    """Fail before a billable call unless ffprobe can actually execute."""
+    executable = shutil.which("ffprobe")
+    if not executable or not os.access(executable, os.X_OK):
+        raise ValueError("ffprobe is unavailable or not executable")
+    try:
+        subprocess.run(
+            [executable, "-version"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("ffprobe is unavailable or not executable") from exc
+
+
+def _reserve_output(path: Path, *, label: str = "--output") -> _OutputReservation:
     if not path.is_absolute():
-        raise ValueError(f"--output must be an absolute path: {path}")
+        raise ValueError(f"{label} must be an absolute path: {path}")
     parent = path.parent
     if not parent.is_dir():
-        raise ValueError(f"--output parent directory must already exist: {parent}")
+        raise ValueError(f"{label} parent directory must already exist: {parent}")
     if parent.is_symlink() or parent.resolve(strict=True) != parent:
-        raise ValueError("--output parent must not traverse symbolic links")
+        raise ValueError(f"{label} parent must not traverse symbolic links")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError as exc:
-        raise ValueError(f"--output already exists and will not be overwritten: {path}") from exc
+        raise ValueError(
+            f"{label} already exists and will not be overwritten: {path}"
+        ) from exc
     except OSError as exc:
-        raise ValueError(f"--output cannot be safely created: {path}") from exc
+        raise ValueError(f"{label} cannot be safely created: {path}") from exc
     try:
         created = os.fstat(descriptor)
     finally:
@@ -211,6 +238,35 @@ def _remove_unused_reservation(reservation: _OutputReservation) -> None:
         and stat.S_ISREG(current.st_mode)
     ):
         reservation.path.unlink()
+
+
+def _write_submission_receipt(
+    path: Path,
+    *,
+    provider_task_id: str,
+    input_digest: str,
+) -> None:
+    payload = {
+        "workflow_id": WORKFLOW_ID,
+        "provider_task_id": provider_task_id,
+        "input_sha256": input_digest,
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _input_digest(
@@ -240,6 +296,7 @@ async def _verify_output(
     result: object,
     *,
     probe_video: ProbeVideo,
+    submitted_task_id: str | None,
 ) -> tuple[str, int, int]:
     status = getattr(result, "status", None)
     if status is not None:
@@ -249,6 +306,10 @@ async def _verify_output(
     provider_task_id = str(getattr(result, "provider_task_id", "") or "").strip()
     if not provider_task_id:
         raise RuntimeError("generator returned no provider task ID")
+    if submitted_task_id is None:
+        raise RuntimeError("generator returned without provider submission evidence")
+    if provider_task_id != submitted_task_id:
+        raise RuntimeError("generator task ID does not match submission receipt")
     result_path = Path(str(getattr(result, "output_path", "")))
     if result_path != args.output:
         raise RuntimeError("generator returned an unexpected output path")
@@ -294,6 +355,29 @@ async def _run(
     print(f"workflow_id={WORKFLOW_ID}")
     print(f"input_sha256={input_digest}")
     print("runtime_cache=fresh")
+    submitted_task_id: str | None = None
+
+    async def on_provider_submitted(raw_task_id: str) -> None:
+        nonlocal submitted_task_id
+        task_id = str(raw_task_id or "").strip()
+        if not task_id or any(ord(character) < 32 for character in task_id):
+            raise RuntimeError("provider submitted an invalid task ID")
+        if submitted_task_id is not None and submitted_task_id != task_id:
+            raise RuntimeError("provider submitted multiple task IDs")
+        submitted_task_id = task_id
+        print(
+            f"provider_submitted_task_id={task_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+        durable_receipt = receipt_path(args.output)
+        _write_submission_receipt(
+            durable_receipt,
+            provider_task_id=task_id,
+            input_digest=input_digest,
+        )
+        print(f"submission_receipt={durable_receipt}", file=sys.stderr, flush=True)
+
     with tempfile.TemporaryDirectory(
         prefix=".h3-ref-smoke-", dir=args.output.parent
     ) as runtime_dir:
@@ -308,9 +392,13 @@ async def _run(
             reference_limit=args.reference_limit,
             workflow_id=WORKFLOW_ID,
             frozen_frames=prepared.frozen_frames,
+            on_provider_submitted=on_provider_submitted,
         )
         output_sha256, width, height = await _verify_output(
-            args, result, probe_video=probe_video
+            args,
+            result,
+            probe_video=probe_video,
+            submitted_task_id=submitted_task_id,
         )
     print(f"provider_task_id={result.provider_task_id}")
     print(f"output_sha256={output_sha256}")
@@ -325,6 +413,7 @@ def main(
     environ: Mapping[str, str] | None = None,
     generator: Generator | None = None,
     probe_video: ProbeVideo = _probe_video,
+    ffprobe_check: FfprobeCheck = require_ffprobe,
 ) -> int:
     args = _parser().parse_args(argv)
     active_environment = os.environ if environ is None else environ
@@ -341,7 +430,15 @@ def main(
         return 2
     try:
         prepared = _prepare_inputs(args)
-        reservation = _reserve_output(args.output)
+        ffprobe_check()
+        output_reservation = _reserve_output(args.output)
+        try:
+            receipt_reservation = _reserve_output(
+                receipt_path(args.output), label="submission receipt"
+            )
+        except (OSError, ValueError):
+            _remove_unused_reservation(output_reservation)
+            raise
     except (OSError, ValueError) as exc:
         print(f"invalid real smoke request: {exc}", file=sys.stderr)
         return 2
@@ -361,7 +458,8 @@ def main(
         )
         return 1
     finally:
-        _remove_unused_reservation(reservation)
+        _remove_unused_reservation(output_reservation)
+        _remove_unused_reservation(receipt_reservation)
     return 0
 
 

@@ -74,6 +74,8 @@ RUNNINGHUB_REAL_SMOKE=1 uv run python scripts/smoke_runninghub_h3_ref.py \
   --output /absolute/path/to/h3-ref-smoke.mp4
 ```
 
-输出路径必须是绝对路径，其真实（非符号链接）父目录必须已存在，且目标文件不得存在；关卡绝不覆盖上一次结果。每次调用都使用全新的临时运行账本并输出 `runtime_cache=fresh`，持久缓存命中不能冒充发布证据。运行时返回后，关卡会独立确认产物可读且非空，用 `ffprobe` 严格核对所选 H3 分辨率，并在 `status=succeeded` 前输出成片 SHA-256 与实际尺寸；随后只清理临时账本，不触碰应用持久数据。
+输出路径必须是绝对路径，其真实（非符号链接）父目录必须已存在，且目标文件与同目录 `<output>.receipt.json` 均不得存在；关卡绝不覆盖上一次证据。任何付费调用前都会实际执行 `ffprobe -version`，探测器缺失或不可执行时禁止提交。每次调用都使用全新的临时运行账本并输出 `runtime_cache=fresh`，持久缓存命中不能冒充发布证据。RunningHub 一旦接受提交，回调会立即把 task ID、固定工作流 ID 和输入摘要原子写入 receipt，并同时向 stderr 输出 task ID；receipt 不含凭据，即使后续轮询、下载、探测或尺寸校验失败也会保留。
+
+运行时返回后，关卡会独立确认产物可读且非空，用 `ffprobe` 严格核对所选 H3 分辨率，并在 `status=succeeded` 前输出成片 SHA-256 与实际尺寸；随后只清理临时账本，不触碰应用持久数据。
 
 命令还会输出工作流 `2096502793044582401`、输入摘要、远端 task ID、最终状态和本地结果路径。CI 与普通本地验证不得设置该开关；远端拒绝、产物缺失/质检失败或尺寸不符时只报告一次失败，不降级、不重试。Ref 与首尾帧会在付费提交前按 PNG/JPEG/WEBP、20 MiB、4000 万像素限制完成预检。
