@@ -1,0 +1,78 @@
+:root {
+  --vp-font-family-base: "Inter", "PingFang SC", "Microsoft YaHei", system-ui,
+    sans-serif;
+  --vp-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --vp-layout-max-width: 1600px;
+  --vp-c-brand-1: #b45309;
+  --vp-c-brand-2: #d97706;
+  --vp-c-brand-3: #f59e0b;
+  --vp-c-brand-soft: rgba(245, 158, 11, 0.14);
+}
+
+.dark {
+  --vp-c-brand-1: #fbbf24;
+  --vp-c-brand-2: #f59e0b;
+  --vp-c-brand-3: #d97706;
+  --vp-c-brand-soft: rgba(245, 158, 11, 0.16);
+}
+
+.VPDoc .content-container {
+  max-width: 980px !important;
+}
+
+.vp-doc h2 {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+}
+
+.vp-doc h3 {
+  margin-top: 1.75rem;
+}
+
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--vp-c-divider);
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc table {
+  width: 100%;
+}
+
+.vp-doc details {
+  margin: 1.25rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  background: var(--vp-c-bg-soft);
+}
+
+.vp-doc details > summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc details[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.vp-doc .mermaid {
+  margin: 1.5rem 0;
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+
+@media (max-width: 768px) {
+  .vp-doc table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .vp-doc .mermaid {
+    padding: 0.5rem;
+  }
+}

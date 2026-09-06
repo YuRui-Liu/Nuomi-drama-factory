@@ -107,3 +107,27 @@ test('cookbook configuration defines light Mermaid styling and dark-mode support
   assert.match(cookbookConfig, /mermaid:\s*{[\s\S]*?theme:\s*['\"]default['\"]/);
   assert.ok(cookbookPackageJson.devDependencies['vitepress-plugin-mermaid']);
 });
+
+test('cookbook theme extends the VitePress default theme', () => {
+  const theme = readFileSync(
+    new URL('../docs/cookbook/.vitepress/theme/index.ts', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(theme, /from\s+['\"]vitepress\/theme['\"]/);
+  assert.match(theme, /import\s+['\"]\.\/custom\.css['\"]/);
+  assert.match(theme, /export\s+default\s+DefaultTheme/);
+});
+
+test('cookbook home documents the HTML reading commands', () => {
+  const home = readFileSync(
+    new URL('../docs/cookbook/README.md', import.meta.url),
+    'utf8',
+  );
+
+  for (const command of ['pnpm docs:dev', 'pnpm docs:build', 'pnpm docs:preview']) {
+    assert.match(home, new RegExp(command.replace(':', '\\:')));
+  }
+  assert.match(home, /HTML 阅读入口/);
+  assert.match(home, /仓库根目录/);
+});

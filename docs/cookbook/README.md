@@ -2,6 +2,16 @@
 
 这组文档面向需要修改功能、理解实现原理或追踪生产管线的开发者。先按功能找到对应管线，再沿页面、API、任务、领域服务和数据产物向下追踪；共享机制只在系统地图和开发手册中解释。
 
+## HTML 阅读入口
+
+从仓库根目录运行以下命令，可以通过带侧边栏、全文搜索和 Mermaid 流程图的 HTML 文档站阅读本 Cookbook。Markdown 仍是唯一内容源，修改后开发服务器会自动刷新。
+
+```bash
+pnpm docs:dev      # 启动本地文档站，终端会显示访问地址
+pnpm docs:build    # 生成静态 HTML
+pnpm docs:preview  # 预览最近一次静态构建
+```
+
 - 第一次启动项目：从[启动与本地开发](start-software.md)开始。
 - 想先理解整体结构：阅读[共享系统地图](system-map.md)。
 - 已经知道页面、接口或任务名：使用[功能反查手册](development/trace-a-feature.md)。
