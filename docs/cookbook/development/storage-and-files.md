@@ -32,7 +32,15 @@ flowchart TD
 | `ctx.state_dir` | `data.db`、`cognee_system/`、`project_config.json`、迁移标记 | 重启后仍需恢复的结构化项目状态；备份时要按数据库语义处理 WAL |
 | `ctx.runtime_dir` | `logs/`、`staging/`、`temp_sketch_panels/` | 运行中可观察或可重建；失败、取消和重试要考虑清理本次运行的中间文件 |
 
-这张表只描述项目级目录。`src/novelvideo/api/deps.py` 还会在安装级 `STATE_DIR/local/` 保存 `settings.db`、`production.db` 和凭据存储；`src/novelvideo/utils/project_paths.py:ProjectPaths` 还定义了 `STATE_DIR/_shared/verification.db`、`director_training.db` 和共享 artifacts。它们不是某个 `ctx.state_dir` 的内容。排查数据时要先确认作用域是项目级、安装级还是全局共享。
+这张表只描述项目级目录。`src/novelvideo/api/deps.py` 还会在安装级 `STATE_DIR/local/` 保存 `settings.db` 和 `production.db`；`src/novelvideo/utils/project_paths.py:ProjectPaths` 还定义了 `STATE_DIR/_shared/verification.db`、`director_training.db` 和共享 artifacts。它们不是某个 `ctx.state_dir` 的内容。排查数据时要先确认作用域是项目级、安装级还是全局共享。
+
+媒体提供商凭据由 `get_media_credential_store` 调用 `create_credential_store` 交给操作系统支持的 Store，不能统一归入 `STATE_DIR/local/`：
+
+- macOS 使用当前用户的 login Keychain；工厂会忽略传入的 fallback path，不在 `STATE_DIR/local/` 写凭据文件。
+- Windows 优先写 Credential Manager。只有 Credential Manager 写入不可用且 DPAPI 可用时，才把密文 fallback 写到 `STATE_DIR/local/media-credentials.dpapi.json`；文件内容不是明文。
+- 其他非 macOS 平台当前也会构造 `WindowsCredentialStore`，但没有 Win32 Credential Manager 和 DPAPI 后端时无法保存凭据，读取也不会返回 fallback 值。
+
+因此备份 `STATE_DIR/local/` 可以覆盖这两个安装级数据库，以及 Windows 上可能存在的 DPAPI fallback 文件；它不包含 macOS Keychain 凭据，也不包含保存在 Windows Credential Manager 中的凭据。DPAPI 文件虽然不是明文，仍应作为敏感备份限制访问。凭据恢复与迁移必须按对应操作系统的安全存储单独处理，不能把复制 `local/` 当成完整凭据备份。
 
 ## ProjectContext 的解析和 home node 门禁
 
@@ -109,6 +117,7 @@ schema bootstrap 使用 `CREATE TABLE IF NOT EXISTS` 和 `_add_column_if_missing
 | `src/novelvideo/shared/project_dirs.py` | `default_project_dirs` | 注册项目时生成三条默认绝对路径 |
 | `src/novelvideo/utils/project_paths.py` | `ProjectPaths`、`bootstrap_from_legacy_output` | 三类项目路径、共享 state 和旧布局迁移 |
 | `src/novelvideo/api/deps.py` | `resolve_project_scope`、`make_sqlite_store_for_context`、`get_sqlite_store` | API 路径解析和 Store 生命周期 |
+| `src/novelvideo/media_capabilities/runtime/credential_store.py` | `create_credential_store`、`MacOSCredentialStore`、`WindowsCredentialStore` | 操作系统凭据存储与 Windows DPAPI fallback |
 | `src/novelvideo/sqlite_store.py` | `SQLiteStore`、`_ensure_db`、`_add_column_if_missing` | 项目 SQLite schema、缓存和读写 |
 | `src/novelvideo/sqlite_pragmas.py` | `configure_sqlite_connection_async` | WAL、同步级别、busy timeout 和外键 |
 | `src/novelvideo/freezone/paths.py` | `safe_upload_filename`、`resolve_static_url_to_path` | 上传名清洗和项目路径越界防护 |
