@@ -1,0 +1,6 @@
+interface:
+  display_name: "发布 Nuomi 扩展风格"
+  short_description: "两阶段校验并发布全局只读视觉风格"
+  default_prompt: "Use $publishing-nuomi-extension-styles to prepare and publish a contract-compliant global read-only extension style."
+policy:
+  allow_implicit_invocation: true
