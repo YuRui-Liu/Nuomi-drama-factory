@@ -389,10 +389,18 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
         provider_workflow_id="2096502793044582401",
     )
     storage = state / "h3_reference_input_snapshots"
-    for item in (storage / snapshot_id, storage / orphan.snapshot_id):
-        item.touch()
-        item.chmod(0o700)
-        os.utime(item, (100, 100))
+    (storage / orphan.snapshot_id / "lease.json").write_text(
+        '{"expires_at":100}', encoding="utf-8"
+    )
+    queued = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=references,
+        frames=frames,
+        reference_revision=7,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    os.utime(storage / queued.snapshot_id, (1, 1))
     assert runtime.garbage_collect_h3_reference_input_snapshots(
         state_root=state,
         protected_ids=(snapshot_id,),
@@ -401,12 +409,105 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
     ) == 1
     assert not (storage / orphan.snapshot_id).exists()
     assert (storage / snapshot_id).exists()
+    assert (storage / queued.snapshot_id).exists()
+    assert runtime.delete_h3_reference_input_snapshot(
+        state_root=state, snapshot_id=queued.snapshot_id
+    ) is True
     assert runtime.delete_h3_reference_input_snapshot(
         state_root=state, snapshot_id=snapshot_id
     ) is True
     assert runtime.delete_h3_reference_input_snapshot(
         state_root=state, snapshot_id=snapshot_id
     ) is False
+
+
+def test_failed_attempt_can_retry_from_snapshot_after_sources_are_removed(
+    tmp_path: Path,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    state = tmp_path / "state"
+    project.mkdir()
+    frame = project / "frame.png"
+    Image.new("RGB", (4, 5), "green").save(frame)
+    reference_path = project / "reference.png"
+    reference_content = _png_bytes()
+    reference_path.write_bytes(reference_content)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+    persisted = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=(_reference(reference_path, reference_content),),
+        frames=frames,
+        reference_revision=1,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    first_attempt = runtime.load_h3_reference_input_snapshot(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+        expected_digest=persisted.digest,
+        frame_sources=(str(frame),),
+    )
+
+    frame.unlink()
+    reference_path.unlink()
+    second_attempt = runtime.load_h3_reference_input_snapshot(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+        expected_digest=persisted.digest,
+        frame_sources=(str(frame),),
+    )
+
+    assert second_attempt.frames[str(frame)].content == first_attempt.frames[str(frame)].content
+    assert second_attempt.references[0].content == first_attempt.references[0].content
+    assert second_attempt.digest == first_attempt.digest
+
+
+def test_snapshot_lease_renewal_prevents_gc_until_renewed_expiry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    frame = project / "frame.png"
+    Image.new("RGB", (3, 3), "green").save(frame)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+    state = tmp_path / "state"
+    persisted = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=(_reference(project / "ref.png", _png_bytes()),),
+        frames=frames,
+        reference_revision=1,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    monkeypatch.setattr(runtime.time, "time", lambda: 200.0)
+    runtime.renew_h3_reference_input_snapshot_lease(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+        ttl_seconds=10,
+    )
+
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state, now=205, ttl_seconds=10
+    ) == 0
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state, now=211, ttl_seconds=10
+    ) == 1
 
 
 def test_reference_input_snapshot_store_rejects_tampered_blob(tmp_path: Path) -> None:

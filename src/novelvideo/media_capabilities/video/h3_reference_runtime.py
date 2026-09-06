@@ -133,7 +133,7 @@ def _delete_posix_snapshot_at(storage_fd: int, snapshot_id: str) -> bool:
                     os.close(child_fd)
                 os.rmdir(name, dir_fd=snapshot_fd)
             elif stat.S_ISREG(metadata.st_mode) and name in {
-                "snapshot.json", ".snapshot.json.tmp"
+                "snapshot.json", ".snapshot.json.tmp", "lease.json", ".lease.json.tmp"
             }:
                 os.unlink(name, dir_fd=snapshot_fd)
             else:
@@ -149,6 +149,7 @@ def _persist_posix_snapshot(
     snapshot_id: str,
     blobs: list[tuple[str, bytes]],
     descriptor: bytes,
+    lease: bytes,
 ) -> None:
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -177,11 +178,13 @@ def _persist_posix_snapshot(
                 directory, name = blob.split("/", 1)
                 _write_private_file_at(child_fds[directory], name, content)
             _write_private_file_at(snapshot_fd, ".snapshot.json.tmp", descriptor)
+            _write_private_file_at(snapshot_fd, "lease.json", lease)
             os.rename(
                 ".snapshot.json.tmp", "snapshot.json",
                 src_dir_fd=snapshot_fd, dst_dir_fd=snapshot_fd,
             )
             os.fsync(snapshot_fd)
+            os.fsync(descriptors[1])
         finally:
             for descriptor_fd in child_fds.values():
                 os.close(descriptor_fd)
@@ -220,6 +223,7 @@ def _persist_windows_snapshot(
     snapshot_id: str,
     blobs: list[tuple[str, bytes]],
     descriptor: bytes,
+    lease: bytes,
     *,
     adapter=None,
 ) -> None:
@@ -262,6 +266,14 @@ def _persist_windows_snapshot(
         target = snapshot_dir / "snapshot.json"
         win32.move_file(temporary, target)
         published_files[-1] = target
+        lease_path = snapshot_dir / "lease.json"
+        handle = win32.create_new_file(lease_path)
+        try:
+            win32.write_file(handle, lease)
+            win32.flush_file(handle)
+        finally:
+            win32.close(handle)
+        published_files.append(lease_path)
     except BaseException:
         for path in reversed(published_files):
             try:
@@ -310,7 +322,9 @@ def _delete_windows_snapshot(state: Path, snapshot_id: str, *, adapter=None) -> 
             win32.close(handles.pop())
             os.rmdir(directory)
         for child in snapshot_dir.iterdir():
-            if child.name not in {"snapshot.json", ".snapshot.json.tmp"}:
+            if child.name not in {
+                "snapshot.json", ".snapshot.json.tmp", "lease.json", ".lease.json.tmp"
+            }:
                 raise ValueError("unexpected H3 snapshot entry")
             file_handle = win32.open_path(child, directory=False)
             try:
@@ -413,12 +427,17 @@ def persist_h3_reference_input_snapshot(
         "frames": frame_records,
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(descriptor).hexdigest()
+    lease = json.dumps(
+        {"expires_at": time.time() + H3_REFERENCE_INPUT_SNAPSHOT_TTL_SECONDS},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     blobs = reference_contents + frame_contents
     if os.name != "nt":
-        _persist_posix_snapshot(Path(state_root), snapshot_id, blobs, descriptor)
+        _persist_posix_snapshot(Path(state_root), snapshot_id, blobs, descriptor, lease)
     else:
         _persist_windows_snapshot(
-            Path(state_root), snapshot_id, blobs, descriptor,
+            Path(state_root), snapshot_id, blobs, descriptor, lease,
             adapter=win32_adapter,
         )
     return H3PersistedReferenceInputSnapshot(snapshot_id=snapshot_id, digest=digest)
@@ -554,6 +573,75 @@ def delete_h3_reference_input_snapshot(
     )
 
 
+def renew_h3_reference_input_snapshot_lease(
+    *, state_root: str | Path, snapshot_id: str,
+    ttl_seconds: int = H3_REFERENCE_INPUT_SNAPSHOT_TTL_SECONDS,
+) -> None:
+    """Extend a queued/running snapshot lease through a no-follow directory chain."""
+    if _SNAPSHOT_ID_PATTERN.fullmatch(str(snapshot_id)) is None:
+        raise ValueError("invalid H3 reference snapshot ID")
+    if os.name == "nt":
+        state = Path(state_root)
+        storage = state / "h3_reference_input_snapshots"
+        snapshot = storage / snapshot_id
+        temporary = snapshot / ".lease.json.tmp"
+        target = snapshot / "lease.json"
+        win32 = _CtypesWin32SnapshotAdapter()
+        handles = []
+        published = False
+        try:
+            handles.append(_open_validated_windows_directory(win32, state, state))
+            handles.append(_open_validated_windows_directory(win32, storage, state))
+            handles.append(_open_validated_windows_directory(win32, snapshot, state))
+            lease = json.dumps(
+                {"expires_at": time.time() + int(ttl_seconds)},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            handle = win32.create_new_file(temporary)
+            try:
+                win32.write_file(handle, lease)
+                win32.flush_file(handle)
+            finally:
+                win32.close(handle)
+            published = True
+            os.replace(temporary, target)
+            published = False
+        finally:
+            if published:
+                try:
+                    win32.delete_file(temporary)
+                except OSError:
+                    pass
+            for handle in reversed(handles):
+                win32.close(handle)
+        return
+    import fcntl
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    try:
+        descriptors.append(os.open(Path(state_root), flags))
+        descriptors.append(os.open(
+            "h3_reference_input_snapshots", flags, dir_fd=descriptors[-1]
+        ))
+        descriptors.append(os.open(snapshot_id, flags, dir_fd=descriptors[-1]))
+        fcntl.flock(descriptors[-1], fcntl.LOCK_EX)
+        lease = json.dumps(
+            {"expires_at": time.time() + int(ttl_seconds)},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        _write_private_file_at(descriptors[-1], ".lease.json.tmp", lease)
+        os.rename(
+            ".lease.json.tmp", "lease.json",
+            src_dir_fd=descriptors[-1], dst_dir_fd=descriptors[-1],
+        )
+        os.fsync(descriptors[-1])
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def garbage_collect_h3_reference_input_snapshots(
     *,
     state_root: str | Path,
@@ -565,7 +653,6 @@ def garbage_collect_h3_reference_input_snapshots(
     if isinstance(ttl_seconds, bool) or int(ttl_seconds) < 0:
         raise ValueError("snapshot TTL must be a non-negative integer")
     protected = {str(item) for item in protected_ids}
-    cutoff = float(time.time() if now is None else now) - int(ttl_seconds)
     state = Path(state_root)
     if os.name == "nt":
         storage = state / "h3_reference_input_snapshots"
@@ -588,15 +675,33 @@ def garbage_collect_h3_reference_input_snapshots(
                     continue
                 handle = _open_validated_windows_directory(win32, item, state)
                 try:
-                    modified = item.stat(follow_symlinks=False).st_mtime
+                    lease_path = item / "lease.json"
+                    lease_handle = win32.open_path(lease_path, directory=False)
+                    try:
+                        if int(win32.attributes(lease_handle)) & int(
+                            win32.REPARSE_POINT
+                        ):
+                            continue
+                        final_path = Path(win32.final_path_for_handle(lease_handle))
+                        if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(
+                            os.path.abspath(lease_path)
+                        ):
+                            continue
+                        lease = json.loads(win32.read_file(lease_handle, 4096))
+                    finally:
+                        win32.close(lease_handle)
                 finally:
                     win32.close(handle)
-                if modified <= cutoff:
+                if float(lease.get("expires_at") or 0) <= float(
+                    now or time.time()
+                ):
                     expired.append(item.name)
         finally:
             for handle in reversed(handles):
                 win32.close(handle)
     else:
+        import fcntl
+
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         descriptors: list[int] = []
         try:
@@ -607,15 +712,32 @@ def garbage_collect_h3_reference_input_snapshots(
                 ))
             except FileNotFoundError:
                 return 0
-            expired = []
+            deleted = 0
             for name in os.listdir(descriptors[-1]):
                 if _SNAPSHOT_ID_PATTERN.fullmatch(name) is None or name in protected:
                     continue
-                metadata = os.stat(
-                    name, dir_fd=descriptors[-1], follow_symlinks=False
-                )
-                if stat.S_ISDIR(metadata.st_mode) and metadata.st_mtime <= cutoff:
-                    expired.append(name)
+                snapshot_fd = os.open(name, flags, dir_fd=descriptors[-1])
+                try:
+                    try:
+                        fcntl.flock(snapshot_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    lease_fd = os.open(
+                        "lease.json", os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=snapshot_fd,
+                    )
+                    try:
+                        lease = json.loads(os.read(lease_fd, 4096))
+                    finally:
+                        os.close(lease_fd)
+                    if float(lease.get("expires_at") or 0) <= float(now or time.time()):
+                        if _delete_posix_snapshot_at(descriptors[-1], name):
+                            deleted += 1
+                except (FileNotFoundError, OSError, TypeError, ValueError):
+                    continue
+                finally:
+                    os.close(snapshot_fd)
+            return deleted
         except FileNotFoundError:
             return 0
         finally:
@@ -1054,4 +1176,5 @@ __all__ = [
     "generate_h3_reference_director_video",
     "load_h3_reference_input_snapshot",
     "persist_h3_reference_input_snapshot",
+    "renew_h3_reference_input_snapshot_lease",
 ]

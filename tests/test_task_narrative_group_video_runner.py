@@ -301,7 +301,7 @@ def test_runner_rejects_stale_reference_revision_before_running_or_transport(
     assert records == []
     assert reference_calls == []
     assert transport_calls == []
-    assert cleanup_calls[0]["snapshot_id"] == "a" * 32
+    assert cleanup_calls == []
 
 
 @pytest.mark.asyncio
@@ -365,6 +365,8 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     manifests = []
     load_calls = []
     cleanup_calls = []
+    fail_first_attempt = [True]
+    cancel_attempt = [False]
 
     from novelvideo.media_capabilities.video.h3_reference_runtime import (
         freeze_h3_reference_frames,
@@ -393,6 +395,10 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     class Adapter:
         async def generate_narrative_group(self, _ctx, request):
             requests.append(request)
+            if cancel_attempt[0]:
+                raise asyncio.CancelledError
+            if fail_first_attempt[0]:
+                raise TimeoutError("provider timed out")
             task_id = f"task-{len(requests)}"
             submitted = request.on_provider_submitted(task_id)
             if asyncio.iscoroutine(submitted):
@@ -472,22 +478,29 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state"
     )
+    envelope = {"episode": 1, "payload": {
+        "group_id": "ng-01", "revision": 2, "plan_revision": 1,
+        "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+        "reference_contract_version": 1, "reference_limit": 5,
+        "provider_workflow_id": "2096502793044582401",
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }}
 
-    result = narrative_group_video.run_narrative_group_video(
-        {"episode": 1, "payload": {
-            "group_id": "ng-01", "revision": 2, "plan_revision": 1,
-            "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
-            "reference_contract_version": 1, "reference_limit": 5,
-            "provider_workflow_id": "2096502793044582401",
-            "reference_snapshot_id": "a" * 32,
-            "reference_snapshot_digest": "b" * 64,
-        }},
-        ctx,
-    )
+    with pytest.raises(RuntimeError, match="all video segments failed"):
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert cleanup_calls == []
+    assert len(requests) == 2
+    fail_first_attempt[0] = False
+    frame.unlink()
+    requests.clear()
+
+    result = narrative_group_video.run_narrative_group_video(envelope, ctx)
 
     assert result["status"] == "completed"
-    assert snapshot_calls == [True]
-    assert len(load_calls) == 1
+    assert snapshot_calls == [True, True]
+    assert len(load_calls) == 2
     assert len(cleanup_calls) == 1
     assert len(requests) == 2
     assert requests[0].global_references is requests[1].global_references
@@ -508,24 +521,22 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     assert ["task-1", None] in provider_snapshots
     assert ["task-1", "task-2"] in provider_snapshots
     requests.clear()
+    cancel_attempt[0] = True
+
+    with pytest.raises(asyncio.CancelledError):
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert len(cleanup_calls) == 1
+    requests.clear()
+    cancel_attempt[0] = False
     missing = tmp_path / "missing.png"
     segments[1] = segments[1].model_copy(update={"first_frame": str(missing)})
 
     with pytest.raises(ValueError, match="frame snapshot"):
-        narrative_group_video.run_narrative_group_video(
-            {"episode": 1, "payload": {
-                "group_id": "ng-01", "revision": 2, "plan_revision": 1,
-                "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
-                "reference_contract_version": 1, "reference_limit": 5,
-                "provider_workflow_id": "2096502793044582401",
-                "reference_snapshot_id": "a" * 32,
-                "reference_snapshot_digest": "b" * 64,
-            }},
-            ctx,
-        )
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
 
     assert requests == []
-    assert len(cleanup_calls) == 2
+    assert len(cleanup_calls) == 1
 
 
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
