@@ -19,9 +19,10 @@ flowchart LR
     CTX --> SVC[领域 Service / Store]
     CTX --> PORT[TaskBackend Port]
     PORT --> RUN[任务 Runner]
+    SVC --> DATA[项目 SQLite / 文件]
     SVC --> WORK[模型 / FFmpeg / 媒体工具]
     RUN --> WORK
-    WORK --> DATA[项目 SQLite / 文件]
+    WORK --> DATA
     DATA --> OBS[查询 / SSE]
     OBS --> TC[前端 Query Cache / 任务中心]
 ```
