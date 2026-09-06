@@ -65,10 +65,17 @@ _ALLOWED_OCCURRENCES = re.compile(
 
 
 def _is_excluded_path(path: Path) -> bool:
+    lowered_parts = tuple(part.lower() for part in path.parts)
+    if len(lowered_parts) >= 2 and lowered_parts[:2] in {
+        ("docs", "plans"),
+        ("docs", "superpowers"),
+    }:
+        return True
+
     for part in path.parts:
         lowered = part.lower()
         normalized = re.sub(r"[^a-z0-9]", "", lowered)
-        if lowered in {"plans", "superpowers", "licenses"}:
+        if lowered == "licenses":
             return True
         if normalized == "thirdparty" or normalized.startswith("thirdpartylicenses"):
             return True
