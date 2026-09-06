@@ -115,6 +115,23 @@ describe("resolveDesktopDownloadUrl", () => {
     await expect(resolveDesktopDownloadUrl("windows")).resolves.toBeNull();
   });
 
+  it.each([
+    ["windows", "NuomiDrama-dRaMaClAw-Setup-2.0.0.exe"],
+    ["mac", "Nuomi-Drama-Factory-SuperTale.dmg"],
+  ] as const)("rejects a new-prefix %s asset that still contains legacy branding", async (platform, name) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        assets: [{
+          name,
+          browser_download_url: `https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/download/v2.0.0/${name}`,
+        }],
+      }),
+    }));
+
+    await expect(resolveDesktopDownloadUrl(platform)).resolves.toBeNull();
+  });
+
   it("rejects a matching asset whose download URL is outside the public repository", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,

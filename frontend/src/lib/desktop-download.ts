@@ -75,6 +75,7 @@ export async function resolveDesktopDownloadUrl(
       if (typeof candidate.name !== "string") return false;
       if (typeof candidate.browser_download_url !== "string") return false;
       return /^(?:NuomiDrama|Nuomi-Drama-Factory)(?:[-_.]|$)/i.test(candidate.name)
+        && !/(?:DramaClaw|SuperTale)/i.test(candidate.name)
         && candidate.name.toLowerCase().endsWith(ext)
         && isPublicReleaseDownload(candidate.browser_download_url, candidate.name);
     });
