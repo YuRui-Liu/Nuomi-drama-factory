@@ -277,3 +277,69 @@ def test_same_process_concurrent_cas_loses_no_revision(tmp_path: Path) -> None:
     assert tuple(c.revision for c in store.list_revisions(1, "shot-1")) == tuple(
         range(1, 14)
     )
+
+
+def test_put_many_is_atomic_when_later_candidate_conflicts(tmp_path: Path) -> None:
+    store = ShotContinuityStore(tmp_path)
+    store.put(1, _contract("shot-2"), 0)
+
+    with pytest.raises(ContinuityRevisionConflict):
+        store.put_many(
+            1,
+            (
+                (_contract("shot-1"), 0),
+                (_contract("shot-2", state="changed"), 0),
+            ),
+        )
+
+    assert store.load_active(1, "shot-1") is None
+    assert store.load_active(1, "shot-2").scene.scene_state == "initial"
+
+
+def test_put_many_binds_child_to_final_in_batch_predecessor_revision(
+    tmp_path: Path,
+) -> None:
+    store = ShotContinuityStore(tmp_path)
+
+    saved = store.put_many(
+        1,
+        (
+            (_contract("shot-1"), 0),
+            (
+                _contract(
+                    "shot-2",
+                    predecessor_shot_id="shot-1",
+                    predecessor_revision=1,
+                ),
+                0,
+            ),
+        ),
+    )
+
+    assert tuple(item.revision for item in saved) == (1, 1)
+    assert saved[1].predecessor_revision == saved[0].revision
+
+
+def test_put_many_rejects_stale_external_predecessor_without_writing(
+    tmp_path: Path,
+) -> None:
+    store = ShotContinuityStore(tmp_path)
+    store.put(1, _contract("shot-1"), 0)
+    store.put(1, _contract("shot-1", state="changed"), 1)
+
+    with pytest.raises(
+        ContinuityRevisionConflict, match="predecessor_revision_stale"
+    ):
+        store.put_many(
+            1,
+            ((
+                _contract(
+                    "shot-2",
+                    predecessor_shot_id="shot-1",
+                    predecessor_revision=1,
+                ),
+                0,
+            ),),
+        )
+
+    assert store.load_active(1, "shot-2") is None

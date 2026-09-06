@@ -82,39 +82,95 @@ class ShotContinuityStore:
         candidate: ShotContinuityContract,
         expected_revision: int,
     ) -> ShotContinuityContract:
+        return self.put_many(
+            episode, ((candidate, expected_revision),)
+        )[0]
+
+    def put_many(
+        self,
+        episode: int,
+        candidates: tuple[tuple[ShotContinuityContract, int], ...],
+    ) -> tuple[ShotContinuityContract, ...]:
+        """Atomically compare-and-swap an ordered contract batch."""
         self._validate_episode(episode)
-        if not isinstance(candidate, ShotContinuityContract):
-            raise TypeError("candidate must be a ShotContinuityContract")
-        self._validate_shot_id(candidate.shot_id)
-        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
-            raise ValueError("expected_revision must be a nonnegative integer")
-        if expected_revision < 0:
-            raise ValueError("expected_revision must be a nonnegative integer")
+        if not isinstance(candidates, tuple):
+            raise TypeError("candidates must be an ordered tuple")
+        shot_ids: list[str] = []
+        for item in candidates:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("each candidate must pair a contract and revision")
+            candidate, expected_revision = item
+            if not isinstance(candidate, ShotContinuityContract):
+                raise TypeError("candidate must be a ShotContinuityContract")
+            self._validate_shot_id(candidate.shot_id)
+            if not isinstance(expected_revision, int) or isinstance(
+                expected_revision, bool
+            ):
+                raise ValueError("expected_revision must be a nonnegative integer")
+            if expected_revision < 0:
+                raise ValueError("expected_revision must be a nonnegative integer")
+            shot_ids.append(candidate.shot_id)
+        if len(shot_ids) != len(set(shot_ids)):
+            raise ValueError("batch candidate shot ids must be unique")
+        if not candidates:
+            return ()
 
         with self._locked():
             payload = self._read(episode)
-            entry = payload["shots"].get(candidate.shot_id)
-            active_revision = 0 if entry is None else entry["active_revision"]
-            if active_revision != expected_revision:
-                raise ContinuityRevisionConflict(
-                    f"expected {expected_revision}, found {active_revision}"
-                )
+            for candidate, expected_revision in candidates:
+                entry = payload["shots"].get(candidate.shot_id)
+                active_revision = 0 if entry is None else entry["active_revision"]
+                if active_revision != expected_revision:
+                    raise ContinuityRevisionConflict(
+                        f"expected {expected_revision}, found {active_revision}"
+                    )
 
-            active = None if entry is None else entry["revisions"][-1]
-            if active is not None and self._semantic_hash(active) == self._semantic_hash(
-                candidate
-            ):
-                return active
+            batch_ids = set(shot_ids)
+            processed: set[str] = set()
+            saved_batch: list[ShotContinuityContract] = []
+            for candidate, _expected_revision in candidates:
+                predecessor_id = candidate.predecessor_shot_id
+                if predecessor_id is not None:
+                    if predecessor_id in batch_ids and predecessor_id not in processed:
+                        raise ValueError(
+                            "batch predecessor must appear before its child"
+                        )
+                    predecessor_entry = payload["shots"].get(predecessor_id)
+                    actual_predecessor_revision = (
+                        0
+                        if predecessor_entry is None
+                        else predecessor_entry["active_revision"]
+                    )
+                    if candidate.predecessor_revision != actual_predecessor_revision:
+                        raise ContinuityRevisionConflict(
+                            "predecessor_revision_stale: "
+                            f"{predecessor_id} expected "
+                            f"{candidate.predecessor_revision}, found "
+                            f"{actual_predecessor_revision}"
+                        )
 
-            saved = candidate.model_copy(update={"revision": active_revision + 1})
-            revisions = [] if entry is None else list(entry["revisions"])
-            revisions.append(saved)
-            payload["shots"][candidate.shot_id] = {
-                "active_revision": saved.revision,
-                "revisions": revisions,
-            }
+                entry = payload["shots"].get(candidate.shot_id)
+                active_revision = 0 if entry is None else entry["active_revision"]
+                active = None if entry is None else entry["revisions"][-1]
+                if (
+                    active is not None
+                    and self._semantic_hash(active) == self._semantic_hash(candidate)
+                ):
+                    saved = active
+                else:
+                    saved = candidate.model_copy(
+                        update={"revision": active_revision + 1}
+                    )
+                    revisions = [] if entry is None else list(entry["revisions"])
+                    revisions.append(saved)
+                    payload["shots"][candidate.shot_id] = {
+                        "active_revision": saved.revision,
+                        "revisions": revisions,
+                    }
+                saved_batch.append(saved)
+                processed.add(candidate.shot_id)
             self._write(episode, payload)
-            return saved
+            return tuple(saved_batch)
 
     def _locked(self) -> _StoreLock:
         return _StoreLock(self)
