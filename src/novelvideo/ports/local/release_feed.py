@@ -8,6 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from packaging.version import InvalidVersion, Version
@@ -17,7 +18,10 @@ from novelvideo.release_notes import parse, validate_version_marker
 
 PACKAGE_NAME = "supertale-ce"
 TAG_PREFIX = "v"
-GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/dramaclaw/dramaclaw/releases/latest"
+GITHUB_LATEST_RELEASE_URL = (
+    "https://api.github.com/repos/YuRui-Liu/Nuomi-drama-factory/releases/latest"
+)
+GITHUB_RELEASE_PATH_PREFIX = "/YuRui-Liu/Nuomi-drama-factory/releases/"
 GITHUB_CACHE_TTL_SECONDS = 6 * 60 * 60
 GITHUB_FAILURE_CACHE_TTL_SECONDS = 60
 
@@ -88,7 +92,7 @@ class LocalReleaseFeed:
 
         update_available = _is_newer(latest_version, current_version)
         parsed_latest = parse(str(latest.get("body") or ""), latest_tag, locale=locale)
-        release_url = str(latest.get("html_url") or "") or None
+        release_url = _trusted_release_url(latest.get("html_url"))
         latest_published_at = str(latest.get("published_at") or "") or None
         return replace(
             feed,
@@ -178,6 +182,30 @@ def _is_newer(candidate: str, current: str) -> bool:
         return Version(candidate) > Version(current)
     except InvalidVersion:
         return candidate > current
+
+
+def _trusted_release_url(value: Any) -> str | None:
+    url = str(value or "").strip()
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    decoded_path = parsed.path
+    while True:
+        next_path = unquote(decoded_path)
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or not parsed.path.startswith(GITHUB_RELEASE_PATH_PREFIX)
+        or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+    ):
+        return None
+    return url
 
 
 def _to_port_item(item) -> ReleaseItem:

@@ -211,7 +211,7 @@ async def test_local_release_feed_reports_newer_github_release(tmp_path: Path) -
     async def fetcher() -> dict[str, Any]:
         return {
             "tag_name": "v1.0.5",
-            "html_url": "https://github.com/dramaclaw/dramaclaw/releases/tag/v1.0.5",
+            "html_url": "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/v1.0.5",
             "published_at": "2026-07-01T08:00:00Z",
             "body": (
                 "---\nattention: medium\n---\n# v1.0.5\n"
@@ -229,10 +229,55 @@ async def test_local_release_feed_reports_newer_github_release(tmp_path: Path) -
     assert feed.update_available is True
     assert feed.latest_version == "1.0.5"
     assert feed.latest_tag == "v1.0.5"
-    assert feed.release_url == "https://github.com/dramaclaw/dramaclaw/releases/tag/v1.0.5"
+    assert feed.release_url == (
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/v1.0.5"
+    )
     assert feed.latest_published_at == "2026-07-01T08:00:00Z"
     assert feed.attention == "medium"
     assert [item.title for item in feed.update_items] == ["Upgrade"]
+
+
+def test_release_feed_uses_nuomi_github_latest_release_api() -> None:
+    from novelvideo.ports.local.release_feed import GITHUB_LATEST_RELEASE_URL
+
+    assert GITHUB_LATEST_RELEASE_URL == (
+        "https://api.github.com/repos/YuRui-Liu/Nuomi-drama-factory/releases/latest"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "html_url",
+    [
+        "https://github.com/dramaclaw/dramaclaw/releases/tag/v1.0.5",
+        "https://example.com/YuRui-Liu/Nuomi-drama-factory/releases/tag/v1.0.5",
+        "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/%2e%2e/%2e%2e/evil",
+        "https://[::1",
+    ],
+)
+async def test_local_release_feed_rejects_untrusted_release_url(
+    tmp_path: Path, html_url: str
+) -> None:
+    from novelvideo.ports.local.release_feed import LocalReleaseFeed
+
+    notes = tmp_path / "release-notes.md"
+    notes.write_text(
+        "---\nversion: 1.0.2\n---\n# v1.0.2\n"
+        "## User-facing Highlights (en)\n- **Current**: local\n",
+        encoding="utf-8",
+    )
+
+    async def fetcher() -> dict[str, Any]:
+        return {"tag_name": "v1.0.5", "html_url": html_url, "body": ""}
+
+    feed = await LocalReleaseFeed(
+        notes_path=notes,
+        version_reader=lambda: "1.0.2",
+        github_fetcher=fetcher,
+    ).current(locale="en")
+
+    assert feed.update_available is True
+    assert feed.release_url is None
 
 
 @pytest.mark.asyncio

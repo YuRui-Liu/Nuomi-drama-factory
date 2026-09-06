@@ -20,6 +20,7 @@ _PUBLIC_FILES = {
     "SECURITY.md",
     "NOTICE",
     "frontend/index.html",
+    "frontend/README.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
 }
 _PUBLIC_TREES = (

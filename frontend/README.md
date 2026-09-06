@@ -1,8 +1,6 @@
-# supertale-fe
+# Nuomi Drama Factory frontend
 
-Standalone React SPA for SuperTale — the original creator frontend for the novel-to-video pipeline. Replaces the in-repo NiceGUI UI shipped from [`supertale-be`](https://github.com/claymorelab/SuperTale) and talks to its REST API exclusively.
-
-This is the "traditional web UI" generation of SuperTale. The next-gen chat-driven pipeline lives in `superchat` + `dramaclaw`.
+Standalone React SPA for Nuomi Drama Factory (NuomiDrama), the creator frontend for the novel-to-video pipeline. It is maintained in the [`YuRui-Liu/Nuomi-drama-factory`](https://github.com/YuRui-Liu/Nuomi-drama-factory) repository and talks exclusively to its REST API.
 
 ## Stack
 
@@ -96,14 +94,14 @@ Long-running operations (ingest, script, sketch, video, compose) follow this pat
 
 ## Deployment
 
-Hosted on Cloudflare Workers across four tag-driven environments:
+Cloudflare Workers deployments use four tag-driven environments. Deployment hostnames are configured per installation rather than documented as shared public endpoints:
 
 | Env | URL | Trigger |
 | --- | --- | --- |
-| dev     | <https://tale-dev.dramaclaw.ai>     | push to `main` |
-| test    | <https://tale-test.dramaclaw.ai>    | push tag `vX.Y.Z` |
-| preview | <https://tale-preview.dramaclaw.ai> | `gh workflow run deploy.yml -f action=preview -f version=vX.Y.Z` (shadow-prod, Zero Trust gated) |
-| prod    | <https://tale.dramaclaw.ai>         | `gh workflow run deploy.yml -f action=promote-prod -f version=vX.Y.Z` (5% canary, manual ramp) |
+| dev     | installation-specific | push to `main` |
+| test    | installation-specific | push tag `vX.Y.Z` |
+| preview | installation-specific | `gh workflow run deploy.yml -f action=preview -f version=vX.Y.Z` (shadow-prod, Zero Trust gated) |
+| prod    | installation-specific | `gh workflow run deploy.yml -f action=promote-prod -f version=vX.Y.Z` (5% canary, manual ramp) |
 
 Full runbook — secrets setup, canary ramp/rollback, Cloudflare Zero Trust config, version-stamping recipe, caveats — in [`DEPLOY.md`](./DEPLOY.md).
 
@@ -115,17 +113,16 @@ Full runbook — secrets setup, canary ramp/rollback, Cloudflare Zero Trust conf
 - [`DESIGN.md`](./DESIGN.md) — visual design system and component patterns
 - [`docs/todo.md`](./docs/todo.md) — outstanding work, backend-blocked items, recently shipped
 
-## Related repos
+## Repository
 
-- [`claymorelab/SuperTale`](https://github.com/claymorelab/SuperTale) — `supertale-be`, FastAPI + NovelVideo pipeline
-- `dramaclaw` / `superchat` — next-gen chat-driven creator pipeline (internal)
+- [`YuRui-Liu/Nuomi-drama-factory`](https://github.com/YuRui-Liu/Nuomi-drama-factory) — NuomiDrama frontend and FastAPI + NovelVideo pipeline
 
 ## Local multi-region dev
 
 To exercise the `multi-region` cluster mode end-to-end locally:
 
 1. **Run two backend instances** on different ports, e.g. `:8780` (cn-1) and `:8781` (us-1). Each must:
-   - Set `SUPERTALE_CORS_ORIGINS=http://localhost:5173` (or emit `Access-Control-Allow-Origin` echo-from-allowlist + `Allow-Credentials: true`)
+   - Set `SUPERTALE_CORS_ORIGINS=http://localhost:5173` (the `SUPERTALE_` prefix is retained as an internal compatibility identifier), or emit `Access-Control-Allow-Origin` echo-from-allowlist + `Allow-Credentials: true`
    - Emit `st_api_key` cookie with `SameSite=Lax` (same-origin behind the local gateway)
 
 2. **Stand up a local edge dispatcher.** Simplest is Caddy:
@@ -162,11 +159,11 @@ To exercise the `multi-region` cluster mode end-to-end locally:
 
 - [ ] Log in to cn-1, edit a beat, open the task panel.
 - [ ] Click the region badge → pick us-1 → confirm. Page should hard-reload to `/login` with us-1 preselected.
-- [ ] DevTools → Application → Local Storage: `st.episode.*`, `supertale-auth`, `supertale-seen-pools` gone; `supertale-app` and `i18nextLng` still present.
+- [ ] DevTools → Application → Local Storage: `st.episode.*`, `supertale-auth`, `supertale-seen-pools` gone; `supertale-app` and `i18nextLng` still present. The `supertale-*` keys are retained as internal compatibility identifiers.
 - [ ] DevTools → Application → Cookies: `server-region=us-1`; `st_api_key` issued by us-1 (not the stale cn-1 one).
 - [ ] Open a second tab logged into us-1; go back to the first tab; trigger any action. First tab should show lockdown banner and hard-reload.
 - [ ] Hit a stale `/api/*` with no `server-region` cookie: edge returns `400 no_region`; FE clears the region and redirects to `/login`.
 
 ## License
 
-[Elastic License 2.0](../LICENSE) — Copyright (c) 2026 ClaymoreLab. Source available; see the root [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
+[Elastic License 2.0](../LICENSE) — Copyright (c) 2026 Nuomi Drama Factory contributors. Source available; see the root [LICENSE](../LICENSE) and [NOTICE](../NOTICE).

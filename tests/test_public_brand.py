@@ -106,6 +106,7 @@ def test_public_paths_include_docs_and_frontend_but_exclude_internal_content() -
     assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE.md"))
     assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE/release.md"))
     assert scanner.is_public_path(Path("frontend/src/components/header.tsx"))
+    assert scanner.is_public_path(Path("frontend/README.md"))
     assert scanner.is_public_path(Path("frontend/src/plans/editor.tsx"))
     assert scanner.is_public_path(Path("frontend/src/superpowers/panel.tsx"))
     assert scanner.is_public_path(Path("readme/plans/guide.md"))
@@ -128,6 +129,7 @@ def test_repository_scan_and_cli_report_only_public_findings(
     scanner = _load_scanner()
     files = {
         "README.md": "DramaClaw heading\n",
+        "frontend/README.md": "DramaClaw frontend\n",
         "readme/README_fr.md": "About DramaClaw\n",
         "docs/operations/runbook.md": "Run DramaClaw\n",
         "frontend/src/header.tsx": 'const title = "DramaClaw";\n',
@@ -152,6 +154,7 @@ def test_repository_scan_and_cli_report_only_public_findings(
         ".github/PULL_REQUEST_TEMPLATE.md:1",
         "README.md:1",
         "docs/operations/runbook.md:1",
+        "frontend/README.md:1",
         "frontend/src/header.tsx:1",
         "readme/README_fr.md:1",
     ]
