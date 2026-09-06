@@ -1093,8 +1093,28 @@ def test_h3_reference_reservation_rechecks_reference_revision_atomically(
     ("task_status", "task_metadata", "expected_stage_status", "expected_revision"),
     [
         pytest.param(None, None, "pending", 0, id="no-task-state"),
-        pytest.param("lookup-error", None, "pending", 0, id="task-state-read-error"),
-        pytest.param("malformed", object(), "pending", 0, id="malformed-task-state"),
+        pytest.param("lookup-error", None, "queued", 1, id="task-state-read-error"),
+        pytest.param("malformed-task", None, "queued", 1, id="malformed-task"),
+        pytest.param(
+            "malformed-metadata", object(), "queued", 1, id="malformed-metadata"
+        ),
+        pytest.param(
+            "queued",
+            {"reference_snapshot_id": "2" * 32},
+            "queued",
+            1,
+            id="incomplete-ownership-metadata",
+        ),
+        pytest.param(
+            "malformed-status",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "queued",
+            1,
+            id="malformed-status",
+        ),
         pytest.param(
             "failed",
             {
@@ -1167,10 +1187,15 @@ def test_h3_reference_enqueue_failure_recovers_reservation_by_task_state(
     monkeypatch.setattr(
         narrative_groups, "get_task_backend", lambda: FailingBackend()
     )
-    task_state = None if task_status is None else SimpleNamespace(
-        status="queued" if task_status == "malformed" else task_status,
-        metadata=task_metadata,
-    )
+    if task_status is None:
+        task_state = None
+    elif task_status == "malformed-task":
+        task_state = object()
+    else:
+        task_state = SimpleNamespace(
+            status=object() if task_status == "malformed-status" else task_status,
+            metadata=task_metadata,
+        )
     def get_task_state(*args, **kwargs):
         if task_status == "lookup-error":
             raise OSError("sensitive database path")

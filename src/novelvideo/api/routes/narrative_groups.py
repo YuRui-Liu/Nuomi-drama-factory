@@ -81,7 +81,11 @@ from novelvideo.narrative_groups.video_references import (
     write_temporary_video_reference,
 )
 from novelvideo.ports import get_task_backend
-from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
+from novelvideo.task_state import (
+    ACTIVE_PROJECT_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    get_task_manager,
+)
 from novelvideo.utils.path_resolver import (
     canonical_identity_path,
     canonical_portrait_path,
@@ -93,10 +97,10 @@ from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES
 router = APIRouter()
 
 
-def _reference_enqueue_may_have_owner(
+def _reference_enqueue_ownership(
     *, ctx, episode: int, scope: str, snapshot_id: str, snapshot_digest: str
-) -> bool:
-    """Conservatively detect whether a failed enqueue persisted an owner."""
+) -> Literal["owned", "unowned", "unknown"]:
+    """Classify durable ownership without treating corrupt state as absence."""
     try:
         task = get_task_manager().get_task_for_project(
             ctx,
@@ -104,24 +108,51 @@ def _reference_enqueue_may_have_owner(
             episode,
             scope=scope,
         )
-        if task is None:
-            return False
-        metadata = dict(task.metadata or {})
-        if not metadata and isinstance(task.result, dict):
-            metadata = dict(task.result.get("task_metadata") or {})
-        owns_snapshot = (
-            metadata.get("reference_snapshot_id") == snapshot_id
-            and metadata.get("reference_snapshot_digest") == snapshot_digest
-        )
-        if not owns_snapshot:
-            return False
-        return (
-            task.status in ACTIVE_PROJECT_TASK_STATUSES
-            or task.status == "retryable"
-            or metadata.get("retryable") is True
-        )
     except Exception:
-        return False
+        return "unknown"
+    if task is None:
+        return "unowned"
+    try:
+        raw_metadata = task.metadata
+        if isinstance(raw_metadata, Mapping):
+            metadata = dict(raw_metadata)
+        elif raw_metadata is None and isinstance(task.result, Mapping):
+            nested_metadata = task.result.get("task_metadata")
+            if not isinstance(nested_metadata, Mapping):
+                return "unknown"
+            metadata = dict(nested_metadata)
+        else:
+            return "unknown"
+        task_status = task.status
+        if not isinstance(task_status, str):
+            return "unknown"
+        if (
+            task_status not in ACTIVE_PROJECT_TASK_STATUSES
+            and task_status not in TERMINAL_TASK_STATUSES
+            and task_status != "retryable"
+        ):
+            return "unknown"
+        persisted_id = metadata.get("reference_snapshot_id")
+        persisted_digest = metadata.get("reference_snapshot_digest")
+        if persisted_id is None or persisted_digest is None:
+            return "unknown"
+        if not isinstance(persisted_id, str) or not isinstance(
+            persisted_digest, str
+        ):
+            return "unknown"
+        if persisted_id != snapshot_id or persisted_digest != snapshot_digest:
+            return "unowned"
+        if (
+            task_status in ACTIVE_PROJECT_TASK_STATUSES
+            or task_status == "retryable"
+            or metadata.get("retryable") is True
+        ):
+            return "owned"
+        if task_status in TERMINAL_TASK_STATUSES:
+            return "unowned"
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 class NarrativeGroupGenerationRequest(BaseModel):
@@ -1370,14 +1401,14 @@ async def _enqueue_group_video(
                 )
             except (OSError, ValueError):
                 pass
-            has_owner = _reference_enqueue_may_have_owner(
+            ownership = _reference_enqueue_ownership(
                 ctx=resolved.ctx,
                 episode=episode,
                 scope=scope,
                 snapshot_id=reference_snapshot_id,
                 snapshot_digest=persisted_snapshot.digest,
             )
-            if not has_owner:
+            if ownership == "unowned":
                 restore_video_reservation(
                     resolved.project_dir, episode, reservation
                 )
