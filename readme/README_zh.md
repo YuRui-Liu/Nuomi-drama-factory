@@ -202,12 +202,12 @@ cd Nuomi-drama-factory
 
 cp .env.example .env
 # 编辑 .env —— 把 PROMPT_EXPORT_PASSWORD 改成非默认值。
-# NEWAPI_BASE_URL 已默认指向官方网关；DC key 可在此填,或下一步在网页里粘贴。
+# NEWAPI_BASE_URL 已默认指向官方网关；Nuomi Drama Factory key 可在此填,或下一步在网页里粘贴。
 
 docker compose up -d --build   # 起两个服务：api / web
 ```
 
-浏览器打开 <http://localhost:8080> 进入应用；REST API 在 <http://localhost:8780>。到**设置 → 模型配置 → 官方渠道**粘贴你的 DC key（到 <https://relayclaw.cdnfg.com> 获取）即可,**无需映射模型**。完整步骤见 [快速开始](../docs/zh/getting-started/quickstart.md)。
+浏览器打开 <http://localhost:8080> 进入应用；REST API 在 <http://localhost:8780>。到**设置 → 模型配置 → 官方渠道**粘贴你的 Nuomi Drama Factory key（到 <https://relayclaw.cdnfg.com> 获取）即可,**无需映射模型**。完整步骤见 [快速开始](../docs/zh/getting-started/quickstart.md)。
 
 **免构建跑法** —— 每次 GitHub Release 都会发布 amd64/arm64 多架构镜像到 Docker Hub,一个文件即可运行:
 
@@ -235,7 +235,7 @@ uv run novelvideo api --port 8780   # 启动 REST API（CE 默认 inline 任务�
 
 Nuomi Drama Factory 对模型侧保持中立 —— 所有文本/图片/视频/音频模型都经一个 **OpenAI 兼容网关**接入，两种方式：
 
-- **Nuomi Drama Factory 官方 key（推荐）**：`docker compose up`,开 <http://localhost:8080> → 设置 → 模型配置 → 官方渠道,粘贴 DC key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 获取 key。
+- **Nuomi Drama Factory 官方 key（推荐）**：`docker compose up`,开 <http://localhost:8080> → 设置 → 模型配置 → 官方渠道,粘贴 Nuomi Drama Factory key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 获取 key。
 - **自带网关（BYO）**：把 `NEWAPI_BASE_URL` 指向你自己的 OpenAI 兼容端点并映射模型名（详见 [配置模型供应商](../docs/zh/getting-started/configuring-models.md)）。
 
 > 想完全本地?用 `docker compose -f docker-compose.selfhosted.yml up` 起 selfhosted 版 `newapi` 网关自行配置（免构建镜像版:`docker-compose.selfhosted.release.yml`）。

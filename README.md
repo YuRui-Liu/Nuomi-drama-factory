@@ -203,12 +203,12 @@ cd Nuomi-drama-factory
 
 cp .env.example .env
 # Edit .env — set PROMPT_EXPORT_PASSWORD to a non-default value.
-# NEWAPI_BASE_URL defaults to the official gateway; add your DC key here or paste it in the UI next.
+# NEWAPI_BASE_URL defaults to the official gateway; add your Nuomi Drama Factory key here or paste it in the UI next.
 
 docker compose up -d --build   # starts two services: api / web
 ```
 
-Open the app at <http://localhost:8080>; the REST API is at <http://localhost:8780>. In **Settings → Model Config → Official**, paste your DC key (get one at <https://relayclaw.cdnfg.com>) and you're ready — no model mapping needed. Full steps in the [Quick Start](docs/en/getting-started/quickstart.md).
+Open the app at <http://localhost:8080>; the REST API is at <http://localhost:8780>. In **Settings → Model Config → Official**, paste your Nuomi Drama Factory key (get one at <https://relayclaw.cdnfg.com>) and you're ready — no model mapping needed. Full steps in the [Quick Start](docs/en/getting-started/quickstart.md).
 
 **No build needed** — every GitHub Release publishes multi-arch (amd64/arm64) images to Docker Hub, so a single file is enough to run:
 
@@ -236,7 +236,7 @@ uv run novelvideo api --port 8780   # start the REST API (CE defaults to inline 
 
 Nuomi Drama Factory stays model-neutral — all text/image/video/audio models connect through a single **OpenAI-compatible gateway**, in two ways:
 
-- **Nuomi Drama Factory official key (recommended)**: `docker compose up`, open <http://localhost:8080> → Settings → Model Config → Official, paste your DC key, save. Works instantly — no model mapping needed. Get a key at <https://relayclaw.cdnfg.com>.
+- **Nuomi Drama Factory official key (recommended)**: `docker compose up`, open <http://localhost:8080> → Settings → Model Config → Official, paste your Nuomi Drama Factory key, save. Works instantly — no model mapping needed. Get a key at <https://relayclaw.cdnfg.com>.
 - **Bring your own gateway (BYO)**: point `NEWAPI_BASE_URL` at your own OpenAI-compatible endpoint and map model names (see [Configuring Models](docs/en/getting-started/configuring-models.md)).
 
 > Prefer fully local? Run `docker compose -f docker-compose.selfhosted.yml up` for a bundled `newapi` gateway you configure yourself (prebuilt-image variant: `docker-compose.selfhosted.release.yml`).
