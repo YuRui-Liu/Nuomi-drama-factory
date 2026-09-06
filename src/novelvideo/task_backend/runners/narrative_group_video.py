@@ -92,8 +92,60 @@ def _provider_workflow_parameters(
     }
 
 
+def _continuity_failure_is_observational(
+    policy: ContinuityPolicy, exc: Exception
+) -> bool:
+    from novelvideo.shot_continuity import ContinuityContractUnavailable
+
+    if isinstance(exc, MemoryError):
+        return False
+    if policy == "observe":
+        return True
+    return policy == "guard" and (
+        isinstance(exc, OSError)
+        or (
+            isinstance(exc, LookupError)
+            and not isinstance(exc, ContinuityContractUnavailable)
+        )
+    )
+
+
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
     return Path(str(payload.get("project_dir") or ctx.output_dir))
+
+
+class H3StaleStageError(RuntimeError):
+    """The queued video revision lost ownership while it was executing."""
+
+
+def _assert_stage_revision(
+    project_dir: Path,
+    episode: int,
+    group_id: str,
+    revision: int,
+    plan_revision: int | None = None,
+) -> None:
+    from novelvideo.narrative_groups.service import load_groups
+
+    group = next(
+        (
+            item
+            for item in load_groups(project_dir, episode)
+            if item.id == group_id
+        ),
+        None,
+    )
+    state = group.stages.get("video") if group is not None else None
+    if (
+        state is None
+        or state.revision != revision
+        or state.status != "running"
+        or (
+            plan_revision is not None
+            and group.video_plan.revision != plan_revision
+        )
+    ):
+        raise H3StaleStageError("narrative group video revision is stale")
 
 
 def _video_workflow_registry() -> VideoWorkflowRegistry:
@@ -508,12 +560,12 @@ async def _optimize_missing_prompts(
                     decision=prepared.mode_decision,
                     risk_report=prepared.risk_report,
                     first_frame=FrameEvidence(
-                        asset_id=str(segment.first_frame),
+                        asset_id=f"{segment.segment_id}:first_frame",
                         sha256=context.first_frame_sha256,
                     ),
                     last_frame=(
                         FrameEvidence(
-                            asset_id=str(segment.last_frame),
+                            asset_id=f"{segment.segment_id}:last_frame",
                             sha256=str(context.last_frame_sha256),
                         )
                         if segment.last_frame else None
@@ -1022,6 +1074,7 @@ def _merge_risk_reports(
 
 
 def _explicit_asset_evidence(
+    project_dir: Path,
     render_state: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Read only render-sidecar references that name both entity and real file."""
@@ -1053,10 +1106,10 @@ def _explicit_asset_evidence(
             asset_id = str(raw.get("asset_id") or "").strip()
             if not entity_key or not asset_id or not asset_path:
                 continue
-            path = Path(asset_path)
-            if not path.is_file():
+            path = _trusted_evidence_path(project_dir, asset_path)
+            if path is None:
                 continue
-            digest = _frame_sha256(asset_path)
+            digest = _frame_sha256(str(path))
             declared_digest = str(raw.get("sha256") or "").strip().lower()
             if declared_digest and declared_digest != digest:
                 continue
@@ -1064,6 +1117,39 @@ def _explicit_asset_evidence(
                 entity_key, AssetEvidence(asset_id=asset_id, sha256=digest)
             )
     return result
+
+
+def _trusted_evidence_path(project_dir: Path, raw_path: object) -> Path | None:
+    project_root = project_dir.resolve(strict=True)
+    candidate = Path(str(raw_path or ""))
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    current = Path(candidate.anchor)
+    try:
+        for part in candidate.parts[1:]:
+            current /= part
+            if current.is_symlink():
+                return None
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    trusted_roots = tuple(
+        (project_root / relative).resolve()
+        for relative in (
+            "assets",
+            "images",
+            "renders",
+            "rendered",
+            "grids",
+            "director_control_frames",
+            "freezone/director_control_frames",
+        )
+    )
+    if not resolved.is_file():
+        return None
+    if not any(resolved.is_relative_to(root) for root in trusted_roots):
+        return None
+    return resolved
 
 
 def _director_world_snapshot(
@@ -1083,18 +1169,20 @@ def _director_world_snapshot(
         raw_path = raw_control.get("path") or raw_control.get("asset_path")
         asset_id = str(raw_control.get("asset_id") or "").strip()
         declared_digest = str(raw_control.get("sha256") or "").strip().lower()
-        if not raw_path and asset_id and Path(asset_id).is_file():
-            raw_path = asset_id
     else:
         raw_path = raw_control
         asset_id = ""
         declared_digest = ""
-    path = Path(str(raw_path or ""))
-    if not path.is_file():
+    if not asset_id:
+        snapshot.pop("control_frame", None)
         return snapshot, False
-    asset_id = asset_id or str(path)
+    path = _trusted_evidence_path(project_dir, raw_path)
+    if path is None:
+        snapshot.pop("control_frame", None)
+        return snapshot, False
     actual_digest = _frame_sha256(str(path))
     if declared_digest and declared_digest != actual_digest:
+        snapshot.pop("control_frame", None)
         return snapshot, False
     snapshot["control_frame"] = {
         "asset_id": asset_id,
@@ -1130,12 +1218,14 @@ def _prepare_continuity(
     segments: list[H3DirectorSegment],
     beats: list[Mapping[str, Any]],
     render_state: Mapping[str, Any],
+    assert_current: Callable[[], None] | None = None,
 ) -> dict[str, PreparedContinuity]:
     from novelvideo.director_plan.store import DirectorPlanStore
     from novelvideo.shot_continuity import (
         ShotContinuityStore,
         audit_h3_shot,
         build_shot_continuity_contract,
+        canonical_sha256,
         select_h3_mode,
         signals_for_shot,
     )
@@ -1153,10 +1243,11 @@ def _prepare_continuity(
         shot_id: (plan_order[index - 1] if index else None)
         for index, shot_id in enumerate(plan_order)
     }
-    assets = _explicit_asset_evidence(render_state)
+    assets = _explicit_asset_evidence(project_dir, render_state)
     beat_numbers = _shot_beat_numbers(segments, beats)
     continuity_store = ShotContinuityStore(project_dir)
-    saved_this_run: dict[str, Any] = {}
+    predicted_this_run: dict[str, ShotContinuityContract] = {}
+    batch: list[tuple[ShotContinuityContract, int]] = []
     prepared: dict[str, PreparedContinuity] = {}
     requested = str(payload.get("mode") or "auto").strip().lower()
     if requested not in {"auto", "i2va", "fl2va"}:
@@ -1175,7 +1266,7 @@ def _prepare_continuity(
                 ) from exc
             predecessor_id = predecessor_ids[shot_id]
             predecessor = (
-                saved_this_run.get(predecessor_id)
+                predicted_this_run.get(predecessor_id)
                 if predecessor_id is not None
                 else None
             )
@@ -1203,23 +1294,30 @@ def _prepare_continuity(
                 for requirement in shot.asset_requirements
             ):
                 extra_blockers.append("required_asset_evidence_missing")
+            existing = continuity_store.load_active(episode, shot_id)
             if report.continuity.level == 2 and predecessor is not None:
                 if predecessor.boundary.observed_carry_out is None:
                     extra_blockers.append("predecessor_observation_required")
-                existing = continuity_store.load_active(episode, shot_id)
                 if existing is not None and (
                     existing.predecessor_shot_id != predecessor.shot_id
                     or existing.predecessor_revision != predecessor.revision
                 ):
                     extra_blockers.append("predecessor_revision_stale")
-            existing = continuity_store.load_active(episode, shot_id)
-            saved = continuity_store.put(
-                episode,
-                candidate,
-                0 if existing is None else existing.revision,
+            expected_revision = 0 if existing is None else existing.revision
+            is_duplicate = (
+                existing is not None
+                and canonical_sha256(existing.model_copy(update={"revision": 0}))
+                == canonical_sha256(candidate.model_copy(update={"revision": 0}))
             )
-            saved_this_run[shot_id] = saved
-            contracts.append(saved)
+            predicted_revision = (
+                existing.revision
+                if is_duplicate and existing is not None
+                else expected_revision + 1
+            )
+            predicted = candidate.model_copy(update={"revision": predicted_revision})
+            predicted_this_run[shot_id] = predicted
+            batch.append((candidate, expected_revision))
+            contracts.append(predicted)
             reports.append(report)
 
         risk_report = _merge_risk_reports(tuple(reports), *extra_blockers)
@@ -1240,7 +1338,26 @@ def _prepare_continuity(
             risk_report=risk_report,
             mode_decision=decision,
         )
-    return prepared
+    if assert_current is not None:
+        assert_current()
+    active_now = DirectorPlanStore(project_dir).load_active(episode)
+    if active_now is None or active_now.revision_id != plan.revision_id:
+        from novelvideo.shot_continuity import ContinuityRevisionConflict
+
+        raise ContinuityRevisionConflict("director_plan_revision_stale")
+    saved_by_shot = {
+        contract.shot_id: contract
+        for contract in continuity_store.put_many(episode, tuple(batch))
+    }
+    return {
+        segment_id: replace(
+            item,
+            contracts=tuple(
+                saved_by_shot[contract.shot_id] for contract in item.contracts
+            ),
+        )
+        for segment_id, item in prepared.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -1345,17 +1462,34 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     saved = stage_payload(project_dir, episode, group_id, "video")
     if saved["revision"] != revision:
         return {"status": "stale", "group_id": group_id, "revision": revision}
-    plan_revision = payload.get("plan_revision")
+    plan_revision = (
+        int(payload["plan_revision"])
+        if payload.get("plan_revision") is not None else None
+    )
     saved_plan_revision = (saved.get("video_plan") or {}).get("revision")
     if (
         plan_revision is not None
         and int(plan_revision) != int(saved_plan_revision or 0)
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
-    record_stage_result(
+    started_group = record_stage_result(
         project_dir, episode, group_id, "video", expected_revision=revision,
         status="running", error="", workflow_parameters=workflow_parameters,
     )
+    started_state = (
+        started_group.stages.get("video")
+        if started_group is not None else None
+    )
+    if started_state is not None and (
+        started_state.revision != revision or started_state.status != "running"
+    ):
+        return {"status": "stale", "group_id": group_id, "revision": revision}
+    try:
+        _assert_stage_revision(
+            project_dir, episode, group_id, revision, plan_revision
+        )
+    except H3StaleStageError:
+        return {"status": "stale", "group_id": group_id, "revision": revision}
     manifest_path: Path | None = None
     try:
         workflow = _workflow_definition_for_payload(payload)
@@ -1413,6 +1547,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         blocked: dict[str, tuple[str, ...]] = {}
         if policy != "legacy":
             try:
+                _assert_stage_revision(
+                    project_dir, episode, group_id, revision, plan_revision
+                )
                 continuity_by_segment = _prepare_continuity(
                     project_dir=project_dir,
                     episode=episode,
@@ -1420,6 +1557,13 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     segments=raw_segments,
                     beats=segment_beats,
                     render_state=render_state,
+                    assert_current=lambda: _assert_stage_revision(
+                        project_dir,
+                        episode,
+                        group_id,
+                        revision,
+                        plan_revision,
+                    ),
                 )
                 for segment_id, prepared in continuity_by_segment.items():
                     evidence_by_segment[segment_id] = {
@@ -1436,8 +1580,17 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     for segment_id, prepared in continuity_by_segment.items()
                     if prepared.risk_report.blockers
                 }
-            except Exception:
-                if policy == "enforce":
+            except Exception as continuity_exc:
+                if not _continuity_failure_is_observational(
+                    policy, continuity_exc
+                ):
+                    if policy == "guard" and not isinstance(
+                        continuity_exc, MemoryError
+                    ):
+                        raise H3ContinuityQualityError(
+                            "continuity_guard_failed:"
+                            f"{type(continuity_exc).__name__}"
+                        ) from continuity_exc
                     raise
                 continuity_by_segment = None
                 evidence_by_segment.clear()
@@ -1503,7 +1656,16 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         continuity_by_segment=continuity_by_segment,
                     )
                 except Exception as shadow_exc:
-                    if policy == "enforce":
+                    if not _continuity_failure_is_observational(
+                        policy, shadow_exc
+                    ):
+                        if policy == "guard" and not isinstance(
+                            shadow_exc, MemoryError
+                        ):
+                            raise H3ContinuityQualityError(
+                                "continuity_guard_failed:"
+                                f"{type(shadow_exc).__name__}"
+                            ) from shadow_exc
                         raise
                     continuity_segments = raw_segments
                     diagnostic = (
@@ -1593,6 +1755,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 manifest_asset=str(manifest_path),
             )
             raise
+        _assert_stage_revision(
+            project_dir, episode, group_id, revision, plan_revision
+        )
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
         evidenced_entries = _entries_with_evidence(
             timeline.entries, evidence_by_segment, default_status="submitted"
@@ -1625,6 +1790,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             generated_segments = []
             segment_errors = []
             for segment_index, segment in enumerate(segments, start=1):
+                _assert_stage_revision(
+                    project_dir, episode, group_id, revision, plan_revision
+                )
                 durable_segment_id = durable_segment_ids[segment_index - 1]
                 segment_output = output.with_name(
                     f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
@@ -1772,6 +1940,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             )
             save_h3_director_manifest(manifest_path, manifest)
             raise
+        except H3StaleStageError:
+            raise
         except Exception:
             manifest = _manifest_with_status(
                 manifest,
@@ -1911,6 +2081,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         return {"status": terminal_status, "group_id": group_id, "revision": revision,
                 "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),
                 "provider_task_id": generated.provider_task_id, "logical_shots": len(segments)}
+    except H3StaleStageError:
+        return {"status": "stale", "group_id": group_id, "revision": revision}
     except Exception as exc:
         failure_assets = (
             {"manifest_asset": str(manifest_path)}

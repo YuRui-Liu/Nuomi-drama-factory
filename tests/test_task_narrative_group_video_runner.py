@@ -1389,6 +1389,9 @@ def test_execute_maps_pair_to_synthetic_canonical_beat_for_optimizer(
 
     monkeypatch.setattr(narrative_group_video, "stage_payload", saved_stage)
     monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        narrative_group_video, "_assert_stage_revision", lambda *_args: None
+    )
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", load_beats)
     monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
     _patch_test_workflow(monkeypatch, narrative_group_video)
@@ -1667,6 +1670,9 @@ def test_execute_projects_active_director_shots_before_building_segments(
         narrative_group_video, "record_stage_result", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
+        narrative_group_video, "_assert_stage_revision", lambda *_args: None
+    )
+    monkeypatch.setattr(
         narrative_group_video,
         "_workflow_definition_for_payload",
         lambda _payload: SimpleNamespace(adapter_key="fake"),
@@ -1733,7 +1739,10 @@ def test_provider_parameters_strip_only_continuity_policy():
     ) == {"resolution": "1080p"}
 
 
-def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path):
+def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
     from datetime import datetime, timezone
 
     from novelvideo.director_plan.models import (
@@ -1818,6 +1827,53 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
     assert prepared.contracts[1].predecessor_revision == 1
     assert "predecessor_observation_required" in prepared.risk_report.blockers
 
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    clear_report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+    )
+
+    class Optimizer:
+        async def optimize_segment(self, _segment, *_args):
+            result = _optimizer_result("integrated bundle prompt")
+            result.plan = SimpleNamespace(
+                mode="i2va",
+                model_dump=lambda **_kwargs: {
+                    "mode": "i2va", "total_frames": 120, "shots": []
+                },
+            )
+            return result
+
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    continuity = {
+        segment.segment_id: replace(
+            prepared,
+            risk_report=clear_report,
+            mode_decision=H3ModeDecision(requested="auto", mode="i2va"),
+        )
+    }
+    optimized = asyncio.run(narrative_group_video._optimize_missing_prompts(
+        [segment],
+        [{"id": segment.segment_id, "visual_description": "wait"}],
+        ctx=SimpleNamespace(state_dir=tmp_path / "state"),
+        project_dir=tmp_path,
+        episode=1,
+        policy="enforce",
+        continuity_by_segment=continuity,
+    ))
+
+    assert continuity[segment.segment_id].bundle is not None
+    assert optimized[0].prompt == continuity[segment.segment_id].bundle.prompt
+    assert optimized[0].last_frame is None
+
     from novelvideo.shot_continuity import ShotContinuityStore
 
     continuity_store = ShotContinuityStore(tmp_path)
@@ -1849,9 +1905,16 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
     assert "predecessor_observation_required" not in refreshed.risk_report.blockers
 
 
-@pytest.mark.parametrize("policy", ["legacy", "observe", "guard"])
+@pytest.mark.parametrize(
+    ("policy", "prepare_error"),
+    [
+        ("legacy", ValueError("not called")),
+        ("observe", ValueError("private path")),
+        ("guard", OSError("temporarily unavailable")),
+    ],
+)
 def test_non_enforcing_policy_fails_open_when_continuity_prepare_crashes(
-    tmp_path, monkeypatch, policy
+    tmp_path, monkeypatch, policy, prepare_error
 ):
     from novelvideo.media_capabilities.video.adapters import (
         NarrativeGroupVideoResult,
@@ -1914,7 +1977,7 @@ def test_non_enforcing_policy_fails_open_when_continuity_prepare_crashes(
     monkeypatch.setattr(
         narrative_group_video,
         "_prepare_continuity",
-        lambda **_kwargs: (_ for _ in ()).throw(ValueError("private path")),
+        lambda **_kwargs: (_ for _ in ()).throw(prepare_error),
     )
     ctx = SimpleNamespace(
         output_dir=str(tmp_path),
@@ -2280,9 +2343,15 @@ def test_observe_mode_mismatch_keeps_shadow_bundle_empty_with_diagnostic(
     )
 
 
-@pytest.mark.parametrize("policy", ["observe", "guard"])
+@pytest.mark.parametrize(
+    ("policy", "shadow_error"),
+    [
+        ("observe", RuntimeError("shadow secret")),
+        ("guard", OSError("temporary shadow outage")),
+    ],
+)
 def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
-    tmp_path, monkeypatch, policy
+    tmp_path, monkeypatch, policy, shadow_error
 ):
     from novelvideo.media_capabilities.video.adapters import (
         NarrativeGroupVideoResult,
@@ -2325,7 +2394,7 @@ def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise RuntimeError("shadow secret")
+            raise shadow_error
         return [
             segment.model_copy(update={"prompt": f"legacy:{segment.segment_id}"})
             for segment in segments
@@ -2382,10 +2451,10 @@ def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
     )
 
     manifest = load_h3_director_manifest(result["manifest_asset"])
-    assert "continuity_observe_failed:RuntimeError" in (
+    assert f"continuity_observe_failed:{type(shadow_error).__name__}" in (
         manifest.entries[0].mode_decision["reason_codes"]
     )
-    assert "shadow secret" not in str(manifest.model_dump(mode="json"))
+    assert str(shadow_error) not in str(manifest.model_dump(mode="json"))
 
 
 def _execute_policy_boundary(
@@ -2397,6 +2466,7 @@ def _execute_policy_boundary(
     blockers=(),
     shadow_error=None,
     decided_mode="i2va",
+    stale_fence_at=None,
 ):
     from novelvideo.media_capabilities.video.adapters import (
         NarrativeGroupVideoResult,
@@ -2432,11 +2502,15 @@ def _execute_policy_boundary(
     requests = []
     stage_failures = []
     optimize_calls = 0
+    prepare_calls = 0
+    fence_calls = 0
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1, "video_prompt": "raw prompt"}]
 
     def prepare(*, segments, **_kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
         if prepare_error is not None:
             raise prepare_error
         decision = H3ModeDecision(
@@ -2505,6 +2579,12 @@ def _execute_policy_boundary(
             stage_failures.append(kwargs)
         return original_record(*args, **kwargs)
 
+    def assert_current(*_args, **_kwargs):
+        nonlocal fence_calls
+        fence_calls += 1
+        if fence_calls == stale_fence_at:
+            raise narrative_group_video.H3StaleStageError("stale")
+
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     _patch_test_workflow(monkeypatch, narrative_group_video)
     monkeypatch.setattr(
@@ -2515,6 +2595,10 @@ def _execute_policy_boundary(
     monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
     monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
     monkeypatch.setattr(narrative_group_video, "record_stage_result", record)
+    if stale_fence_at is not None:
+        monkeypatch.setattr(
+            narrative_group_video, "_assert_stage_revision", assert_current
+        )
     monkeypatch.setattr(
         narrative_group_video,
         "_video_workflow_adapters",
@@ -2549,6 +2633,7 @@ def _execute_policy_boundary(
         requests=requests,
         stage_failures=stage_failures,
         optimize_calls=optimize_calls,
+        prepare_calls=prepare_calls,
         manifest_path=(
             tmp_path / "videos" / "ep001" / "narrative_groups"
             / "ng-01_r1.manifest.json"
@@ -2639,3 +2724,146 @@ def test_enforce_success_uses_decided_frames_at_provider_boundary(
         Path(provider_segment.last_frame).name
         if provider_segment.last_frame else None
     ) == expected_last
+
+
+@pytest.mark.parametrize(
+    "prepare_error",
+    [
+        ValueError("invalid contract"),
+        __import__(
+            "novelvideo.shot_continuity", fromlist=["ContinuityRevisionConflict"]
+        ).ContinuityRevisionConflict("cas stale"),
+        __import__(
+            "novelvideo.shot_continuity", fromlist=["ContinuityContractUnavailable"]
+        ).ContinuityContractUnavailable("missing shot"),
+    ],
+)
+def test_guard_deterministic_prepare_errors_fail_closed_with_safe_diagnostic(
+    tmp_path, monkeypatch, prepare_error
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="guard",
+        prepare_error=prepare_error,
+    )
+
+    assert outcome.requests == []
+    assert len(outcome.stage_failures) == 1
+    assert outcome.stage_failures[0]["error"] == (
+        f"continuity_guard_failed:{type(prepare_error).__name__}"
+    )
+    assert str(prepare_error) not in outcome.stage_failures[0]["error"]
+
+
+@pytest.mark.parametrize("policy", ["observe", "guard"])
+def test_continuity_policies_never_swallow_memory_error(
+    tmp_path, monkeypatch, policy
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy=policy,
+        prepare_error=MemoryError("out of memory"),
+    )
+
+    assert isinstance(outcome.error, MemoryError)
+    assert outcome.requests == []
+
+
+def test_stage_revision_race_stops_before_continuity_store_and_transport(
+    tmp_path, monkeypatch
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="enforce",
+        stale_fence_at=2,
+    )
+
+    assert outcome.error is None
+    assert outcome.result["status"] == "stale"
+    assert outcome.prepare_calls == 0
+    assert outcome.optimize_calls == 0
+    assert outcome.requests == []
+
+
+def test_explicit_asset_evidence_rejects_outside_and_symlink_paths(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _explicit_asset_evidence,
+    )
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    valid = assets / "valid.png"
+    valid.write_bytes(b"valid")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.png"
+    outside.write_bytes(b"outside")
+    linked = assets / "linked.png"
+    linked.symlink_to(outside)
+    render = {
+        "cell_assets": [{
+            "references": [
+                {
+                    "entity_key": "valid",
+                    "asset_id": "asset-valid",
+                    "asset_path": str(valid),
+                },
+                {
+                    "entity_key": "outside",
+                    "asset_id": "asset-outside",
+                    "asset_path": str(outside),
+                },
+                {
+                    "entity_key": "linked",
+                    "asset_id": "asset-linked",
+                    "asset_path": str(linked),
+                },
+            ]
+        }]
+    }
+
+    evidence = _explicit_asset_evidence(tmp_path, render)
+
+    assert tuple(evidence) == ("valid",)
+    assert evidence["valid"].asset_id == "asset-valid"
+    assert str(tmp_path) not in evidence["valid"].model_dump_json()
+
+
+def test_director_world_requires_opaque_asset_id_and_trusted_path(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    control_dir = tmp_path / "director_control_frames"
+    control_dir.mkdir()
+    frame = control_dir / "frame.png"
+    frame.write_bytes(b"frame")
+    monkeypatch_payload = {
+        "snapshot": {"control_frame": {"path": str(frame)}}
+    }
+    from novelvideo.director_world import store as director_store
+
+    monkeypatch.setattr(
+        director_store, "load_beat_blocking", lambda *_args: monkeypatch_payload
+    )
+    snapshot, available = narrative_group_video._director_world_snapshot(
+        tmp_path, 1, 1
+    )
+
+    assert available is False
+    assert "control_frame" not in snapshot
+    assert str(frame) not in str(snapshot)
+
+    monkeypatch_payload["snapshot"]["control_frame"] = {
+        "asset_id": "dw-frame-1",
+        "path": str(frame),
+    }
+    snapshot, available = narrative_group_video._director_world_snapshot(
+        tmp_path, 1, 1
+    )
+
+    assert available is True
+    assert snapshot["control_frame"]["asset_id"] == "dw-frame-1"
+    assert "path" not in snapshot["control_frame"]
+    assert str(frame) not in str(snapshot)
