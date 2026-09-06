@@ -27,6 +27,8 @@ from .models import (
     StageName,
     VideoPlan,
     VideoPlanUnit,
+    VideoReferenceItem,
+    VideoReferenceSettings,
     VideoSettings,
 )
 
@@ -292,6 +294,21 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         revision=int(raw_settings.get("revision") or 0),
         overrides=raw_settings.get("overrides") or {},
     )
+    raw_reference_settings = dict(data.get("video_reference_settings") or {})
+    video_reference_settings = VideoReferenceSettings(
+        revision=int(raw_reference_settings.get("revision") or 0),
+        references=tuple(
+            VideoReferenceItem(
+                reference_id=str(item.get("reference_id") or ""),
+                source_kind=str(item.get("source_kind") or ""),
+                label=str(item.get("label") or ""),
+                subject_description=str(item.get("subject_description") or ""),
+                asset_id=str(item.get("asset_id") or ""),
+                temporary_upload_id=str(item.get("temporary_upload_id") or ""),
+            )
+            for item in raw_reference_settings.get("references") or ()
+        ),
+    )
     return NarrativeGroup(
         id=str(data["id"]),
         ordinal=int(data["ordinal"]),
@@ -300,6 +317,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
         video_plan=video_plan,
         video_settings=video_settings,
+        video_reference_settings=video_reference_settings,
         stages=stages or default_stages,
         errors=tuple(data.get("errors") or ()),
         source_span_ids=tuple(
@@ -436,6 +454,11 @@ def _materialize_active_groups(
                 ),
                 video_settings=(
                     previous.video_settings if previous else VideoSettings()
+                ),
+                video_reference_settings=(
+                    previous.video_reference_settings
+                    if previous
+                    else VideoReferenceSettings()
                 ),
                 source_span_ids=group.source_span_ids,
                 shot_ids=shot_ids,
@@ -687,6 +710,7 @@ def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) 
                             else group.video_plan
                         ),
                         video_settings=old.video_settings,
+                        video_reference_settings=old.video_reference_settings,
                         stages=old.stages,
                         errors=old.errors,
                     )
@@ -751,6 +775,99 @@ def update_video_settings(
         save_groups(
             project_dir,
             episode,
+            [updated_group if item.id == group_id else item for item in groups],
+        )
+        return updated_group
+
+
+async def update_video_reference_settings(
+    *,
+    store: object,
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+    selections: Any,
+    max_images: int,
+) -> NarrativeGroup:
+    """Validate and atomically persist ordered logical video references."""
+    from .video_references import (
+        resolve_group_video_reference_preview,
+        validate_video_reference_selections,
+    )
+
+    requested = validate_video_reference_selections(selections, max_images)
+    initial_groups = load_materialized_groups(project_dir, episode_number)
+    initial_group = next(
+        (item for item in initial_groups if item.id == group_id), None
+    )
+    if initial_group is None:
+        raise KeyError(group_id)
+    if initial_group.video_reference_settings.revision != int(expected_revision):
+        raise RuntimeError("narrative group video reference settings revision is stale")
+    video_stage = initial_group.stages.get("video", GroupStageState())
+    if video_stage.status in {"queued", "running"}:
+        raise RuntimeError(
+            f"cannot update video reference settings while video stage is {video_stage.status}"
+        )
+
+    preview = await resolve_group_video_reference_preview(
+        store=store,
+        project_dir=project_dir,
+        episode_number=episode_number,
+        group=initial_group,
+        max_images=max_images,
+    )
+    by_id = {candidate.reference_id: candidate for candidate in preview.candidates}
+    unknown = [
+        selection.reference_id
+        for selection in requested
+        if selection.reference_id not in by_id
+    ]
+    if unknown:
+        raise ValueError(
+            "unknown narrative-group video reference IDs: "
+            + ", ".join(sorted(set(unknown)))
+        )
+    references = tuple(
+        VideoReferenceItem(
+            reference_id=selection.reference_id,
+            source_kind=by_id[selection.reference_id].source_kind,
+            label=by_id[selection.reference_id].label,
+            subject_description=selection.subject_description,
+            asset_id=by_id[selection.reference_id].asset_id,
+            temporary_upload_id=by_id[
+                selection.reference_id
+            ].temporary_upload_id,
+        )
+        for selection in requested
+    )
+
+    with _sidecar_guard(project_dir, episode_number):
+        groups = load_materialized_groups(project_dir, episode_number)
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        if group.video_reference_settings.revision != int(expected_revision):
+            raise RuntimeError(
+                "narrative group video reference settings revision is stale"
+            )
+        video_stage = group.stages.get("video", GroupStageState())
+        if video_stage.status in {"queued", "running"}:
+            raise RuntimeError(
+                "cannot update video reference settings while video stage is "
+                f"{video_stage.status}"
+            )
+        updated_group = replace(
+            group,
+            video_reference_settings=VideoReferenceSettings(
+                revision=group.video_reference_settings.revision + 1,
+                references=references,
+            ),
+        )
+        save_groups(
+            project_dir,
+            episode_number,
             [updated_group if item.id == group_id else item for item in groups],
         )
         return updated_group

@@ -7,6 +7,12 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 StageName = Literal["sketch", "render", "video"]
+VideoReferenceSourceKind = Literal[
+    "character_identity",
+    "scene_master",
+    "prop_reference",
+    "temporary_upload",
+]
 StageStatus = Literal[
     "pending",
     "queued",
@@ -127,6 +133,41 @@ class VideoSettings:
 
 
 @dataclass(frozen=True)
+class VideoReferenceItem:
+    reference_id: str
+    source_kind: VideoReferenceSourceKind
+    label: str
+    subject_description: str
+    asset_id: str = ""
+    temporary_upload_id: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "reference_id": self.reference_id,
+            "source_kind": self.source_kind,
+            "label": self.label,
+            "subject_description": self.subject_description,
+            "asset_id": self.asset_id,
+            "temporary_upload_id": self.temporary_upload_id,
+        }
+
+
+@dataclass(frozen=True)
+class VideoReferenceSettings:
+    revision: int = 0
+    references: tuple[VideoReferenceItem, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "references", tuple(self.references))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "revision": self.revision,
+            "references": [reference.to_dict() for reference in self.references],
+        }
+
+
+@dataclass(frozen=True)
 class GroupStageState:
     status: StageStatus = "pending"
     revision: int = 0
@@ -175,6 +216,9 @@ class NarrativeGroup:
     cell_to_beat: tuple[CellMapping, ...]
     video_plan: VideoPlan = field(default_factory=VideoPlan)
     video_settings: VideoSettings = field(default_factory=VideoSettings)
+    video_reference_settings: VideoReferenceSettings = field(
+        default_factory=VideoReferenceSettings
+    )
     stages: dict[StageName, GroupStageState] = field(default_factory=_default_stages)
     errors: tuple[dict, ...] = ()
     source_span_ids: tuple[str, ...] = ()
@@ -227,4 +271,5 @@ class NarrativeGroup:
         result["video_inputs"] = list(self.video_inputs)
         result["video_plan"] = self.video_plan.to_dict()
         result["video_settings"] = self.video_settings.to_dict()
+        result["video_reference_settings"] = self.video_reference_settings.to_dict()
         return result
