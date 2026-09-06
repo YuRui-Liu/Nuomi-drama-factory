@@ -53,7 +53,8 @@ from novelvideo.media_capabilities.video.h3_reference_runtime import (
     garbage_collect_h3_reference_input_snapshots,
     generate_h3_reference_director_video,
     load_h3_reference_input_snapshot,
-    renew_h3_reference_input_snapshot_lease,
+    mark_h3_reference_snapshot_running,
+    retain_h3_reference_snapshot,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
@@ -152,16 +153,30 @@ def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, .
 
 def _delete_terminal_reference_snapshot(
     ctx: ProjectContext, payload: Mapping[str, Any]
+) -> bool:
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
+        return False
+    try:
+        return delete_h3_reference_input_snapshot(
+            state_root=ctx.state_dir, snapshot_id=snapshot_id
+        )
+    except (OSError, ValueError):
+        # TTL GC will recover an orphan that cannot be removed at terminal time.
+        return False
+
+
+def _retain_reference_snapshot(
+    ctx: ProjectContext, payload: Mapping[str, Any]
 ) -> None:
     snapshot_id = str(payload.get("reference_snapshot_id") or "")
     if re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
         return
     try:
-        delete_h3_reference_input_snapshot(
+        retain_h3_reference_snapshot(
             state_root=ctx.state_dir, snapshot_id=snapshot_id
         )
     except (OSError, ValueError):
-        # TTL GC will recover an orphan that cannot be removed at terminal time.
         pass
 
 
@@ -866,22 +881,10 @@ async def run_video_segments(
     return tuple(await asyncio.gather(*(isolated(segment) for segment in segments)))
 
 
-async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+async def _execute_inner(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
-    state_root = getattr(ctx, "state_dir", None)
-    if state_root is not None:
-        snapshot_id = str(payload.get("reference_snapshot_id") or "")
-        try:
-            if re.fullmatch(r"[0-9a-f]{32}", snapshot_id):
-                renew_h3_reference_input_snapshot_lease(
-                    state_root=state_root, snapshot_id=snapshot_id
-                )
-            garbage_collect_h3_reference_input_snapshots(
-                state_root=state_root,
-                protected_ids=(snapshot_id,),
-            )
-        except (OSError, ValueError):
-            pass
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     project_dir = _project_dir(payload, ctx)
     group_id = str(payload["group_id"])
@@ -999,7 +1002,6 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 "status": "skipped", "reason": "nonvisual_beats",
                 "group_id": group_id, "revision": revision,
             }
-            _delete_terminal_reference_snapshot(ctx, payload)
             return result
         if reference_required:
             frame_sources = tuple(
@@ -1348,8 +1350,6 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             actual_output=generated.actual_output,
             **stems,
         )
-        if terminal_status == "completed":
-            _delete_terminal_reference_snapshot(ctx, payload)
         return {"status": terminal_status, "group_id": group_id, "revision": revision,
                 "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),
                 "provider_task_id": generated.provider_task_id, "logical_shots": len(segments)}
@@ -1365,6 +1365,44 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             **failure_assets,
         )
         raise
+
+
+async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    payload = dict(envelope.get("payload") or {})
+    state_root = getattr(ctx, "state_dir", None)
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    has_snapshot = (
+        state_root is not None
+        and re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is not None
+    )
+    if has_snapshot:
+        try:
+            mark_h3_reference_snapshot_running(
+                state_root=state_root, snapshot_id=snapshot_id
+            )
+        except (OSError, ValueError):
+            pass
+    if state_root is not None:
+        try:
+            garbage_collect_h3_reference_input_snapshots(
+                state_root=state_root,
+                protected_ids=(snapshot_id,),
+            )
+        except (OSError, ValueError):
+            pass
+    try:
+        result = await _execute_inner(envelope, ctx)
+    except BaseException:
+        if has_snapshot:
+            _retain_reference_snapshot(ctx, payload)
+        raise
+    if has_snapshot:
+        if result.get("status") in {"completed", "skipped"}:
+            if not _delete_terminal_reference_snapshot(ctx, payload):
+                _retain_reference_snapshot(ctx, payload)
+        else:
+            _retain_reference_snapshot(ctx, payload)
+    return result
 
 
 def run_narrative_group_video(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:

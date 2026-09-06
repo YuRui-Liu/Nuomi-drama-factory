@@ -400,12 +400,15 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
         reference_limit=5,
         provider_workflow_id="2096502793044582401",
     )
+    runtime.activate_h3_reference_snapshot(
+        state_root=state, snapshot_id=queued.snapshot_id
+    )
     os.utime(storage / queued.snapshot_id, (1, 1))
     assert runtime.garbage_collect_h3_reference_input_snapshots(
         state_root=state,
         protected_ids=(snapshot_id,),
         ttl_seconds=10,
-        now=200,
+        now=10**12,
     ) == 1
     assert not (storage / orphan.snapshot_id).exists()
     assert (storage / snapshot_id).exists()
@@ -470,7 +473,7 @@ def test_failed_attempt_can_retry_from_snapshot_after_sources_are_removed(
     assert second_attempt.digest == first_attempt.digest
 
 
-def test_snapshot_lease_renewal_prevents_gc_until_renewed_expiry(
+def test_snapshot_lease_states_protect_queued_and_expire_retained(
     tmp_path: Path, monkeypatch
 ) -> None:
     from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
@@ -496,7 +499,18 @@ def test_snapshot_lease_renewal_prevents_gc_until_renewed_expiry(
         provider_workflow_id="2096502793044582401",
     )
     monkeypatch.setattr(runtime.time, "time", lambda: 200.0)
-    runtime.renew_h3_reference_input_snapshot_lease(
+    runtime.activate_h3_reference_snapshot(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+    )
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state, now=10**12, ttl_seconds=10
+    ) == 0
+    runtime.mark_h3_reference_snapshot_running(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+    )
+    runtime.retain_h3_reference_snapshot(
         state_root=state,
         snapshot_id=persisted.snapshot_id,
         ttl_seconds=10,
@@ -508,6 +522,128 @@ def test_snapshot_lease_renewal_prevents_gc_until_renewed_expiry(
     assert runtime.garbage_collect_h3_reference_input_snapshots(
         state_root=state, now=211, ttl_seconds=10
     ) == 1
+
+
+def test_pending_snapshot_gc_honors_zero_now(tmp_path: Path) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    frame = project / "frame.png"
+    Image.new("RGB", (3, 3), "green").save(frame)
+    frames = runtime.freeze_h3_reference_frames(
+        (H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),),
+        project_root=project,
+    )
+    state = tmp_path / "state"
+    persisted = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=(_reference(project / "ref.png", _png_bytes()),),
+        frames=frames,
+        reference_revision=1,
+        reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+    lease = (
+        state / "h3_reference_input_snapshots" / persisted.snapshot_id / "lease.json"
+    )
+    lease.write_text('{"state":"pending","expires_at":0}', encoding="utf-8")
+
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state, now=0, ttl_seconds=10
+    ) == 1
+
+
+def test_windows_gc_and_renewal_are_serialized_by_exclusive_lease_handle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    snapshot_id = "a" * 32
+    state = tmp_path / "state"
+    storage = state / "h3_reference_input_snapshots"
+
+    class Win32:
+        DIRECTORY = 0x10
+        REPARSE_POINT = 0x400
+
+        def __init__(self):
+            self.lease = {"state": "retained", "expires_at": 1}
+            self.renew_wins_before_lock = True
+            self.rewrites = []
+
+        def open_write_directory(self, path):
+            return ("directory", Path(path))
+
+        def attributes(self, handle):
+            return self.DIRECTORY if handle[0] == "directory" else 0
+
+        def final_path_for_handle(self, handle):
+            return handle[1]
+
+        def close(self, _handle):
+            return None
+
+        def list_names(self, directory):
+            if Path(directory) == storage:
+                if self.renew_wins_before_lock:
+                    self.lease = {"state": "running", "expires_at": None}
+                    self.renew_wins_before_lock = False
+                return (snapshot_id,)
+            return ()
+
+        def open_exclusive_file(self, path):
+            return ("lease", Path(path))
+
+        def read_file(self, _handle, _limit):
+            return json.dumps(self.lease).encode("utf-8")
+
+        def rewrite_file(self, _handle, content):
+            self.lease = json.loads(content)
+            self.rewrites.append(self.lease["state"])
+
+        def modified_time(self, _handle):
+            return 0
+
+    win32 = Win32()
+    deleted = []
+    monkeypatch.setattr(
+        runtime,
+        "_delete_windows_snapshot",
+        lambda _state, item, **_kwargs: deleted.append(item) or True,
+    )
+
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        now=100,
+        ttl_seconds=10,
+        win32_adapter=win32,
+        platform_name="nt",
+    ) == 0
+    assert deleted == []
+
+    win32.lease = {"state": "retained", "expires_at": 1}
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        now=100,
+        ttl_seconds=10,
+        win32_adapter=win32,
+        platform_name="nt",
+    ) == 1
+    assert win32.rewrites == ["deleting"]
+    with pytest.raises(ValueError, match="transition"):
+        runtime._transition_h3_reference_snapshot_lease(
+            state_root=state,
+            snapshot_id=snapshot_id,
+            target_state="running",
+            allowed_states=frozenset({"queued", "retained", "running"}),
+            ttl_seconds=None,
+            win32_adapter=win32,
+            platform_name="nt",
+        )
 
 
 def test_reference_input_snapshot_store_rejects_tampered_blob(tmp_path: Path) -> None:
