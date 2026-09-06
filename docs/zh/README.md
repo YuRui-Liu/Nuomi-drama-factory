@@ -15,6 +15,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [开发者 Cookbook](../cookbook/README.md) | 按功能定位原理、调用管线、关键代码和最小验证 |
 | [产品使用手册](https://neo-flying.feishu.cn/docx/JGNTdsjJuo748TxJkxecoYs2nth) | 全功能 UI 操作手册（飞书） |
 | [自托管手册](guides/self-hosting.md) | 部署 / 升级 / 备份 |
 | [ffmpeg 指南](guides/ffmpeg.md) | 安装 / 定位 / 许可义务 |
@@ -27,7 +28,7 @@
 |---|---|
 | [功能总览](concepts/features.md) | Nuomi Drama Factory 能做什么 |
 | [架构](concepts/architecture.md) | 系统怎么运作 |
-| [技术设计](technical-design.md) | 面向新开发者的架构、模块、开发、测试与桌面打包说明 |
+| [技术设计](technical-design.md) | 系统架构、模块边界、开发与桌面打包说明 |
 
 ## 参考
 

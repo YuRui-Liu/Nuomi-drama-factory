@@ -1,6 +1,6 @@
 # Nuomi Drama Factory 技术设计
 
-> 本文面向首次接手 Nuomi Drama Factory 的开发者，帮助你理解系统边界、跑起开发环境、定位代码、调试任务并扩展功能。产品说明见[功能总览](concepts/features.md)，部署说明见[自托管手册](guides/self-hosting.md)。
+> 本文面向首次接手 Nuomi Drama Factory 的开发者，帮助你理解系统边界、跑起开发环境、定位代码、调试任务并扩展功能。要按“我想修改什么”追踪具体管线，请从[开发者 Cookbook](../cookbook/README.md)进入；产品说明见[功能总览](concepts/features.md)，部署说明见[自托管手册](guides/self-hosting.md)。
 
 ## 1. 项目定位与边界
 
@@ -345,7 +345,7 @@ corepack pnpm desktop:build
 
 ## 17. 新开发者接手清单
 
-- [ ] 阅读本文、[架构概览](concepts/architecture.md)和[环境变量参考](reference/environment-variables.md)。
+- [ ] 阅读本文、[开发者 Cookbook](../cookbook/README.md)、[架构概览](concepts/architecture.md)和[环境变量参考](reference/environment-variables.md)。
 - [ ] 在 Windows CMD 中分别跑起后端和前端。
 - [ ] 确认 `/api/v1/config` 返回 200，前端可创建并打开项目。
 - [ ] 配置模型渠道并执行一次最小生成任务。
