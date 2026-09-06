@@ -4,7 +4,7 @@
 - **上游**：[声音与音频](06-audio.md)
 - **下游**：[合成与导出](08-compose-export.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪 canonical 首帧、尾帧、Beat 文本与音频怎样进入单 Beat 或 NarrativeGroup 视频任务，以及生成结果怎样成为候选、当前视频或组合视频。这里的「单 segment」是 NarrativeGroup 的失败片段重试入口，不等同于单 Beat；成片合成、字幕与导出包由下一篇负责。
@@ -364,4 +364,4 @@ git diff --name-only -- docs/cookbook/pipelines/07-video.md
 - 首帧、尾帧、NarrativeGroup render cell 与图片候选从[分镜与图像](05-storyboard.md)继续追踪。
 - Director manifest、音轨替换、字幕、FFmpeg 和最终成片从[合成与导出](08-compose-export.md)继续追踪。
 - 任务身份、scope、终态刷新与取消见[新增 API 与长任务](../development/add-api-and-task.md)；project/output/state/runtime 边界见[存储与项目文件](../development/storage-and-files.md)。
-- 返回 [Cookbook 首页](../README.md)。
+- 返回 [Cookbook 首页](/)。

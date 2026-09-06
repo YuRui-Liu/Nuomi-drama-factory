@@ -4,7 +4,7 @@
 - **上游**：[生产资产](03-production-assets.md)
 - **下游**：[分镜与图像](05-storyboard.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪两组容易被「Beat」一词混在一起的状态。生产层的 `VisualBeat` 是可直接生成草图、音频和视频的逐行单元，保存在 SQLite `beats` 表；语义层的 `DramaticBeat` 是带原文行号、事实约束、校验报告和激活指针的导演拆解 revision，保存在项目文件中。两者目前没有自动投影关系。语义 revision 激活后由导演方案读取，再进入下游[分镜与图像](05-storyboard.md)。

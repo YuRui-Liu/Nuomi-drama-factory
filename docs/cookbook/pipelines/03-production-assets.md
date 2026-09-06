@@ -4,7 +4,7 @@
 - **上游**：[剧集图谱](02-episode-graph.md)
 - **下游**：[剧本与语义](04-screenplay.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪剧集图谱中的角色、场景和道具怎样进入资产中心，怎样生成可比较的图片候选，以及候选怎样成为下游读取的 canonical 资产。这里有两组需要分别理解的状态：角色的叙事身份与 `VisualBible` 决定「允许生成什么」，`production_workflow.json` 中的 slot、version 和 adoption event 决定「当前采用哪一个文件」。剧本文本和 Beat 怎样引用这些资产，进入下游[剧本与语义](04-screenplay.md)继续追踪。

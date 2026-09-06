@@ -4,7 +4,7 @@
 - **上游**：[视频生成](07-video.md)
 - **下游**：无；成片与导出包是核心生产管线的末端产物
 - **代码基线**：`c170582`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪 Compose 页怎样判断一集能否合成，`compose_episode` 怎样选择 Director 与逐 Beat 视频、重建音轨并用 FFmpeg 发布固定成片，以及 SRT、成片和 ZIP 三类导出怎样读取这些文件。这里有三套相邻但不相同的“就绪”判断：页面门禁、`pipeline/status` 的导航状态和后端 Runner 的真实校验。排错和修改时不能把其中一套当成另外两套。
@@ -349,4 +349,4 @@ npm test -- --run src/__tests__/routes/compose-export-contract.test.ts
 - 项目目录、固定文件与 state/output 边界见[存储与项目文件](../development/storage-and-files.md)。
 - `compose_episode` 的任务键、队列、进度、取消和超时见[新增 API 与长任务](../development/add-api-and-task.md)。
 - 从路由、任务名或文件名反向定位时使用[功能反查](../development/trace-a-feature.md)；验证范围选择见[测试策略](../development/testing-strategy.md)。
-- 核心生产管线在这里结束；返回 [Cookbook 首页](../README.md)选择其他专题。
+- 核心生产管线在这里结束；返回 [Cookbook 首页](/)选择其他专题。

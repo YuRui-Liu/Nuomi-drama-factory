@@ -4,7 +4,7 @@
 - **上游**：[分镜与图像](05-storyboard.md)
 - **下游**：[视频生成](07-video.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪生产 Beat 的对白与旁白怎样选择参考声线、通过 RunningHub IndexTTS2 生成音频，并把文件、来源哈希和尝试记录交给视频与字幕环节。角色工作区的声音设计只负责建立可复用的参考样本；它与剧集音频生成是两类任务。

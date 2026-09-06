@@ -4,7 +4,7 @@
 - **上游**：[剧本与语义](04-screenplay.md)
 - **下游**：[声音与音频](06-audio.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
 
 本页追踪从 Beat 到草图、实图首帧的两条生产路径。逐 Beat 路径围绕 SQLite `beats`、剧集图片池和 `sketches/frames` canonical 文件工作；叙事组路径把一组连续 Beat 或导演 Shot 固定到多宫格 cell，另用 stage revision 管理草图与实图。它们共用图像生成能力，也会把切分结果写入相同的 canonical 图片目录；叙事组只有部分布局会再进入剧集图片池，任务 scope、重试语义和版本状态也与逐 Beat 路径不同。
@@ -304,4 +304,4 @@ rg -n 'T[O]DO|T[B]D|待[补]|占[位]|/(U[s]ers|h[o]me|private|tmp|var)/|[A-Za-z
 - 上游：[剧本与语义](04-screenplay.md)，继续追踪 DramaticBeat、VisualBeat 与 Director Shot 如何形成图像输入。
 - 下游：[声音与音频](06-audio.md)，继续追踪 canonical 画面与 Beat 的台词、音效及音乐如何汇合；普通生产顺序随后进入 07 视频与 08 合成。
 - 横向入口：[共享系统地图](../system-map.md)、[功能反查](../development/trace-a-feature.md)、[新增 API 与长任务](../development/add-api-and-task.md)、[存储与项目文件](../development/storage-and-files.md)、[测试策略](../development/testing-strategy.md)。
-- 返回 [Cookbook 首页](../README.md)。
+- 返回 [Cookbook 首页](/)。

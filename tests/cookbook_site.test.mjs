@@ -179,6 +179,17 @@ test(
       assert.match(readFileSync(file, 'utf8'), /<!doctype html>/i);
     }
 
+    const generatedHtmlFiles = readdirSync(distRoot, { recursive: true })
+      .filter((file) => String(file).endsWith('.html'));
+    for (const page of generatedHtmlFiles) {
+      const html = readFileSync(new URL(String(page), distRoot), 'utf8');
+      assert.doesNotMatch(
+        html,
+        /href=["'][^"']*README(?:\.html)?(?:[#/"'])/i,
+        `expected ${page} to link to the generated homepage instead of README`,
+      );
+    }
+
     const assetsRoot = new URL('assets/', distRoot);
     const assetNames = readdirSync(assetsRoot, { recursive: true }).join('\n');
     assert.match(assetNames, /localSearchIndex/);

@@ -1,13 +1,13 @@
 # Nuomi Drama Factory 存储与项目文件
 
-- **所属**：[开发与验证](../README.md#开发与验证)
+- **所属**：[开发与验证](/#开发与验证)
 - **上游**：[共享系统地图](../system-map.md)
 - **下游**：[小说导入](../pipelines/01-ingest.md) · [生产资产](../pipelines/03-production-assets.md) · [合成与导出](../pipelines/08-compose-export.md)
 - **代码基线**：`55504a0`
-- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
+- **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[功能反查](trace-a-feature.md) · [新增 API 与长任务](add-api-and-task.md) · [测试策略](testing-strategy.md)
 
-本页说明项目身份如何确定三类目录、SQLite 与媒体文件各自保存什么，以及新增写入或迁移时要守住的边界。具体产物由哪条业务管线生成，继续查对应的[生产管线专题](../README.md#核心生产管线)。
+本页说明项目身份如何确定三类目录、SQLite 与媒体文件各自保存什么，以及新增写入或迁移时要守住的边界。具体产物由哪条业务管线生成，继续查对应的[生产管线专题](/#核心生产管线)。
 
 ## 先区分身份、目录和内容
 
