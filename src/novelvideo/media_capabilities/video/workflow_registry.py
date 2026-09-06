@@ -63,7 +63,9 @@ class VideoWorkflowDefinition(BaseModel):
     label: str
     provider: str
     adapter_key: str
-    workflow_settings_key: RunningHubWorkflowSettingsKey
+    workflow_settings_key: RunningHubWorkflowSettingsKey = (
+        RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3
+    )
     scenes: frozenset[VideoWorkflowScene]
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
