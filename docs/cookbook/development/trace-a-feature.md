@@ -191,10 +191,10 @@ rg -n 'run_compose_episode|task_type.?[:=].?"compose_episode"' \
 页面展示的文件可能只是当前采用版本，不能代表所有生成历史。视频生成会把候选写入视频池；`GET .../video-pool` 读取索引，`POST .../video-pool-select` 改变 Beat 采用项，合成 Runner 再通过 `resolve_episode_composition_sources` 解析当前来源。追媒体问题时应同时检查候选文件、池索引、采用关系和最终固定文件。
 
 ```bash
-rg -n 'video-pool|video_pool_index|resolve_episode_composition_sources' \
-  frontend/src src/novelvideo tests
-rg -n 'history|candidate|pool|selected|assignment' \
-  src/novelvideo/generators src/novelvideo/api frontend/src/lib/queries
+rg -n 'useVideoPool|video-pool-select|select_video_pool|video_pool_index|resolve_episode_composition_sources' \
+  frontend/src/lib/queries/video.ts \
+  src/novelvideo/api/routes/generation.py \
+  src/novelvideo/task_backend/runners/video.py
 ```
 
 ## 修改影响面清单
@@ -223,6 +223,6 @@ rg -n 'useComposeEpisode|compose_video|compose_episode|run_compose_episode|useFi
 文档改动提交前再运行：
 
 ```bash
-git diff --check -- docs/cookbook/development/trace-a-feature.md
-git diff -- docs/cookbook/development/trace-a-feature.md
+git diff --check HEAD -- docs/cookbook/development/trace-a-feature.md
+git diff HEAD -- docs/cookbook/development/trace-a-feature.md
 ```
