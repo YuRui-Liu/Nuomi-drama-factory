@@ -12,7 +12,10 @@
     "desktop:frontend": "corepack pnpm --dir frontend build:ce",
     "desktop:stage": "node desktop/scripts/stage-runtime.cjs",
     "desktop:prepare": "pnpm desktop:test && pnpm desktop:frontend && pnpm desktop:stage",
-    "desktop:build": "pnpm desktop:prepare && electron-builder --win nsis --x64"
+    "desktop:build": "pnpm desktop:prepare && electron-builder --win nsis --x64",
+    "docs:dev": "pnpm --dir docs/cookbook dev",
+    "docs:build": "pnpm --dir docs/cookbook build",
+    "docs:preview": "pnpm --dir docs/cookbook preview"
   },
   "devDependencies": {
     "@ffmpeg-installer/win32-x64": "4.1.0",

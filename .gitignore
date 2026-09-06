@@ -80,6 +80,8 @@ dist-desktop/
 /.pnpm-store/
 /.runlogs/
 /docs/issues
+/docs/cookbook/.vitepress/dist/
+/docs/cookbook/.vitepress/cache/
 scripts/incident_drills/.drill.local.env
 .obsidian/
 
