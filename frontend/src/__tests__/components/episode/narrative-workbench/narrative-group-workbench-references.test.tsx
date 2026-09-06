@@ -14,6 +14,9 @@ const m = vi.hoisted(() => ({
  success: vi.fn(),
  error: vi.fn(),
  generateVideo: vi.fn(),
+ generateVideoSegment: vi.fn(),
+ updateVideoSettings: vi.fn(),
+ groupsRefetch: vi.fn(),
  referencePreviewQuery: vi.fn(),
  stageProps: vi.fn(),
  promptsQuery: vi.fn(),
@@ -30,17 +33,17 @@ const m = vi.hoisted(() => ({
 const group = { id:"g1", ordinal:1, title:"G", beat_ids:["1"], layout:{rows:1,columns:1,capacity:1}, stages:{sketch:{status:"pending",revision:0},render:{status:"partial_failure",revision:0},video:{status:"pending",revision:0}}, cell_to_beat:[],errors:[],video_inputs:[] };
 const group2 = { ...group, id: "g2", ordinal: 2, title: "G2" };
 vi.mock("@/lib/queries/narrative-groups",()=>({
- useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:m.groupsLoading,refetch:vi.fn()}),
+ useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:m.groupsLoading,refetch:m.groupsRefetch}),
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
  useNarrativeGroupVideoReferencePreview:(...args:any[])=>m.referencePreviewQuery(...args),
- useGenerateNarrativeGroupVideoSegment:()=>({mutateAsync:vi.fn()}),
+ useGenerateNarrativeGroupVideoSegment:()=>({mutateAsync:m.generateVideoSegment}),
  useChangeNarrativeGroupStyle:()=>({mutateAsync:vi.fn(),isPending:false}),
  useNarrativeGroupVideoPrompts:(...args:any[])=>m.promptsQuery(...args),
  useUpdateNarrativeGroupVideoDialogueSource:()=>({mutateAsync:vi.fn()}),
  updateNarrativeGroupVideoPlan:vi.fn().mockResolvedValue({ok:true}),
- updateNarrativeGroupVideoSettings:vi.fn().mockResolvedValue({ok:true}),
+ updateNarrativeGroupVideoSettings:(...args:any[])=>m.updateVideoSettings(...args),
  narrativeGroupTaskScope:()=>"grid-scope",
  narrativeGroupVideoTaskScope:()=>"video-scope",
  narrativeGroupVideoPromptUnitKey:(_:any,index:number)=>String(index),
@@ -82,6 +85,9 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.dialogSelection={useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"};
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
+  m.generateVideoSegment.mockResolvedValue({scope:"segment-x"});
+  m.updateVideoSettings.mockResolvedValue({ok:true});
+  m.groupsRefetch.mockResolvedValue({data:{ok:true,data:m.groups}});
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{units:[]}},isLoading:false,isError:false});
   m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
   m.updateDefaults.mockResolvedValue({ok:true});
@@ -224,6 +230,50 @@ describe("NarrativeGroupWorkbench references",()=>{
   expect(m.referencePreviewQuery).toHaveBeenCalledWith("p",1,"g1",true);
   fireEvent.click(screen.getByRole("button",{name:"生成组合视频"}));
   await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({referenceRevision:7})));
+ });
+ it("synchronizes existing group settings when switching to Ref before allowing generation",async()=>{
+  const user=userEvent.setup();
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3"};
+  m.videoModels=[
+   {id:"runninghub:minimax-h3",label:"Legacy",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
+   {id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}},
+  ];
+  m.groups=[{...group,video_inputs:[{beat_id:"1",has_first_frame:true,has_last_frame:false}],video_plan:{revision:3,source:"recommended",units:[],total_duration_seconds:0},video_settings:{revision:4,workflow_id:"runninghub:minimax-h3",overrides:{resolution:"720p"}},video_reference_settings:{revision:7,references:[{reference_id:"hero",subject_description:"Hero"}]}}];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
+  m.updateVideoSettings.mockImplementation(async()=>{
+   m.groups=[{...m.groups[0],video_settings:{revision:5,workflow_id:"runninghub:minimax-h3-ref",overrides:{}}}];
+   return {ok:true,data:m.groups[0]};
+  });
+  const view=render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  await user.click(screen.getByRole("combobox",{name:"视频模型"}));
+  await user.click(await screen.findByRole("option",{name:"Ref"}));
+  await waitFor(()=>expect(m.updateVideoSettings).toHaveBeenCalledWith("p",1,{groupId:"g1",expectedRevision:4,workflowId:"runninghub:minimax-h3-ref",overrides:{}}));
+  view.rerender(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByRole("button",{name:"生成组合视频"}));
+  await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({model:"runninghub:minimax-h3-ref",planRevision:3,settingsRevision:5,referenceRevision:7})));
+ });
+ it("blocks stale reference previews, refreshes them, and uses preview max",async()=>{
+  const previewRefetch=vi.fn().mockResolvedValue({data:{ok:true,data:{revision:8,max_images:3,candidates:[],selected:[],warnings:[]}}});
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.groups=[{...group,video_reference_settings:{revision:8,references:[]},video_segments:[{id:"seg1",group_id:"g1",shot_ids:["s1"],duration_seconds:5,continuity_reason:"",audio_mode:"project_default",style_snapshot_id:"s",status:"failed"}]}];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:3,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isFetching:false,isError:false,error:null,refetch:previewRefetch});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  await waitFor(()=>expect(previewRefetch).toHaveBeenCalled());
+  const props=m.stageProps.mock.calls[m.stageProps.mock.calls.length-1]?.[0];
+  expect(props.reference).toMatchObject({max:3,valid:false});
+  expect(screen.queryByRole("button",{name:"重试片段 seg1"})).not.toBeInTheDocument();
+  await props.onGenerate({video_model:"runninghub:minimax-h3-ref",h3_mode:"auto"});
+  expect(m.generateVideo).not.toHaveBeenCalled();
+ });
+ it("retries a segment with the complete synchronized Ref request",async()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.groups=[{...group,stages:{...group.stages,video:{status:"failed",revision:6}},video_plan:{revision:3,source:"recommended",units:[],total_duration_seconds:0},video_settings:{revision:5,workflow_id:"runninghub:minimax-h3-ref",overrides:{}},video_reference_settings:{revision:7,references:[]},video_segments:[{id:"seg1",group_id:"g1",shot_ids:["s1"],duration_seconds:5,continuity_reason:"",audio_mode:"project_default",style_snapshot_id:"s",status:"failed"}]}];
+  m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByRole("button",{name:"重试片段 seg1"}));
+  await waitFor(()=>expect(m.generateVideoSegment).toHaveBeenCalledWith({groupId:"g1",segmentId:"seg1",model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,planRevision:3,settingsRevision:5,referenceRevision:7,aspectRatio:"16:9"}));
  });
  it("keeps required-reference generation disabled while invalid or dirty",()=>{
   m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};

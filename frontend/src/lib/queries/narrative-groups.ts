@@ -138,6 +138,16 @@ export interface NarrativeGroupVideoSettings {
   overrides: Record<string, string>;
 }
 
+export interface NarrativeGroupVideoReferenceSettings {
+  revision: number;
+  references: Array<VideoReferenceSelection & {
+    source_kind?: VideoReferenceSourceKind;
+    label?: string;
+    asset_id?: string | null;
+    temporary_upload_id?: string | null;
+  }>;
+}
+
 export interface NarrativeGroupVideoPromptUnit {
   beat_ids: string[];
   label?: string | null;
@@ -250,6 +260,7 @@ export interface NarrativeGroup {
   }>;
   video_plan?: NarrativeGroupVideoPlan;
   video_settings?: NarrativeGroupVideoSettings;
+  video_reference_settings?: NarrativeGroupVideoReferenceSettings;
   generation_batches?: NarrativeGenerationBatch[];
   video_segments?: NarrativeVideoSegment[];
   effective_style_snapshot?: EffectiveStyleSnapshot | null;
@@ -535,9 +546,13 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
 export function useGenerateNarrativeGroupVideoSegment(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, segmentId }: { groupId: string; segmentId: string }) => api.post(
+    mutationFn: ({ groupId, segmentId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
+      groupId: string; segmentId: string; model: string; mode: "auto" | "i2va" | "fl2va";
+      revision: number; planRevision?: number; settingsRevision?: number; referenceRevision?: number;
+      aspectRatio: "9:16" | "16:9"; resolution?: string;
+    }) => api.post(
       narrativeGroupVideoSegmentPath(project, episode, groupId, segmentId),
-      { json: {} },
+      { json: narrativeGroupVideoPayload({model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution}) },
     ).json<TaskResponse>(),
     onSuccess: () => qc.invalidateQueries({
       queryKey: queryKeys.narrativeGroups(project, episode),

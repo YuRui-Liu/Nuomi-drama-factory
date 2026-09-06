@@ -154,6 +154,14 @@ export function useMediaProviderAccounts(enabled = true) {
   });
 }
 
+function invalidateVideoReferenceConsumers(client: ReturnType<typeof useQueryClient>) {
+  client.invalidateQueries({ queryKey: queryKeys.videoModels() });
+  client.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === "projects"
+      && query.queryKey.includes("narrative-groups"),
+  });
+}
+
 export function useSaveMediaProviderAccount() {
   const client = useQueryClient();
   return useMutation({
@@ -175,6 +183,7 @@ export function useSaveMediaProviderAccount() {
       client.invalidateQueries({
         queryKey: [...queryKeys.mediaProviderAccounts(), "runninghub-workflows"],
       });
+      invalidateVideoReferenceConsumers(client);
     },
   });
 }
@@ -204,6 +213,7 @@ export function useSaveRunningHubWorkflows() {
       client.invalidateQueries({
         queryKey: [...queryKeys.mediaProviderAccounts(), "runninghub-workflows"],
       });
+      invalidateVideoReferenceConsumers(client);
     },
   });
 }

@@ -3810,6 +3810,11 @@
   "settings": {
     "title": "设置",
     "close": "关闭",
+    "runtime": {
+      "runningHubVideoRefWorkflow": "MiniMax H3 多参考图工作流 ID",
+      "runningHubVideoRefMaxImages": "多参考图最大张数",
+      "runningHubVideoRefMaxInvalid": "多参考图最大张数必须在 {{min}} 到 {{max}} 之间"
+    },
     "navigationLabel": "设置分类",
     "statusConfigured": "{{page}}已配置",
     "statusNotConfigured": "{{page}}未配置",

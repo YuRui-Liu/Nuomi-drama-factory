@@ -32,6 +32,7 @@ import {
   useNarrativeGroupReferences,
   useNarrativeGroupVideoReferencePreview,
   useGenerateNarrativeGroupVideo,
+  useGenerateNarrativeGroupVideoSegment,
   useUpdateNarrativeGroupVideoReferences,
   useUpdateNarrativeGroupVideoPlan,
   useUploadNarrativeGroupVideoReference,
@@ -147,6 +148,19 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("narrative group reference hooks", () => {
+  it("sends the complete revisioned request when retrying one segment", async () => {
+    let body: unknown;
+    server.use(http.post(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/segments/seg-1/generate",
+      async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ok: true, task_type: "video", scope: "segment", message: "started" });
+      },
+    ));
+    const { result } = renderHook(() => useGenerateNarrativeGroupVideoSegment("demo", 2), { wrapper });
+    await result.current.mutateAsync({groupId:"ng-1",segmentId:"seg-1",model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,planRevision:3,settingsRevision:5,referenceRevision:7,aspectRatio:"16:9"});
+    expect(body).toEqual({model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,plan_revision:3,settings_revision:5,reference_revision:7,aspect_ratio:"16:9"});
+  });
   it("sends a reference revision for the Ref model without changing legacy generation bodies", async () => {
     const bodies: unknown[] = [];
     server.use(http.post(

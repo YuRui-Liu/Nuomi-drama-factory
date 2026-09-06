@@ -3810,6 +3810,11 @@
   "settings": {
     "title": "Settings",
     "close": "Close",
+    "runtime": {
+      "runningHubVideoRefWorkflow": "MiniMax H3 multi-reference workflow ID",
+      "runningHubVideoRefMaxImages": "Maximum reference images",
+      "runningHubVideoRefMaxInvalid": "Maximum reference images must be between {{min}} and {{max}}"
+    },
     "navigationLabel": "Settings categories",
     "statusConfigured": "{{page}} is configured",
     "statusNotConfigured": "{{page}} is not configured",
