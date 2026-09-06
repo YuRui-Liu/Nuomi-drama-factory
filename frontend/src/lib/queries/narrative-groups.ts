@@ -57,7 +57,7 @@ export interface VideoReferenceCandidate {
   source_kind: VideoReferenceSourceKind;
   label: string;
   subject_description: string;
-  thumbnail_url?: string | null;
+  thumbnail_url: string;
 }
 
 export interface VideoReferenceSelection {
