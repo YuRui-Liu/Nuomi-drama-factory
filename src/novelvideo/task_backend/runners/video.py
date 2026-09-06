@@ -661,6 +661,8 @@ def run_video_generation(envelope: dict[str, Any], ctx: ProjectContext) -> dict[
 
 
 def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    import os
+    import stat
     import subprocess
     import tempfile
 
@@ -910,33 +912,51 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             filter_parts.append(f"[{index}:a]aresample=44100[a{index}]")
         concat_inputs = "".join(f"[v{index}][a{index}]" for index in range(len(video_clips)))
         filter_parts.append(f"{concat_inputs}concat=n={len(video_clips)}:v=1:a=1[outv][outa]")
-        cmd.extend(
-            [
-                "-filter_complex",
-                ";".join(filter_parts),
-                "-map",
-                "[outv]",
-                "-map",
-                "[outa]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                str(output_path),
-            ]
+        try:
+            output_mode = stat.S_IMODE(output_path.stat().st_mode)
+        except FileNotFoundError:
+            output_mode = 0o644
+        fd, candidate_name = tempfile.mkstemp(
+            prefix=f".{output_path.stem}.",
+            suffix=".tmp.mp4",
+            dir=output_path.parent,
         )
-        result = run_checked(cmd, default_timeout_seconds=30 * 60)
-        check_cancel()
-        if result.returncode != 0:
-            raise RuntimeError(f"拼接失败: {result.stderr[:500]}")
+        os.close(fd)
+        candidate_path = Path(candidate_name)
+        try:
+            cmd.extend(
+                [
+                    "-filter_complex",
+                    ";".join(filter_parts),
+                    "-map",
+                    "[outv]",
+                    "-map",
+                    "[outa]",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-crf",
+                    "23",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    str(candidate_path),
+                ]
+            )
+            result = run_checked(cmd, default_timeout_seconds=30 * 60)
+            check_cancel()
+            if result.returncode != 0:
+                raise RuntimeError(f"拼接失败: {result.stderr[:500]}")
+            if not candidate_path.is_file() or candidate_path.stat().st_size == 0:
+                raise RuntimeError("拼接失败: ffmpeg 生成了空的视频文件")
+            candidate_path.chmod(output_mode)
+            os.replace(candidate_path, output_path)
+        finally:
+            candidate_path.unlink(missing_ok=True)
 
     return {
         "video_path": output_path.as_posix(),

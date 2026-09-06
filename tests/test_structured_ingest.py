@@ -111,8 +111,15 @@ async def test_ingest_reuses_manifest_emits_progress_and_never_calls_cognee(
     async def fake_build_publication(*_args, **_kwargs):
         return object()
 
-    async def fake_publish(_store, _publication, *, run_id=None):
+    async def fake_publish(
+        _store,
+        _publication,
+        *,
+        run_id=None,
+        before_commit=None,
+    ):
         assert run_id
+        await before_commit()
         return {"episodes": 0, "characters": 0, "scenes": 0}
 
     monkeypatch.setattr(

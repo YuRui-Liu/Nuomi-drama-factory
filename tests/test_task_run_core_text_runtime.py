@@ -78,6 +78,60 @@ def test_graph_asset_extractors_use_configured_knowledge_runtime():
         assert registrations[task_type] == "knowledge_extraction"
 
 
+def test_run_core_does_not_dispatch_when_initial_owner_update_is_rejected(monkeypatch):
+    from novelvideo.task_backend import run_core
+
+    async def not_cancelled(**kwargs):
+        return False
+
+    async def no_async_work(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(run_core, "is_cancel_requested", not_cancelled)
+    monkeypatch.setattr(run_core, "_refund_feature_credit_reservation", no_async_work)
+    monkeypatch.setattr(run_core, "_clear_project_task_metrics_context", lambda: None)
+    monkeypatch.setattr(run_core, "_set_project_task_metrics_context", lambda *a, **k: None)
+    monkeypatch.setattr(run_core, "_project_task_timeout_seconds", lambda: 0)
+    monkeypatch.setattr(run_core, "project_task_run_context", lambda task_id: nullcontext())
+    monkeypatch.setattr(
+        run_core, "project_task_subprocess_context", lambda **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(run_core, "_ensure_builtin_runners_registered", lambda: None)
+    called = False
+
+    def runner(envelope, ctx):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    register_project_task_runner("rejected_initial_owner_update", runner)
+
+    class Manager:
+        def update_progress_for_project(self, *args, **kwargs):
+            return False
+
+        def fail_task_for_project(self, *args, **kwargs):
+            raise AssertionError("a rejected owner must not mutate task state")
+
+        def complete_task_for_project(self, *args, **kwargs):
+            raise AssertionError("a rejected owner must not complete task state")
+
+    result = run_core.run_project_task_core_sync(
+        {
+            "project_id": "project-1",
+            "task_type": "rejected_initial_owner_update",
+            "episode": 1,
+            "__execution_owner_id": "worker-a",
+        },
+        SimpleNamespace(),
+        Manager(),
+        run_task_id="task-1",
+    )
+
+    assert result == {"failed": True, "error_code": "TASK_LEASE_LOST"}
+    assert called is False
+
+
 async def test_enqueue_freezes_task_override_into_envelope(monkeypatch):
     from novelvideo.ports.local import tasks
 
@@ -112,7 +166,11 @@ async def test_enqueue_freezes_task_override_into_envelope(monkeypatch):
         def update_progress_for_project(self, *args, **kwargs):
             return None
 
+        def claim_task_lease(self, *args, **kwargs):
+            return True
+
     monkeypatch.setattr(tasks, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(tasks.InlineTaskBackend, "_bind_cancellation_store", lambda *_: None)
     monkeypatch.setattr(tasks, "require_project_home_node", lambda ctx, **kwargs: ctx)
     backend = tasks.InlineTaskBackend()
     captured = []

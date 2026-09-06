@@ -164,7 +164,11 @@ def read_task_result(
         beat_num=beat_num,
         scope=scope,
     )
-    if require_terminal and snapshot.get("status") not in {"completed", "failed"}:
+    if require_terminal and snapshot.get("status") not in {
+        "completed",
+        "failed",
+        "cancelled",
+    }:
         raise RuntimeError(
             f"Task not finished yet: {task_type}/{project}/ep{episode} "
             f"status={snapshot.get('status') or '-'}"
@@ -193,7 +197,11 @@ def wait_for_task_terminal(
             beat_num=beat_num,
             scope=scope,
         )
-        if snapshot is not None and snapshot.get("status") in {"completed", "failed"}:
+        if snapshot is not None and snapshot.get("status") in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
             return snapshot
         if time.monotonic() >= deadline:
             raise TimeoutError(

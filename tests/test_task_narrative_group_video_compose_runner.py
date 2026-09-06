@@ -1,4 +1,7 @@
+import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 
 def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypatch):
@@ -13,6 +16,8 @@ def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypa
         return [{"id": "beat-1", "beat_number": 1}]
 
     def compose(envelope, ctx):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
         calls.append((envelope, ctx))
         return {"video_path": "final.mp4"}
 
@@ -21,6 +26,7 @@ def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypa
     ctx = SimpleNamespace(output_dir=str(tmp_path))
 
     result = subject.run_narrative_group_video_compose({
+        "__run_task_id": "recompose-task-1",
         "episode": 1,
         "payload": {"group_id": "ng-01", "revision": 1, "span_index": 0,
                     "dialogue_source": "h3_native"},

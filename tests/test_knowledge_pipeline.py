@@ -134,6 +134,56 @@ def test_ready_pipeline_requires_a_different_identity_for_new_run(tmp_path: Path
     assert running.run_identity == new_identity
 
 
+def test_attempt_token_allows_same_identity_retry_and_rejects_stale_completion(
+    tmp_path: Path,
+) -> None:
+    identity = {
+        "source_sha256": "a" * 64,
+        "schema_version": "structured_v1",
+        "pipeline_version": "1",
+    }
+    _write_config(
+        tmp_path,
+        {
+            "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
+            "knowledge_pipeline_status": STATUS_STRUCTURED_PENDING,
+        },
+    )
+    transition_structured_pipeline(
+        tmp_path,
+        STATUS_STRUCTURED_RUNNING,
+        run_identity=identity,
+        attempt_id="attempt-old",
+    )
+    transition_structured_pipeline(
+        tmp_path,
+        STATUS_STRUCTURED_READY,
+        expected_status=STATUS_STRUCTURED_RUNNING,
+        attempt_id="attempt-old",
+    )
+
+    running = transition_structured_pipeline(
+        tmp_path,
+        STATUS_STRUCTURED_RUNNING,
+        expected_status=STATUS_STRUCTURED_READY,
+        run_identity=identity,
+        attempt_id="attempt-new",
+    )
+
+    assert running.status == STATUS_STRUCTURED_RUNNING
+    assert running.run_identity == identity
+    assert running.attempt_id == "attempt-new"
+    with pytest.raises(KnowledgePipelineTransitionError, match="attempt"):
+        transition_structured_pipeline(
+            tmp_path,
+            STATUS_STRUCTURED_FAILED,
+            expected_status=STATUS_STRUCTURED_RUNNING,
+            attempt_id="attempt-old",
+            error="late failure",
+        )
+    assert knowledge_pipeline_state_from_state_dir(tmp_path).attempt_id == "attempt-new"
+
+
 @pytest.mark.parametrize("formal_asset_count", [None, 1])
 def test_legacy_switch_fails_closed_when_assets_unknown_or_present(
     tmp_path: Path, formal_asset_count: int | None,

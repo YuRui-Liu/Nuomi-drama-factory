@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import sqlite3
 import sys
 import textwrap
 import threading
@@ -10,13 +11,22 @@ from pathlib import Path
 import pytest
 
 from novelvideo.ports import registry
-from novelvideo.ports.local.tasks import InlineTaskBackend, InMemoryCancellationStore
+from novelvideo.ports.local.tasks import (
+    InlineTaskBackend,
+    InMemoryCancellationStore,
+    SQLiteCancellationStore,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.generators import tts_generator, video_composer, video_generator
 from novelvideo.generators.tts_generator import EdgeTTSGenerator, MockTTSGenerator
 from novelvideo.generators.video_composer import SceneAsset, VideoComposer
 from novelvideo.generators.video_generator import MockVideoGenerator
-from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, raise_if_envelope_cancel_requested
+from novelvideo.task_backend.cancel import (
+    TaskCancelled,
+    TaskLeaseLost,
+    TaskTimedOut,
+    raise_if_envelope_cancel_requested,
+)
 from novelvideo.task_backend.limits import (
     global_lane_concurrency,
     project_lane_active_limit,
@@ -24,6 +34,7 @@ from novelvideo.task_backend.limits import (
     project_lane_min_active_limit,
     project_user_lane_active_limit,
 )
+from novelvideo.task_backend.lease_store import SQLiteLaneLeaseStore
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.subprocesses import (
     active_subprocess_count,
@@ -85,13 +96,507 @@ def _ctx(tmp_path: Path, project_id: str = "proj_l014", requester: str = "editor
 
 
 @pytest.fixture(autouse=True)
-def _task_ports(monkeypatch):
+def _task_ports(monkeypatch, tmp_path):
     manager = TaskStateManager()
+    monkeypatch.setenv("ST_CE_TASK_RUNTIME_DB", str(tmp_path / "runtime" / "tasks.db"))
     monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
     registry.register_port("cancellation_store", InMemoryCancellationStore())
     monkeypatch.setattr("novelvideo.task_state._task_manager", manager)
     monkeypatch.setattr("novelvideo.ports.local.tasks.get_task_manager", lambda: manager)
     return manager
+
+
+def test_runtime_lane_store_admission_is_transactional_across_instances(tmp_path):
+    database_path = tmp_path / "runtime" / "tasks.db"
+    first = SQLiteLaneLeaseStore(database_path)
+    second = SQLiteLaneLeaseStore(database_path)
+
+    assert first.admit(
+        owner_id="worker-a",
+        task_id="task-a",
+        lane="world",
+        active_limit=1,
+        queue_limit=1,
+        lease_seconds=60,
+    ) == "active"
+    assert second.admit(
+        owner_id="worker-b",
+        task_id="task-b",
+        lane="world",
+        active_limit=1,
+        queue_limit=1,
+        lease_seconds=60,
+    ) == "queued"
+
+    with pytest.raises(Exception) as exc_info:
+        second.admit(
+            owner_id="worker-b",
+            task_id="task-c",
+            lane="world",
+            active_limit=1,
+            queue_limit=1,
+            lease_seconds=60,
+        )
+    assert exc_info.value.__class__.__name__ == "GlobalLaneQueueLimitExceeded"
+
+    assert first.release(owner_id="worker-a", task_id="task-a")
+    assert second.promote(
+        owner_id="worker-b",
+        task_id="task-b",
+        lane="world",
+        active_limit=1,
+        lease_seconds=60,
+    )
+    assert second.release(owner_id="worker-b", task_id="task-b")
+
+
+def test_runtime_lane_store_reclaims_expired_leases_without_promoting_old_tasks(tmp_path):
+    database_path = tmp_path / "runtime" / "tasks.db"
+    store = SQLiteLaneLeaseStore(database_path)
+    assert store.admit(
+        owner_id="dead-worker",
+        task_id="old-task",
+        lane="world",
+        active_limit=1,
+        queue_limit=1,
+        lease_seconds=0.01,
+    ) == "active"
+    time.sleep(0.03)
+
+    assert store.admit(
+        owner_id="new-worker",
+        task_id="new-task",
+        lane="world",
+        active_limit=1,
+        queue_limit=1,
+        lease_seconds=60,
+    ) == "active"
+    assert not store.promote(
+        owner_id="dead-worker",
+        task_id="old-task",
+        lane="world",
+        active_limit=1,
+        lease_seconds=60,
+    )
+
+
+def test_runtime_lane_lease_expiry_uses_sqlite_clock_after_write_lock(tmp_path):
+    database_path = tmp_path / "runtime" / "tasks.db"
+    store = SQLiteLaneLeaseStore(database_path)
+    store.counts("world")
+    started = threading.Event()
+    result: list[str] = []
+
+    def admit() -> None:
+        started.set()
+        result.append(
+            store.admit(
+                owner_id="worker-a",
+                task_id="task-a",
+                lane="world",
+                active_limit=1,
+                queue_limit=1,
+                lease_seconds=1.0,
+            )
+        )
+
+    lock_conn = sqlite3.connect(database_path, timeout=10)
+    lock_conn.execute("BEGIN IMMEDIATE")
+    thread = threading.Thread(target=admit)
+    thread.start()
+    assert started.wait(timeout=1)
+    time.sleep(1.2)
+    lock_conn.commit()
+    lock_conn.close()
+    thread.join(timeout=2)
+
+    assert result == ["active"]
+    assert store.heartbeat(owner_id="worker-a", task_id="task-a", lease_seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_two_inline_backends_share_global_lane_active_and_queue_limits(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_QUEUED_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_WORLD_TASKS", "5")
+    first_backend = InlineTaskBackend()
+    second_backend = InlineTaskBackend()
+    first_ctx = _ctx(tmp_path, "shared_lane_a")
+    second_ctx = _ctx(tmp_path, "shared_lane_b")
+    first_release = threading.Event()
+    second_finished = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def runner(envelope, run_ctx):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            if envelope["project_id"] == first_ctx.project_id:
+                first_release.wait(timeout=3)
+            else:
+                second_finished.set()
+            return {"ok": True}
+        finally:
+            with lock:
+                active -= 1
+
+    register_project_task_runner("shared_lane_first", runner)
+    register_project_task_runner("shared_lane_second", runner)
+
+    await first_backend.enqueue_project_task(
+        first_ctx, task_type="shared_lane_first", episode=1, queue_kind="world"
+    )
+    await _wait_for_status(_task_ports, first_ctx, "shared_lane_first", "running")
+    await second_backend.enqueue_project_task(
+        second_ctx, task_type="shared_lane_second", episode=1, queue_kind="world"
+    )
+
+    await asyncio.sleep(0.1)
+    assert not second_finished.is_set()
+    assert second_backend.lane_snapshot()["world"]["queued"] == 1
+    first_release.set()
+    assert await asyncio.to_thread(second_finished.wait, 3)
+    await _wait_for_status(_task_ports, second_ctx, "shared_lane_second", "completed")
+    assert maximum_active == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_inline_backend_cancel_is_observed_by_owner_worker_via_project_sqlite(
+    _task_ports,
+    tmp_path,
+):
+    ctx = _ctx(tmp_path, "shared_cancel")
+    project_db = ctx.state_dir / "data.db"
+    owner_store = SQLiteCancellationStore(project_db)
+    registry.register_port("cancellation_store", owner_store)
+    owner_backend = InlineTaskBackend()
+    remote_backend = InlineTaskBackend()
+    started = threading.Event()
+    observed = threading.Event()
+
+    def runner(envelope, run_ctx):
+        started.set()
+        try:
+            while True:
+                raise_if_envelope_cancel_requested(envelope)
+                time.sleep(0.02)
+        except TaskCancelled:
+            observed.set()
+            raise
+
+    register_project_task_runner("shared_cancel_runner", runner)
+    queued = await owner_backend.enqueue_project_task(
+        ctx, task_type="shared_cancel_runner", episode=1, queue_kind="world"
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    running = await _wait_for_status(_task_ports, ctx, "shared_cancel_runner", "running")
+    assert running.execution_owner_id
+
+    # Simulate the cancelling request being handled by another CE instance.
+    registry.register_port("cancellation_store", SQLiteCancellationStore(project_db))
+    await remote_backend.cancel_project_task(ctx, queued.task_state)
+
+    assert await asyncio.to_thread(observed.wait, 3)
+    cancelled = await _wait_for_status(
+        _task_ports, ctx, "shared_cancel_runner", "cancelled"
+    )
+    assert cancelled.execution_owner_id == running.execution_owner_id
+    assert cancelled.cancel_requested_at
+
+
+@pytest.mark.asyncio
+async def test_inline_worker_stops_locally_when_project_task_lease_is_lost(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_TASK_LEASE_SECONDS", "0.3")
+    monkeypatch.setenv("ST_CE_TASK_HEARTBEAT_SECONDS", "0.03")
+    ctx = _ctx(tmp_path, "lease_loss")
+    backend = InlineTaskBackend()
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def runner(envelope, run_ctx):
+        started.set()
+        try:
+            while True:
+                raise_if_envelope_cancel_requested(envelope)
+                time.sleep(0.01)
+        except TaskLeaseLost:
+            stopped.set()
+            raise
+
+    register_project_task_runner("lease_loss_runner", runner)
+    queued = await backend.enqueue_project_task(
+        ctx, task_type="lease_loss_runner", episode=1, queue_kind="world"
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    running = await _wait_for_status(_task_ports, ctx, "lease_loss_runner", "running")
+    original_owner = running.execution_owner_id
+    assert original_owner
+
+    with _task_ports._connect_context(ctx) as conn:
+        conn.execute(
+            "UPDATE task_states SET execution_owner_id = ? WHERE task_id = ?",
+            ("replacement-worker", queued.task_state.task_id),
+        )
+
+    assert await asyncio.to_thread(stopped.wait, 3)
+    await _wait_lane_idle(backend, "world")
+    state = _task_ports.get_task_for_project(ctx, "lease_loss_runner", 1)
+    assert state is not None
+    assert state.execution_owner_id == "replacement-worker"
+    assert state.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_queued_lane_lease_loss_fails_owned_project_task_without_replay(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_WORLD_TASKS", "5")
+    backend = InlineTaskBackend()
+    ctx = _ctx(tmp_path, "queued_lease_loss")
+    release = threading.Event()
+
+    def runner(envelope, run_ctx):
+        release.wait(timeout=3)
+        return {"ok": True}
+
+    register_project_task_runner("queued_lease_active", runner)
+    register_project_task_runner("queued_lease_lost", runner)
+    await backend.enqueue_project_task(
+        ctx, task_type="queued_lease_active", episode=1, queue_kind="world"
+    )
+    await _wait_for_status(_task_ports, ctx, "queued_lease_active", "running")
+    queued = await backend.enqueue_project_task(
+        ctx, task_type="queued_lease_lost", episode=1, queue_kind="world"
+    )
+    queued_state = _task_ports.get_task_for_project(ctx, "queued_lease_lost", 1)
+    assert queued_state is not None
+    assert queued_state.execution_owner_id == backend._execution_owner_id
+
+    assert backend._lease_store.release(
+        owner_id=backend._execution_owner_id,
+        task_id=queued.task_state.task_id,
+    )
+
+    failed = await _wait_for_status(
+        _task_ports, ctx, "queued_lease_lost", "failed", timeout=3
+    )
+    assert failed.error == "TASK_LEASE_EXPIRED"
+    assert backend.lane_snapshot()["world"]["queued"] == 0
+    release.set()
+
+
+@pytest.mark.asyncio
+async def test_remote_cancel_of_queued_task_is_terminal_and_frees_queue_capacity(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_QUEUED_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_CE_TASK_HEARTBEAT_SECONDS", "0.02")
+    ctx = _ctx(tmp_path, "queued_remote_cancel")
+    project_db = ctx.state_dir / "data.db"
+    registry.register_port("cancellation_store", SQLiteCancellationStore(project_db))
+    owner_backend = InlineTaskBackend()
+    remote_backend = InlineTaskBackend()
+    release = threading.Event()
+
+    def blocking_runner(envelope, run_ctx):
+        release.wait(timeout=3)
+        return {"ok": True}
+
+    register_project_task_runner("queued_cancel_active", blocking_runner)
+    register_project_task_runner("queued_cancel_target", blocking_runner)
+    register_project_task_runner("queued_cancel_replacement", blocking_runner)
+    await owner_backend.enqueue_project_task(
+        ctx, task_type="queued_cancel_active", episode=1, queue_kind="world"
+    )
+    await _wait_for_status(_task_ports, ctx, "queued_cancel_active", "running")
+    queued = await owner_backend.enqueue_project_task(
+        ctx, task_type="queued_cancel_target", episode=1, queue_kind="world"
+    )
+
+    registry.register_port("cancellation_store", SQLiteCancellationStore(project_db))
+    await remote_backend.cancel_project_task(ctx, queued.task_state)
+
+    cancelled = await _wait_for_status(
+        _task_ports, ctx, "queued_cancel_target", "cancelled"
+    )
+    assert cancelled.execution_owner_id == owner_backend._execution_owner_id
+    await owner_backend.enqueue_project_task(
+        ctx, task_type="queued_cancel_replacement", episode=1, queue_kind="world"
+    )
+    replacement_state = _task_ports.get_task_for_project(
+        ctx, "queued_cancel_replacement", 1
+    )
+    assert replacement_state is not None
+    assert replacement_state.status == "queued"
+    assert owner_backend._lease_store.counts("world")["queued"] == 1
+    release.set()
+    await _wait_for_status(_task_ports, ctx, "queued_cancel_active", "completed")
+    await _wait_for_status(_task_ports, ctx, "queued_cancel_replacement", "completed")
+    await _wait_lane_idle(owner_backend, "world")
+
+
+@pytest.mark.asyncio
+async def test_queued_poller_retries_transient_coordination_error_within_lease(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_GLOBAL_MAX_ACTIVE_WORLD_TASKS", "1")
+    monkeypatch.setenv("ST_PROJECT_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_PROJECT_USER_MAX_ACTIVE_WORLD_TASKS", "5")
+    monkeypatch.setenv("ST_CE_TASK_LEASE_SECONDS", "0.5")
+    monkeypatch.setenv("ST_CE_TASK_HEARTBEAT_SECONDS", "0.02")
+    backend = InlineTaskBackend()
+    ctx = _ctx(tmp_path, "queued_retry")
+    release = threading.Event()
+    finished = threading.Event()
+
+    def active_runner(envelope, run_ctx):
+        release.wait(timeout=3)
+        return {"ok": True}
+
+    def queued_runner(envelope, run_ctx):
+        finished.set()
+        return {"ok": True}
+
+    register_project_task_runner("queued_retry_active", active_runner)
+    register_project_task_runner("queued_retry_target", queued_runner)
+    await backend.enqueue_project_task(
+        ctx, task_type="queued_retry_active", episode=1, queue_kind="world"
+    )
+    await _wait_for_status(_task_ports, ctx, "queued_retry_active", "running")
+    queued = await backend.enqueue_project_task(
+        ctx, task_type="queued_retry_target", episode=1, queue_kind="world"
+    )
+    original_heartbeat = backend._lease_store.heartbeat
+    injected = False
+
+    def flaky_heartbeat(**kwargs):
+        nonlocal injected
+        if kwargs["task_id"] == queued.task_state.task_id and not injected:
+            injected = True
+            raise sqlite3.OperationalError("database is temporarily busy")
+        return original_heartbeat(**kwargs)
+
+    monkeypatch.setattr(backend._lease_store, "heartbeat", flaky_heartbeat)
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and not injected:
+        await asyncio.sleep(0.01)
+    assert injected
+    assert backend.lane_snapshot()["world"]["queued"] == 1
+    release.set()
+    finished_in_time = await asyncio.to_thread(finished.wait, 10)
+    queued_state = _task_ports.get_task_for_project(ctx, "queued_retry_target", 1)
+    assert finished_in_time, (
+        backend.lane_snapshot()["world"],
+        backend._lease_store.counts("world"),
+        queued_state.status if queued_state is not None else None,
+        queued_state.error if queued_state is not None else None,
+    )
+    await _wait_for_status(_task_ports, ctx, "queued_retry_target", "completed")
+    await _wait_lane_idle(backend, "world")
+
+
+@pytest.mark.asyncio
+async def test_active_heartbeat_coordination_error_requests_conservative_local_stop(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    monkeypatch.setenv("ST_CE_TASK_LEASE_SECONDS", "0.3")
+    monkeypatch.setenv("ST_CE_TASK_HEARTBEAT_SECONDS", "0.02")
+    backend = InlineTaskBackend()
+    ctx = _ctx(tmp_path, "active_coordination_error")
+    stopped = threading.Event()
+    original_heartbeat = backend._lease_store.heartbeat
+    calls = 0
+
+    def flaky_heartbeat(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise sqlite3.OperationalError("database is temporarily busy")
+        return original_heartbeat(**kwargs)
+
+    monkeypatch.setattr(backend._lease_store, "heartbeat", flaky_heartbeat)
+
+    def runner(envelope, run_ctx):
+        try:
+            while True:
+                raise_if_envelope_cancel_requested(envelope)
+                time.sleep(0.01)
+        except TaskLeaseLost:
+            stopped.set()
+            raise
+
+    register_project_task_runner("active_coordination_error_runner", runner)
+    await backend.enqueue_project_task(
+        ctx,
+        task_type="active_coordination_error_runner",
+        episode=1,
+        queue_kind="world",
+    )
+
+    assert await asyncio.to_thread(stopped.wait, 3)
+    await _wait_lane_idle(backend, "world")
+
+
+@pytest.mark.asyncio
+async def test_inline_dispatch_aborts_when_lane_lease_is_lost(
+    monkeypatch,
+    _task_ports,
+    tmp_path,
+):
+    backend = InlineTaskBackend()
+    ctx = _ctx(tmp_path, "dispatch_lane_lost")
+    captured = []
+    monkeypatch.setattr(backend, "_start_lane_job", lambda lane, job: captured.append((lane, job)))
+    called = False
+
+    def runner(envelope, run_ctx):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    register_project_task_runner("dispatch_lane_lost_runner", runner)
+    queued = await backend.enqueue_project_task(
+        ctx, task_type="dispatch_lane_lost_runner", episode=1, queue_kind="world"
+    )
+    lane, job = captured[0]
+    assert backend._lease_store.release(
+        owner_id=backend._execution_owner_id,
+        task_id=queued.task_state.task_id,
+    )
+
+    await backend._run_inline(lane, job)
+
+    assert called is False
+    failed = _task_ports.get_task_for_project(ctx, "dispatch_lane_lost_runner", 1)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.error == "TASK_LEASE_LOST"
 
 
 async def _wait_for_status(manager, ctx, task_type: str, status: str, *, episode: int = 1, timeout: float = 3.0):
@@ -592,6 +1097,10 @@ async def test_gate3_multi_project_lane_dispatch_is_project_fair_fifo(
     assert backend.lane_snapshot()["world"]["queued"] == 2
     release_first.set()
 
-    await _wait_for_status(_task_ports, ctx_b, "l014_gate3_b1", "completed")
-    await _wait_for_status(_task_ports, ctx_a, "l014_gate3_a2", "completed")
+    await _wait_for_status(
+        _task_ports, ctx_b, "l014_gate3_b1", "completed", timeout=10.0
+    )
+    await _wait_for_status(
+        _task_ports, ctx_a, "l014_gate3_a2", "completed", timeout=10.0
+    )
     assert run_order[:3] == [ctx_a.project_id, ctx_b.project_id, ctx_a.project_id]

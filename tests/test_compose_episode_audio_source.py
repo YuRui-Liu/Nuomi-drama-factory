@@ -39,6 +39,7 @@ def test_compose_episode_preserves_embedded_audio_when_no_external_mp3(
         commands.append(cmd)
         if cmd[0] == "ffprobe":
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        Path(cmd[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(video, "get_task_manager", lambda: manager)
@@ -105,10 +106,11 @@ def test_compose_episode_all_native_director_uses_only_original_audio(
         commands.append(cmd)
         if cmd[0] == "ffprobe":
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        Path(cmd[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(video, "get_task_manager", _FakeTaskManager)
-    monkeypatch.setattr(video, "load_groups", lambda *_: [group])
+    monkeypatch.setattr(video, "load_materialized_groups", lambda *_: [group])
     monkeypatch.setattr(video, "run_project_subprocess", fake_run)
 
     video.run_compose_episode(

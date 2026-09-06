@@ -187,17 +187,21 @@ def test_compose_episode_checks_cancel_after_final_ffmpeg_returns(tmp_path, monk
 
     _write_beat_video(tmp_path, episode=1, beat_num=1)
     cancel_after_final = False
+    ffmpeg_calls = 0
 
     def fake_check(*_args, **_kwargs):
         if cancel_after_final:
             raise TaskCancelled()
 
     def fake_run(cmd, **_kwargs):
-        nonlocal cancel_after_final
+        nonlocal cancel_after_final, ffmpeg_calls
         if cmd[0] == "ffprobe":
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
-        if cmd[0] == "ffmpeg" and "ep001_final.mp4" in cmd[-1]:
-            cancel_after_final = True
+        if cmd[0] == "ffmpeg":
+            ffmpeg_calls += 1
+            Path(cmd[-1]).write_bytes(b"video")
+            if ffmpeg_calls == 2:
+                cancel_after_final = True
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(video, "raise_if_envelope_cancel_requested", fake_check)
@@ -231,6 +235,7 @@ def test_compose_episode_passes_deadline_timeout_to_ffmpeg(tmp_path, monkeypatch
         timeouts.append(kwargs.get("timeout"))
         if cmd[0] == "ffprobe":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        Path(cmd[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(video, "get_task_manager", lambda: _FakeTaskManager())

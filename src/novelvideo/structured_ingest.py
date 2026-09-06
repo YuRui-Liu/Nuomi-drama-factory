@@ -7,15 +7,19 @@ marker only after the plan is durable.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
+import portalocker
 
 STRUCTURED_PIPELINE_VERSION = "structured_v1"
 STRUCTURED_SCHEMA_VERSION = "1"
@@ -246,6 +250,96 @@ async def _call_transition(
     return await result if inspect.isawaitable(result) else result
 
 
+def _restore_novel_marker_if_unchanged(
+    path: Path,
+    *,
+    previous: bytes | None,
+    written: bytes,
+) -> bool:
+    try:
+        current = path.read_bytes()
+    except FileNotFoundError:
+        return False
+    if current != written:
+        return False
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return True
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.rollback")
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(previous)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+@asynccontextmanager
+async def _project_mutation_lock(state_dir: Path):
+    """Share the episode-import mutation lock for publication side effects."""
+    lock_path = state_dir / "episode_import.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = portalocker.Lock(str(lock_path), mode="a", timeout=None)
+    await asyncio.to_thread(lock.acquire)
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(lock.release)
+
+
+def _fail_ready_transition_for_attempt(
+    state_dir: Path,
+    *,
+    attempt_id: str,
+    error: str,
+) -> Literal["failed", "different_attempt", "not_ready"]:
+    """Fail a persisted ready state only when this exact attempt still owns it."""
+    from novelvideo.knowledge_pipeline import (
+        KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY,
+        KNOWLEDGE_PIPELINE_ERROR_KEY,
+        KNOWLEDGE_PIPELINE_KEY,
+        KNOWLEDGE_PIPELINE_STATUS_KEY,
+        KNOWLEDGE_PIPELINE_STRUCTURED,
+        STATUS_STRUCTURED_FAILED,
+        STATUS_STRUCTURED_READY,
+        STRUCTURED_STATUSES,
+    )
+    from novelvideo.project_config import update_project_config_file_in_state_dir
+
+    outcome: Literal["failed", "different_attempt", "not_ready"] = "not_ready"
+
+    def apply(config: dict[str, Any]) -> None:
+        nonlocal outcome
+        status = config.get(KNOWLEDGE_PIPELINE_STATUS_KEY)
+        if (
+            config.get(KNOWLEDGE_PIPELINE_KEY) != KNOWLEDGE_PIPELINE_STRUCTURED
+            or status not in STRUCTURED_STATUSES
+        ):
+            return
+        current_attempt = str(
+            config.get(KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY) or ""
+        ).strip()
+        if current_attempt and current_attempt != attempt_id:
+            outcome = "different_attempt"
+            return
+        if current_attempt != attempt_id:
+            return
+        if status != STATUS_STRUCTURED_READY:
+            return
+        config[KNOWLEDGE_PIPELINE_STATUS_KEY] = STATUS_STRUCTURED_FAILED
+        if str(error or "").strip():
+            config[KNOWLEDGE_PIPELINE_ERROR_KEY] = str(error).strip()
+        else:
+            config.pop(KNOWLEDGE_PIPELINE_ERROR_KEY, None)
+        outcome = "failed"
+
+    update_project_config_file_in_state_dir(state_dir, apply, strict=True)
+    return outcome
+
+
 async def ingest_source_text_structured(
     store: Any,
     novel_path: str,
@@ -276,12 +370,16 @@ async def ingest_source_text_structured(
     base_store = _underlying_store(store)
     state_dir = Path(base_store.state_dir)
     transition_fn = transition or _default_transition
+    attempt_id = uuid4().hex
     await _call_transition(
         transition_fn,
         state_dir,
         "structured_running",
         run_identity=plan.identity.as_dict(),
+        attempt_id=attempt_id,
     )
+    failure_state_handled = False
+    different_attempt_active = False
     try:
         if not content.strip():
             raise ValueError("小说内容为空，无法导入")
@@ -303,38 +401,72 @@ async def ingest_source_text_structured(
             on_log=on_log,
         )
         novel_marker = Path(base_store.project_dir) / "novel.txt"
-        previous_marker = novel_marker.read_bytes() if novel_marker.is_file() else None
-        try:
-            save = base_store.save_novel_content(content)
-            if inspect.isawaitable(save):
-                await save
-            published = await publish_structured_publication(
-                base_store,
-                publication,
-                run_id=plan.run_id,
+        written_marker = content.encode("utf-8")
+        async with _project_mutation_lock(state_dir):
+            previous_marker = (
+                novel_marker.read_bytes() if novel_marker.is_file() else None
             )
-        except BaseException:
-            if previous_marker is None:
-                novel_marker.unlink(missing_ok=True)
-            else:
-                novel_marker.write_bytes(previous_marker)
-            raise
-        await _call_transition(
-            transition_fn,
-            state_dir,
-            "structured_ready",
-            expected_status="structured_running",
-        )
+            marker_written = False
+
+            async def mark_ready() -> None:
+                await _call_transition(
+                    transition_fn,
+                    state_dir,
+                    "structured_ready",
+                    expected_status="structured_running",
+                    run_identity=plan.identity.as_dict(),
+                    attempt_id=attempt_id,
+                )
+
+            try:
+                save = base_store.save_novel_content(content)
+                if inspect.isawaitable(save):
+                    await save
+                marker_written = True
+                published = await publish_structured_publication(
+                    base_store,
+                    publication,
+                    run_id=plan.run_id,
+                    before_commit=mark_ready,
+                )
+            except BaseException as publish_error:
+                if marker_written:
+                    _restore_novel_marker_if_unchanged(
+                        novel_marker,
+                        previous=previous_marker,
+                        written=written_marker,
+                    )
+                try:
+                    compensation = _fail_ready_transition_for_attempt(
+                        state_dir,
+                        attempt_id=attempt_id,
+                        error=str(publish_error),
+                    )
+                except Exception:
+                    compensation = "not_ready"
+                failure_state_handled = compensation == "failed"
+                different_attempt_active = compensation == "different_attempt"
+                raise
         _report(on_progress, _PROGRESS[5])
     except BaseException as exc:
-        await _call_transition(
-            transition_fn,
-            state_dir,
-            "structured_failed",
-            expected_status="structured_running",
-            error=str(exc),
-            run_identity=plan.identity.as_dict(),
-        )
+        if not failure_state_handled and not different_attempt_active:
+            try:
+                await _call_transition(
+                    transition_fn,
+                    state_dir,
+                    "structured_failed",
+                    expected_status="structured_running",
+                    error=str(exc),
+                    run_identity=plan.identity.as_dict(),
+                    attempt_id=attempt_id,
+                )
+            except Exception as transition_error:
+                from novelvideo.knowledge_pipeline import (
+                    KnowledgePipelineTransitionError,
+                )
+
+                if not isinstance(transition_error, KnowledgePipelineTransitionError):
+                    raise
         raise
     return {
         "char_count": len(content),
