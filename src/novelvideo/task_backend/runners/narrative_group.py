@@ -7,7 +7,7 @@ from hashlib import sha256
 from math import gcd
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -69,7 +69,7 @@ class GroupGenerationInput:
     prompt: str
     references: tuple[str, ...]
     warnings: tuple[str, ...] = ()
-    reference_audit: Mapping[str, Any] = field(default_factory=dict)
+    reference_audit: Mapping[str, Any] = dataclass_field(default_factory=dict)
 
 
 class ReferenceSnapshotInvalid(RuntimeError):
