@@ -1748,7 +1748,7 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
         _prepare_continuity,
     )
 
-    def shot(shot_id, span):
+    def shot(shot_id, span, *, continuous=False):
         return ShotPlan(
             id=shot_id,
             source_span_ids=(span,),
@@ -1756,6 +1756,7 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
             action="waits",
             visible_start_state="still",
             visible_end_state="ready",
+            continuous_with_next=continuous,
             duration_seconds=2,
         )
 
@@ -1776,7 +1777,10 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
             objective="wait",
             visible_turn="ready",
             relation_to_previous="single",
-            shots=(shot("shot-1", "line-1"), shot("shot-2", "line-2")),
+            shots=(
+                shot("shot-1", "line-1"),
+                shot("shot-2", "line-2", continuous=True),
+            ),
         ),),
         validation_report=ValidationReport(passed=True),
         created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
@@ -1812,3 +1816,573 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path
     ]
     assert prepared.contracts[1].predecessor_shot_id == "shot-1"
     assert prepared.contracts[1].predecessor_revision == 1
+    assert "predecessor_observation_required" in prepared.risk_report.blockers
+
+    from novelvideo.shot_continuity import ShotContinuityStore
+
+    continuity_store = ShotContinuityStore(tmp_path)
+    predecessor = continuity_store.load_active(1, "shot-1")
+    assert predecessor is not None
+    continuity_store.put(
+        1,
+        predecessor.model_copy(update={
+            "boundary": predecessor.boundary.model_copy(update={
+                "observed_carry_out": "ready",
+            })
+        }),
+        predecessor.revision,
+    )
+    child_only = segment.model_copy(update={
+        "segment_id": "shot-2",
+        "last_frame": None,
+    })
+    refreshed = _prepare_continuity(
+        project_dir=tmp_path,
+        episode=1,
+        payload={"mode": "auto"},
+        segments=[child_only],
+        beats=[{"beat_number": 2}],
+        render_state={},
+    )["shot-2"]
+
+    assert "predecessor_revision_stale" in refreshed.risk_report.blockers
+    assert "predecessor_observation_required" not in refreshed.risk_report.blockers
+
+
+@pytest.mark.parametrize("policy", ["legacy", "observe", "guard"])
+def test_non_enforcing_policy_fails_open_when_continuity_prepare_crashes(
+    tmp_path, monkeypatch, policy
+):
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    provider_prompts = []
+    provider_parameters = []
+
+    class Optimizer:
+        async def optimize_segment(self, segment, _context, _mode):
+            return _optimizer_result(f"legacy:{segment.segment_id}")
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "video_prompt": "old one"},
+            {"id": "beat-2", "beat_number": 2, "video_prompt": "old two"},
+        ]
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            provider_prompts.extend(segment.prompt for segment in request.segments)
+            provider_parameters.append(dict(request.workflow_parameters))
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-1",
+                actual_mode="i2va",
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    class Adapters:
+        def resolve(self, _key):
+            return Adapter()
+
+    async def generate(_ctx, *, segments, output_path, **kwargs):
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id="provider-1",
+            actual_mode="i2va",
+            provider_parameters={"width": 720, "height": 1280},
+            actual_output={"width": 720, "height": 1280},
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_status": "unavailable",
+            "ambience_stem_status": "unavailable",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "_video_workflow_adapters", Adapters)
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_prepare_continuity",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("private path")),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "mode": "auto",
+                "workflow_parameters": {
+                    "resolution": "720p",
+                    "continuity_policy": policy,
+                },
+            },
+        },
+        ctx,
+    )
+
+    assert result["status"] == "completed"
+    assert provider_prompts == ["legacy:beat-1", "legacy:beat-2"]
+    assert provider_parameters == [{"resolution": "720p"}] * 2
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    manifest = load_h3_director_manifest(result["manifest_asset"])
+    assert manifest.workflow_parameters == {
+        "resolution": "720p",
+        "continuity_policy": policy,
+    }
+
+
+@pytest.mark.parametrize("policy", ["guard", "enforce"])
+def test_blocked_policy_rejects_before_transport_and_records_failure_once(
+    tmp_path, monkeypatch, policy
+):
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    transports = []
+    stage_failures = []
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "video_prompt": "old one"},
+            {"id": "beat-2", "beat_number": 2, "video_prompt": "old two"},
+        ]
+
+    def prepare(*, segments, **_kwargs):
+        report = ShotRiskReport(
+            spatial=RiskDimensionScore(dimension="spatial", level=0),
+            identity=RiskDimensionScore(dimension="identity", level=0),
+            motion=RiskDimensionScore(dimension="motion", level=2),
+            continuity=RiskDimensionScore(dimension="continuity", level=0),
+            blockers=("shot_rewrite_required",),
+        )
+        return {
+            segment.segment_id: narrative_group_video.PreparedContinuity(
+                provider_segment=segment,
+                contracts=(),
+                risk_report=report,
+                mode_decision=H3ModeDecision(
+                    requested="auto",
+                    mode=None,
+                    blockers=("unreachable_motion",),
+                ),
+            )
+            for segment in segments
+        }
+
+    original_record = narrative_group_video.record_stage_result
+
+    def record(*args, **kwargs):
+        if kwargs.get("status") == "failed":
+            stage_failures.append(kwargs)
+        return original_record(*args, **kwargs)
+
+    async def generate(*_args, **_kwargs):
+        transports.append(True)
+        raise AssertionError("transport must not run")
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
+    monkeypatch.setattr(narrative_group_video, "record_stage_result", record)
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+
+    with pytest.raises(
+        narrative_group_video.H3ContinuityQualityError,
+        match="H3_CONTINUITY_QUALITY_REJECTED",
+    ):
+        narrative_group_video.run_narrative_group_video(
+            {
+                "episode": 1,
+                "payload": {
+                    "group_id": "ng-01",
+                    "revision": 1,
+                    "workflow_parameters": {
+                        "resolution": "720p",
+                        "continuity_policy": policy,
+                    },
+                },
+            },
+            ctx,
+        )
+
+    assert transports == []
+    assert len(stage_failures) == 1
+    manifest_path = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "ng-01_r1.manifest.json"
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    manifest = load_h3_director_manifest(manifest_path)
+    assert manifest.status == "quality_rejected"
+    assert all(entry.status == "quality_rejected" for entry in manifest.entries)
+
+
+def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    submitted = []
+    report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+    )
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "video_prompt": "old one"},
+            {"id": "beat-2", "beat_number": 2, "video_prompt": "old two"},
+        ]
+
+    def prepare(*, segments, **_kwargs):
+        return {
+            segment.segment_id: narrative_group_video.PreparedContinuity(
+                provider_segment=segment,
+                contracts=(),
+                risk_report=report,
+                mode_decision=H3ModeDecision(
+                    requested="auto", mode="i2va"
+                ),
+            )
+            for segment in segments
+        }
+
+    async def optimize(
+        segments,
+        _beats,
+        *,
+        evidence_by_segment=None,
+        continuity_by_segment=None,
+        **_kwargs,
+    ):
+        prefix = "bundle" if continuity_by_segment is not None else "legacy"
+        if continuity_by_segment is not None:
+            for segment in segments:
+                prepared = continuity_by_segment[segment.segment_id]
+                evidence_by_segment[segment.segment_id] = {
+                    "continuity_contracts": (),
+                    "risk_report": prepared.risk_report.model_dump(mode="json"),
+                    "mode_decision": prepared.mode_decision.model_dump(mode="json"),
+                    "compiled_bundle": {"prompt": f"bundle:{segment.segment_id}"},
+                }
+        return [
+            segment.model_copy(update={"prompt": f"{prefix}:{segment.segment_id}"})
+            for segment in segments
+        ]
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            submitted.append(request)
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-1",
+                actual_mode="i2va",
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
+    monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "workflow_parameters": {
+                    "resolution": "720p",
+                    "continuity_policy": "enforce",
+                },
+            },
+        },
+        ctx,
+    )
+
+    assert result["status"] == "completed"
+    assert [request.segments[0].prompt for request in submitted] == [
+        "bundle:beat-1",
+        "bundle:beat-2",
+    ]
+    assert all("continuity_policy" not in request.workflow_parameters for request in submitted)
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    manifest = load_h3_director_manifest(result["manifest_asset"])
+    assert manifest.entries[0].compiled_bundle == {"prompt": "bundle:beat-1"}
+
+
+def test_segment_risk_merge_preserves_s2_i2_m2_c2_independently():
+    from novelvideo.shot_continuity import RiskDimensionScore, ShotRiskReport
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _merge_risk_reports,
+    )
+
+    names = ("spatial", "identity", "motion", "continuity")
+    blockers = (
+        "director_world_required",
+        "reference_capability_required",
+        "shot_rewrite_required",
+        "predecessor_observation_required",
+    )
+    reports = []
+    for selected, blocker in zip(names, blockers, strict=True):
+        reports.append(ShotRiskReport(
+            **{
+                name: RiskDimensionScore(
+                    dimension=name,
+                    level=2 if name == selected else 0,
+                    reasons=(f"{name}_reason",) if name == selected else (),
+                )
+                for name in names
+            },
+            blockers=(blocker,),
+        ))
+
+    merged = _merge_risk_reports(tuple(reports))
+
+    assert tuple(getattr(merged, name).level for name in names) == (2, 2, 2, 2)
+    assert merged.blockers == blockers
+
+
+def test_observe_mode_mismatch_keeps_shadow_bundle_empty_with_diagnostic(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    first = tmp_path / "first.png"
+    last = tmp_path / "last.png"
+    first.write_bytes(b"first")
+    last.write_bytes(b"last")
+    segment = H3DirectorSegment(
+        segment_id="shot-1",
+        beat_number=1,
+        prompt="old prompt",
+        duration_seconds=3,
+        first_frame=str(first),
+        last_frame=str(last),
+    )
+    report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+    )
+    prepared = {
+        "shot-1": narrative_group_video.PreparedContinuity(
+            provider_segment=segment,
+            contracts=(),
+            risk_report=report,
+            mode_decision=H3ModeDecision(requested="auto", mode="i2va"),
+        )
+    }
+
+    class Optimizer:
+        async def optimize_segment(self, _segment, _context, _mode):
+            return _optimizer_result("shadow prompt")
+
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: SimpleNamespace(
+            revision_id="rev-1", project_style_snapshot=None
+        ),
+    )
+    evidence = {}
+
+    result = asyncio.run(narrative_group_video._optimize_missing_prompts(
+        [segment],
+        [{"id": "shot-1", "beat_number": 1, "content": "wait"}],
+        ctx=SimpleNamespace(state_dir=tmp_path / "state"),
+        project_dir=tmp_path,
+        episode=1,
+        evidence_by_segment=evidence,
+        policy="observe",
+        continuity_by_segment=prepared,
+    ))
+
+    assert result[0].prompt == "old prompt"
+    assert prepared["shot-1"].bundle is None
+    assert "shadow_mode_replan_required" in (
+        evidence["shot-1"]["mode_decision"]["reason_codes"]
+    )
+
+
+@pytest.mark.parametrize("policy", ["observe", "guard"])
+def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
+    tmp_path, monkeypatch, policy
+):
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    submitted = []
+    calls = 0
+    report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+    )
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "video_prompt": "one"},
+            {"id": "beat-2", "beat_number": 2, "video_prompt": "two"},
+        ]
+
+    def prepare(*, segments, **_kwargs):
+        return {
+            segment.segment_id: narrative_group_video.PreparedContinuity(
+                provider_segment=segment,
+                contracts=(),
+                risk_report=report,
+                mode_decision=H3ModeDecision(requested="auto", mode="i2va"),
+            )
+            for segment in segments
+        }
+
+    async def optimize(segments, _beats, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("shadow secret")
+        return [
+            segment.model_copy(update={"prompt": f"legacy:{segment.segment_id}"})
+            for segment in segments
+        ]
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            submitted.append(request.segments[0].prompt)
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-1",
+                actual_mode="i2va",
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
+    monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "workflow_parameters": {
+                    "resolution": "720p",
+                    "continuity_policy": policy,
+                },
+            },
+        },
+        ctx,
+    )
+
+    assert result["status"] == "completed"
+    assert submitted == ["legacy:beat-1", "legacy:beat-2"]
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    manifest = load_h3_director_manifest(result["manifest_asset"])
+    assert "continuity_observe_failed:RuntimeError" in (
+        manifest.entries[0].mode_decision["reason_codes"]
+    )
+    assert "shadow secret" not in str(manifest.model_dump(mode="json"))

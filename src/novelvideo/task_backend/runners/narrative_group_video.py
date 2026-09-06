@@ -1410,75 +1410,73 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         manifest_path = output.with_suffix(".manifest.json")
         evidence_by_segment: dict[str, dict[str, Any]] = {}
         continuity_by_segment: dict[str, PreparedContinuity] | None = None
+        blocked: dict[str, tuple[str, ...]] = {}
         if policy != "legacy":
-            continuity_by_segment = _prepare_continuity(
-                project_dir=project_dir,
-                episode=episode,
-                payload=payload,
-                segments=raw_segments,
-                beats=segment_beats,
-                render_state=render_state,
+            try:
+                continuity_by_segment = _prepare_continuity(
+                    project_dir=project_dir,
+                    episode=episode,
+                    payload=payload,
+                    segments=raw_segments,
+                    beats=segment_beats,
+                    render_state=render_state,
+                )
+                for segment_id, prepared in continuity_by_segment.items():
+                    evidence_by_segment[segment_id] = {
+                        "continuity_contracts": tuple(
+                            contract.model_dump(mode="json")
+                            for contract in prepared.contracts
+                        ),
+                        "risk_report": prepared.risk_report.model_dump(mode="json"),
+                        "mode_decision": prepared.mode_decision.model_dump(mode="json"),
+                        "compiled_bundle": None,
+                    }
+                blocked = {
+                    segment_id: prepared.risk_report.blockers
+                    for segment_id, prepared in continuity_by_segment.items()
+                    if prepared.risk_report.blockers
+                }
+            except Exception:
+                if policy == "enforce":
+                    raise
+                continuity_by_segment = None
+                evidence_by_segment.clear()
+                blocked = {}
+        if blocked and policy in {"guard", "enforce"}:
+            rejected_timeline = build_h3_timeline_data(
+                raw_segments, strict_first_frame=True
             )
-            for segment_id, prepared in continuity_by_segment.items():
-                evidence_by_segment[segment_id] = {
-                    "continuity_contracts": tuple(
-                        contract.model_dump(mode="json")
-                        for contract in prepared.contracts
-                    ),
-                    "risk_report": prepared.risk_report.model_dump(mode="json"),
-                    "mode_decision": prepared.mode_decision.model_dump(mode="json"),
-                    "compiled_bundle": None,
-                }
-            blocked = {
-                segment_id: prepared.risk_report.blockers
-                for segment_id, prepared in continuity_by_segment.items()
-                if prepared.risk_report.blockers
+            rejected_manifest = H3DirectorOutputManifest(
+                physical_video=None,
+                entries=_entries_with_evidence(
+                    rejected_timeline.entries,
+                    evidence_by_segment,
+                    default_status="quality_rejected",
+                ),
+                workflow_id=workflow.id,
+                workflow_parameters=workflow_parameters,
+                status="quality_rejected",
+            )
+            if manifest_path.is_file():
+                rejected_manifest = _merge_replay_evidence(
+                    rejected_manifest,
+                    load_h3_director_manifest(manifest_path),
+                )
+            save_h3_director_manifest(manifest_path, rejected_manifest)
+            error_payload = {
+                "error_code": "H3_CONTINUITY_QUALITY_REJECTED",
+                "transport_called": False,
+                "continuity_policy": policy,
+                "blockers": blocked,
             }
-            if blocked and policy in {"guard", "enforce"}:
-                rejected_timeline = build_h3_timeline_data(
-                    raw_segments, strict_first_frame=True
+            error = H3ContinuityQualityError(
+                json.dumps(
+                    error_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
-                rejected_manifest = H3DirectorOutputManifest(
-                    physical_video=None,
-                    entries=_entries_with_evidence(
-                        rejected_timeline.entries,
-                        evidence_by_segment,
-                        default_status="quality_rejected",
-                    ),
-                    workflow_id=workflow.id,
-                    workflow_parameters=workflow_parameters,
-                    status="quality_rejected",
-                )
-                if manifest_path.is_file():
-                    rejected_manifest = _merge_replay_evidence(
-                        rejected_manifest,
-                        load_h3_director_manifest(manifest_path),
-                    )
-                save_h3_director_manifest(manifest_path, rejected_manifest)
-                error_payload = {
-                    "error_code": "H3_CONTINUITY_QUALITY_REJECTED",
-                    "transport_called": False,
-                    "continuity_policy": policy,
-                    "blockers": blocked,
-                }
-                error = H3ContinuityQualityError(
-                    json.dumps(
-                        error_payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                )
-                record_stage_result(
-                    project_dir,
-                    episode,
-                    group_id,
-                    "video",
-                    expected_revision=revision,
-                    status="failed",
-                    error=str(error),
-                    manifest_asset=str(manifest_path),
-                )
-                raise error
+            )
+            raise error
         try:
             if policy == "legacy":
                 segments = await _optimize_missing_prompts(
@@ -1494,6 +1492,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     episode_beats=source_beats,
                 )
                 try:
+                    if continuity_by_segment is None:
+                        raise LookupError("continuity preparation unavailable")
                     continuity_segments = await _optimize_missing_prompts(
                         raw_segments, segment_beats, ctx=ctx,
                         project_dir=project_dir, episode=episode,
@@ -1502,10 +1502,14 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                         policy=policy,
                         continuity_by_segment=continuity_by_segment,
                     )
-                except H3PromptQualityError:
+                except Exception as shadow_exc:
                     if policy == "enforce":
                         raise
                     continuity_segments = raw_segments
+                    diagnostic = (
+                        "continuity_observe_failed:"
+                        f"{type(shadow_exc).__name__}"
+                    )
                     for segment_id, prepared in (
                         continuity_by_segment or {}
                     ).items():
@@ -1513,7 +1517,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             update={
                                 "reason_codes": _stable_union(
                                     prepared.mode_decision.reason_codes,
-                                    ("shadow_prompt_quality_rejected",),
+                                    (diagnostic,),
                                 )
                             }
                         )
