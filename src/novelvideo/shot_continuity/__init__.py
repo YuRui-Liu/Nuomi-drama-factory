@@ -20,12 +20,14 @@ from .models import (
     ShotRiskReport,
     SubjectLock,
 )
+from .store import ContinuityRevisionConflict, ShotContinuityStore
 
 __all__ = [
     "AssetEvidence",
     "BoundaryState",
     "CameraLock",
     "CompiledShotBundle",
+    "ContinuityRevisionConflict",
     "ContractRef",
     "DirectorWorldBinding",
     "Evidence",
@@ -37,6 +39,7 @@ __all__ = [
     "RiskDimensionScore",
     "SceneLock",
     "ShotContinuityContract",
+    "ShotContinuityStore",
     "ShotRiskReport",
     "SubjectLock",
     "canonical_sha256",
