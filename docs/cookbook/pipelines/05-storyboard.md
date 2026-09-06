@@ -7,7 +7,7 @@
 > **代码核对基线**：`55504a0`<br>
 > **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
 
-本页追踪从 Beat 到草图、实图首帧的两条生产路径。逐 Beat 路径围绕 SQLite `beats`、剧集图片池和 `sketches/frames` canonical 文件工作；叙事组路径把一组连续 Beat 或导演 Shot 固定到多宫格 cell，另用 stage revision 管理草图与实图。它们共用图像生成能力，也会把切分结果写入相同的剧集图片目录，但任务 scope、重试语义和版本状态并不相同。
+本页追踪从 Beat 到草图、实图首帧的两条生产路径。逐 Beat 路径围绕 SQLite `beats`、剧集图片池和 `sketches/frames` canonical 文件工作；叙事组路径把一组连续 Beat 或导演 Shot 固定到多宫格 cell，另用 stage revision 管理草图与实图。它们共用图像生成能力，也会把切分结果写入相同的 canonical 图片目录；叙事组只有部分布局会再进入剧集图片池，任务 scope、重试语义和版本状态也与逐 Beat 路径不同。
 
 ## 功能边界
 
@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | `Beat` | 逐行生产单元；`beat_number`、画面描述、场景与身份引用决定图像输入 | SQLite `beats`；媒体 URL 由 canonical 文件动态补出 | `useEpisodeBeats` |
 | `NarrativeGroup` | 1–9 个生产单元的有序集合；active DirectorPlan 存在时，生产单元改为 Shot | `.narrative_groups/epNNN.json` sidecar；active plan 会投影并同步 sidecar | `useNarrativeGroups` |
-| Grid / cell | Grid 是一次模型调用产出的整张多宫格；cell 是按行优先切出的单镜图片 | `grids/epNNN/` 下整图、`sketch/`、`render/` 候选文件 | `/grids` 或 group stage payload |
+| Grid / cell | Grid 是一次模型调用产出的整张多宫格；cell 是按行优先切出的单镜图片 | 逐 Beat 产物进入 `grids/epNNN/`；叙事组小布局 cell 可只写 canonical 文件和 stage payload | `/grids` 或 group stage payload |
 | 草图候选 | 构图参考；携带生成时 Beat 内容 hash，可判定 stale | 图片池 `PoolImage(type="sketch")` | Grid Gallery、单 Beat sketch candidates |
 | 渲染候选 | 成品首帧候选；当前实现不做 Beat 内容 stale 判定 | 图片池 `PoolImage(type="render")` | Render Grid Gallery |
 | canonical 草图 / 首帧 | 下游默认读取的当前图片，不等于候选历史 | `sketches/epNNN/beat_NN.png`、`frames/epNNN/beat_NN.png` | Beat 的 `sketch_url`、`frame_url` |
@@ -42,7 +42,7 @@
 
 `save_grid_and_split` 保存整图、按 `beat_nums` 切 cell、以内容 hash 去重并注册 `PoolImage`。批量草图默认 `force_promote=False`，已有 canonical 草图不会因新一轮抽卡被自动覆盖；`sketch_regen`、`selected_regen` 和 render grid 再生属于明确重生成，通常以 `force_promote=True` 覆盖相应 canonical 文件。
 
-`POST .../beats/{beat_num}/pool-select` 允许把任意 pool cell 分配给目标 Beat，而不是只能回到 `original_beat`。选择草图会复制到 canonical sketch；选择 render 会复制到 canonical frame，并更新 `beat_assignments`。草图候选的 `beat_content_hash` 与当前 `visual_description`、场景、时段及相关 sketch color 不一致时，服务端返回 `stale=true`，除非显式 `force=true`；render 候选当前始终视为非 stale。前端 `usePoolSelect` 对草图和 render 的缓存处理也不同：草图更新 Beat `sketch_url` 并失效 pose editor，render 更新 `beat_assignments` 和 `frame_url`。
+`POST .../beats/{beat_num}/pool-select` 允许把任意 pool cell 分配给目标 Beat，而不是只能回到 `original_beat`。选择草图会复制到 canonical sketch；选择 render 会复制到 canonical frame，并更新 `beat_assignments`。这里的草图 stale 校验仍以候选的 `original_beat` 为准：服务端用 `pool_img.original_beat` 找生成时对应 Beat，比对其 `beat_content_hash`，不会改用 URL 中的目标 `beat_num`。因此把 Beat 1 的候选分配给 Beat 5 时，门禁回答的是「该候选相对 Beat 1 是否过期」，不是「它是否匹配 Beat 5」。校验失败返回 `stale=true`，除非显式 `force=true`；render 候选当前始终视为非 stale。前端 `usePoolSelect` 对草图和 render 的缓存处理也不同：草图更新目标 Beat 的 `sketch_url` 并失效 pose editor，render 更新目标 Beat 的 `beat_assignments` 和 `frame_url`。
 
 ## 两条生产路径及交点
 
@@ -54,10 +54,15 @@ flowchart LR
     NG[NarrativeGroup + cell_to_beat]
     SG[sketch_generation / sketch_regen]
     RP[render plan / execute]
+    SR[selected_regen]
     GG[narrative_group_grid]
     SP[narrative_group_split]
-    GRID[整张 Grid]
-    CELL[切分 cell]
+    GRID[逐 Beat Grid]
+    GGRID[叙事组 Grid]
+    CELL[逐 Beat 切分 cell]
+    GCS[cleanup 切分]
+    GCL[pool 切分]
+    SMALL{布局为 1×1 / 1×2 / 1×3 / 2×2?}
     POOL[(剧集图片池)]
     CANON[canonical sketches / frames]
     VIDEO[视频输入]
@@ -66,16 +71,19 @@ flowchart LR
     B --> NG
     DP -->|投影 Shot| NG
     BG --> SG --> GRID
-    BG --> RP --> GG
-    NG --> GG --> GRID
-    NG -->|仅重试切分| SP --> CELL
+    BG --> RP --> SR --> GRID
+    NG --> GG --> GGRID --> SMALL
+    NG -->|仅重试已有 Grid| SP --> SMALL
     GRID --> CELL --> POOL
+    SMALL -->|是| GCS --> CANON
+    SMALL -->|否：2×3 / 3×3 等| GCL --> POOL
+    GCL --> CANON
     CELL --> CANON
     POOL -->|pool-select| CANON
     CANON --> VIDEO
 ```
 
-图中的 `GG` 在逐 Beat render plan 分支代表它最终派发的 Grid 生成工作，实际任务类型是 `selected_regen`；叙事组分支的任务类型才是 `narrative_group_grid`。两条路径的交点是整图切分、剧集图片池和 canonical 文件，而不是 group revision。
+逐 Beat render plan 最终派发的 Grid 任务是 `selected_regen`，叙事组分支才使用 `narrative_group_grid`。两条路径稳定的交点是 canonical 草图/首帧。图片池是条件性交点：`_split_existing_grid` 对 `1×1`、`1×2`、`1×3`、`2×2` 走 `split_and_cleanup`，直接把 cell 复制到 `sketches/frames` 并返回 stage `cell_assets`，不创建 `PoolImage`；`2×3`、`3×3` 等未命中该分支的布局才调用 `save_grid_and_split` 更新 pool。group revision 始终只在 sidecar 中维护。
 
 ### 逐 Beat 路径
 
@@ -87,7 +95,7 @@ flowchart LR
 
 ### NarrativeGroup 路径
 
-`generate` / `regenerate` 先由 API 从 sidecar 取服务端映射，再解析本组参考图和图像 provider/model，调用 `advance_revision`，最后以 `group_{group_id}_{stage}_r{revision}` 派发 `narrative_group_grid`。Runner 将 stage 置为 running，只调用一次图像模型生成整组 Grid，再切分 cell；成功为 `completed`，部分 cell 失败为 `partial_failure` 并保留成功 cell，生成或切分异常则写 `failed` 和 error 后重新抛出。
+`generate` / `regenerate` 先由 API 从 sidecar 取服务端映射，再解析本组参考图和图像 provider/model，调用 `advance_revision`，最后以 `group_{group_id}_{stage}_r{revision}` 派发 `narrative_group_grid`。Runner 将 stage 置为 running，只调用一次图像模型生成整组 Grid，再切分 cell。抽象编排函数 `retry_split` / `run_group_grid` 能把 splitter 返回的逐 cell errors 表达为 `partial_failure` 并保留成功 cell，`tests/test_task_narrative_group_runners.py::test_partial_split_failure_preserves_successful_cells` 验证的是这一层契约。当前生产 `_split_existing_grid` 的两个分支都固定返回 `errors=[]`，切图、清理或复制任一处抛异常都会由 `_execute` 把整个 stage 写成 `failed`；当前生产链路没有逐 cell 捕获并形成 `partial_failure` 的实现。
 
 `split` 使用相同 scope 和当前 revision，但派发 `narrative_group_split`。它从 sidecar 恢复已有 `grid_asset`，不重新解析参考图，也不调用图像模型，只重复确定性切分。只有 Grid 已生成而切分失败时，这种重试才有意义。
 
@@ -95,7 +103,9 @@ render stage 默认要求当前 sketch stage 已 `completed`、revision 大于 0
 
 ## 参考图、模型与分辨率
 
-叙事组参考图只从本组生产单元解析。角色优先使用 identity 图，缺失时回退 portrait；场景使用 scene master；路径必须真实存在且位于项目 `assets` 下。服务端以 opaque id 暴露引用，按来源优先级、覆盖 Beat 数、首次出现位置排序，最多选择 9 张。未知引用 id 返回 422 且不会推进 revision 或入队；`split` 完全不解析引用。
+叙事组参考图的预期范围是本组生产单元，但 active DirectorPlan 下当前有一处 DTO 分叉。独立 reference preview endpoint 先用 `_group_beats`，拿 group 的 `beat_ids`（投影后是 source span id）去匹配 SQLite Beat；实际 `generate` / `regenerate` 在 `_group_beats` 后还会调用 `generation_beats_for_group`，把输入替换为 Director Shot，再从 Shot 解析引用。因此预览列表不保证与入队时重新解析出的引用集合一致，预览提交的 opaque id 可能在生成 API 校验时变成 unknown 并返回 422。修复这一点时应让 preview 和 enqueue 共用同一个 production-unit resolver，不能只调整前端选择状态。
+
+在各自实际解析到的输入内，角色优先使用 identity 图，缺失时回退 portrait；场景使用 scene master；路径必须真实存在且位于项目 `assets` 下。服务端以 opaque id 暴露引用，按来源优先级、覆盖 Beat 数、首次出现位置排序，最多选择 9 张。未知引用 id 不会推进 revision 或入队；`split` 完全不解析引用。
 
 默认草图模型为 `nano-banana-2`，默认实图模型为 `gpt-image-2`，provider 默认 `grsai-main`；项目设置或请求可覆盖。render 的 `image_size` 还要经过 `supported_grid_image_sizes` 校验。Runner 对 GPT Image 模型调用 `resolve_grid_image_resolution`，根据 cell 画幅和 Grid 行列折算 provider 尺寸，并把 requested/actual pixel size、降级原因、upscale 和亮边清理报告写回 stage，不能只根据前端选择框判断最终分辨率。
 
@@ -109,10 +119,12 @@ render stage 默认要求当前 sketch stage 已 `completed`、revision 大于 0
 | 选中 Beat 草图 | `sketch_regen` | `selection_scope(mode, beats)` | 批量计划逐 Grid 跟踪返回 scope；成功终态刷新 |
 | render plan 执行 | 响应标记 `render_plan`，实际每 Grid 为 `selected_regen` | 响应汇总 `location__hash`；实际任务各有 selection scope | 页面按返回 `task_ids` 跟踪并刷新 |
 | 按索引 render 再生 | `grid_regenerate` | `grid_{index}` | episode image task 订阅刷新 |
-| 叙事组生成/再生 | `narrative_group_grid` | `group_{id}_{stage}_r{revision}` | `useTaskController` 刷新 narrative groups、grids、beats |
-| 叙事组仅切分 | `narrative_group_split` | 同一 group/stage/revision scope | 同上 |
+| 叙事组生成/再生 | `narrative_group_grid` | `group_{id}_{stage}_r{revision}` | 仅当前选中 group 的当前单一 scope 由 `useTaskController` 跟踪 |
+| 叙事组仅切分 | `narrative_group_split` | 同一 group/stage/revision scope | 限制同上 |
 
-mutation 入队成功时，`useNarrativeGroupAction` 已立即失效 narrative groups、grids 和 beats；终态由 workbench 的 task controller 再刷新。逐 Beat 的 `useGenerateSketches`、`useRegenerateSketches`、`useRenderExecute` 本身不失效查询，依赖页面 task 订阅。批量草图失败时 `useScopedTaskBatchInvalidation` 会移除跟踪项但不刷新；服务端任务日志和保留下来的 pool/canonical 文件仍是排查部分成功的依据。
+mutation 入队成功时，`useNarrativeGroupAction` 已立即失效 narrative groups、grids 和 beats。终态刷新并非 episode-wide 保证：`NarrativeGroupWorkbench` 的两个 `useTaskController` 都根据当前选中 group 计算一个 active scope；切换 group 或并行提交其他 group 后，旧 scope 不再被该 controller 跟踪。`useEpisodeImageTaskInvalidation` 的类型集合也不包含 `narrative_group_grid` / `narrative_group_split`。需要保证所有组在终态刷新时，应增加按 project + episode + task type 匹配的全局订阅或等价失效机制。
+
+逐 Beat 的 `useGenerateSketches`、`useRegenerateSketches`、`useRenderExecute` 本身不失效查询，依赖页面 task 订阅。批量草图失败时 `useScopedTaskBatchInvalidation` 会移除跟踪项但不刷新；服务端任务日志和保留下来的 pool/canonical 文件仍是排查部分成功的依据。
 
 ## 端到端时序
 
@@ -144,10 +156,17 @@ sequenceDiagram
     TB->>R: envelope + frozen scope/payload
     R->>P: 生成一张 Grid
     P-->>R: image result
-    R->>F: 保存 Grid，按 cell 切分并 promote
-    R->>S: 更新 pool；group 路径再写 stage result
+    alt 逐 Beat，或叙事组 2×3 / 3×3 等布局
+        R->>F: 保存 Grid，按 cell 切分并 promote
+        R->>S: 更新 pool index
+    else 叙事组 1×1 / 1×2 / 1×3 / 2×2
+        R->>F: cleanup 后直接复制 canonical cell
+    end
+    R->>S: group 路径写 stage result
     TB-->>UI: task terminal event
-    UI->>Q: invalidate grids + beats (+ narrative groups)
+    opt scope 仍属于当前选中 group
+        UI->>Q: terminal invalidate groups + grids + beats
+    end
 ```
 
 ## 数据与产物
@@ -155,8 +174,9 @@ sequenceDiagram
 | 数据或产物 | 位置 | 更新语义 |
 | --- | --- | --- |
 | NarrativeGroup sidecar | `.narrative_groups/epNNN.json` | 带进程内锁和文件锁；保存 group 映射、stage revision/history/error 与实际模型元数据 |
-| Grid 与 cell | `grids/epNNN/{custom,sketch,render,...}` | 整图保留，cell 以 Beat/时间戳命名并去重 |
-| pool index | 生产环境映射到 state 树的 `grids/epNNN/pool_index.json` | 原子写入；首次读取会迁移旧 output-side index；rebuild 尽量保留可解析 assignment |
+| 逐 Beat Grid 与 cell | `grids/epNNN/{custom,sketch,render,...}` | 整图保留，cell 以 Beat/时间戳命名并去重、入池 |
+| 叙事组 Grid 与 cell | Grid 在 `grids/epNNN/narrative_groups/`；小布局临时切片后直接复制到 canonical，大布局 cell 进入 `grids/epNNN/{sketch,render}` | 所有布局写 group stage；只有调用 `save_grid_and_split` 的大布局更新 pool |
+| pool index | 生产环境映射到 state 树的 `grids/epNNN/pool_index.json` | 逐 Beat 路径和叙事组大布局更新；原子写入，首次读取会迁移旧 output-side index |
 | 当前草图 | `sketches/epNNN/beat_NN.png` | 生成、regen、上传或 pool-select 复制覆盖 |
 | 当前首帧 | `frames/epNNN/beat_NN.png` | render、上传或 pool-select 复制覆盖 |
 | render plan hash cache | `.render_plan_cache` | 参考图 hash 加速 input fingerprint；缺失参考图使 plan 请求失败 |
@@ -166,7 +186,7 @@ sequenceDiagram
 ### 修改分组或网格布局
 
 1. 逐 Beat 路径分别核对 `sketch_grid_split`、`sketch_scene_grid_split`、`perfect_grid_split`、`build_regen_plan` 与 `REGEN_MODE_CONFIGS`；它们不是 `layout_for_group` 的同一份规则。
-2. 叙事组需同步 `layout_for_group`、`cell_to_beat`、前端布局标签和 `_split_existing_grid` 支持的 cleanup layout。容量与真实单元数分开，padding 不能注册成候选。
+2. 叙事组需同步 `layout_for_group`、`cell_to_beat`、前端布局标签和 `_split_existing_grid` 支持的 cleanup layout。新增 cleanup layout 还会改变是否经过 `save_grid_and_split`、是否产生 PoolImage；容量与真实单元数分开，padding 不能注册成候选。
 3. 改变 group 映射会让 `rebuild_groups` 清空旧 stage；active DirectorPlan 下应修改导演 group/Shot，而不是开放强制 rebuild。
 4. 覆盖 `tests/test_narrative_group_service.py::test_layout_for_group_uses_supported_shapes`、`test_group_beats_respects_scene_and_time_continuity` 和 `tests/test_task_narrative_group_runners.py::test_generation_batch_payload_controls_layout_style_and_panel_tags`。
 
@@ -174,7 +194,7 @@ sequenceDiagram
 
 1. 叙事组同步 `_image_binding`、media defaults、`GroupReferenceDialog`、`resolve_group_reference_preview` 和 Runner 的 `ImageGenerationRequest`；不要把 provider 凭据放进前端 payload。
 2. 新模型需定义支持的 image size、Grid 画幅换算与实际像素回写；前端只展示服务端返回的 `actual_*` 才能反映降级。
-3. 引用必须限制在本组且在项目 asset root 内；保留 unknown opaque id 的 422 门禁和最多 9 张限制。
+3. 引用必须限制在本组且在项目 asset root 内；active DirectorPlan 下要先消除 preview 的 source-span DTO 与 enqueue 的 Shot DTO 分叉，再保留 unknown opaque id 的 422 门禁和最多 9 张限制。
 4. 覆盖 `tests/test_api_narrative_groups.py` 中 reference preview/selection、render sketch revision、unsupported resolution 用例，以及 `tests/test_narrative_group_image_resolution.py`。
 
 ### 增加单 Beat 重生成动作
@@ -182,13 +202,13 @@ sequenceDiagram
 1. 草图使用 `sketch_regen`，render 使用 render plan/execute；mode key 要与画幅匹配，scope 用 `selection_scope`，不要复用不对应真实任务行的 render plan 汇总 scope。
 2. Runner payload 仍要带完整 Beat 上下文、选中编号、角色/场景/道具引用和 image selection；草图重生成保留「同一场景」校验。
 3. 明确候选与 canonical 语义。自动抽卡一般只入池，用户明确重生成才覆盖 canonical；若改动 `force_promote`，需要回归用户已手选图片不被后台任务覆盖。
-4. 前端成功提交后登记每个 scope 或 task id；终态至少失效 `grids`、`beats`，render 还应失效 `sketchImageUsage` 与 pipeline status。
+4. 前端成功提交后登记每个 scope 或 task id；逐 Beat 终态至少失效 `grids`、`beats`，render 还应失效 `sketchImageUsage` 与 pipeline status。叙事组若允许切换或并行处理多个 group，需要 episode-wide 订阅，而不是只依赖当前选中 group 的 controller。
 5. 覆盖 `tests/test_api_sketch_regenerate.py::test_sketch_selected_regen_returns_scope`、`tests/test_api_render_regenerate.py::test_render_selected_regen_returns_scope_and_passes_render_settings`、`frontend/src/__tests__/lib/queries/sketches.test.tsx` 和 `frontend/src/__tests__/routes/beats-sketch-render-contract.test.ts`。
 
 ### 修改重建、回滚或失败恢复
 
 1. group `regenerate` 必须先保存当前 stage snapshot，再以新 revision 入队；Runner 完成写入必须带 `expected_revision`，避免晚到结果覆盖新版本。
-2. `split` 只能复用当前 `grid_asset`，不应重新调用 provider 或解析引用；部分失败要保留成功 cell 和逐 cell error。
+2. `split` 只能复用当前 `grid_asset`，不应重新调用 provider 或解析引用。若要支持部分失败恢复，需要先让生产 splitter 逐 cell 捕获错误并返回 errors；目前任一异常会使整个 stage failed。
 3. rollback 创建新 revision，不要直接删 history 或覆盖为旧编号；完成后前端需同时刷新 groups、grids 与 beats。
 4. pool rebuild 只能重建索引，不能承诺恢复已经删除的 Grid/cell；canonical 文件也不等同于完整候选历史。
 5. 覆盖 `tests/test_narrative_group_service.py::test_stale_revision_completion_cannot_overwrite_new_revision`、`tests/test_api_narrative_groups.py::test_stage_history_and_rollback_routes`、`tests/test_task_narrative_group_runners.py::test_split_runner_recovers_grid_from_sidecar_without_generator`。
@@ -197,12 +217,13 @@ sequenceDiagram
 
 | 现象 | 优先检查 |
 | --- | --- |
-| task 完成但页面没有新图 | task type、真实 scope/task id 是否被跟踪；render execute 不要跟踪 `location__...` 汇总 scope |
+| task 完成但页面没有新图 | 逐 Beat render execute 不要跟踪 `location__...` 汇总 scope；叙事组检查任务是否属于已切走/并行的非当前 group，当前没有 episode-wide 终态订阅 |
 | group render 返回 409 | sketch stage 是否 completed、记录的 grid_asset 是否仍存在；是否确实允许 unconstrained |
-| 选择草图提示过期 | `/grids` 的 `beat_content_hash` 与当前 Beat/颜色是否不同；只有确认复用旧构图时才传 `force=true` |
-| Grid 有图但部分 Beat 为空 | group stage 的 `cell_assets`、`errors`、cleanup report；使用 `split` 只重试切分 |
+| 选择草图提示过期 | 检查候选 `original_beat` 的当前内容/颜色，不是目标 `beat_num`；只有确认跨 Beat 复用旧构图时才传 `force=true` |
+| Group Grid 有图但 cell/canonical 为空 | 检查 stage error 与 cleanup；当前生产 splitter 不生成逐 cell partial_failure，可用 `split` 重试整次确定性切分 |
 | 重生成后又出现旧结果 | sidecar current revision 与任务 scope 中 rN 是否一致；旧 Runner 写入会被 expected revision 忽略 |
 | render plan 执行 409 | 使用响应中的 new plan/hash/fingerprint 重新确认，不要在客户端自行改旧计划继续提交 |
+| 叙事组有 canonical 图但图片池看不到 | 先看布局；`1×1`、`1×2`、`1×3`、`2×2` 分支不建 PoolImage，属于当前预期行为 |
 | 图片池丢了 assignment | 检查 state-side `pool_index.json`、cell 是否仍存在、rebuild 时旧 id 是否能映射到新 alias |
 | 模型选择与实际输出不一致 | stage 的 `actual_provider`、`actual_model`、requested/actual pixel size、resolution warning，以及任务日志中的 provider/model |
 
@@ -222,7 +243,7 @@ sequenceDiagram
 
 ## 测试入口
 
-- API 与 scope：`tests/test_api_generation_sketches.py`、`tests/test_api_sketch_regenerate.py`、`tests/test_api_render_regenerate.py`、`tests/test_api_narrative_groups.py`。
+- API、scope 与 pool 选择：`tests/test_api_generation_sketches.py`、`tests/test_api_sketch_regenerate.py`、`tests/test_api_render_regenerate.py`、`tests/test_api_narrative_groups.py`、`tests/test_api_beat_image_upload.py`。
 - 分组、revision 与回滚：`tests/test_narrative_group_service.py`。
-- Runner 生成/切分与失败：`tests/test_task_sketch_runner.py`、`tests/test_task_narrative_group_runners.py`。
-- 前端请求与刷新契约：`frontend/src/__tests__/lib/queries/sketches.test.tsx`、`narrative-groups.test.ts`、`render-plan.test.tsx`、`frontend/src/__tests__/routes/beats-sketch-render-contract.test.ts`。
+- Runner 生成/切分、引用与失败：`tests/test_task_sketch_runner.py`、`tests/test_task_narrative_group_runners.py`、`tests/test_narrative_group_runner_references.py`。
+- 前端请求与刷新契约：`frontend/src/__tests__/lib/queries/sketches.test.tsx`、`narrative-groups.test.ts`、`render-plan.test.tsx`、`frontend/src/__tests__/hooks/use-episode-image-task-invalidation.test.tsx`、`frontend/src/__tests__/routes/beats-sketch-render-contract.test.ts`。
