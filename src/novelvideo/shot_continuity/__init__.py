@@ -1,5 +1,11 @@
 """Public shot continuity domain contracts."""
 
+from .builder import (
+    ContinuityContractUnavailable,
+    build_shot_continuity_contract,
+    contracts_for_segment,
+    director_world_binding,
+)
 from .hashing import canonical_sha256
 from .models import (
     AssetEvidence,
@@ -27,6 +33,7 @@ __all__ = [
     "BoundaryState",
     "CameraLock",
     "CompiledShotBundle",
+    "ContinuityContractUnavailable",
     "ContinuityRevisionConflict",
     "ContractRef",
     "DirectorWorldBinding",
@@ -42,5 +49,8 @@ __all__ = [
     "ShotContinuityStore",
     "ShotRiskReport",
     "SubjectLock",
+    "build_shot_continuity_contract",
     "canonical_sha256",
+    "contracts_for_segment",
+    "director_world_binding",
 ]
