@@ -35,6 +35,11 @@ from novelvideo.image_request_usage import (
     update_image_request_status,
 )
 from novelvideo.services.style_service import StyleService
+from novelvideo.character_visual.identity_sheet import (
+    IDENTITY_SHEET_PANEL_LAYOUT,
+    build_identity_sheet_v2_prompt,
+    compose_identity_sheet_v2,
+)
 from novelvideo.generators.nanobanana_grid import (
     _InlineImagePart,
     _call_huimeng_image_api,
@@ -58,7 +63,7 @@ def _default_ethnicity_instruction(ethnicity: str) -> str:
     )
 
 
-CHARACTER_STATE_PANEL_LAYOUT = ("front", "side", "back")
+CHARACTER_STATE_PANEL_LAYOUT = IDENTITY_SHEET_PANEL_LAYOUT
 
 
 def build_character_state_sheet_prompt(
@@ -71,39 +76,21 @@ def build_character_state_sheet_prompt(
     ethnicity: str,
     has_costume_reference: bool,
     medium: str = "the configured project visual style",
+    project_style: str | None = None,
+    project_dir: str | Path | None = None,
 ) -> str:
-    """Compile the canonical three-view character state resource prompt."""
-    costume_block = ""
-    if has_costume_reference:
-        costume_block = """
-COSTUME REFERENCE (CRITICAL):
-- Copy clothing, fabric, accessories, colors, and styling from the costume reference.
-- Combine the identity anchor face with the costume reference; do not copy its person.
-"""
-    return f"""Production character turnaround state sheet for {character_tag} ({character_name}).
-Create exactly one 3-panel sheet arranged LEFT TO RIGHT on a plain white or light-gray background:
-- Panel 1: FRONT VIEW, full body, neutral standing pose, head to feet.
-- Panel 2: SIDE VIEW, strict 90-degree profile, full body, head to feet.
-- Panel 3: BACK VIEW, full body, facing directly away, head to feet.
-
-IDENTITY AND STATE LOCK:
-- All 3 panels show the same person, same face, same age, same body proportions, same hair, and same outfit.
-- Preserve identity from the identity-anchor reference; only the viewing angle changes.
-- Preserve clothing seams, accessories, colors, footwear, and silhouette across every panel.
-- Default ethnicity when unspecified: {ethnicity}.
-
-CHARACTER STATE:
-{appearance}
-{costume_block}
-STYLE:
-- Render all panels in {medium}.
-- {style_instructions}
-
-STRICT EXCLUSIONS:
-- {avoid_instructions}
-- No FACE CLOSEUP, no THREE-QUARTER view, no extra panel, no cropped feet.
-- No action pose, expression change, environment, props, text, labels, numbers, watermark, or poster composition.
-""".strip()
+    """Compatibility wrapper for the shared Identity Sheet v2 prompt contract."""
+    return build_identity_sheet_v2_prompt(
+        character_name=character_name,
+        character_tag=character_tag,
+        appearance=appearance,
+        project_style=project_style or medium,
+        style_instructions=style_instructions,
+        avoid_instructions=avoid_instructions,
+        ethnicity=ethnicity,
+        has_costume_reference=has_costume_reference,
+        project_dir=project_dir,
+    )
 
 
 def create_composite_reference(
@@ -462,7 +449,7 @@ class NanoBananaCharacterGenerator:
 
         使用角色的正面基准图作为身份锚点，保持面部一致性，
         只变换服装、背景等身份特定的外观。
-        统一生成 3 面板状态资源图（正面全身 + 侧面全身 + 背面全身）。
+        统一生成 Identity Sheet v2（3/4 肖像 + 无头正面全身 + 背面全身）。
 
         Args:
             character_name: 角色名称
@@ -481,6 +468,14 @@ class NanoBananaCharacterGenerator:
 
         if style is None:
             style = IMAGE_DEFAULT_STYLE
+
+        if not reference_image_path or not os.path.isfile(reference_image_path):
+            return CharacterReferenceResult(
+                success=False,
+                character_name=character_name,
+                error="Confirmed Portrait reference is required for Identity Sheet v2.",
+                generation_time=time.time() - start_time,
+            )
 
         request_id = uuid.uuid4().hex
         project_output_dir = Path(project_dir).resolve() if project_dir else None
@@ -502,9 +497,7 @@ class NanoBananaCharacterGenerator:
             if not character_tag:
                 character_tag = self._generate_character_tag(character_name)
 
-            print(
-                f"[NanoBanana Character] 基于基准图生成 {character_name} 状态三视图（正面+侧面+背面）..."
-            )
+            print(f"[NanoBanana Character] 基于基准图生成 {character_name} Identity Sheet v2...")
 
             # 构建统一的身份锁定三视图状态资源 Prompt。
             has_costume_ref = bool(costume_image_path and os.path.exists(costume_image_path))
@@ -526,6 +519,8 @@ class NanoBananaCharacterGenerator:
                 ethnicity=ethnicity,
                 has_costume_reference=has_costume_ref,
                 medium=medium,
+                project_style=style,
+                project_dir=project_dir or None,
             )
 
             # 保存 prompt 到文件（审计用）
@@ -573,22 +568,19 @@ class NanoBananaCharacterGenerator:
                 )
                 usage_recorded = True
 
-            # 加载参考图（年龄变体等无参考图场景允许为空）
+            # Portrait 是 v2 唯一脸源；入口处已 fail closed 验证其存在。
             ref_image = None
             ref_image_bytes = None
-            if reference_image_path and os.path.exists(reference_image_path):
-                ref_image = self._load_image_as_part(reference_image_path)
-                if not ref_image and self.provider == "google":
-                    return CharacterReferenceResult(
-                        success=False,
-                        character_name=character_name,
-                        error=f"无法加载参考图: {reference_image_path}",
-                        generation_time=time.time() - start_time,
-                    )
-                with open(reference_image_path, "rb") as f:
-                    ref_image_bytes = f.read()
-            else:
-                print(f"[NanoBanana Character] 无参考图，从文字描述独立生成")
+            ref_image = self._load_image_as_part(reference_image_path)
+            if not ref_image and self.provider == "google":
+                return CharacterReferenceResult(
+                    success=False,
+                    character_name=character_name,
+                    error=f"无法加载 Portrait 参考图: {reference_image_path}",
+                    generation_time=time.time() - start_time,
+                )
+            with open(reference_image_path, "rb") as f:
+                ref_image_bytes = f.read()
 
             # 加载服装参考图（如果有）
             costume_image = None
@@ -599,12 +591,13 @@ class NanoBananaCharacterGenerator:
                     costume_image_bytes = f.read()
                 print(f"[NanoBanana Character] 已加载服装参考图: {costume_image_path}")
 
-            # 统一流程：一次生成正面、侧面、背面三视图。
-            aspect_ratio = "16:9"
+            # 统一流程：只调用一次模型生成 v2 三格候选。
+            aspect_ratio = "3:2"
             image_size = "1K"
-            body_label = "3面板 character state sheet"
+            body_label = "Identity Sheet v2 candidate"
 
             temp_body_path = output_path.replace(".png", "_body_temp.png")
+            Path(temp_body_path).parent.mkdir(parents=True, exist_ok=True)
             print(f"[NanoBanana Character] 生成{body_label}到临时文件: {temp_body_path}")
 
             image_bytes = await self._generate_with_reference(
@@ -622,10 +615,12 @@ class NanoBananaCharacterGenerator:
             )
 
             if image_bytes:
-                # 直接使用 sheet 作为身份参考图（零拼接，天然一致）
-                import shutil
-
-                shutil.move(temp_body_path, output_path)
+                # 保留 raw candidate；正式输出仅由确定性裁切、遮罩和拼版写入。
+                compose_identity_sheet_v2(
+                    candidate_path=temp_body_path,
+                    portrait_path=reference_image_path,
+                    output_path=output_path,
+                )
                 print(f"[NanoBanana Character] {body_label}已保存: {output_path}")
 
                 generation_time = time.time() - start_time
@@ -917,10 +912,12 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & PRESENTATION (CRITICAL):
-- PERFECT FRONT-FACING head-and-shoulders portrait, symmetrical composition
+- LARGE THREE-QUARTER head-and-shoulders portrait, face turned slightly from camera
 - Face fills 60-70% of frame
 - Neutral expression, mouth closed
 - Plain solid neutral background only
+- Use flat, even, neutral lighting with natural eye highlights
+- Preserve subtle natural facial asymmetry and the configured project style
 - Minimal visible clothing; keep attention on face, hair silhouette, and head shape
 - This is a clean animation identity anchor, not a photographic actor portrait
 
@@ -938,7 +935,7 @@ STRICT REQUIREMENTS:
 
 MUST AVOID:
 {negative_keywords}
-- Do not turn the face away from camera
+- Do not use a strict profile or hide either eye
 - Do not include elaborate costume staging or environment
 - Do not add text, labels, watermarks, or signatures
 - Do not include multiple characters
@@ -954,10 +951,12 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & CAMERA (CRITICAL):
-- FRONT-FACING: subject facing camera DIRECTLY, looking STRAIGHT at camera, symmetrical composition
+- LARGE THREE-QUARTER head-and-shoulders portrait, face turned slightly from camera
 - Head-and-shoulders close-up, face fills 60-70% of the frame
 - Neutral expression, mouth closed
 - Solid matte gray seamless studio background — NO environment, NO scenery, NO props
+- Use flat, even, neutral lighting with natural eye highlights
+- Preserve subtle natural facial asymmetry and the configured project style
 - Plain simple dark top (like a basic t-shirt), MINIMAL clothing visible
 - Do NOT show elaborate costumes, accessories, or period clothing
 - This should follow the project visual style while remaining clear enough for identity locking.
@@ -969,14 +968,14 @@ VISUAL STYLE:
 {style_keywords}
 
 STRICT REQUIREMENTS:
-- This is a CHARACTER IDENTITY ANCHOR — face must be perfectly front-facing and clearly visible
+- This is a CHARACTER IDENTITY ANCHOR — the three-quarter face must remain clearly visible
 - High-quality, 4K resolution
 - Maintain strict facial fidelity to the character description
 - Keep facial structure, hairstyle, skin tone, and expression readable for downstream identity matching
 
 MUST AVOID:
 {negative_keywords}
-- Do NOT turn the face to any side — must be perfectly FRONTAL
+- Do not use a strict profile or hide either eye
 - Do not include elaborate clothing or costumes
 - Do not show full body or lower body
 - Do NOT add ANY background: no rooms, no scenery, no furniture, no props — plain solid color only
@@ -1012,7 +1011,7 @@ A second reference image is provided showing the target costume/clothing.
         ethnicity: str = "Chinese",
         has_costume_reference: bool = False,
     ) -> str:
-        """Build the canonical front/side/back identity-state resource prompt."""
+        """Build the canonical Identity Sheet v2 resource prompt."""
         family, _ = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,
@@ -1031,6 +1030,8 @@ A second reference image is provided showing the target costume/clothing.
             ethnicity=ethnicity,
             has_costume_reference=has_costume_reference,
             medium=medium,
+            project_style=style_name,
+            project_dir=project_dir or None,
         )
 
     async def _generate_single_image(

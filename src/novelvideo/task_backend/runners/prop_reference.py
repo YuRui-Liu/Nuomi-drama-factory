@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,35 +50,66 @@ def _register_prop_candidate(
     model: str,
     source_attempt_id: str | None,
 ) -> dict[str, str]:
-    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.production_workflow import (
+        ProductionWorkflowStore,
+        production_workflow_project_lock,
+    )
 
     root = output_dir.resolve()
     slot_id = f"prop:{prop.name}:reference"
-    workflow = ProductionWorkflowStore(Path(ctx.state_dir) / "production_workflow.json")
-    slot, version, _event = workflow.register_candidate_version(
-        slot_id=slot_id,
-        asset_kind="prop_reference",
-        version_id=output_path.stem,
-        asset_path=output_path.resolve().relative_to(root).as_posix(),
-        source_attempt_id=source_attempt_id,
-        qc_passed=output_path.is_file() and output_path.stat().st_size > 0,
-        generation_metadata={
-            "prop_name": str(prop.name),
-            "prop_type": str(getattr(prop, "prop_type", "") or "object"),
-            "provider": "grsai",
-            "model": model,
-            "aspect_ratio": "16:9",
-            "panel_layout": ["front", "side", "back"],
-            "prompt_snapshot": prompt,
-            "content_policy": "deterministic_post_composite",
-            "canonical_path": canonical_path.resolve().relative_to(root).as_posix(),
-        },
-        actor=str(getattr(ctx, "requester_username", "") or "system"),
-        at=datetime.now(timezone.utc),
-    )
-    if slot.current_version_id == version.version_id:
-        canonical_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(output_path, canonical_path)
+    with production_workflow_project_lock(ctx.state_dir):
+        qc_passed = output_path.is_file() and output_path.stat().st_size > 0
+        staged_canonical: Path | None = None
+        if qc_passed:
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            staged_canonical = canonical_path.with_name(
+                f".{canonical_path.name}.{output_path.stem}.stage"
+            )
+            try:
+                shutil.copy2(output_path, staged_canonical)
+                with staged_canonical.open("rb") as staged_file:
+                    os.fsync(staged_file.fileno())
+            except Exception:
+                staged_canonical.unlink(missing_ok=True)
+                raise
+        workflow = ProductionWorkflowStore(Path(ctx.state_dir) / "production_workflow.json")
+        workflow_snapshot = workflow.capture_file_snapshot()
+        canonical_snapshot = canonical_path.read_bytes() if canonical_path.exists() else None
+        try:
+            slot, version, _event = workflow.register_candidate_version(
+                slot_id=slot_id,
+                asset_kind="prop_reference",
+                version_id=output_path.stem,
+                asset_path=output_path.resolve().relative_to(root).as_posix(),
+                source_attempt_id=source_attempt_id,
+                qc_passed=qc_passed,
+                generation_metadata={
+                    "prop_name": str(prop.name),
+                    "prop_type": str(getattr(prop, "prop_type", "") or "object"),
+                    "provider": "grsai",
+                    "model": model,
+                    "aspect_ratio": "16:9",
+                    "panel_layout": ["front", "side", "back"],
+                    "prompt_snapshot": prompt,
+                    "content_policy": "deterministic_post_composite",
+                    "canonical_path": canonical_path.resolve().relative_to(root).as_posix(),
+                },
+                actor=str(getattr(ctx, "requester_username", "") or "system"),
+                at=datetime.now(timezone.utc),
+            )
+            if staged_canonical is not None and slot.current_version_id == version.version_id:
+                os.replace(staged_canonical, canonical_path)
+                staged_canonical = None
+        except Exception:
+            workflow.restore_file_snapshot(workflow_snapshot)
+            if canonical_snapshot is None:
+                canonical_path.unlink(missing_ok=True)
+            else:
+                canonical_path.write_bytes(canonical_snapshot)
+            raise
+        finally:
+            if staged_canonical is not None:
+                staged_canonical.unlink(missing_ok=True)
     return {
         "slot_id": slot_id,
         "version_id": version.version_id,

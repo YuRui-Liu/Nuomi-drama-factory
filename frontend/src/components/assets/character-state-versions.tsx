@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,11 +20,8 @@ interface CharacterStateVersionsProps {
   legacyAssetPath?: string | null;
 }
 
-const PANEL_LABELS: Record<string, string> = {
-  front: "正面",
-  side: "侧面",
-  back: "背面",
-};
+const V1_PANELS = ["front", "side", "back"];
+const V2_PANELS = ["portrait", "headlessFront", "fullBack"];
 
 function assetMediaUrl(project: string, assetPath: string): string {
   const encodedPath = assetPath
@@ -37,18 +36,37 @@ function assetMediaUrl(project: string, assetPath: string): string {
 }
 
 function panelLayout(version: ProductionAssetVersion): string[] {
+  if (isV2(version)) return V2_PANELS;
   const panels = version.generation_metadata?.panel_layout;
   return Array.isArray(panels) && panels.length > 0
     ? panels.filter((panel): panel is string => typeof panel === "string")
-    : ["front", "side", "back"];
+    : V1_PANELS;
 }
 
-function statusLabel(version: ProductionAssetVersion, isCurrent: boolean): string {
-  if (isCurrent) return "当前采用";
-  if (!version.qc_passed) return "QC 未通过";
-  if (version.adoption_status === "candidate") return "候选版本";
-  if (version.adoption_status === "superseded") return "历史版本";
+function isV2(version: ProductionAssetVersion): boolean {
+  const layoutVersion = version.generation_metadata?.layout_version;
+  return layoutVersion === "identity_sheet_v2" || layoutVersion === "v2";
+}
+
+function statusLabel(
+  version: ProductionAssetVersion,
+  isCurrent: boolean,
+  t: TFunction,
+): string {
+  if (isCurrent) return t("characters.stateVersions.status.current");
+  if (!version.qc_passed) return t("characters.stateVersions.status.qcFailed");
+  if (version.adoption_status === "candidate") return t("characters.stateVersions.status.candidate");
+  if (version.adoption_status === "superseded") return t("characters.stateVersions.status.superseded");
   return version.adoption_status;
+}
+
+function qcIssues(version: ProductionAssetVersion): string[] {
+  const reportIssues = version.generation_metadata?.quality_report?.issues;
+  return [...new Set([
+    ...(Array.isArray(reportIssues) ? reportIssues : []),
+    ...version.soft_issues,
+    ...(version.technical_error ? [version.technical_error] : []),
+  ])];
 }
 
 export function CharacterStateVersions({
@@ -57,6 +75,7 @@ export function CharacterStateVersions({
   identityId,
   legacyAssetPath,
 }: CharacterStateVersionsProps) {
+  const { t } = useTranslation();
   const slotId = `character:${characterName}:state:${identityId}`;
   const slotQuery = useProductionAssetSlot(
     project,
@@ -71,7 +90,7 @@ export function CharacterStateVersions({
     return (
       <div className="flex items-center gap-2 border-t border-white/[0.06] pt-4 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
-        加载人物状态版本…
+        {t("characters.stateVersions.loading")}
       </div>
     );
   }
@@ -83,30 +102,40 @@ export function CharacterStateVersions({
     if (right.version_id === payload.slot.current_version_id) return 1;
     return String(right.created_at ?? "").localeCompare(String(left.created_at ?? ""));
   });
+  const currentVersion = versions.find(
+    (version) => version.version_id === payload.slot.current_version_id,
+  );
+  const currentLayoutIsV2 = currentVersion ? isV2(currentVersion) : false;
 
   const adopt = async (versionId: string) => {
     try {
       await adoptVersion.mutateAsync({
         versionId,
-        reason: "人物身份卡手动采用",
+        reason: t("characters.stateVersions.adoptReason"),
       });
-      toast.success("已采用人物状态版本");
+      toast.success(t("characters.stateVersions.adoptSuccess"));
     } catch {
-      toast.error("采用失败，请检查任务日志");
+      toast.error(t("characters.stateVersions.adoptFailed"));
     }
   };
 
   return (
-    <section className="border-t border-white/[0.06] pt-4" aria-label="人物状态三视图版本">
+    <section className="border-t border-white/[0.06] pt-4" aria-label={t("characters.stateVersions.ariaLabel")}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h4 className="text-xs font-medium text-foreground">人物状态三视图</h4>
+          <h4 className="text-xs font-medium text-foreground">
+            {t(currentLayoutIsV2
+              ? "characters.stateVersions.v2Title"
+              : "characters.stateVersions.title")}
+          </h4>
           <p className="mt-1 text-[11px] text-muted-foreground">
-            正面、侧面、背面保持同一人物与服装；生成后先作为候选，可手动采用。
+            {t(currentLayoutIsV2
+              ? "characters.stateVersions.v2Description"
+              : "characters.stateVersions.description")}
           </p>
         </div>
         <span className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground">
-          {versions.length} 个版本
+          {t("characters.stateVersions.versionCount", { count: versions.length })}
         </span>
       </div>
 
@@ -118,10 +147,7 @@ export function CharacterStateVersions({
             version.adoption_status === "candidate" &&
             version.qc_passed &&
             !payload.read_only;
-          const issues = [
-            ...version.soft_issues,
-            ...(version.technical_error ? [version.technical_error] : []),
-          ];
+          const issues = qcIssues(version);
 
           return (
             <article
@@ -130,7 +156,11 @@ export function CharacterStateVersions({
             >
               <img
                 src={assetMediaUrl(project, version.asset_path)}
-                alt={`${characterName} ${identityId} 三视图 ${version.version_id}`}
+                alt={t("characters.stateVersions.imageAlt", {
+                  characterName,
+                  identityId,
+                  versionId: version.version_id,
+                })}
                 className="aspect-video w-full bg-white/[0.025] object-contain"
               />
               <div className="space-y-2 p-3">
@@ -141,7 +171,7 @@ export function CharacterStateVersions({
                     ) : (
                       <AlertTriangle className="size-3 text-amber-400" />
                     )}
-                    {statusLabel(version, isCurrent)}
+                    {statusLabel(version, isCurrent, t)}
                   </span>
                   <span className="max-w-[55%] truncate font-mono text-[10px] text-muted-foreground">
                     {version.version_id}
@@ -154,14 +184,22 @@ export function CharacterStateVersions({
                       key={panel}
                       className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[10px] text-muted-foreground"
                     >
-                      {PANEL_LABELS[panel] ?? panel}
+                      {t(`characters.stateVersions.panels.${panel}`, { defaultValue: panel })}
                     </span>
                   ))}
                 </div>
 
+                {isV2(version) ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    {t("characters.stateVersions.isolationHint")}
+                  </p>
+                ) : null}
+
                 {issues.length > 0 && (
                   <div className="rounded bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
-                    {issues.join("；")}
+                    {issues.map((issue) =>
+                      t(`characters.stateVersions.qcIssues.${issue}`, { defaultValue: issue }),
+                    ).join(t("characters.stateVersions.issueSeparator"))}
                   </div>
                 )}
 
@@ -177,7 +215,7 @@ export function CharacterStateVersions({
                     {adoptVersion.isPending ? (
                       <Loader2 className="size-3 animate-spin" />
                     ) : null}
-                    采用此版本
+                    {t("characters.stateVersions.adopt")}
                   </Button>
                 )}
               </div>

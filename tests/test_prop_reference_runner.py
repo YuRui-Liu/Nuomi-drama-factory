@@ -4,6 +4,41 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_prop_canonical_replace_failure_rolls_back_workflow_and_canonical(
+    monkeypatch, tmp_path
+):
+    from novelvideo.task_backend.runners import prop_reference
+
+    candidate = tmp_path / "assets/props/key/versions/v1.png"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    canonical = tmp_path / "assets/props/key/reference.png"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"official")
+    real_replace = prop_reference.os.replace
+
+    def fail_canonical_replace(source, target):
+        if Path(target) == canonical:
+            raise OSError("canonical replace failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(prop_reference.os, "replace", fail_canonical_replace)
+    with pytest.raises(OSError, match="canonical replace failed"):
+        prop_reference._register_prop_candidate(
+            ctx=SimpleNamespace(state_dir=tmp_path, requester_username="system"),
+            output_dir=tmp_path,
+            prop=SimpleNamespace(name="key", prop_type="object"),
+            output_path=candidate,
+            canonical_path=canonical,
+            prompt="prompt",
+            model="model",
+            source_attempt_id="attempt",
+        )
+
+    assert canonical.read_bytes() == b"official"
+    assert not (tmp_path / "production_workflow.json").exists()
+
+
 @pytest.mark.asyncio
 async def test_prop_reference_runner_registers_candidates_without_overwriting_current(
     monkeypatch,

@@ -2,9 +2,10 @@
 
 import io
 import logging
+import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -49,6 +50,13 @@ from novelvideo.character_visual import (
     CharacterVisualWorkspaceStore,
     classify_legacy_visual_field,
 )
+from novelvideo.character_visual.identity_sheet import (
+    IDENTITY_SHEET_LAYOUT_VERSION,
+    IDENTITY_SHEET_PANEL_LAYOUT,
+    IdentitySheetQualityReport,
+    classify_identity_sheet_style,
+)
+from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.config import (
     image_generation_selection_options,
     character_image_selection_options,
@@ -2103,17 +2111,15 @@ async def generate_identity_image(
             "error": "Identity has no appearance_details, face_prompt, or costume_image",
         }
 
-    # 输出路径
+    # 候选始终写入版本目录；只有视觉 QC 通过后才晋升 canonical。
     identities_dir = project_dir / "assets" / "characters" / name / "identities"
     identities_dir.mkdir(parents=True, exist_ok=True)
     safe_identity_name = re.sub(r'[/\\:*?"<>|]', "_", identity.identity_name)
-    output_path = identities_dir / f"{safe_identity_name}.png"
-
-    # 备份旧文件
-    if output_path.exists():
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        backup = identities_dir / f"{safe_identity_name}_{ts}.png"
-        shutil.copy(output_path, backup)
+    canonical_path = identities_dir / f"{safe_identity_name}.png"
+    attempt_id = f"character-state-{datetime.now():%Y%m%d%H%M%S%f}"
+    versions_dir = identities_dir / safe_identity_name / "versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    output_path = versions_dir / f"{attempt_id}.png"
 
     # 读取项目配置获取默认 style/ethnicity
     proj_config = load_project_config(username, project_name)
@@ -2121,6 +2127,11 @@ async def generate_identity_image(
     face_override = getattr(identity, "face_prompt", "") or ""
     identity_scope = f"character:{name}:identity:{identity.identity_name}"
     if is_age_variant:
+        if not has_identity_portrait:
+            return {
+                "ok": False,
+                "error": "年龄变体必须先生成或上传 Identity Portrait",
+            }
         combined_prompt = (
             ""
             if has_identity_portrait and has_costume_image
@@ -2138,6 +2149,7 @@ async def generate_identity_image(
                 )
             )
         )
+        reference_image_path = identity_portrait
         result = await generate_identity_image_unified(
             character_name=name,
             identity_prompt=combined_prompt,
@@ -2152,6 +2164,7 @@ async def generate_identity_image(
             usage_task_type="identity_image",
             usage_scope=identity_scope,
             identity_name=identity.identity_name,
+            structured=True,
         )
     else:
         portrait_path = compute_portrait_path(project_dir, name)
@@ -2160,6 +2173,7 @@ async def generate_identity_image(
                 "ok": False,
                 "error": f"Character '{name}' has no portrait. Generate portrait first",
             }
+        reference_image_path = str(portrait_path)
 
         result = await generate_identity_image_unified(
             character_name=name,
@@ -2175,6 +2189,7 @@ async def generate_identity_image(
             usage_task_type="identity_image",
             usage_scope=identity_scope,
             identity_name=identity.identity_name,
+            structured=True,
         )
 
     if isinstance(result, bool):
@@ -2186,10 +2201,123 @@ async def generate_identity_image(
     if not success:
         return {"ok": False, "error": error_msg}
 
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        return {"ok": False, "error": "Identity image generation produced no candidate"}
+
+    try:
+        quality_report = await assess_identity_sheet_quality(
+            image_data=output_path.read_bytes(),
+            style=body.style or proj_config.get("visual_style") or "",
+            project_dir=str(project_dir),
+        )
+    except Exception:
+        quality_report = IdentitySheetQualityReport(
+            passed=False,
+            checks={"qc_unavailable": False},
+            issues=["qc_unavailable"],
+            style_family=classify_identity_sheet_style(
+                body.style or proj_config.get("visual_style") or ""
+            ),
+        )
+    report_data = quality_report.model_dump(mode="json")
+    raw_candidate_path = output_path.with_name(f"{output_path.stem}_body_temp.png")
+    from novelvideo.production_workflow import (
+        ProductionWorkflowStore,
+        production_workflow_project_lock,
+    )
+
+    root = project_dir.resolve()
+
+    def relative_asset_path(path: Path) -> str:
+        return path.resolve().relative_to(root).as_posix()
+
+    slot_id = f"character:{name}:state:{identity.identity_id}"
+    state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / "_state"
+    promote_path: Path | None = None
+    with production_workflow_project_lock(state_dir):
+        if quality_report.passed:
+            promote_path = identities_dir / f".{safe_identity_name}.{attempt_id}.promote.png"
+            shutil.copy2(output_path, promote_path)
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        workflow_snapshot = workflow.capture_file_snapshot()
+        canonical_snapshot = canonical_path.read_bytes() if canonical_path.exists() else None
+        try:
+            slot, version, _event = workflow.register_candidate_version(
+                slot_id=slot_id,
+                asset_kind="character_state",
+                version_id=attempt_id,
+                asset_path=relative_asset_path(output_path),
+                source_attempt_id=attempt_id,
+                qc_passed=quality_report.passed,
+                soft_issues=[] if quality_report.passed else list(quality_report.issues),
+                generation_metadata={
+                    "character_name": name,
+                    "identity_id": identity.identity_id,
+                    "state_id": identity.identity_id,
+                    "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+                    "panel_layout": list(IDENTITY_SHEET_PANEL_LAYOUT),
+                    "face_source": relative_asset_path(Path(reference_image_path)),
+                    "face_source_panel": "portrait_3q",
+                    "quality_report": report_data,
+                    "raw_candidate_path": relative_asset_path(raw_candidate_path),
+                    "recipe_revision": str(proj_config.get("production_recipe_version") or "1"),
+                    "reference_sources": [
+                        relative_asset_path(Path(path))
+                        for path in ([reference_image_path] + ([costume_image] if has_costume_image else []))
+                    ],
+                    "canonical_path": relative_asset_path(canonical_path),
+                },
+                actor=str(getattr(ctx, "requester_username", "") or username),
+                at=datetime.now(timezone.utc),
+            )
+            if promote_path is not None and slot.current_version_id == version.version_id:
+                if canonical_path.exists():
+                    backup = identities_dir / f"{safe_identity_name}_{datetime.now():%Y%m%d%H%M%S%f}.png"
+                    shutil.copy2(canonical_path, backup)
+                os.replace(promote_path, canonical_path)
+                promote_path = None
+        except Exception:
+            workflow.restore_file_snapshot(workflow_snapshot)
+            if canonical_snapshot is None:
+                canonical_path.unlink(missing_ok=True)
+            else:
+                canonical_path.write_bytes(canonical_snapshot)
+            raise
+        finally:
+            if promote_path is not None:
+                promote_path.unlink(missing_ok=True)
+    if not quality_report.passed:
+        return {
+            "ok": False,
+            "error": (
+                "Identity Sheet QC unavailable"
+                if "qc_unavailable" in quality_report.issues
+                else "Identity Sheet visual QC failed"
+            ),
+            "issues": list(quality_report.issues),
+            "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+            "qc_passed": False,
+            "quality_report": report_data,
+            "slot_id": slot_id,
+            "version_id": version.version_id,
+            "adoption_status": version.adoption_status.value,
+        }
+
     image_url = _asset_url(
         ctx,
         project_dir,
-        project_dir / "assets" / "characters" / name / "identities" / f"{safe_identity_name}.png",
+        canonical_path,
     )
 
-    return {"ok": True, "data": {"image_url": image_url}}
+    return {
+        "ok": True,
+        "data": {
+            "image_url": image_url,
+            "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+            "qc_passed": True,
+            "quality_report": report_data,
+            "slot_id": slot_id,
+            "version_id": version.version_id,
+            "adoption_status": version.adoption_status.value,
+        },
+    }

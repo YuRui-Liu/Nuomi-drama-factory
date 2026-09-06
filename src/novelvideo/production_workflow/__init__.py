@@ -28,7 +28,11 @@ from .scene_assets import (
     SceneStateDecision,
     plan_scene_state,
 )
-from .store import ProductionWorkflowStore
+from .store import (
+    ProductionWorkflowStore,
+    character_state_project_lock,
+    production_workflow_project_lock,
+)
 
 __all__ = [
     "AdoptionEvent",
@@ -42,6 +46,8 @@ __all__ = [
     "NormalizedRegion",
     "ProjectProductionSettings",
     "ProductionWorkflowStore",
+    "character_state_project_lock",
+    "production_workflow_project_lock",
     "PropAppearanceState",
     "PropAssetDecision",
     "PropAssetReason",

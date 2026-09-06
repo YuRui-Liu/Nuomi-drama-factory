@@ -9,6 +9,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from novelvideo.character_visual.identity_sheet import (
+    IdentitySheetQualityReport,
+    IdentitySheetStyleFamily,
+)
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelProp, StyleConfig
 
 pytestmark = pytest.mark.m04
@@ -297,6 +301,16 @@ def m04_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         generators_pkg, "generate_character_reference_unified", fake_character_reference
     )
     monkeypatch.setattr(image_generator, "generate_identity_image_unified", fake_identity_image)
+
+    async def passing_identity_qc(**_kwargs):
+        return IdentitySheetQualityReport(
+            passed=True,
+            checks={},
+            issues=[],
+            style_family=IdentitySheetStyleFamily.THREE_D_STYLIZED,
+        )
+
+    monkeypatch.setattr(characters, "assess_identity_sheet_quality", passing_identity_qc)
 
     custom_style = StyleConfig(
         id="custom_drama",

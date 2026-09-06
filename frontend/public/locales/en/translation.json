@@ -611,6 +611,48 @@
       "loading": "Loading style",
       "configureHint": "Configure the project style on the import page"
     },
+    "stateVersions": {
+      "ariaLabel": "Character state turnaround versions",
+      "title": "Character state turnaround",
+      "description": "Keep the same character and outfit across front, side, and back views. Generated results remain candidates until manually adopted.",
+      "v2Title": "Character Identity Sheet v2",
+      "v2Description": "The 3/4 face master anchors identity; the headless front full body defines body shape and front outfit details; the back full body defines the rear silhouette and outfit structure.",
+      "loading": "Loading character state versions…",
+      "versionCount": "{{count}} versions",
+      "imageAlt": "{{characterName}} {{identityId}} turnaround {{versionId}}",
+      "isolationHint": "The headless front view is a model identity-isolation strategy, not a damaged image.",
+      "issueSeparator": "; ",
+      "adopt": "Adopt this version",
+      "adoptReason": "Manually adopted from the character identity sheet",
+      "adoptSuccess": "Character state version adopted",
+      "adoptFailed": "Adoption failed. Check the task log.",
+      "status": {
+        "current": "Currently adopted",
+        "qcFailed": "QC failed",
+        "candidate": "Candidate",
+        "superseded": "Previous version"
+      },
+      "panels": {
+        "front": "Front",
+        "side": "Side",
+        "back": "Back",
+        "portrait": "3/4 face master",
+        "headlessFront": "Headless front full body",
+        "fullBack": "Back full body"
+      },
+      "qcIssues": {
+        "portrait_too_small": "Portrait area is too small",
+        "front_face_detected": "A face was detected in the front body view",
+        "back_face_visible": "The face is visible in the back view",
+        "state_inconsistent": "Character state is inconsistent across views",
+        "non_neutral_presentation": "The background or lighting is not neutral",
+        "style_mismatch": "Style does not match the project settings",
+        "dead_eyes": "Eyes lack a natural, lively appearance",
+        "unnatural_skin_texture": "Skin texture looks unnatural",
+        "plastic_material": "Materials look plastic",
+        "qc_unavailable": "QC is unavailable"
+      }
+    },
     "voiceSamples": {
       "title": "Voice samples (IndexTTS2)",
       "hint": "Usually upload only the default voice. Override age slots only when variants need a different sound.",

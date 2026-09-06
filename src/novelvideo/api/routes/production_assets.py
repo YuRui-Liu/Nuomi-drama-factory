@@ -14,7 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import resolve_project_scope
-from novelvideo.production_workflow import ProductionWorkflowStore
+from novelvideo.production_workflow import (
+    ProductionWorkflowStore,
+    production_workflow_project_lock,
+)
 
 router = APIRouter()
 
@@ -196,15 +199,16 @@ async def materialize_legacy_asset(
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     safe_path = _safe_project_asset(resolved.project_dir, body.asset_path)
-    store = _store(resolved)
-    try:
-        slot, current = store.materialize_legacy_current(
-            slot_id=slot_id,
-            asset_kind=body.asset_kind,
-            asset_path=safe_path,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with production_workflow_project_lock(resolved.state_dir):
+        store = _store(resolved)
+        try:
+            slot, current = store.materialize_legacy_current(
+                slot_id=slot_id,
+                asset_kind=body.asset_kind,
+                asset_path=safe_path,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "ok": True,
         "data": _slot_payload(slot, {current.version_id: current}, store=store),
@@ -220,23 +224,24 @@ async def register_production_asset_candidate(
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     safe_path = _safe_project_asset(resolved.project_dir, body.asset_path)
-    store = _store(resolved)
-    try:
-        slot, version, event = store.register_candidate_version(
-            slot_id=slot_id,
-            asset_kind=body.asset_kind,
-            version_id=body.version_id,
-            asset_path=safe_path,
-            source_attempt_id=body.source_attempt_id,
-            qc_passed=body.qc_passed,
-            generation_metadata=body.generation_metadata,
-            soft_issues=body.soft_issues,
-            technical_error=body.technical_error,
-            actor=str(user.get("username") or user.get("id") or "system"),
-            at=datetime.now(timezone.utc),
-        )
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with production_workflow_project_lock(resolved.state_dir):
+        store = _store(resolved)
+        try:
+            slot, version, event = store.register_candidate_version(
+                slot_id=slot_id,
+                asset_kind=body.asset_kind,
+                version_id=body.version_id,
+                asset_path=safe_path,
+                source_attempt_id=body.source_attempt_id,
+                qc_passed=body.qc_passed,
+                generation_metadata=body.generation_metadata,
+                soft_issues=body.soft_issues,
+                technical_error=body.technical_error,
+                actor=str(user.get("username") or user.get("id") or "system"),
+                at=datetime.now(timezone.utc),
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "ok": True,
         "data": {
@@ -258,56 +263,69 @@ async def adopt_production_asset_version(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
-    store = _store(resolved)
     staged_canonical: tuple[Path, Path] | None = None
-    try:
-        _slot_before, versions_before = store.get_slot(slot_id)
-        selected_before = versions_before.get(version_id)
-        if selected_before is None:
-            raise ValueError("asset version not found")
-        metadata = selected_before.generation_metadata or {}
-        canonical_path = metadata.get("canonical_path")
-        if isinstance(canonical_path, str) and canonical_path.strip():
-            safe_source = _safe_project_asset(
-                resolved.project_dir, selected_before.asset_path
+    replaced_canonical = False
+    with production_workflow_project_lock(resolved.state_dir):
+        store = _store(resolved)
+        workflow_snapshot = store.capture_file_snapshot()
+        canonical_snapshot: bytes | None = None
+        target_existed = False
+
+        def rollback() -> None:
+            store.restore_file_snapshot(workflow_snapshot)
+            if staged_canonical is None:
+                return
+            if target_existed and canonical_snapshot is not None:
+                staged_canonical[1].write_bytes(canonical_snapshot)
+            else:
+                staged_canonical[1].unlink(missing_ok=True)
+
+        try:
+            _slot_before, versions_before = store.get_slot(slot_id)
+            selected_before = versions_before.get(version_id)
+            if selected_before is None:
+                raise ValueError("asset version not found")
+            metadata = selected_before.generation_metadata or {}
+            canonical_path = metadata.get("canonical_path")
+            if isinstance(canonical_path, str) and canonical_path.strip():
+                safe_source = _safe_project_asset(resolved.project_dir, selected_before.asset_path)
+                source = resolved.project_dir / safe_source
+                target = _safe_project_target(resolved.project_dir, canonical_path)
+                if slot_id.startswith("scene:"):
+                    expected_relative = _scene_slot_canonical_relative_path(slot_id, metadata)
+                    expected_target = ((resolved.project_dir / expected_relative).resolve() if expected_relative is not None else None)
+                    if expected_target is None or target != expected_target:
+                        raise ValueError("scene canonical_path does not match the selected asset slot")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target_existed = target.exists()
+                canonical_snapshot = target.read_bytes() if target_existed else None
+                staged = target.with_name(f".{target.name}.adopt-{uuid.uuid4().hex}.tmp")
+                shutil.copy2(source, staged)
+                staged_canonical = (staged, target)
+            slot, versions, event = store.adopt_version(
+                slot_id=slot_id,
+                version_id=version_id,
+                actor=str(user.get("username") or user.get("id") or "system"),
+                reason=body.reason,
+                at=datetime.now(timezone.utc),
             )
-            source = resolved.project_dir / safe_source
-            target = _safe_project_target(resolved.project_dir, canonical_path)
-            if slot_id.startswith("scene:"):
-                expected_relative = _scene_slot_canonical_relative_path(slot_id, metadata)
-                expected_target = (
-                    (resolved.project_dir / expected_relative).resolve()
-                    if expected_relative is not None
-                    else None
-                )
-                if expected_target is None or target != expected_target:
-                    raise ValueError(
-                        "scene canonical_path does not match the selected asset slot"
-                    )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            staged = target.with_name(
-                f".{target.name}.adopt-{uuid.uuid4().hex}.tmp"
-            )
-            shutil.copy2(source, staged)
-            staged_canonical = (staged, target)
-        slot, versions, event = store.adopt_version(
-            slot_id=slot_id,
-            version_id=version_id,
-            actor=str(user.get("username") or user.get("id") or "system"),
-            reason=body.reason,
-            at=datetime.now(timezone.utc),
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="asset slot not found") from exc
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    else:
-        if staged_canonical is not None:
-            os.replace(staged_canonical[0], staged_canonical[1])
-            await _clear_adopted_scene_stale_reference(resolved, slot_id, metadata)
-    finally:
-        if staged_canonical is not None and staged_canonical[0].exists():
-            staged_canonical[0].unlink(missing_ok=True)
+            if staged_canonical is not None:
+                os.replace(staged_canonical[0], staged_canonical[1])
+                replaced_canonical = True
+        except KeyError as exc:
+            rollback()
+            raise HTTPException(status_code=404, detail="asset slot not found") from exc
+        except (RuntimeError, ValueError) as exc:
+            rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception:
+            rollback()
+            raise
+        finally:
+            if staged_canonical is not None and staged_canonical[0].exists():
+                staged_canonical[0].unlink(missing_ok=True)
+    if replaced_canonical:
+        await _clear_adopted_scene_stale_reference(resolved, slot_id, metadata)
     return {
         "ok": True,
         "data": {
