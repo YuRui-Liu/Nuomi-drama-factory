@@ -7,7 +7,7 @@ from hashlib import sha256
 from math import gcd
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,6 +23,10 @@ from novelvideo.narrative_groups.references import (
     GroupImageReference,
     apply_group_reference_selection,
     resolve_group_reference_preview,
+)
+from novelvideo.narrative_groups.reference_uploads import (
+    InvalidReferenceUpload,
+    validate_reference_image,
 )
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -65,6 +69,77 @@ class GroupGenerationInput:
     prompt: str
     references: tuple[str, ...]
     warnings: tuple[str, ...] = ()
+    reference_audit: Mapping[str, Any] = dataclass_field(default_factory=dict)
+
+
+class ReferenceSnapshotInvalid(RuntimeError):
+    """A stable, caller-safe failure for stale or tampered reference inputs."""
+
+    error_code = "REFERENCE_SNAPSHOT_INVALID"
+
+    def __init__(self) -> None:
+        super().__init__(self.error_code)
+
+
+def _snapshot_generation_input(
+    payload: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> GroupGenerationInput:
+    """Revalidate a frozen decision snapshot without re-resolving user intent."""
+    try:
+        if snapshot.get("schema_version") != "narrative-reference-decision/v1":
+            raise ValueError
+        snapshot_id = str(snapshot["id"]).strip()
+        images = snapshot["images"]
+        ignored = snapshot["ignored_requirement_ids"]
+        warnings = snapshot.get("warnings", ())
+        if (
+            not snapshot_id
+            or not isinstance(images, (list, tuple))
+            or not isinstance(ignored, (list, tuple))
+            or not isinstance(warnings, (list, tuple))
+        ):
+            raise ValueError
+
+        project_dir = Path(str(payload["project_dir"])).resolve(strict=False)
+        assets_root = project_dir / "assets"
+        uploads_root = project_dir / ".runtime" / "reference_uploads"
+        references: list[str] = []
+        counts = {"formal": 0, "temporary": 0, "fallback": 0}
+        for raw in images:
+            if not isinstance(raw, Mapping):
+                raise ValueError
+            resolution = str(raw.get("resolution") or "")
+            if resolution in {"matched", "project_asset"}:
+                counts["formal"] += 1
+            elif resolution in {"temporary", "fallback"}:
+                counts[resolution] += 1
+            else:
+                raise ValueError
+            validated = validate_reference_image(
+                str(raw["image_path"]), allowed_roots=(assets_root, uploads_root)
+            )
+            references.append(validated.image_path)
+
+        style_reference = str(snapshot.get("style_reference") or "")
+        if style_reference:
+            validated_style = validate_reference_image(
+                style_reference, allowed_roots=(assets_root,)
+            )
+            references.insert(0, validated_style.image_path)
+        audit = {
+            "snapshot_id": snapshot_id,
+            **counts,
+            "ignored": len(ignored),
+        }
+    except (KeyError, TypeError, ValueError, InvalidReferenceUpload):
+        raise ReferenceSnapshotInvalid() from None
+
+    return GroupGenerationInput(
+        prompt=_grid_prompt(payload),
+        references=tuple(references),
+        warnings=tuple(str(item) for item in warnings),
+        reference_audit=audit,
+    )
 
 
 def _reference_mapping(
@@ -184,21 +259,37 @@ def _normalize_generation_batch_payload(
 
 
 def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
-    preview = resolve_group_reference_preview(
-        Path(str(payload["project_dir"])),
-        list(payload.get("beats") or []),
-        stage=str(payload.get("stage") or "render"),
-    )
-    options = payload.get("reference_selection") or {}
-    selection = apply_group_reference_selection(
-        preview,
-        use_style=bool(options.get("use_style", True)),
-        selected_character_reference_ids=options.get("selected_character_reference_ids"),
-        selected_scene_reference_ids=options.get("selected_scene_reference_ids"),
-    )
-    references = selection.image_paths
-    prompt_references = selection.selected
-    warnings = list(selection.warnings)
+    snapshot = payload.get("reference_resolution")
+    if snapshot is not None and not isinstance(snapshot, Mapping):
+        raise ReferenceSnapshotInvalid()
+    if isinstance(snapshot, Mapping):
+        generation_input = _snapshot_generation_input(payload, snapshot)
+        if str(payload.get("constraint_mode") or "") != "strong_sketch":
+            return generation_input
+        # Strong-lock processing below is shared with legacy selections.
+        references = generation_input.references
+        prompt_references: tuple[GroupImageReference, ...] = ()
+        warnings = list(generation_input.warnings)
+        style_prompt = ""
+        reference_audit = generation_input.reference_audit
+    else:
+        preview = resolve_group_reference_preview(
+            Path(str(payload["project_dir"])),
+            list(payload.get("beats") or []),
+            stage=str(payload.get("stage") or "render"),
+        )
+        options = payload.get("reference_selection") or {}
+        selection = apply_group_reference_selection(
+            preview,
+            use_style=bool(options.get("use_style", True)),
+            selected_character_reference_ids=options.get("selected_character_reference_ids"),
+            selected_scene_reference_ids=options.get("selected_scene_reference_ids"),
+        )
+        references = selection.image_paths
+        prompt_references = selection.selected
+        warnings = list(selection.warnings)
+        style_prompt = selection.style_prompt
+        reference_audit = {}
     if str(payload.get("constraint_mode") or "") == "strong_sketch":
         group = next(
             (
@@ -229,11 +320,12 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
     return GroupGenerationInput(
         prompt=_grid_prompt(
             payload,
-            style_prompt=selection.style_prompt,
+            style_prompt=style_prompt,
             selected_references=prompt_references,
         ),
         references=tuple(references),
         warnings=tuple(warnings),
+        reference_audit=reference_audit,
     )
 
 
@@ -453,6 +545,7 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             "provider_task_id": task_id,
             "reference_count": len(generation_input.references),
             "reference_warnings": list(generation_input.warnings),
+            "reference_audit": dict(generation_input.reference_audit),
             "policy_retry": policy_retry,
             "requested_image_size": requested_tier,
             "requested_pixel_size": (
@@ -664,7 +757,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             async def generate(data: Mapping[str, Any]) -> dict[str, Any]:
                 generated = await _generate_grid(data, ctx)
                 for field in (
-                    "reference_count", "reference_warnings",
+                    "reference_count", "reference_warnings", "reference_audit",
                     "source_sketch_revision", "constraint_mode",
                     "requested_image_size", "requested_pixel_size",
                     "actual_pixel_size", "resolution_warning", "cleaned_cell_size",
@@ -712,6 +805,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                 "target_cell_size": str(result.get("target_cell_size") or ""),
                 "upscaled": bool(result.get("upscaled")),
                 "degraded": bool(result.get("degraded")),
+                "reference_audit": dict(result.get("reference_audit") or {}),
             },
         )
         return result

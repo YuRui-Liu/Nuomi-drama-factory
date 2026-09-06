@@ -642,8 +642,27 @@ def generation_beats_for_group(
     group = next((item for item in active.groups if item.id == group_id), None)
     if group is None:
         raise KeyError(group_id)
-    return [
-        {
+    beats = []
+    for shot in group.shots:
+        asset_requirements = [
+            requirement.model_dump(mode="json")
+            for requirement in shot.asset_requirements
+        ]
+        identities: list[str] = []
+        props: list[str] = []
+        scene_id = ""
+        for requirement in shot.asset_requirements:
+            entity_key = requirement.entity_key.strip()
+            if requirement.kind in {"character_identity", "character_state"}:
+                if entity_key and entity_key not in identities:
+                    identities.append(entity_key)
+            elif requirement.kind == "prop":
+                if entity_key and entity_key not in props:
+                    props.append(entity_key)
+            elif requirement.kind in {"scene_base", "scene_state"}:
+                if entity_key and (not scene_id or requirement.kind == "scene_state"):
+                    scene_id = entity_key
+        beats.append({
             "id": shot.id,
             "beat_id": shot.id,
             "source_span_ids": list(shot.source_span_ids),
@@ -660,9 +679,12 @@ def generation_beats_for_group(
             "camera_motion": shot.camera_motion,
             "dialogue_source_ids": list(shot.dialogue_source_ids),
             "duration_seconds": shot.duration_seconds,
-        }
-        for shot in group.shots
-    ]
+            "asset_requirements": asset_requirements,
+            "detected_identities": identities,
+            "detected_props": props,
+            "scene_ref": {"scene_id": scene_id} if scene_id else {},
+        })
+    return beats
 
 
 def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:

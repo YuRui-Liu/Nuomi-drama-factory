@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from novelvideo.director_plan.models import (
+    AssetRequirement,
     DirectorPlanRevision,
     NarrativeGroupPlan,
     ShotPlan,
@@ -22,7 +23,12 @@ from novelvideo.narrative_groups.models import (
 from novelvideo.narrative_groups import service
 
 
-def _shot(shot_id: str, source_span_id: str) -> ShotPlan:
+def _shot(
+    shot_id: str,
+    source_span_id: str,
+    *,
+    asset_requirements: tuple[AssetRequirement, ...] = (),
+) -> ShotPlan:
     return ShotPlan(
         id=shot_id,
         source_span_ids=(source_span_id,),
@@ -30,6 +36,7 @@ def _shot(shot_id: str, source_span_id: str) -> ShotPlan:
         action="acts",
         visible_start_state="before",
         visible_end_state="after",
+        asset_requirements=asset_requirements,
         duration_seconds=3,
     )
 
@@ -343,3 +350,62 @@ def test_active_projection_accepts_shot_partition_for_video_plan(tmp_path: Path)
         ("shot-01-02",),
     ]
     assert [unit.duration_seconds for unit in updated.video_plan.units] == [3.0, 3.0]
+
+
+def test_generation_beats_preserve_director_asset_requirements_and_legacy_refs(
+    tmp_path: Path,
+) -> None:
+    requirements = (
+        AssetRequirement(
+            kind="character_identity",
+            entity_key="hero",
+            evidence_source_ids=("line-1",),
+            design_notes="blue coat",
+        ),
+        AssetRequirement(
+            kind="character_state",
+            entity_key="hero",
+            visible_change="coat soaked by rain",
+        ),
+        AssetRequirement(kind="scene_state", entity_key="hallway_rain"),
+        AssetRequirement(kind="prop", entity_key="letter", required=False),
+    )
+    group = _group("director-a", 1, ("line-1",), ("shot-1",))
+    group = group.model_copy(
+        update={"shots": (_shot("shot-1", "line-1", asset_requirements=requirements),)}
+    )
+    _activate(tmp_path, (group,))
+
+    [beat] = service.generation_beats_for_group(tmp_path, 1, "director-a", [])
+
+    assert beat["asset_requirements"] == [
+        requirement.model_dump(mode="json") for requirement in requirements
+    ]
+    assert beat["detected_identities"] == ["hero"]
+    assert beat["detected_props"] == ["letter"]
+    assert beat["scene_ref"] == {"scene_id": "hallway_rain"}
+
+
+def test_generation_beats_do_not_merge_distinct_character_state_variants(
+    tmp_path: Path,
+) -> None:
+    variants = (
+        AssetRequirement(
+            kind="character_state", entity_key="hero", visible_change="dry coat"
+        ),
+        AssetRequirement(
+            kind="character_state", entity_key="hero", visible_change="wet coat"
+        ),
+    )
+    group = _group("director-a", 1, ("line-1",), ("shot-1",))
+    group = group.model_copy(
+        update={"shots": (_shot("shot-1", "line-1", asset_requirements=variants),)}
+    )
+    _activate(tmp_path, (group,))
+
+    [beat] = service.generation_beats_for_group(tmp_path, 1, "director-a", [])
+
+    assert [item["visible_change"] for item in beat["asset_requirements"]] == [
+        "dry coat",
+        "wet coat",
+    ]

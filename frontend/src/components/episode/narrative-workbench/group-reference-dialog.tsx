@@ -17,6 +17,8 @@ import type {
   NarrativeGroupGenerationSelection,
   NarrativeGroupImageReference,
   NarrativeGroupReferencePreview,
+  NarrativeReferenceCandidate,
+  NarrativeReferenceUpload,
 } from "@/lib/queries/narrative-groups";
 import {
   coerceNarrativeImageSize,
@@ -24,6 +26,26 @@ import {
   supportedNarrativeImageSizes,
   type NarrativeImageSize,
 } from "@/lib/narrative-image-resolution";
+import { ReferenceResolutionDialog } from "./reference-resolution-dialog";
+import { FreeReferencePicker, type ReferenceUploadOptions } from "./free-reference-picker";
+import { useNarrativeReferenceCandidates, useUploadNarrativeReference } from "@/lib/queries/narrative-groups";
+
+function ConnectedFreeReferencePicker({ project, episode, groupId, stage, onAdded }: {
+  project: string; episode: number; groupId: string; stage: "sketch" | "render";
+  onAdded: (id: string, source: "asset" | "upload") => void;
+}) {
+  const candidates = useNarrativeReferenceCandidates(project, episode, groupId, stage);
+  const upload = useUploadNarrativeReference(project, episode, groupId, stage);
+  return <FreeReferencePicker
+    candidates={candidates.data?.ok ? candidates.data.data : []}
+    uploading={upload.isPending}
+    onAdd={(id) => onAdded(id, "asset")}
+    onUpload={async (file, options) => {
+      const response = await upload.mutateAsync({ file, ...options });
+      if (response.ok) onAdded(response.data.upload_id, "upload");
+    }}
+  />;
+}
 
 export interface GroupReferenceDialogProps {
   open: boolean;
@@ -39,6 +61,13 @@ export interface GroupReferenceDialogProps {
   defaultModel?: string;
   defaultImageSize?: NarrativeImageSize;
   sketchReady?: boolean;
+  project?: string;
+  episode?: number;
+  groupId?: string;
+  onCreateProp?: (entityId: string) => void;
+  candidates?: NarrativeReferenceCandidate[];
+  uploadingReference?: boolean;
+  onUploadReference?: (file: File, options: ReferenceUploadOptions) => Promise<NarrativeReferenceUpload | null>;
 }
 
 function defaultSelection(
@@ -56,7 +85,7 @@ function defaultSelection(
     providerId,
     model,
     imageSize: coerceNarrativeImageSize(model, imageSize),
-    allowUnconstrained: false,
+    allowUnconstrained: true,
     saveAsProjectDefault: false,
   } satisfies NarrativeGroupGenerationSelection;
 }
@@ -153,22 +182,39 @@ export function GroupReferenceDialog({
   defaultModel = stage === "sketch" ? "nano-banana-2" : "gpt-image-2",
   defaultImageSize,
   sketchReady = true,
+  project = "",
+  episode = 0,
+  groupId = "",
+  onCreateProp,
+  candidates = [],
+  uploadingReference = false,
+  onUploadReference,
 }: GroupReferenceDialogProps) {
   const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview, defaultProvider, defaultModel, defaultImageSize));
   const wasOpen = useRef(false);
   const previousPreviewKey = useRef<string | null>(null);
   const previewKey = previewSelectionKey(preview);
+  const [unresolvedCount, setUnresolvedCount] = useState(0);
+  const [ignoredCount, setIgnoredCount] = useState(0);
+  const [freeAssetIds, setFreeAssetIds] = useState<string[]>([]);
+  const [freeUploadIds, setFreeUploadIds] = useState<string[]>([]);
 
   useEffect(() => {
     const justOpened = open && !wasOpen.current;
     const defaultsChanged = previewKey !== previousPreviewKey.current;
-    if (justOpened || defaultsChanged) setSelection(defaultSelection(preview, defaultProvider, defaultModel, defaultImageSize));
+    if (justOpened || defaultsChanged) {
+      setSelection(defaultSelection(preview, defaultProvider, defaultModel, defaultImageSize));
+      setUnresolvedCount(preview?.requirements?.filter((item) => !["matched", "fallback", "temporary", "ignored"].includes(item.status)).length ?? 0);
+      setIgnoredCount(0);
+      setFreeAssetIds([]);
+      setFreeUploadIds([]);
+    }
     wasOpen.current = open;
     previousPreviewKey.current = previewKey;
   }, [open, preview, previewKey, defaultProvider, defaultModel, defaultImageSize]);
 
   const imageCount = selection.selectedCharacterReferenceIds.length
-    + selection.selectedSceneReferenceIds.length;
+    + selection.selectedSceneReferenceIds.length + freeAssetIds.length + freeUploadIds.length;
   const errorMessage = typeof error === "string" ? error : error?.message;
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
@@ -187,6 +233,19 @@ export function GroupReferenceDialog({
       </div> : null}
 
       {!loading && preview ? <div className="space-y-3">
+        {preview.requirements?.length ? <ReferenceResolutionDialog
+          key={previewKey}
+          requirements={preview.requirements}
+          onChange={(decisions, nextUnresolvedCount) => {
+            setUnresolvedCount(nextUnresolvedCount);
+            setIgnoredCount(decisions.filter((item) => item.action === "ignore").length);
+            setSelection((current) => ({ ...current, referenceResolution: {
+              ...current.referenceResolution,
+              decisions,
+            } }));
+          }}
+          onCreateProp={onCreateProp ? (requirement) => onCreateProp(requirement.entity_id) : undefined}
+        /> : null}
         <section className="grid gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-2">
           <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={selection.providerId ?? ""} onChange={(event) => setSelection((current) => ({ ...current, providerId: event.target.value }))} /></label>
           <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-input bg-background px-3" value={selection.model ?? ""} onChange={(event) => setSelection((current) => ({ ...current, model: event.target.value, imageSize: coerceNarrativeImageSize(event.target.value, current.imageSize) }))}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
@@ -217,6 +276,45 @@ export function GroupReferenceDialog({
             ...current, selectedCharacterReferenceIds: ids,
           }))}
         />
+
+        {project && groupId && onUploadReference ? <FreeReferencePicker
+          candidates={candidates}
+          uploading={uploadingReference}
+          onAdd={(assetId) => {
+            setFreeAssetIds((current) => current.includes(assetId) ? current : [...current, assetId]);
+            setSelection((current) => ({ ...current, referenceResolution: {
+              decisions: current.referenceResolution?.decisions ?? [],
+              additional_asset_ids: [...new Set([...(current.referenceResolution?.additional_asset_ids ?? []), assetId])],
+              additional_upload_ids: current.referenceResolution?.additional_upload_ids ?? [],
+            } }));
+          }}
+          onUpload={async (file, options) => {
+            const response = await onUploadReference(file, options);
+            if (response) {
+              setFreeUploadIds((current) => current.includes(response.upload_id) ? current : [...current, response.upload_id]);
+              setSelection((current) => ({
+                ...current,
+                referenceResolution: {
+                  decisions: current.referenceResolution?.decisions ?? [],
+                  additional_asset_ids: current.referenceResolution?.additional_asset_ids ?? [],
+                  additional_upload_ids: [...new Set([...(current.referenceResolution?.additional_upload_ids ?? []), response.upload_id])],
+                },
+              }));
+            }
+          }}
+        /> : project && groupId ? <ConnectedFreeReferencePicker project={project} episode={episode} groupId={groupId} stage={stage} onAdded={(id, source) => {
+          if (source === "asset") setFreeAssetIds((current) => current.includes(id) ? current : [...current, id]);
+          else setFreeUploadIds((current) => current.includes(id) ? current : [...current, id]);
+          setSelection((current) => ({ ...current, referenceResolution: {
+            decisions: current.referenceResolution?.decisions ?? [],
+            additional_asset_ids: source === "asset"
+              ? [...new Set([...(current.referenceResolution?.additional_asset_ids ?? []), id])]
+              : current.referenceResolution?.additional_asset_ids ?? [],
+            additional_upload_ids: source === "upload"
+              ? [...new Set([...(current.referenceResolution?.additional_upload_ids ?? []), id])]
+              : current.referenceResolution?.additional_upload_ids ?? [],
+          } }));
+        }} /> : null}
         <ReferenceSection
           title="场景参考"
           references={preview.scene_references}
@@ -240,13 +338,14 @@ export function GroupReferenceDialog({
           disabled={
             loading || !!errorMessage || !preview || submitting
             || imageCount > preview.limits.max_images
+            || unresolvedCount > 0
             || !selection.providerId?.trim() || !selection.model?.trim()
             || (stage === "render" && !sketchReady && !selection.allowUnconstrained)
           }
           onClick={() => onSubmit(selection)}
         >
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
-          使用 {imageCount} 张参考图生成
+          使用 {imageCount} 张参考图生成{ignoredCount ? `（忽略 ${ignoredCount} 项）` : ""}
         </Button>
       </DialogFooter>
     </DialogContent>

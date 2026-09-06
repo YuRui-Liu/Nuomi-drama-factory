@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import math
 import re
+import hashlib
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.api.auth import get_api_user
+from novelvideo.api.schemas import NarrativeReferenceResolutionRequest
 from novelvideo.api.deps import (
     get_media_capability_store,
     get_media_credential_resolver,
@@ -43,6 +48,26 @@ from novelvideo.narrative_groups.references import (
     UnknownGroupReferenceIds,
     apply_group_reference_selection,
     resolve_group_reference_preview,
+    resolve_requirement_reference_preview,
+)
+from novelvideo.narrative_groups.reference_requirements import (
+    reference_requirements_for_shots,
+)
+from novelvideo.narrative_groups.reference_decisions import (
+    InvalidReferenceDecisions,
+    ResolvedProjectAsset,
+    build_reference_snapshot,
+)
+from novelvideo.narrative_groups.reference_matching import ReferenceMatchPreview
+from novelvideo.narrative_groups.reference_uploads import (
+    InvalidReferenceUpload,
+    load_reference_upload,
+    save_reference_upload,
+)
+from novelvideo.utils.path_resolver import (
+    canonical_identity_path,
+    canonical_prop_reference_path,
+    canonical_scene_master_path,
 )
 from novelvideo.narrative_groups.service import (
     advance_revision,
@@ -72,6 +97,7 @@ class NarrativeGroupGenerationRequest(BaseModel):
     model: str | None = None
     image_size: Literal["1K", "2K", "4K"] | None = None
     allow_unconstrained: bool = False
+    reference_resolution: NarrativeReferenceResolutionRequest | None = None
 
 
 def _image_binding(
@@ -220,6 +246,9 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
     result = []
     for group in groups:
         item = group.to_dict()
+        item["title"] = str(
+            item.get("objective") or item.get("visible_turn") or ""
+        ).strip() or None
         effective_style = dict(item.get("effective_style_snapshot") or {})
         snapshot_id = str(effective_style.get("snapshot_id") or "project-default")
         effective_style.update({
@@ -338,6 +367,185 @@ def _serialize_reference_preview(
         },
         "warnings": list(selection.warnings),
     }
+
+
+def _serialize_requirement_reference_preview(
+    project: str, project_dir: Path, preview: Any
+) -> dict[str, Any]:
+    def binding_item(binding: Any) -> dict[str, Any]:
+        return {
+            "requirement_id": binding.requirement_id,
+            "decision": binding.decision,
+            "asset_id": binding.asset_id,
+            "asset_kind": binding.asset_kind,
+            "thumbnail_url": _asset_url(project, project_dir, binding.image_path),
+        }
+
+    requirements = []
+    for requirement in preview.requirements:
+        requirements.append({
+            "id": requirement.id,
+            "kind": requirement.kind,
+            "entity_id": requirement.entity_id,
+            "base_entity_id": requirement.base_entity_id or None,
+            "variant_id": requirement.variant_id or None,
+            "shot_ids": list(requirement.shot_ids),
+            "required": requirement.required,
+            "label": requirement.label,
+            "status": requirement.status,
+            "candidate_asset_ids": list(requirement.candidate_asset_ids),
+            "available_actions": list(requirement.available_actions),
+            "bindings": [binding_item(item) for item in requirement.bindings],
+            "warning": requirement.warning or None,
+        })
+    bindings = [binding_item(item) for item in preview.bindings]
+    selected = [item for item in bindings if item["thumbnail_url"]]
+    legacy = {"character_references": [], "scene_references": []}
+    by_requirement = {item["id"]: item for item in requirements}
+    for item in selected:
+        requirement = by_requirement.get(item["requirement_id"], {})
+        kind = str(requirement.get("kind") or "")
+        legacy_kind = "character" if kind == "character_identity" else "scene" if kind.startswith("scene_") else ""
+        if not legacy_kind:
+            continue
+        legacy[f"{legacy_kind}_references"].append({
+            "id": item["asset_id"],
+            "kind": legacy_kind,
+            "source_kind": item["asset_kind"],
+            "label": requirement.get("label") or item["asset_id"],
+            "thumbnail_url": item["thumbnail_url"],
+            "beat_numbers": [],
+            "enabled_by_default": True,
+            "warning": requirement.get("warning"),
+        })
+    return {
+        "requirements": requirements,
+        "bindings": bindings,
+        "style": {
+            "id": preview.style.id,
+            "label": preview.style.name,
+            "prompt": preview.style.prompt,
+            "enabled_by_default": True,
+            "warning": preview.style.warning,
+        },
+        **legacy,
+        "limits": {
+            "max_images": MAX_GROUP_IMAGE_REFERENCES,
+            "selected_images": len(selected),
+            "omitted_reference_ids": [],
+        },
+        "warnings": list(preview.warnings),
+    }
+
+
+def _active_reference_requirements(
+    project_dir: Path, episode: int, group_id: str
+) -> tuple[Any, ...]:
+    active = DirectorPlanStore(project_dir).load_active(episode)
+    group = next(
+        (item for item in active.groups if item.id == group_id), None
+    ) if active is not None else None
+    return reference_requirements_for_shots(group.shots) if group is not None else ()
+
+
+async def _project_reference_assets(
+    store: Any, project_dir: Path
+) -> dict[str, ResolvedProjectAsset]:
+    """Return opaque project-scoped candidate IDs mapped to safe image assets."""
+    result: dict[str, ResolvedProjectAsset] = {}
+    def add(
+        kind: str, entity_id: str, path: Path, *, base: str = "", variant: str = ""
+    ) -> None:
+        if not path.is_file():
+            return
+        asset_id = hashlib.sha256(
+            f"{kind}\0{entity_id}\0{base}\0{variant}".encode("utf-8")
+        ).hexdigest()
+        result[asset_id] = ResolvedProjectAsset(
+            asset_id=asset_id, image_path=str(path.resolve()), asset_kind=kind,
+            entity_id=entity_id, base_entity_id=base, variant_id=variant,
+        )
+
+    for character in await store.list_characters():
+        for identity in getattr(character, "identities", ()) or ():
+            identity_id = str(getattr(identity, "identity_id", "") or "").strip()
+            if identity_id:
+                add(
+                    "character_identity", identity_id,
+                    canonical_identity_path(project_dir, character.name, identity_id),
+                )
+    for scene in await store.list_scenes():
+        name = str(getattr(scene, "name", "") or "").strip()
+        base = str(getattr(scene, "base_scene_id", "") or "").strip()
+        variant = str(getattr(scene, "variant_id", "") or "").strip()
+        if name:
+            add(
+                "scene_variant" if base else "scene_base", name,
+                canonical_scene_master_path(project_dir, name),
+                base=base, variant=variant,
+            )
+    for prop in await store.list_props():
+        name = str(getattr(prop, "name", "") or "").strip()
+        if name:
+            add("prop", name, canonical_prop_reference_path(project_dir, name))
+    return result
+
+
+async def _reference_persistence_target(
+    store: Any,
+    project_dir: Path,
+    *,
+    requirement_id: str,
+    asset_kind: str,
+    target_entity_id: str,
+    base_entity_id: str,
+    variant_id: str,
+) -> Path:
+    target = target_entity_id.strip()
+    if asset_kind == "prop":
+        if (requirement_id and requirement_id != f"prop:{target}") or not target:
+            raise HTTPException(status_code=422, detail="Invalid prop persistence target")
+        if await store.get_prop(target) is None:
+            raise HTTPException(status_code=422, detail="Target prop does not exist")
+        return canonical_prop_reference_path(project_dir, target)
+    if asset_kind == "scene_base":
+        if (requirement_id and requirement_id != f"scene_base:{target}") or not target:
+            raise HTTPException(status_code=422, detail="Invalid scene persistence target")
+        scene = await store.get_scene_exact(target)
+        if scene is None or str(getattr(scene, "base_scene_id", "") or "").strip():
+            raise HTTPException(status_code=422, detail="Target base scene does not exist")
+        return canonical_scene_master_path(project_dir, target)
+    if asset_kind == "scene_variant":
+        base = base_entity_id.strip()
+        variant = variant_id.strip()
+        if (
+            not target or not base or not variant
+            or (requirement_id and requirement_id != f"scene_variant:{base}:{variant}")
+        ):
+            raise HTTPException(status_code=422, detail="Invalid scene variant target")
+        scene = await store.get_scene_exact(target)
+        if (
+            scene is None
+            or str(getattr(scene, "base_scene_id", "") or "").strip() != base
+            or str(getattr(scene, "variant_id", "") or "").strip() != variant
+        ):
+            raise HTTPException(status_code=422, detail="Target scene variant does not exist")
+        return canonical_scene_master_path(project_dir, target)
+    if asset_kind == "character_identity":
+        if (requirement_id and requirement_id != f"character_identity:{target}") or not target:
+            raise HTTPException(status_code=422, detail="Invalid identity persistence target")
+        characters = await store.list_characters()
+        character = next((
+            item for item in characters
+            if any(
+                str(getattr(identity, "identity_id", "") or "").strip() == target
+                for identity in (getattr(item, "identities", ()) or ())
+            )
+        ), None)
+        if character is None:
+            raise HTTPException(status_code=422, detail="Target identity does not exist")
+        return canonical_identity_path(project_dir, character.name, target)
+    raise HTTPException(status_code=422, detail="Unsupported persistence asset kind")
 
 
 _REJECTED_REVIEW_VALUE = object()
@@ -707,15 +915,145 @@ async def preview_group_references(
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     try:
         _, selected_beats = _group_beats(groups, beats, group_id)
+        selected_beats = generation_beats_for_group(
+            resolved.project_dir, episode, group_id, selected_beats
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group not found") from exc
-    preview = resolve_group_reference_preview(
-        resolved.project_dir, selected_beats, stage=stage_name
+    requirements = _active_reference_requirements(
+        resolved.project_dir, episode, group_id
     )
+    if requirements:
+        store = await make_sqlite_store_for_context(resolved.ctx)
+        preview = await resolve_requirement_reference_preview(
+            store, requirements, stage=stage_name
+        )
+        data = _serialize_requirement_reference_preview(
+            project, resolved.project_dir, preview
+        )
+    else:
+        preview = resolve_group_reference_preview(
+            resolved.project_dir, selected_beats, stage=stage_name
+        )
+        data = _serialize_reference_preview(project, resolved.project_dir, preview)
     return {
         "ok": True,
-        "data": _serialize_reference_preview(project, resolved.project_dir, preview),
+        "data": data,
     }
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/{stage_name}/references/candidates"
+)
+async def list_reference_candidates(
+    project: str,
+    episode: int,
+    group_id: str,
+    stage_name: Literal["sketch", "render"],
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    if not any(item.id == group_id for item in groups):
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    candidates = await _project_reference_assets(store, resolved.project_dir)
+    return {"ok": True, "data": [
+        {
+            "id": asset_id,
+            "kind": kind,
+            "label": label,
+            "available": True,
+            "thumbnail_url": _asset_url(project, resolved.project_dir, path),
+        }
+        for asset_id, asset in candidates.items()
+        for kind, label, path in [
+            (asset.asset_kind, asset.entity_id, asset.image_path)
+        ]
+    ]}
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/{stage_name}/references/upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_group_reference(
+    project: str,
+    episode: int,
+    group_id: str,
+    stage_name: Literal["sketch", "render"],
+    file: UploadFile = File(...),
+    persist: bool = Form(False),
+    requirement_id: str = Form(""),
+    asset_kind: str = Form(""),
+    target_entity_id: str = Form(""),
+    base_entity_id: str = Form(""),
+    variant_id: str = Form(""),
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    if not any(item.id == group_id for item in groups):
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    persist_resolver = None
+    if persist:
+        store = await make_sqlite_store_for_context(resolved.ctx)
+        target = await _reference_persistence_target(
+            store,
+            resolved.project_dir,
+            requirement_id=requirement_id,
+            asset_kind=asset_kind,
+            target_entity_id=target_entity_id,
+            base_entity_id=base_entity_id,
+            variant_id=variant_id,
+        )
+        def persist_resolver(_project_dir: Path, _request: Any) -> Path:
+            return target
+    try:
+        upload = save_reference_upload(
+            resolved.project_dir,
+            await file.read(),
+            file.content_type or "",
+            file.filename or "",
+            persist=persist,
+            requirement_id=requirement_id,
+            asset_kind=asset_kind,
+            target_entity_id=target_entity_id,
+            base_entity_id=base_entity_id,
+            variant_id=variant_id,
+            persist_resolver=persist_resolver,
+        )
+    except InvalidReferenceUpload as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    data = asdict(upload)
+    data.pop("image_path", None)
+    data["url"] = (
+        f"/api/v1/projects/{quote(project, safe='')}/episodes/{episode}/"
+        f"narrative-groups/{quote(group_id, safe='')}/{stage_name}/"
+        f"references/uploads/{upload.upload_id}"
+    )
+    return {"ok": True, "data": data}
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/{stage_name}/references/uploads/{upload_id}"
+)
+async def get_group_reference_upload(
+    project: str,
+    episode: int,
+    group_id: str,
+    stage_name: Literal["sketch", "render"],
+    upload_id: str,
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    if not any(item.id == group_id for item in groups):
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    upload = load_reference_upload(resolved.project_dir, upload_id)
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Reference upload not found")
+    return FileResponse(upload.image_path, media_type=upload.mime_type)
 
 
 @router.get(
@@ -804,31 +1142,83 @@ async def _enqueue_group_action(
 
     request = generation_request or NarrativeGroupGenerationRequest()
     reference_selection = None
+    reference_snapshot = None
     if not split_only:
-        preview = resolve_group_reference_preview(
-            resolved.project_dir, selected_beats, stage=stage
+        requirements = _active_reference_requirements(
+            resolved.project_dir, episode, group_id
         )
-        try:
-            apply_group_reference_selection(
-                preview,
-                use_style=request.use_style,
-                selected_character_reference_ids=request.selected_character_reference_ids,
-                selected_scene_reference_ids=request.selected_scene_reference_ids,
+        if request.reference_resolution is not None:
+            if not requirements:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Reference resolution requires director asset requirements",
+                )
+            store = await make_sqlite_store_for_context(resolved.ctx)
+            preview = await resolve_requirement_reference_preview(
+                store, requirements, stage=stage
             )
-        except UnknownGroupReferenceIds as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"unknown_reference_ids": list(exc.unknown_ids)},
-            ) from exc
-        reference_selection = request.model_dump(
-            exclude={
-                "aspect_ratio",
-                "provider_id",
-                "model",
-                "image_size",
-                "allow_unconstrained",
-            }
-        )
+            assets = await _project_reference_assets(store, resolved.project_dir)
+            decisions = request.reference_resolution.decisions
+            additional_upload_ids = request.reference_resolution.additional_upload_ids
+            requested_upload_ids = [
+                *(item.upload_id for item in decisions if item.upload_id),
+                *additional_upload_ids,
+            ]
+            uploads = {}
+            for upload_id in requested_upload_ids:
+                upload = load_reference_upload(resolved.project_dir, upload_id)
+                if upload is not None:
+                    uploads[upload_id] = upload
+            style_asset_id = request.reference_resolution.style_asset_id
+            if style_asset_id and style_asset_id not in assets:
+                raise HTTPException(status_code=422, detail="Unknown style asset ID")
+            try:
+                reference_snapshot = build_reference_snapshot(
+                    ReferenceMatchPreview(
+                        requirements=preview.requirements,
+                        bindings=preview.bindings,
+                        warnings=preview.warnings,
+                    ),
+                    [item.model_dump() for item in decisions],
+                    project_dir=resolved.project_dir,
+                    project_assets=assets,
+                    uploads=uploads,
+                    additional_asset_ids=request.reference_resolution.additional_asset_ids,
+                    additional_upload_ids=additional_upload_ids,
+                    style_reference=(
+                        assets[style_asset_id].image_path
+                        if style_asset_id in assets else None
+                    ),
+                    max_images=MAX_GROUP_IMAGE_REFERENCES,
+                )
+            except InvalidReferenceDecisions as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        else:
+            preview = resolve_group_reference_preview(
+                resolved.project_dir, selected_beats, stage=stage
+            )
+            try:
+                apply_group_reference_selection(
+                    preview,
+                    use_style=request.use_style,
+                    selected_character_reference_ids=request.selected_character_reference_ids,
+                    selected_scene_reference_ids=request.selected_scene_reference_ids,
+                )
+            except UnknownGroupReferenceIds as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"unknown_reference_ids": list(exc.unknown_ids)},
+                ) from exc
+            reference_selection = request.model_dump(
+                exclude={
+                    "aspect_ratio",
+                    "provider_id",
+                    "model",
+                    "image_size",
+                    "allow_unconstrained",
+                    "reference_resolution",
+                }
+            )
     provider_id = model = ""
     image_size = "1K"
     constraint_mode = ""
@@ -898,6 +1288,16 @@ async def _enqueue_group_action(
                 "source_sketch_asset": source_sketch_asset,
             }
         )
+    if reference_snapshot is not None:
+        payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
+        payload.update({
+            "provider_id": provider_id,
+            "model": model,
+            "image_size": image_size,
+            "constraint_mode": constraint_mode,
+            "source_sketch_revision": source_sketch_revision,
+            "source_sketch_asset": source_sketch_asset,
+        })
     queued = await get_task_backend().enqueue_project_task(
         resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
         scope=scope, payload=payload,
