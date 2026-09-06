@@ -42,7 +42,7 @@ sequenceDiagram
     participant C as run_project_task_core_sync
     participant X as Runner
     participant F as 前端任务中心
-    R->>B: enqueue_project_task(ctx, task_type, identity, payload)
+    R->>B: enqueue_project_task(ctx, task_type, queue_kind, episode, beat_num, scope, payload)
     B->>M: reserve_task_for_project
     alt 同一业务键已有活跃任务
         M-->>B: 原 task_state, reserved=false
@@ -94,7 +94,9 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 
 `src/novelvideo/ports/tasks.py:display_metadata_for_task` 只从 payload 提取白名单展示字段，例如 `display_name`、`task_label`、`task_family`、`source_label`、`target_label`、`canvas_id`、`node_id` 和 `skill_id`。通用标题还由 `src/novelvideo/api/routes/tasks.py:_TASK_TYPE_LABELS` 生成。新增面向任务中心的类型时，至少决定：是否要后端中文 label、是否要 payload 中的 `display_name`、完成后哪些 Query 需要失效、点击任务时跳到哪里。
 
-异常不要在 Runner 中吞掉后伪造成功结果。`run_project_task_core_sync` 会把已知的超时、余额不足、内容审核和带合法 `error_code` 的领域异常转换为结构化失败；未知异常经 `safe_exception_message` 脱敏后写入 failed，并继续抛出。注册导入失败也会先写 failed，`tests/test_task_run_core_registration_failure.py` 固定了这项契约。任务结果中的本地绝对路径在 tasks route 序列化时会转换为受项目权限保护的 URL 或被移除，前端不应依赖本机路径。
+异常不要在 Runner 中吞掉后伪造成功结果。`run_project_task_core_sync` 会把已知的超时、余额不足、内容审核和带合法 `error_code` 的领域异常转换为结构化失败；未知异常经 `safe_exception_message` 脱敏后写入 failed，并继续抛出。注册导入失败也会先写 failed，`tests/test_task_run_core_registration_failure.py` 固定了这项契约。
+
+结果路径还有一条容易误读的边界：`src/novelvideo/api/routes/tasks.py:_sanitize_task_result_for_client` 只识别键名为 `path`、`paths` 或以 `_path`、`_paths` 结尾的字段，并把这些字段中的项目 output 绝对路径转换为受保护 URL，或移除无法安全暴露的本地绝对路径。其他键名不会因为值看起来像路径就自动清理；即使函数会递归处理嵌套字典，仍以每一层的键名是否符合上述规则为准。Runner 不得把绝对路径放进 `artifact`、`debug` 等任意未受保护结果字段，也不能把这个序列化器当成通用敏感信息过滤器。
 
 ### 取消、超时、幂等与重试
 
@@ -113,7 +115,11 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 
 只有需要统一文本 Agent 路由的任务才在 `register_project_task_runner(..., text_task_role=...)` 指定角色。TaskBackend 在入队时根据角色和可选 `agent_route_override` 解析并冻结 snapshot；执行核心要求 snapshot 的 `task_role` 与注册项一致，再进入 `text_task_runtime_scope`。非文本任务不要为了选择普通 provider 滥用 `text_task_role`。
 
-公共核心按照 `task_type` 建立 usage context、记录资源尝试，并在成功后确认 feature credit reservation、失败或取消时退款。新增可计量资源时需检查 `src/novelvideo/task_backend/run_core.py:_PROJECT_TASK_RESOURCE_KINDS` 与 `_emit_project_task_metrics`，以及入队 Adapter 是否传递 `billing_metadata` / reservation metadata。计量上报、积分确认和退款自身异常当前只记录日志，不会把已经完成的业务结果改成失败；真正的模型、媒体或 provider 调用异常则应抛给公共核心。要暴露稳定错误给前端，优先使用合法 `error_code` 的领域异常，并确保消息不包含密钥、请求头或本地绝对路径。
+公共核心按照 `task_type` 建立 usage context，并由 `_emit_project_task_metrics` 记录已映射资源的尝试。feature credit reservation 则是条件性能力：`run_project_task_core_sync` 只在 envelope 顶层已经带有 `billing_metadata`，且其中存在 `feature_credit_reservation_id` 或兼容的 `feature_credit_charge_id` 时，才会在成功后确认、在失败或取消时退款；没有 reservation id 时确认和退款函数直接返回。
+
+当前 `src/novelvideo/ports/tasks.py:TaskBackend.enqueue_project_task` 和 `src/novelvideo/task_backend/client.py:enqueue_project_task` 的稳定签名都没有 `billing_metadata` 参数，CE 的 `InlineTaskBackend` 也不会从普通 payload 自动提升这项 metadata。因此，新增任务作者不能假定调用标准入队接口就会自动完成积分预留、确认和退款。任务确需接入 feature credit reservation 时，先在实际使用的 Port / Adapter 或其他任务生产者中定义可承载、可序列化的 envelope 契约，再为预留成功、入队失败、执行成功、执行失败和取消补配套测试；不要向当前标准 `enqueue_project_task` 传入不存在的关键字参数。
+
+计量上报、积分确认和退款自身异常当前只记录日志，不会把已经完成的业务结果改成失败；真正的模型、媒体或 provider 调用异常则应抛给公共核心。新增可计量资源时仍需检查 `src/novelvideo/task_backend/run_core.py:_PROJECT_TASK_RESOURCE_KINDS` 与 `_emit_project_task_metrics`。要暴露稳定错误给前端，优先使用合法 `error_code` 的领域异常，并确保消息不包含密钥、请求头或本地绝对路径。
 
 ## 真实扩展顺序
 
@@ -125,7 +131,7 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 4. **Runner**：按业务资源命名 Runner 模块并编写 `runner(envelope, ctx)`；真实参考是 `src/novelvideo/task_backend/runners/ingest.py:run_ingest_fast`。Runner 负责业务编排、进度、取消检查点、Store 生命周期和副作用清理。
 5. **注册**：在 Runner 模块底部调用 `src/novelvideo/task_backend/registry.py:register_project_task_runner`，并确保该模块能从 `src/novelvideo/task_backend/run_core.py:_ensure_builtin_runners_registered` 的导入图到达。需要文本路由时同时声明 `text_task_role`。
 6. **前端 task scope 与展示**：同步 `frontend/src/lib/task-types.ts:TASK_TYPES`、`frontend/src/lib/queries/ingest.ts:useStartIngest` 所代表的 mutation、任务选择条件、深链或 stage registry、任务中心 label 和完成后的 Query invalidation。scope 的构造和取消请求必须复用后端同一值。
-7. **测试**：先用 `tests/test_api_ingest_chapter_preview.py` 一类 route 测试覆盖校验与响应，再用 `tests/test_task_ingest_knowledge_context.py` 一类 Runner 测试覆盖成功、失败和取消，最后以 `tests/test_task_backend_registry.py` 与 `frontend/src/__tests__/task-center/provider.test.tsx` 固定跨层契约。
+7. **测试**：先用 `tests/test_api_ingest_chapter_preview.py` 一类 route 测试覆盖校验与响应。`tests/test_task_ingest_knowledge_context.py::test_ingest_context_covers_store_lifecycle` 只覆盖 ingest Runner 的成功路径与 Store 生命周期；取消使用 `tests/contract/test_m07_tasks.py::test_inline_cancel_is_cooperative_runner_stop`，注册失败使用 `tests/test_task_run_core_registration_failure.py::test_runner_registration_failure_marks_started_task_failed`。最后以 `tests/test_task_backend_registry.py` 与 `frontend/src/__tests__/task-center/provider.test.tsx` 固定跨层契约。
 
 ### `ingest_fast` 小型对照例
 
@@ -165,8 +171,8 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 - Runner 有取消检查点、外部调用 timeout、Store / 文件句柄 `finally` 清理，以及迟到写回保护。
 - `progress` 的取值约定和 `current_task` 文案可被前端消费；成功状态使用 `completed`。
 - 展示 label、`display_name` 和 metadata 白名单已核对；新增 metadata 不会自动出现在客户端。
-- 结果里的文件路径可转换为项目静态 URL；不向客户端泄露绝对路径。
-- 新的计量资源已加入 resource kind / counter 逻辑；计费预留的确认、退款在重试时是否幂等已经核对。
+- 结果中 `path` / `paths` / `*_path` / `*_paths` 字段可转换为项目静态 URL；其他结果字段没有自动路径清理，均不得携带绝对路径。
+- 新的计量资源已加入 resource kind / counter 逻辑；若实际任务生产者支持 reservation metadata，预留、确认、退款和重试的契约及幂等性已有测试覆盖。
 - 终态后再次提交是否安全已经验证；不能只依赖 active-task reservation。
 
 ## 验证矩阵
@@ -175,7 +181,7 @@ Runner 接收的是已经解析的 `ProjectContext`。文件与 SQLite 应从 `c
 | --- | --- | --- |
 | 注册与公共执行核心 | `uv run pytest tests/test_task_backend_registry.py tests/test_task_run_core_registration_failure.py -q` | 改文本路由时增加 `tests/test_task_run_core_text_runtime.py`；改 Adapter metadata 时增加 `tests/test_task_backend_celery_metadata.py` |
 | API schema / route | `tests/test_api_ingest_chapter_preview.py::test_start_ingest_rejects_unsupported_extension_before_ray`、`tests/test_structured_ingest_integration.py::test_ingest_start_rejects_stale_pipeline_selection_before_enqueue` | 改权限、文件上传、错误码时，加未登录、角色不足、非法路径和异常响应用例 |
-| Runner | `tests/test_task_ingest_knowledge_context.py::test_ingest_context_covers_store_lifecycle`、`tests/test_structured_ingest_integration.py::test_ingest_runner_routes_structured_project_without_cognee` | 有外部调用、取消或重试时，分别覆盖成功、provider 失败、超时、取消和重复执行 |
+| Runner | 成功与 Store 生命周期：`tests/test_task_ingest_knowledge_context.py::test_ingest_context_covers_store_lifecycle`；取消：`tests/contract/test_m07_tasks.py::test_inline_cancel_is_cooperative_runner_stop`；注册失败：`tests/test_task_run_core_registration_failure.py::test_runner_registration_failure_marks_started_task_failed` | 有外部调用、超时或业务重试时，再分别覆盖 provider 失败、超时和重复执行 |
 | 前端 mutation | `frontend/src/__tests__/lib/queries/ingest.test.tsx` | 请求体、错误映射或 cache invalidation 改动时运行 |
 | 前端任务展示 | `frontend/src/__tests__/task-center/provider.test.tsx`、`frontend/src/__tests__/task-center/store.test.ts`、`frontend/src/__tests__/routes/ingest-settings-save.test.tsx` | 改 task type、scope、SSE 字段、deep link 或终态处理时运行 |
 
