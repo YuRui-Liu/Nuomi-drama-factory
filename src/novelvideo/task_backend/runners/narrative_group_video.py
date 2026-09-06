@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -1103,7 +1104,7 @@ def _explicit_asset_evidence(
                 or raw.get("path")
                 or ""
             ).strip()
-            asset_id = str(raw.get("asset_id") or "").strip()
+            asset_id = _opaque_asset_id(raw.get("asset_id"))
             if not entity_key or not asset_id or not asset_path:
                 continue
             path = _trusted_evidence_path(project_dir, asset_path)
@@ -1117,6 +1118,28 @@ def _explicit_asset_evidence(
                 entity_key, AssetEvidence(asset_id=asset_id, sha256=digest)
             )
     return result
+
+
+def _opaque_asset_id(raw_value: object) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    stripped = raw_value.strip()
+    if (
+        not stripped
+        or stripped in {".", ".."}
+        or Path(stripped).is_absolute()
+        or "/" in stripped
+        or "\\" in stripped
+        or stripped.casefold().startswith("file:")
+        or (
+            len(stripped) >= 2
+            and stripped[0].isalpha()
+            and stripped[1] == ":"
+        )
+        or any(unicodedata.category(char) == "Cc" for char in stripped)
+    ):
+        return None
+    return raw_value
 
 
 def _trusted_evidence_path(project_dir: Path, raw_path: object) -> Path | None:
@@ -1167,11 +1190,11 @@ def _director_world_snapshot(
     raw_control = snapshot.get("control_frame") or blocking.get("control_frame")
     if isinstance(raw_control, Mapping):
         raw_path = raw_control.get("path") or raw_control.get("asset_path")
-        asset_id = str(raw_control.get("asset_id") or "").strip()
+        asset_id = _opaque_asset_id(raw_control.get("asset_id"))
         declared_digest = str(raw_control.get("sha256") or "").strip().lower()
     else:
         raw_path = raw_control
-        asset_id = ""
+        asset_id = None
         declared_digest = ""
     if not asset_id:
         snapshot.pop("control_frame", None)
@@ -1833,9 +1856,23 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )
+                    _assert_stage_revision(
+                        project_dir,
+                        episode,
+                        group_id,
+                        revision,
+                        plan_revision,
+                    )
                 except H3ManifestPersistenceError:
                     raise
                 except Exception as exc:
+                    _assert_stage_revision(
+                        project_dir,
+                        episode,
+                        group_id,
+                        revision,
+                        plan_revision,
+                    )
                     message = f"{type(exc).__name__}: {exc}"
                     entry = next(
                         current for current in manifest.entries
@@ -1869,9 +1906,13 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     )
                     _persist_generation_evidence(manifest_path, manifest)
                     segment_errors.append({"segment_id": segment.segment_id, "error": message})
+                    _assert_stage_revision(
+                        project_dir, episode, group_id, revision, plan_revision
+                    )
                     record_video_segment_result(
                         project_dir, episode, group_id, durable_segment_id,
                         status="failed", error=message,
+                        expected_revision=revision,
                     )
                 else:
                     entry = next(
@@ -1901,13 +1942,20 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     )
                     _persist_generation_evidence(manifest_path, manifest)
                     generated_segments.append((segment_index, segment, item))
+                    _assert_stage_revision(
+                        project_dir, episode, group_id, revision, plan_revision
+                    )
                     record_video_segment_result(
                         project_dir, episode, group_id, durable_segment_id,
                         status="completed", provider_task_id=item.provider_task_id,
                         result={"output_path": str(item.output_path)},
+                        expected_revision=revision,
                     )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")
+            _assert_stage_revision(
+                project_dir, episode, group_id, revision, plan_revision
+            )
             from novelvideo.task_backend.runners.narrative_group_video_compose import (
                 SegmentCompositionItem,
                 build_local_composition_plan,
@@ -1993,6 +2041,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 actual_output=generated.actual_output,
             )
             save_h3_director_manifest(manifest_path, manifest)
+            _assert_stage_revision(
+                project_dir, episode, group_id, revision, plan_revision
+            )
             record_stage_result(
                 project_dir, episode, group_id, "video",
                 expected_revision=revision, status="partial_failure", error=message,
@@ -2066,6 +2117,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         )
         save_h3_director_manifest(manifest_path, manifest)
         terminal_status = "partial_failure" if segment_errors else "completed"
+        _assert_stage_revision(
+            project_dir, episode, group_id, revision, plan_revision
+        )
         record_stage_result(
             project_dir, episode, group_id, "video", expected_revision=revision,
             status=terminal_status,

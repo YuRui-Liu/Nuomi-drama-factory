@@ -2467,6 +2467,7 @@ def _execute_policy_boundary(
     shadow_error=None,
     decided_mode="i2va",
     stale_fence_at=None,
+    provider_revision_race=None,
 ):
     from novelvideo.media_capabilities.video.adapters import (
         NarrativeGroupVideoResult,
@@ -2504,6 +2505,7 @@ def _execute_policy_boundary(
     optimize_calls = 0
     prepare_calls = 0
     fence_calls = 0
+    segment_writes = []
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1, "video_prompt": "raw prompt"}]
@@ -2564,6 +2566,12 @@ def _execute_policy_boundary(
             requests.append(request)
             Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(request.output_path).write_bytes(b"video")
+            if provider_revision_race is not None:
+                from novelvideo.narrative_groups.service import advance_revision
+
+                advance_revision(tmp_path, 1, "ng-01", "video", regenerate=True)
+                if provider_revision_race == "error":
+                    raise OSError("provider failed after revision changed")
             return NarrativeGroupVideoResult(
                 output_path=request.output_path,
                 provider_task_id="provider-1",
@@ -2595,6 +2603,11 @@ def _execute_policy_boundary(
     monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
     monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
     monkeypatch.setattr(narrative_group_video, "record_stage_result", record)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "record_video_segment_result",
+        lambda *args, **kwargs: segment_writes.append((args, kwargs)),
+    )
     if stale_fence_at is not None:
         monkeypatch.setattr(
             narrative_group_video, "_assert_stage_revision", assert_current
@@ -2634,6 +2647,7 @@ def _execute_policy_boundary(
         stage_failures=stage_failures,
         optimize_calls=optimize_calls,
         prepare_calls=prepare_calls,
+        segment_writes=segment_writes,
         manifest_path=(
             tmp_path / "videos" / "ep001" / "narrative_groups"
             / "ng-01_r1.manifest.json"
@@ -2788,6 +2802,23 @@ def test_stage_revision_race_stops_before_continuity_store_and_transport(
     assert outcome.requests == []
 
 
+@pytest.mark.parametrize("provider_outcome", ["success", "error"])
+def test_provider_revision_race_never_writes_current_group_sidecar(
+    tmp_path, monkeypatch, provider_outcome
+):
+    outcome = _execute_policy_boundary(
+        tmp_path,
+        monkeypatch,
+        policy="legacy",
+        provider_revision_race=provider_outcome,
+    )
+
+    assert outcome.error is None
+    assert outcome.result["status"] == "stale"
+    assert len(outcome.requests) == 1
+    assert outcome.segment_writes == []
+
+
 def test_explicit_asset_evidence_rejects_outside_and_symlink_paths(tmp_path):
     from novelvideo.task_backend.runners.narrative_group_video import (
         _explicit_asset_evidence,
@@ -2828,6 +2859,77 @@ def test_explicit_asset_evidence_rejects_outside_and_symlink_paths(tmp_path):
     assert tuple(evidence) == ("valid",)
     assert evidence["valid"].asset_id == "asset-valid"
     assert str(tmp_path) not in evidence["valid"].model_dump_json()
+
+
+def test_opaque_asset_ids_reject_path_shaped_values_without_persisting_them(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    frame = assets / "frame.png"
+    frame.write_bytes(b"frame")
+    secret_path = str(tmp_path / "secret.txt")
+    invalid_ids = (
+        secret_path,
+        ".",
+        "..",
+        "../x",
+        "a/b",
+        "a\\b",
+        "file://secret",
+        "C:secret",
+        "asset\nsecret",
+    )
+
+    for asset_id in invalid_ids:
+        render = {"cell_assets": [{"references": [{
+            "entity_key": "hero",
+            "asset_id": asset_id,
+            "asset_path": str(frame),
+        }]}]}
+        evidence = narrative_group_video._explicit_asset_evidence(tmp_path, render)
+        assert evidence == {}
+        assert asset_id not in str(evidence)
+
+        from novelvideo.director_world import store as director_store
+
+        monkeypatch.setattr(
+            director_store,
+            "load_beat_blocking",
+            lambda *_args, value=asset_id: {
+                "snapshot": {"control_frame": {
+                    "asset_id": value, "path": str(frame)
+                }}
+            },
+        )
+        snapshot, available = narrative_group_video._director_world_snapshot(
+            tmp_path, 1, 1
+        )
+        assert available is False
+        assert asset_id not in str(snapshot)
+
+
+@pytest.mark.parametrize("asset_id", ["550e8400-e29b-41d4-a716-446655440000", "asset:hero.v2"])
+def test_opaque_asset_ids_allow_uuid_colon_and_dot(tmp_path, asset_id):
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _explicit_asset_evidence,
+    )
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    frame = assets / "frame.png"
+    frame.write_bytes(b"frame")
+    evidence = _explicit_asset_evidence(tmp_path, {
+        "cell_assets": [{"references": [{
+            "entity_key": "hero",
+            "asset_id": asset_id,
+            "asset_path": str(frame),
+        }]}]
+    })
+
+    assert evidence["hero"].asset_id == asset_id
 
 
 def test_director_world_requires_opaque_asset_id_and_trusted_path(

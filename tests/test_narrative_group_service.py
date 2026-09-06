@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -9,6 +10,7 @@ from novelvideo.narrative_groups.service import (
     layout_for_group,
     load_groups,
     record_stage_result,
+    record_video_segment_result,
     rollback_stage_revision,
     stage_history,
     rebuild_groups,
@@ -18,6 +20,51 @@ from novelvideo.narrative_groups.service import (
     ensure_groups,
     update_video_plan,
 )
+
+
+def test_record_video_segment_result_compares_video_revision(tmp_path):
+    group = ensure_groups(tmp_path, 1, [{"id": "beat-1"}])[0]
+    save_groups(tmp_path, 1, [replace(
+        group,
+        video_segments=({"id": "segment-1", "status": "pending"},),
+    )])
+    advance_revision(tmp_path, 1, group.id, "video")
+
+    updated = record_video_segment_result(
+        tmp_path,
+        1,
+        group.id,
+        "segment-1",
+        status="completed",
+        expected_revision=1,
+    )
+
+    assert updated.video_segments[0]["status"] == "completed"
+
+
+def test_record_video_segment_result_rejects_stale_revision_without_write(
+    tmp_path,
+):
+    group = ensure_groups(tmp_path, 1, [{"id": "beat-1"}])[0]
+    original_segment = {"id": "segment-1", "status": "pending"}
+    save_groups(tmp_path, 1, [replace(
+        group,
+        video_segments=(original_segment,),
+    )])
+    advance_revision(tmp_path, 1, group.id, "video")
+
+    with pytest.raises(RuntimeError, match="video revision is stale"):
+        record_video_segment_result(
+            tmp_path,
+            1,
+            group.id,
+            "segment-1",
+            status="failed",
+            error="old task",
+            expected_revision=0,
+        )
+
+    assert load_groups(tmp_path, 1)[0].video_segments == (original_segment,)
 
 
 @pytest.mark.parametrize(
