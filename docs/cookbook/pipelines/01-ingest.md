@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
+- **业务与创作**：[项目与小说](../product/01-project-and-novel.md) · [端到端创作管线](../creation/02-end-to-end-workflow.md)
+- **技术调用链**：导入页面 → ingest API / task → 文本解析 → episode source 持久化
 
 本页追踪原始小说或已有分集剧本进入项目后的第一段处理：文件接收、文本解析、格式检查、`ingest_fast`、章节预览，以及版本化 `episode_sources` 写入。剧集图谱怎样从分集来源抽取实体、事件与关系，进入下游[剧集图谱](02-episode-graph.md)继续追踪。
 

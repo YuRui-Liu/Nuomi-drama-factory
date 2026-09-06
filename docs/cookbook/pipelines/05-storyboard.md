@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
+- **业务与创作**：[剧本与分镜](../product/04-screenplay-and-storyboard.md) · [镜头语言](../creation/05-shot-language.md)
+- **技术调用链**：Beat / NarrativeGroup → 草图与实图任务 → 候选 / stage revision → canonical 首帧
 
 本页追踪从 Beat 到草图、实图首帧的两条生产路径。逐 Beat 路径围绕 SQLite `beats`、剧集图片池和 `sketches/frames` canonical 文件工作；叙事组路径把一组连续 Beat 或导演 Shot 固定到多宫格 cell，另用 stage revision 管理草图与实图。它们共用图像生成能力，也会把切分结果写入相同的 canonical 图片目录；叙事组只有部分布局会再进入剧集图片池，任务 scope、重试语义和版本状态也与逐 Beat 路径不同。
 

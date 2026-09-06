@@ -54,6 +54,94 @@
   background: var(--vp-c-bg-soft);
 }
 
+.wiki-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.wiki-card {
+  display: flex;
+  min-height: 148px;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1.25rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 16px;
+  color: var(--vp-c-text-1) !important;
+  background: linear-gradient(145deg, var(--vp-c-bg-soft), var(--vp-c-bg));
+  text-decoration: none !important;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.wiki-card:hover {
+  border-color: var(--vp-c-text-3);
+  transform: translateY(-2px);
+  box-shadow: var(--vp-shadow-2);
+}
+
+.wiki-card__eyebrow {
+  color: var(--vp-c-text-2);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.wiki-card__title {
+  font-size: 1.15rem;
+  line-height: 1.4;
+}
+
+.wiki-card__description {
+  color: var(--vp-c-text-2);
+  line-height: 1.7;
+}
+
+.wiki-grid--compact .wiki-card {
+  min-height: 120px;
+}
+
+.audience-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 1.75rem;
+}
+
+.audience-tag {
+  padding: 0.28rem 0.7rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-soft);
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.business-flow,
+.technical-flow,
+.checklist-block {
+  margin: 1.25rem 0;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--vp-c-divider);
+  border-left-width: 4px;
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+
+.business-flow {
+  border-left-color: var(--vp-c-green-2);
+}
+
+.technical-flow {
+  border-left-color: var(--vp-c-indigo-2);
+}
+
+.checklist-block {
+  border-left-color: var(--vp-c-yellow-2);
+}
+
 @media (max-width: 768px) {
   .VPDoc .content-container {
     max-width: 688px !important;
@@ -67,5 +155,13 @@
 
   .vp-doc .mermaid {
     padding: 0.5rem;
+  }
+
+  .wiki-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wiki-card {
+    min-height: auto;
   }
 }

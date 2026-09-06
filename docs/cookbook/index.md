@@ -1,6 +1,43 @@
-# Nuomi Drama Factory 开发者 Cookbook
+# Nuomi Drama Factory Cookbook
 
-这组文档面向需要修改功能、理解实现原理或追踪生产管线的开发者。先按功能找到对应管线，再沿页面、API、任务、领域服务和数据产物向下追踪；共享机制只在系统地图和开发手册中解释。
+从“软件能做什么”，到“怎样创作得更好”，再到“代码为什么这样运行”。这是一套同时服务创作者、产品、测试和研发的可视化 Wiki。
+
+<div class="audience-tags">
+  <span class="audience-tag">创作者</span>
+  <span class="audience-tag">产品</span>
+  <span class="audience-tag">测试</span>
+  <span class="audience-tag">研发</span>
+</div>
+
+## 你现在想完成什么
+
+<div class="wiki-grid">
+  <a class="wiki-card" href="/product/01-project-and-novel"><span class="wiki-card__eyebrow">第一次创作</span><strong class="wiki-card__title">从项目与小说开始</strong><span class="wiki-card__description">按用户操作和阶段产出，走通从素材输入到成片导出的完整路径。</span></a>
+  <a class="wiki-card" href="/product/04-screenplay-and-storyboard"><span class="wiki-card__eyebrow">了解软件</span><strong class="wiki-card__title">按产品功能查找</strong><span class="wiki-card__description">看入口、业务流程、规则、异常与验收标准。</span></a>
+  <a class="wiki-card" href="/creation/01-creative-philosophy"><span class="wiki-card__eyebrow">提升质量</span><strong class="wiki-card__title">学习创作方法</strong><span class="wiki-card__description">沉淀节奏、角色、镜头、连续性和质量门禁经验。</span></a>
+  <a class="wiki-card" href="/system-map"><span class="wiki-card__eyebrow">修改与维护</span><strong class="wiki-card__title">追踪技术实现</strong><span class="wiki-card__description">从页面、API、任务到存储和产物定位完整调用链。</span></a>
+</div>
+
+## 三条阅读线
+
+| 阅读线 | 回答的问题 | 推荐起点 |
+| --- | --- | --- |
+| 产品功能 | 用户在哪里操作？系统有哪些状态和规则？怎样验收？ | [项目与小说](product/01-project-and-novel.md) |
+| 创作方法 | 什么结果算好？每个阶段如何判断和返工？ | [创作哲学](creation/01-creative-philosophy.md) |
+| 技术实现 | 原理是什么？请求和任务怎么走？修改影响哪里？ | [共享系统地图](system-map.md) |
+
+```mermaid
+flowchart LR
+  A[故事与素材] --> B[拆集规划]
+  B --> C[角色·场景·道具]
+  C --> D[剧本]
+  D --> E[分镜]
+  E --> F[声音与视频]
+  F --> G[合成与导出]
+  G --> H[质量复盘]
+```
+
+流程图用于建立阶段感；进入任一产品页后，都可以继续跳到对应的创作判断方法和技术调用链。
 
 ## HTML 阅读入口
 
@@ -16,6 +53,15 @@ pnpm docs:preview  # 预览最近一次静态构建
 - 第一次启动项目：从[启动与本地开发](start-software.md)开始。
 - 想先理解整体结构：阅读[共享系统地图](system-map.md)。
 - 已经知道页面、接口或任务名：使用[功能反查手册](development/trace-a-feature.md)。
+
+## 按角色进入
+
+<div class="wiki-grid wiki-grid--compact">
+  <a class="wiki-card" href="/creation/02-end-to-end-workflow"><strong class="wiki-card__title">创作者 / 导演</strong><span class="wiki-card__description">关注阶段目标、创作判断、返工信号与检查清单。</span></a>
+  <a class="wiki-card" href="/product/02-episode-planning"><strong class="wiki-card__title">产品 / 设计</strong><span class="wiki-card__description">关注用户路径、业务规则、状态异常和能力边界。</span></a>
+  <a class="wiki-card" href="/creation/07-quality-gates"><strong class="wiki-card__title">测试 / 交付</strong><span class="wiki-card__description">关注可观察结果、阶段门禁与验收口径。</span></a>
+  <a class="wiki-card" href="/development/trace-a-feature"><strong class="wiki-card__title">研发 / 维护</strong><span class="wiki-card__description">关注路由、API、任务、领域服务、存储与验证。</span></a>
+</div>
 
 ## 按修改目标直达
 

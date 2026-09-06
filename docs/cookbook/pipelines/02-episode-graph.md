@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
+- **业务与创作**：[拆集与规划](../product/02-episode-planning.md) · [拆集与节奏](../creation/03-episode-rhythm.md)
+- **技术调用链**：episode source → outbox → episode_graph_index → 候选图与活动 runtime
 
 本页追踪版本化 `episode_sources` 怎样经过固定分组、结构化抽取、确定性合并和候选图写入，最终切换为项目的活动 Cognee runtime。图谱中的角色、身份、场景、道具、事件与关系怎样进入角色和视觉资产生产，在下游[生产资产](03-production-assets.md)继续追踪。
 

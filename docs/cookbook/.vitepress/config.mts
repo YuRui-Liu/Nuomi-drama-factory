@@ -7,8 +7,8 @@ const repositoryDocs =
 export default withMermaid(
   defineConfig({
     lang: "zh-CN",
-    title: "Nuomi Drama Factory 开发者 Cookbook",
-    description: "按修改目标定位原理、调用管线、关键代码和验证方式。",
+    title: "Nuomi Drama Factory Cookbook",
+    description: "连接产品功能、漫剧创作方法与技术实现的可维护 Wiki。",
     // Keep internal-link validation strict while allowing the local service URLs
     // intentionally documented in start-software.md.
     ignoreDeadLinks: "localhostLinks",
@@ -19,8 +19,16 @@ export default withMermaid(
     themeConfig: {
       nav: [
         { text: "Cookbook 首页", link: "/" },
-        { text: "系统地图", link: "/system-map" },
-        { text: "启动与调试", link: "/start-software" },
+        { text: "产品功能", link: "/product/01-project-and-novel" },
+        { text: "创作方法", link: "/creation/01-creative-philosophy" },
+        {
+          text: "技术实现",
+          items: [
+            { text: "系统地图", link: "/system-map" },
+            { text: "启动与调试", link: "/start-software" },
+            { text: "功能反查", link: "/development/trace-a-feature" },
+          ],
+        },
         { text: "中文文档", link: repositoryDocs },
       ],
       sidebar: [
@@ -30,6 +38,33 @@ export default withMermaid(
             { text: "Cookbook 首页", link: "/" },
             { text: "启动与本地开发", link: "/start-software" },
             { text: "共享系统地图", link: "/system-map" },
+          ],
+        },
+        {
+          text: "产品功能",
+          collapsed: false,
+          items: [
+            { text: "01 项目与小说", link: "/product/01-project-and-novel" },
+            { text: "02 拆集与规划", link: "/product/02-episode-planning" },
+            { text: "03 角色·场景·道具", link: "/product/03-production-assets" },
+            { text: "04 剧本与分镜", link: "/product/04-screenplay-and-storyboard" },
+            { text: "05 音频与视频", link: "/product/05-audio-and-video" },
+            { text: "06 合成与导出", link: "/product/06-compose-and-export" },
+            { text: "07 设置与任务中心", link: "/product/07-settings-and-tasks" },
+          ],
+        },
+        {
+          text: "创作方法",
+          collapsed: false,
+          items: [
+            { text: "01 创作哲学", link: "/creation/01-creative-philosophy" },
+            { text: "02 端到端创作管线", link: "/creation/02-end-to-end-workflow" },
+            { text: "03 拆集与节奏", link: "/creation/03-episode-rhythm" },
+            { text: "04 角色一致性", link: "/creation/04-character-consistency" },
+            { text: "05 镜头语言", link: "/creation/05-shot-language" },
+            { text: "06 视听连续性", link: "/creation/06-audiovisual-continuity" },
+            { text: "07 阶段质量门禁", link: "/creation/07-quality-gates" },
+            { text: "08 创作复盘模板", link: "/creation/08-retrospective-template" },
           ],
         },
         {

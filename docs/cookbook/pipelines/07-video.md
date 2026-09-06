@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)
+- **业务与创作**：[音频与视频](../product/05-audio-and-video.md) · [视听连续性](../creation/06-audiovisual-continuity.md)
+- **技术调用链**：canonical 帧 / Beat / 音频 → 视频任务 → provider → 候选、当前视频或组合视频
 
 本页追踪 canonical 首帧、尾帧、Beat 文本与音频怎样进入单 Beat 或 NarrativeGroup 视频任务，以及生成结果怎样成为候选、当前视频或组合视频。这里的「单 segment」是 NarrativeGroup 的失败片段重试入口，不等同于单 Beat；成片合成、字幕与导出包由下一篇负责。
 

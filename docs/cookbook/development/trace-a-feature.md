@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[合成与导出](../pipelines/08-compose-export.md)
+- **业务入口**：[产品功能](../product/01-project-and-novel.md) · [端到端创作管线](../creation/02-end-to-end-workflow.md)
+- **技术调用链**：页面路由 → HTTP 路径 → task_type → Runner / 服务 → 数据与媒体产物
 
 这份手册回答一类具体问题：「我要改某个功能，它从页面到产物是怎么走的？」做法是从手头已有的稳定线索开始搜索，再沿调用者、契约、执行者和数据落点逐层核对。不要只凭相似的目录名判断调用关系；路由、HTTP 路径、`task_type` 和输出文件名通常是更可靠的锚点。
 

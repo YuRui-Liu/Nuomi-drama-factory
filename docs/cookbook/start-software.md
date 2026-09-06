@@ -5,6 +5,8 @@
 - **下游**：[共享系统地图](system-map.md) · [核心生产管线](/#核心生产管线)
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
+- **业务与创作**：[项目与小说](product/01-project-and-novel.md) · [端到端创作管线](creation/02-end-to-end-workflow.md)
+- **技术调用链**：启动方式 → 前端与 API 健康检查 → 项目入口 → 生产任务与产物
 
 导航：[Cookbook 首页](/) · [共享系统地图](system-map.md) · [常见故障](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/guides/troubleshooting.md) · [模型配置](https://github.com/YuRui-Liu/Nuomi-drama-factory/blob/main/docs/zh/getting-started/configuring-models.md)
 

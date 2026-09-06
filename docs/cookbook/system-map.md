@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[功能反查](development/trace-a-feature.md) · [新增 API 与长任务](development/add-api-and-task.md) · [存储与项目文件](development/storage-and-files.md) · [测试策略](development/testing-strategy.md)
+- **业务入口**：[产品功能总链路](product/01-project-and-novel.md) · [端到端创作管线](creation/02-end-to-end-workflow.md)
+- **技术调用链**：页面 → Query / Mutation → API Route → TaskBackend / 领域服务 → Store 与项目文件
 
 本页只说明八条生产管线共用的应用边界、任务生命周期和项目目录约定。某项业务怎样生成角色、分镜、音频或视频，回到对应的[生产管线专题](/#核心生产管线)继续追踪；产品介绍与部署步骤不在这里重复。
 

@@ -6,6 +6,8 @@
 - **代码基线**：`55504a0`
 - **返回首页**：[Nuomi Drama Factory 开发者 Cookbook](/)
 - **相关手册**：[功能反查](trace-a-feature.md) · [测试策略](testing-strategy.md)
+- **业务入口**：[设置与任务中心](../product/07-settings-and-tasks.md) · [阶段质量门禁](../creation/07-quality-gates.md)
+- **技术调用链**：前端 mutation → API schema / route → task payload → Runner → 状态回传
 
 本页说明怎样在现有边界内增加一个项目 API，或者把耗时操作接入统一任务系统。这里关注的是跨层契约；具体业务数据写到哪里，继续查对应的[生产管线专题](/#核心生产管线)和[存储与项目文件](storage-and-files.md)。
 
