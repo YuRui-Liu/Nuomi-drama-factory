@@ -240,11 +240,13 @@ Nuomi Drama Factory stays model-neutral — all text/image/video/audio models co
 |----------------------|---------------------------------------------------------------------|
 | **Text / LLM**       | via OpenAI-compatible gateway (Nuomi Drama Factory official key, or BYO)      |
 | **Image**            | gpt-image · nano-banana                                             |
-| **Video**            | Seedance 1.0 / 1.5 / 2.0 series · happyhorse                        |
+| **Video**            | Seedance 1.0 / 1.5 / 2.0 series · happyhorse · RunningHub MiniMax H3 Director / Director Ref |
 | **Voice-over**       | IndexTTS2                                                           |
 | **Story graph**      | Cognee                                                             |
 | **Task runtime**     | in-process inline (no Ray / Redis / Celery)                        |
 | **Storage**          | local filesystem                                                   |
+
+RunningHub's original MiniMax H3 Director remains the default video workflow. The separately selected Director Ref adds ordered global character/scene/prop references (5 by default, configurable from 1 to 10) while preserving first/optional last-frame control; see [Media production](docs/en/guides/media-production.md).
 
 <br/>
 

@@ -204,13 +204,18 @@ Import calculates `source_sha256` over normalized content and returns a draft pr
 ### Provider capabilities
 
 - **GRSAI:** planned implementations for `image.storyboard_grid` and `image.single` will generate narrative storyboard grids. A later `image.grid_upscale_split` stage will upscale, split, remove borders, and preserve deterministic cell-to-shot mapping.
-- **RunningHub MiniMax H3 video:** workflow `2089723723468328961` is the default `runninghub_minimax_h3` backend. It submits one version-5 `timeline_data` to node 12 and downloads video from node 7. It supports first-frame i2v and first-plus-last-frame fl2v; tail-only generation is deliberately not exposed in the product.
+- **RunningHub MiniMax H3 video:** `runninghub:minimax-h3` remains the default and uses workflow `2089723723468328961` without global refs. The separately selected `runninghub:minimax-h3-ref` uses workflow setting `video_minimax_h3_ref` (default `2096502793044582401`) and submits global refs together with first/optional last frames. Both submit one version-5 `timeline_data` to node 12 and download video from node 7; tail-only generation is deliberately not exposed.
 - **RunningHub TTS:** the contracts include `tts.synthesize`, `tts.voice_design`, and `tts.voice_clone`; workflow submission, parallel segmentation, ordered merging, and audio quality checks remain future work.
 - **MiniMax H3 Skills:** the Chinese-first prompt layer compiles structured shots into the official H3 format. Dialogue shots must include recognizable speaker, line, and timing information for lip sync. See the [official MiniMax H3 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills).
 
 ### MiniMax H3 Director operation
 
 - One Director output can contain several shots. Composition, subtitles, and export use manifest spans and insert that physical video once.
+- The original Director is still the default. Selecting Director Ref does not migrate existing projects or silently alter old payloads.
+- Director Ref proposes global candidates from the group's character identities, scene master, and key prop references. A temporary upload is copied into project-owned storage; it is not an arbitrary server path. Users choose the order and edit each Subject description.
+- `video_minimax_h3_ref_max_images` defaults to 5 and strictly accepts 1–10. It limits only global character/scene/prop/upload refs; first and last frames are separate and do not count. At least one Ref and a first frame are required, and FL2V also requires a last frame.
+- Saving increments a reference revision. Submission must use the current revision, freezes the selected bytes and frame bytes before transport, and records content hashes in the result manifest without recording local paths or image bytes.
+- Invalid or stale inputs fail closed. The runtime never falls back to the original Director, drops refs or a last frame, truncates refs, or retries a rejected hybrid payload with weaker inputs.
 - H3 ambience and sound effects are retained. Newly generated spans default to `external_tts`; migrated legacy MP4s default to `h3_native` because no verified stems exist, so composition keeps their original audio.
 - To backfill old beat/group MP4s without altering them, first run `python scripts/h3_director_migration.py <project-dir>` (dry-run), then explicitly add `--write`. Only a same-revision mapped narrative group is CAS-attached as `completed` for production composition; a beat with no group is reported as `unattached`. `external_tts` migration additionally requires both existing `--ambience-stem` and `--dialogue-stem`; newer sidecar results are never overwritten.
 
@@ -223,6 +228,7 @@ Import calculates `source_sha256` over normalized content and returns a draft pr
 - Confirm all required semantic bindings, output nodes, media types, and parameter constraints before publication.
 - Configure fallback chains explicitly; do not rely on implicit switching between providers.
 - Keep concurrency within account quotas and bound polling and local queues so personal batch production cannot overwhelm one account.
+- Treat `scripts/smoke_runninghub_h3_ref.py` as a billable manual release gate. It requires explicit workflow/input/resolution/cost confirmation and `RUNNINGHUB_REAL_SMOKE=1`; never enable it in CI.
 
 ### Verifying the foundation
 
