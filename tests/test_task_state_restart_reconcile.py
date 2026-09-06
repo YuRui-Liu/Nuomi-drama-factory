@@ -86,6 +86,23 @@ def test_expired_inline_running_task_is_failed_on_read(tmp_path: Path) -> None:
     assert fetched.status == "failed"
 
 
+def test_expired_inline_task_is_swept_after_initial_database_read(tmp_path: Path) -> None:
+    manager = TaskStateManager()
+    ctx = _ctx(tmp_path)
+    created = manager.create_task_for_project(
+        ctx, "ingest_fast", 0, scope="job_runtime_orphan", metadata={"backend": "inline"}
+    )
+
+    # The first read used to permanently memoize the database as already swept.
+    assert manager.list_tasks_for_project(ctx)[0].status == "queued"
+    _set_lease(manager, ctx, created.task_id, _ANCIENT)
+
+    listed = manager.list_tasks_for_project(ctx)
+
+    assert listed[0].status == "failed"
+    assert listed[0].error == "TASK_LEASE_EXPIRED"
+
+
 def test_expired_celery_running_task_is_untouched_by_startup_sweep(tmp_path: Path) -> None:
     manager = TaskStateManager()
     ctx = _ctx(tmp_path)
@@ -154,8 +171,8 @@ def test_expired_inline_task_unblocks_reservation(tmp_path: Path) -> None:
     assert state.task_id != created.task_id
 
 
-def test_sweep_runs_once_per_db_by_design(tmp_path: Path) -> None:
-    """清扫按库记忆化:进程启动后新出现的'过期'行不再被扫(启动前遗留才是僵尸)。"""
+def test_sweep_reclaims_tasks_that_expire_after_process_start(tmp_path: Path) -> None:
+    """长驻 API 进程也必须持续回收后来失去 worker 的任务。"""
     manager = TaskStateManager()
     ctx = _ctx(tmp_path)
     first = manager.create_task_for_project(
@@ -174,7 +191,7 @@ def test_sweep_runs_once_per_db_by_design(tmp_path: Path) -> None:
     _set_lease(manager, ctx, second.task_id, _ANCIENT)
 
     statuses = {t.scope: t.status for t in manager.list_tasks_for_project(ctx)}
-    assert statuses["job_b"] == "running"
+    assert statuses["job_b"] == "failed"
 
 
 def test_expired_inline_task_no_longer_blocks_active_count(tmp_path: Path) -> None:

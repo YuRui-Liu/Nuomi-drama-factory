@@ -212,6 +212,15 @@ class SQLiteLaneLeaseStore:
             )
             return cursor.rowcount == 1
 
+    def release_task(self, *, task_id: str) -> bool:
+        """Release a queued task even when its original process owner is gone."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM inline_lane_leases WHERE task_id = ? AND state = 'queued'",
+                (str(task_id),),
+            )
+            return cursor.rowcount == 1
+
     def counts(self, lane: str) -> dict[str, int]:
         clean_lane = normalize_queue_kind(lane)
         with self._transaction() as conn:

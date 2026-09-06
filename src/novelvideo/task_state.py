@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import sqlite3
-import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -254,10 +253,6 @@ class TaskStateManager:
     COMPLETED_TTL = 3600  # 完成后保留 1 小时
     LEASE_EXPIRED_ERROR = "TASK_LEASE_EXPIRED"
 
-    def __init__(self) -> None:
-        # 僵尸清扫按库只跑一次(见 _sweep_interrupted_inline_tasks_once)
-        self._swept_dbs: set[str] = set()
-        self._sweep_lock = threading.Lock()
     STARTING_TIMEOUT = _env_int(
         "NOVELVIDEO_TASK_STARTING_TIMEOUT",
         180,
@@ -367,7 +362,7 @@ class TaskStateManager:
         )
         conn.commit()
         if sweep_inline:
-            self._sweep_interrupted_inline_tasks_once(conn, db_path)
+            self._sweep_interrupted_inline_tasks(conn, db_path)
         try:
             yield conn
             conn.commit()
@@ -1386,12 +1381,9 @@ class TaskStateManager:
             return None
         return self._row_to_state(row)
 
-    def _sweep_interrupted_inline_tasks_once(self, conn, db_path: Path) -> None:
-        """启动时只回收 lease 已明确过期的 ACTIVE inline 任务。"""
+    def _sweep_interrupted_inline_tasks(self, conn, db_path: Path) -> None:
+        """回收当前已明确过期的 ACTIVE inline 任务。"""
         key = str(db_path)
-        with self._sweep_lock:
-            if key in self._swept_dbs:
-                return
         try:
             self._expire_task_leases_on_connection(
                 conn,
@@ -1400,11 +1392,9 @@ class TaskStateManager:
             )
             conn.commit()
         except sqlite3.OperationalError as exc:
-            # 清扫失败不能拖垮正常读写;不记忆化,下次连接重试。
+            # 清扫失败不能拖垮正常读写；下次连接继续重试。
             logger.warning("interrupted-inline sweep skipped for %s: %s", key, exc)
             return
-        with self._sweep_lock:
-            self._swept_dbs.add(key)
 
     def get_task_for_project(
         self,

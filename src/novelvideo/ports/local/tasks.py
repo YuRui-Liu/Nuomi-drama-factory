@@ -676,20 +676,25 @@ class InlineTaskBackend:
             beat_num=task_state.beat_num,
             scope=task_state.scope,
         )
-        # A claimed task owns its terminal transition.  Unclaimed/local-queued
-        # tasks can be cancelled immediately by the API instance.
-        if current is not None and (removed_locally or not current.execution_owner_id):
+        # Queued work is safe to terminate from any API instance. Its original
+        # owner may already be gone, in which case waiting for that owner leaves
+        # the task permanently queued with an unconsumed cancellation request.
+        if current is not None and (
+            current.status == "queued" or removed_locally or not current.execution_owner_id
+        ):
             manager.update_progress_for_project(
                 ctx,
                 task_state.task_type,
                 task_state.episode,
                 beat_num=task_state.beat_num,
                 scope=task_state.scope,
-                progress=task_state.progress,
+                progress=current.progress,
                 current_task="任务已取消",
                 status="cancelled",
-                expected_task_id=task_state.task_id,
+                expected_task_id=current.task_id,
             )
+            if current.status == "queued":
+                self._lease_store.release_task(task_id=current.task_id)
         # taskkill/killpg 是阻塞调用(Windows 上可达秒级),不得占事件循环
         await asyncio.get_running_loop().run_in_executor(
             None, kill_task_processes, task_state.task_id

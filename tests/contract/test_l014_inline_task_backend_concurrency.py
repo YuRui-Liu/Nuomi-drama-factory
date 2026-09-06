@@ -425,6 +425,39 @@ async def test_remote_inline_backend_cancel_is_observed_by_owner_worker_via_proj
 
 
 @pytest.mark.asyncio
+async def test_remote_cancel_immediately_terminates_orphaned_queued_task(
+    _task_ports,
+    tmp_path,
+):
+    ctx = _ctx(tmp_path, "orphaned_queued_cancel")
+    manager = _task_ports
+    state = manager.create_task_for_project(
+        ctx,
+        "orphaned_queued_cancel",
+        1,
+        metadata={"backend": "inline", "queue_kind": "default"},
+        queue_kind="default",
+    )
+    manager.update_progress_for_project(
+        ctx,
+        "orphaned_queued_cancel",
+        1,
+        progress=0.0,
+        current_task="任务已进入队列",
+        status="queued",
+        expected_task_id=state.task_id,
+    )
+    assert manager.claim_task_lease(ctx, state.task_id, "inline:dead-owner", lease_seconds=30)
+
+    backend = InlineTaskBackend(execution_owner_id="inline:cancel-api")
+    await backend.cancel_project_task(ctx, state)
+
+    cancelled = manager.get_task_for_project(ctx, "orphaned_queued_cancel", 1)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_inline_worker_stops_locally_when_project_task_lease_is_lost(
     monkeypatch,
     _task_ports,
