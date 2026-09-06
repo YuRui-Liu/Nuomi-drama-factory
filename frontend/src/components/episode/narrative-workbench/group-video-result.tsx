@@ -41,6 +41,13 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
         <div className="flex items-center gap-2"><span className="text-muted-foreground">{native ? "H3 原声" : "外部配音"}</span><Button type="button" variant="outline" size="sm" onClick={() => onDialogueSourceChange?.({ spanIndex: index, dialogueSource: native ? "external_tts" : "h3_native" })}>{native ? "改用外部配音" : "改用 H3 原声"}</Button></div>
       </div>;
     })}</div> : <p className="mt-3 text-xs text-muted-foreground">镜头切分与对白源将在导演清单就绪后显示。</p>}
-    {promptsOpen ? <GroupVideoPromptDrawer open onOpenChange={setPromptsOpen} project={project} episode={episode} groupId={groupId} /> : null}
+    {promptsOpen ? <GroupVideoPromptDrawer
+      open
+      onOpenChange={setPromptsOpen}
+      project={project}
+      episode={episode}
+      groupId={groupId}
+      canRecordPostflight={stage.status === "completed" && !!stage.manifest_asset}
+    /> : null}
   </section>;
 }
