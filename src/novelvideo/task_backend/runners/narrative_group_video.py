@@ -40,12 +40,16 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorOutputManifest,
     H3DirectorSegment,
     H3TimelineEntry,
+    H3ReferenceManifestEntry,
     build_h3_timeline_data,
     save_h3_director_manifest,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
+from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    generate_h3_reference_director_video,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
@@ -91,6 +95,7 @@ def _workflow_definition_for_payload(
 
 def _video_workflow_adapters():
     from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
         H3WorkflowAdapter,
         VideoWorkflowAdapters,
     )
@@ -98,7 +103,64 @@ def _video_workflow_adapters():
     # Inject through this module so existing tests and runtime instrumentation
     # can replace the H3 transport without changing adapter internals.
     return VideoWorkflowAdapters(
-        (H3WorkflowAdapter(generator=generate_h3_director_video),)
+        (
+            H3WorkflowAdapter(generator=generate_h3_director_video),
+            H3ReferenceWorkflowAdapter(
+                generator=generate_h3_reference_director_video
+            ),
+        )
+    )
+
+
+async def _reference_execution_snapshot(
+    *,
+    ctx: ProjectContext,
+    project_dir: Path,
+    episode: int,
+    group: object,
+    workflow: VideoWorkflowDefinition,
+):
+    from novelvideo.api.deps import (
+        get_media_capability_store,
+        get_media_credential_resolver,
+        make_sqlite_store_for_context,
+    )
+    from novelvideo.media_capabilities.runtime.configuration import (
+        load_runninghub_runtime_configuration,
+    )
+    from novelvideo.narrative_groups.video_references import (
+        resolve_saved_video_references,
+    )
+
+    reference_limit = workflow.reference_policy.max_images
+    store = await make_sqlite_store_for_context(ctx)
+    references = await resolve_saved_video_references(
+        store=store,
+        project_dir=project_dir,
+        episode_number=episode,
+        group=group,
+        max_images=reference_limit,
+    )
+    runtime = load_runninghub_runtime_configuration(
+        get_media_capability_store(), get_media_credential_resolver()
+    )
+    provider_workflow_id = runtime.workflow_id_for_key(
+        workflow.workflow_settings_key
+    )
+    return references, reference_limit, provider_workflow_id
+
+
+def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, ...]:
+    return tuple(
+        H3ReferenceManifestEntry(
+            picture_index=index,
+            reference_id=reference.reference_id,
+            source_kind=str(reference.source_kind),
+            label=reference.label,
+            subject_description=reference.subject_description,
+            sha256=reference.sha256,
+        )
+        for index, reference in enumerate(references, start=1)
     )
 
 
@@ -792,13 +854,48 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         and int(plan_revision) != int(saved_plan_revision or 0)
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
+    workflow = _workflow_definition_for_payload(payload)
+    materialized_group = None
+    global_references = ()
+    reference_revision = None
+    reference_limit = None
+    provider_workflow_id = None
+    reference_policy = getattr(workflow, "reference_policy", None)
+    if getattr(reference_policy, "required", False):
+        materialized_group = next(
+            group for group in load_materialized_groups(project_dir, episode)
+            if group.id == group_id
+        )
+        requested_reference_revision = payload.get("reference_revision")
+        reference_revision = materialized_group.video_reference_settings.revision
+        if (
+            requested_reference_revision is None
+            or int(requested_reference_revision) != int(reference_revision)
+        ):
+            return {"status": "stale", "group_id": group_id, "revision": revision}
+        (
+            global_references,
+            reference_limit,
+            provider_workflow_id,
+        ) = await _reference_execution_snapshot(
+            ctx=ctx,
+            project_dir=project_dir,
+            episode=episode,
+            group=materialized_group,
+            workflow=workflow,
+        )
+    reference_manifest_fields = {
+        "provider_workflow_id": provider_workflow_id,
+        "reference_settings_revision": reference_revision,
+        "reference_limit": reference_limit,
+        "global_references": _reference_manifest_entries(global_references),
+    }
     record_stage_result(
         project_dir, episode, group_id, "video", expected_revision=revision,
         status="running", error="", workflow_parameters=workflow_parameters,
     )
     manifest_path: Path | None = None
     try:
-        workflow = _workflow_definition_for_payload(payload)
         adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
         source_beats = await _load_canonical_beats(ctx, episode)
         beats = generation_beats_for_group(
@@ -811,10 +908,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             # one-beat-per-segment interpretation.
             render_state = {**render_state, "video_plan": {}}
         raw_segments = _build_segments(payload, beats, render_state)
-        materialized_group = next(
-            group for group in load_materialized_groups(project_dir, episode)
-            if group.id == group_id
-        )
+        if materialized_group is None:
+            materialized_group = next(
+                group for group in load_materialized_groups(project_dir, episode)
+                if group.id == group_id
+            )
         durable_segment_ids = [
             str(item.get("id")) for item in materialized_group.video_segments
         ]
@@ -891,6 +989,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 workflow_id=workflow.id,
                 workflow_parameters=workflow_parameters,
                 status="quality_rejected",
+                **reference_manifest_fields,
             )
             save_h3_director_manifest(manifest_path, rejected_manifest)
             error_payload = {
@@ -917,6 +1016,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             workflow_id=workflow.id,
             workflow_parameters=workflow_parameters,
             status="submitted",
+            **reference_manifest_fields,
         )
         save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
@@ -955,6 +1055,14 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             output_path=str(segment_output),
                             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
                             workflow_parameters=workflow_parameters,
+                            mode=str(
+                                payload.get("mode")
+                                or getattr(workflow, "default_mode", "auto")
+                            ),
+                            reference_revision=reference_revision,
+                            global_references=global_references,
+                            reference_limit=reference_limit,
+                            provider_workflow_id=provider_workflow_id,
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )

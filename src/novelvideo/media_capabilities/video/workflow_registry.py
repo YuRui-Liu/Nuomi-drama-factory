@@ -180,7 +180,7 @@ def _h3_unavailable_reason(
     return None
 
 
-def _load_h3_reference_workflow_profile(*, workflow_id: str) -> WorkflowProfile:
+def load_h3_reference_workflow_profile(*, workflow_id: str) -> WorkflowProfile:
     if not isinstance(workflow_id, str):
         raise ValueError("H3 reference workflow ID must contain digits only")
     normalized_workflow_id = workflow_id.strip()
@@ -205,6 +205,10 @@ def _load_h3_reference_workflow_profile(*, workflow_id: str) -> WorkflowProfile:
     return WorkflowProfile.model_validate(payload)
 
 
+# Preserve the private integration seam used by earlier registry tests.
+_load_h3_reference_workflow_profile = load_h3_reference_workflow_profile
+
+
 def _h3_reference_unavailable_reason(
     store: MediaCapabilityStore,
     resolver: CredentialResolver,
@@ -222,7 +226,7 @@ def _h3_reference_unavailable_reason(
     except MediaRuntimeConfigurationError:
         return "workflow_not_configured"
     try:
-        _load_h3_reference_workflow_profile(workflow_id=workflow_id)
+        load_h3_reference_workflow_profile(workflow_id=workflow_id)
     except (OSError, ValueError):
         return "profile_invalid"
     return None
@@ -320,4 +324,5 @@ __all__ = [
     "VideoWorkflowScene",
     "VideoWorkflowUnavailable",
     "build_video_workflow_registry",
+    "load_h3_reference_workflow_profile",
 ]
