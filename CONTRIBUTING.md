@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你考虑为 DramaClaw 贡献。无论是修 bug、补文档还是加功能，都欢迎。
+感谢你考虑为 Nuomi Drama Factory 贡献。无论是修 bug、补文档还是加功能，都欢迎。
 
 ## 开始之前
 
@@ -10,17 +10,17 @@
 
 ## 报告 Bug / 提功能建议
 
-- **Bug**：开一个 [Bug 报告](https://github.com/dramaclaw/dramaclaw/issues/new?template=bug_report.yml)，附复现步骤、运行环境、相关日志。
-- **功能建议**：开一个 [功能建议](https://github.com/dramaclaw/dramaclaw/issues/new?template=feature_request.yml)，说清场景与动机。
-- 不确定从哪入手？看带 [`good first issue`](https://github.com/dramaclaw/dramaclaw/labels/good%20first%20issue) 标签的 issue。
+- **Bug**：开一个 [Bug 报告](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=bug_report.yml)，附复现步骤、运行环境、相关日志。
+- **功能建议**：开一个 [功能建议](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=feature_request.yml)，说清场景与动机。
+- 不确定从哪入手？看带 [`good first issue`](https://github.com/YuRui-Liu/Nuomi-drama-factory/labels/good%20first%20issue) 标签的 issue。
 
 ## 提交 PR
 
 ### 本地开发
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 uv sync
 cp .env.example .env      # 按文档配置模型网关
 uv run novelvideo api --port 8780
@@ -38,9 +38,9 @@ uv run novelvideo api --port 8780
 向本项目提交贡献，即表示你同意：
 
 a. 维护方可按需调整本项目所采用的许可证（更严格或更宽松）；
-b. 你贡献的代码可用于商业用途，包括但不限于 DramaClaw 的云 / 托管业务运营。
+b. 你贡献的代码可用于商业用途，包括但不限于 Nuomi Drama Factory 的云 / 托管业务运营。
 
-> 这一条让 DramaClaw 能在 source-available 许可下，把社区贡献也用于官方托管/商业版本——这是「同一套代码、社区与商业不分叉」得以成立的前提。提交贡献即视为接受，无需另外签署。
+> 这一条让 Nuomi Drama Factory 能在 source-available 许可下，把社区贡献也用于官方托管/商业版本——这是「同一套代码、社区与商业不分叉」得以成立的前提。提交贡献即视为接受，无需另外签署。
 
 ## 开发者原产证书（DCO）
 
@@ -57,4 +57,4 @@ git commit -s -m "fix: ……"
 
 ## 获取帮助
 
-[Discussions](https://github.com/dramaclaw/dramaclaw/discussions) ｜ [Issues](https://github.com/dramaclaw/dramaclaw/issues)
+[Discussions](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions) ｜ [Issues](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues)

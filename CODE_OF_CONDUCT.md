@@ -1,11 +1,13 @@
 # Contributor Covenant Code of Conduct · 贡献者公约行为准则
 
-DramaClaw adopts the [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+Nuomi Drama Factory adopts the [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 本项目采用 [贡献者公约 v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)。
 
 By participating — through issues, pull requests, discussions, or any other
-channel — you agree to uphold it. Reports go to **`conduct@dramaclaw.ai`**.
-参与本项目(issue、PR、讨论或任何渠道)即表示你同意遵守本准则。举报请联系 **`conduct@dramaclaw.ai`**。
+channel — you agree to uphold it. Report concerns privately through the
+[GitHub Security Advisory form](https://github.com/YuRui-Liu/Nuomi-drama-factory/security/advisories/new).
+参与本项目(issue、PR、讨论或任何渠道)即表示你同意遵守本准则。请通过
+[GitHub 安全公告表单](https://github.com/YuRui-Liu/Nuomi-drama-factory/security/advisories/new)私下举报。
 
 > English first, 简体中文在后。两份内容一致;如有歧义以 [官方英文原文](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) 为准。
 
@@ -72,9 +74,9 @@ representative at an online or offline event.
 ### Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-**`conduct@dramaclaw.ai`**. All complaints will be reviewed and investigated
-promptly and fairly.
+reported privately to the community leaders responsible for enforcement through
+the [GitHub Security Advisory form](https://github.com/YuRui-Liu/Nuomi-drama-factory/security/advisories/new).
+All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.
@@ -173,8 +175,9 @@ wiki 编辑、issue 及其他贡献,并在适当时说明采取此类措施的�
 
 ### 执行
 
-如遇辱骂、骚扰或其他不可接受的行为,可向负责执行的社区维护者举报,联系方式为
-**`conduct@dramaclaw.ai`**。所有投诉都将得到及时且公正的审查与处理。
+如遇辱骂、骚扰或其他不可接受的行为,请通过
+[GitHub 安全公告表单](https://github.com/YuRui-Liu/Nuomi-drama-factory/security/advisories/new)
+私下向负责执行的社区维护者举报。所有投诉都将得到及时且公正的审查与处理。
 
 所有社区维护者都有义务尊重任何事件举报者的隐私与安全。
 

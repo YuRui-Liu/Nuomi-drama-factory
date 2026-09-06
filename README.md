@@ -1,9 +1,9 @@
 <div align="center">
 
 <!-- TBD: replace with official logo assets/logo.svg -->
-<h1>DramaClaw</h1>
+<h1>NuomiDrama</h1>
 
-## Make Your Own DC.
+## Make Your Own Drama.
 
 <p align="left">
 
@@ -32,7 +32,7 @@ From script to storyboard, from assets to finished film — the whole chain.<br/
 Because people aren't beasts of burden.<br/>
 Because creativity is humanity's last line of defense.<br/>
 <br/>
-What DramaClaw sets out to do is simple:<br/>
+What Nuomi Drama Factory sets out to do is simple:<br/>
 <br/>
 <strong>Tear down the wall.</strong><br/>
 <br/>
@@ -48,18 +48,18 @@ We'll keep tearing down walls.
 <br/>
 
 [![License](https://img.shields.io/badge/License-Elastic_2.0-blue.svg)](./LICENSES/Elastic-2.0.txt)
-[![GitHub stars](https://img.shields.io/github/stars/dramaclaw/dramaclaw?style=social)](https://github.com/dramaclaw/dramaclaw/stargazers)
-[![Release](https://img.shields.io/github/v/release/dramaclaw/dramaclaw?include_prereleases&sort=semver)](https://github.com/dramaclaw/dramaclaw/releases)
+[![GitHub stars](https://img.shields.io/github/stars/YuRui-Liu/Nuomi-drama-factory?style=social)](https://github.com/YuRui-Liu/Nuomi-drama-factory/stargazers)
+[![Release](https://img.shields.io/github/v/release/YuRui-Liu/Nuomi-drama-factory?include_prereleases&sort=semver)](https://github.com/YuRui-Liu/Nuomi-drama-factory/releases)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](#quick-start)
 
-**English** &nbsp;|&nbsp; [简体中文](./readme/README_zh.md) &nbsp;|&nbsp; [Website](https://dramaclaw.ai) &nbsp;|&nbsp; [Docs](./docs/en/README.md) &nbsp;|&nbsp; [Quick Start](./docs/en/getting-started/quickstart.md)
+**English** &nbsp;|&nbsp; [简体中文](./readme/README_zh.md) &nbsp;|&nbsp; [Community](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions) &nbsp;|&nbsp; [Docs](./docs/en/README.md) &nbsp;|&nbsp; [Quick Start](./docs/en/getting-started/quickstart.md)
 
 </div>
 
 <br/>
 
 <p align="center">
-  <img src="./assets/hero.png" alt="DramaClaw — storytellers, back in front of the camera" width="820"/>
+  <img src="./assets/hero.png" alt="Nuomi Drama Factory — storytellers, back in front of the camera" width="820"/>
 </p>
 
 <!--
@@ -80,7 +80,7 @@ We'll keep tearing down walls.
 
 <div align="center">
 
-## 🎬 Made with DramaClaw
+## 🎬 Made with Nuomi Drama Factory
 
 <sub>Real short dramas our team produced on this very pipeline &mdash; click a link to play.</sub>
 
@@ -129,9 +129,9 @@ We'll keep tearing down walls.
 
 <br/>
 
-## What is DramaClaw?
+## What is Nuomi Drama Factory?
 
-DramaClaw is an industrialized drama-production line whose **source is available**. Drop in a manuscript and DramaClaw takes over all the heavy lifting: extracting characters, planning episodes, generating scripts, drawing storyboards and first frames, synthesizing voice-over, and cutting the final film.
+Nuomi Drama Factory is an industrialized drama-production line whose **source is available**. Drop in a manuscript and Nuomi Drama Factory takes over all the heavy lifting: extracting characters, planning episodes, generating scripts, drawing storyboards and first frames, synthesizing voice-over, and cutting the final film.
 
 It's built for creators, indie studios, and creative engineers — letting you run the whole "drama factory" on your own infrastructure, without stitching together a dozen disconnected tools or handing your material to an opaque black-box cloud service.
 
@@ -142,7 +142,7 @@ And although it's built around drama production, the same pipeline — character
 ## Core Capabilities
 
 <p align="center">
-  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/oss-launch.jpg?v=2" width="760" alt="DramaClaw 源码发布 · source-available launch"/>
+  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/oss-launch.jpg?v=2" width="760" alt="Nuomi Drama Factory 源码发布 · source-available launch"/>
 </p>
 
 - **Novel parsing & story graph** &mdash; parse the manuscript into a queryable graph of characters, relationships, and timeline
@@ -167,7 +167,7 @@ And although it's built around drama production, the same pipeline — character
 ## Pipeline at a Glance
 
 <p align="center">
-  <img src="./assets/pipeline.png" alt="DramaClaw pipeline — Ingest, Plan, Produce, Deliver" width="900"/>
+  <img src="./assets/pipeline.png" alt="Nuomi Drama Factory pipeline — Ingest, Plan, Produce, Deliver" width="900"/>
 </p>
 
 Every step has its own interface — run them in order, skip steps, resume from any checkpoint, or even plug in your own orchestrator.
@@ -176,7 +176,7 @@ Every step has its own interface — run them in order, skip steps, resume from 
 
 ## System Requirements
 
-DramaClaw runs all inference through a **remote OpenAI-compatible gateway** — nothing runs models on your machine — so the local footprint is light. An ordinary laptop or a small VPS is enough.
+Nuomi Drama Factory runs all inference through a **remote OpenAI-compatible gateway** — nothing runs models on your machine — so the local footprint is light. An ordinary laptop or a small VPS is enough.
 
 | Item | Requirement |
 |---|---|
@@ -198,8 +198,8 @@ DramaClaw runs all inference through a **remote OpenAI-compatible gateway** — 
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 cp .env.example .env
 # Edit .env — set PROMPT_EXPORT_PASSWORD to a non-default value.
@@ -213,7 +213,7 @@ Open the app at <http://localhost:8080>; the REST API is at <http://localhost:87
 **No build needed** — every GitHub Release publishes multi-arch (amd64/arm64) images to Docker Hub, so a single file is enough to run:
 
 ```bash
-curl -LO https://raw.githubusercontent.com/dramaclaw/dramaclaw/main/docker-compose.release.yml
+curl -LO https://raw.githubusercontent.com/YuRui-Liu/Nuomi-drama-factory/main/docker-compose.release.yml
 docker compose -f docker-compose.release.yml up -d
 # Pin a version (defaults to latest): DRAMACLAW_VERSION=1.0.1 docker compose -f docker-compose.release.yml up -d
 ```
@@ -221,8 +221,8 @@ docker compose -f docker-compose.release.yml up -d
 ### Local development (uv + Python 3.11+)
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 uv sync
 cp .env.example .env && $EDITOR .env
@@ -234,16 +234,16 @@ uv run novelvideo api --port 8780   # start the REST API (CE defaults to inline 
 
 ## Supported Models & Providers
 
-DramaClaw stays model-neutral — all text/image/video/audio models connect through a single **OpenAI-compatible gateway**, in two ways:
+Nuomi Drama Factory stays model-neutral — all text/image/video/audio models connect through a single **OpenAI-compatible gateway**, in two ways:
 
-- **DramaClaw official key (recommended)**: `docker compose up`, open <http://localhost:8080> → Settings → Model Config → Official, paste your DC key, save. Works instantly — no model mapping needed. Get a key at <https://relayclaw.cdnfg.com>.
+- **Nuomi Drama Factory official key (recommended)**: `docker compose up`, open <http://localhost:8080> → Settings → Model Config → Official, paste your DC key, save. Works instantly — no model mapping needed. Get a key at <https://relayclaw.cdnfg.com>.
 - **Bring your own gateway (BYO)**: point `NEWAPI_BASE_URL` at your own OpenAI-compatible endpoint and map model names (see [Configuring Models](docs/en/getting-started/configuring-models.md)).
 
 > Prefer fully local? Run `docker compose -f docker-compose.selfhosted.yml up` for a bundled `newapi` gateway you configure yourself (prebuilt-image variant: `docker-compose.selfhosted.release.yml`).
 
 | Stage                | Connected via gateway                                               |
 |----------------------|---------------------------------------------------------------------|
-| **Text / LLM**       | via OpenAI-compatible gateway (DramaClaw official key, or BYO)      |
+| **Text / LLM**       | via OpenAI-compatible gateway (Nuomi Drama Factory official key, or BYO)      |
 | **Image**            | gpt-image · nano-banana                                             |
 | **Video**            | Seedance 1.0 / 1.5 / 2.0 series · happyhorse                        |
 | **Voice-over**       | IndexTTS2                                                           |
@@ -253,21 +253,21 @@ DramaClaw stays model-neutral — all text/image/video/audio models connect thro
 
 <br/>
 
-## Why DramaClaw?
+## Why Nuomi Drama Factory?
 
-**Built for novel-to-short-drama.** General workflow tools can wire nodes together, but they don't know what an "episode beat" is, don't understand why a character's cross-scene identity consistency matters, and won't guard a chapter's emotional arc across image + voice + editing. DramaClaw builds all that judgment into the tool.
+**Built for novel-to-short-drama.** General workflow tools can wire nodes together, but they don't know what an "episode beat" is, don't understand why a character's cross-scene identity consistency matters, and won't guard a chapter's emotional arc across image + voice + editing. Nuomi Drama Factory builds all that judgment into the tool.
 
 **Every step is decomposable.** Each stage is an independent async task with its own interface. Run sequentially, skip steps, resume mid-way — the toolchain itself is the product, with no hidden black box.
 
-**Self-hostable, model-neutral.** Your manuscript, your characters, your models, your servers. Use closed-source frontier models when you want the best results; switch to open-weight models when you want full control. DramaClaw won't lock you into any single vendor.
+**Self-hostable, model-neutral.** Your manuscript, your characters, your models, your servers. Use closed-source frontier models when you want the best results; switch to open-weight models when you want full control. Nuomi Drama Factory won't lock you into any single vendor.
 
-### How DramaClaw compares
+### How Nuomi Drama Factory compares
 
 The edge isn't "more generation" — it's organizing the whole short-drama production loop (script → assets → shots → canvas → final cut) into something reusable, collaborative and scalable.
 
 <sub>Legend: ✅ Full · ◐ Partial · ○ Planned · ❌ None — competitor names partially masked; comparison based on publicly available product docs and positioning.</sub>
 
-| Capability | L\*TV | R\*Hub | T\*Now | S\*ko | U\*dream | O\*II | J\*/K\* | **DramaClaw** |
+| Capability | L\*TV | R\*Hub | T\*Now | S\*ko | U\*dream | O\*II | J\*/K\* | **Nuomi Drama Factory** |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | Storyboard preview (script→shots, boards) | ◐ | ✅ | ◐ | ✅ | ◐ | ❌ | ❌ | ✅ |
 | Interactive series (multi-episode, branching, IP) | ◐ | ◐ | ◐ | ✅ | ◐ | ❌ | ❌ | ✅ |
@@ -299,19 +299,19 @@ The edge isn't "more generation" — it's organizing the whole short-drama produ
 
 ## Join the Community / Contribute
 
-- [Report a Bug](https://github.com/dramaclaw/dramaclaw/issues/new?template=bug_report.yml)
-- [Request a Feature](https://github.com/dramaclaw/dramaclaw/issues/new?template=feature_request.yml)
-- [Join the Discussion](https://github.com/dramaclaw/dramaclaw/discussions)
+- [Report a Bug](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=bug_report.yml)
+- [Request a Feature](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=feature_request.yml)
+- [Join the Discussion](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions)
 - [Contributing Guide](./CONTRIBUTING.md)
 - [Security Policy](./SECURITY.md)
 
-We continuously curate and label [`good first issue`](https://github.com/dramaclaw/dramaclaw/labels/good%20first%20issue) — a great place to start.
+We continuously curate and label [`good first issue`](https://github.com/YuRui-Liu/Nuomi-drama-factory/labels/good%20first%20issue) — a great place to start.
 
 <br/>
 
 ## Contributors
 
-The people building DramaClaw — thank you. 💜
+The people building Nuomi Drama Factory — thank you. 💜
 
 <table>
   <tr>
@@ -351,16 +351,6 @@ The people building DramaClaw — thank you. 💜
 [Elastic License 2.0](./LICENSES/Elastic-2.0.txt). Free to use, modify, and redistribute — the only restriction is that you may not resell the software as a hosted service. See the [license explainer](./docs/en/license.md).
 
 <br/>
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=dramaclaw%2Fdramaclaw&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&theme=dark&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
- </picture>
-</a>
 
 <br/><br/>
 

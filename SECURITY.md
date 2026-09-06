@@ -1,6 +1,6 @@
 # Security Policy
 
-Thanks for helping keep DramaClaw and its users safe.
+Thanks for helping keep Nuomi Drama Factory and its users safe.
 
 ## Supported versions
 
@@ -15,11 +15,10 @@ Thanks for helping keep DramaClaw and its users safe.
 **Please do not open a public issue for security reports.** Public disclosure
 before a fix ships puts every self-hosted deployment at risk.
 
-Use either of the following private channels:
+Use the following private channel:
 
-- **Email:** `security@dramaclaw.ai`
 - **GitHub Security Advisory:** open a private advisory via
-  <https://github.com/dramaclaw/dramaclaw/security/advisories/new> &mdash; this
+  <https://github.com/YuRui-Liu/Nuomi-drama-factory/security/advisories/new> &mdash; this
   keeps the discussion scoped to project maintainers until a fix is ready.
 
 When reporting, please include:
@@ -46,6 +45,6 @@ The following are unlikely to be treated as security reports:
 - Findings in third-party model providers &mdash; please report those to the
   provider directly
 - Content-moderation concerns &mdash; please use
-  [Discussions](https://github.com/dramaclaw/dramaclaw/discussions) instead
+  [Discussions](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions) instead
 
 Responsible reports make the project stronger. Thank you.

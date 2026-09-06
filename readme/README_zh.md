@@ -1,9 +1,9 @@
 <div align="center">
 
 <!-- TBD: 替换为正式 logo assets/logo.svg -->
-<h1>DramaClaw</h1>
+<h1>Nuomi Drama Factory</h1>
 
-## Make Your Own DC.
+## Make Your Own Drama.
 
 <p align="left">
 
@@ -32,7 +32,7 @@ AI 时代，真正的问题不是机器会不会替代人。<br/>
 因为人不是牛马。<br/>
 因为创造力，是人类最后的防线。<br/>
 <br/>
-DramaClaw 要做的事很简单：<br/>
+Nuomi Drama Factory 要做的事很简单：<br/>
 <br/>
 <strong>拆墙。</strong><br/>
 <br/>
@@ -48,18 +48,18 @@ DramaClaw 要做的事很简单：<br/>
 <br/>
 
 [![License](https://img.shields.io/badge/License-Elastic_2.0-blue.svg)](../LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/dramaclaw/dramaclaw?style=social)](https://github.com/dramaclaw/dramaclaw/stargazers)
-[![Release](https://img.shields.io/github/v/release/dramaclaw/dramaclaw?include_prereleases&sort=semver)](https://github.com/dramaclaw/dramaclaw/releases)
+[![GitHub stars](https://img.shields.io/github/stars/YuRui-Liu/Nuomi-drama-factory?style=social)](https://github.com/YuRui-Liu/Nuomi-drama-factory/stargazers)
+[![Release](https://img.shields.io/github/v/release/YuRui-Liu/Nuomi-drama-factory?include_prereleases&sort=semver)](https://github.com/YuRui-Liu/Nuomi-drama-factory/releases)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](#quick-start)
 
-[English](../README.md) &nbsp;|&nbsp; **简体中文** &nbsp;|&nbsp; [官网](https://dramaclaw.ai) &nbsp;|&nbsp; [文档](../docs/zh/README.md) &nbsp;|&nbsp; [快速开始](../docs/zh/getting-started/quickstart.md)
+[English](../README.md) &nbsp;|&nbsp; **简体中文** &nbsp;|&nbsp; [社区](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions) &nbsp;|&nbsp; [文档](../docs/zh/README.md) &nbsp;|&nbsp; [快速开始](../docs/zh/getting-started/quickstart.md)
 
 </div>
 
 <br/>
 
 <p align="center">
-  <img src="../assets/hero.png" alt="DramaClaw — 讲故事的人，重新走回镜头前" width="820"/>
+  <img src="../assets/hero.png" alt="Nuomi Drama Factory — 讲故事的人，重新走回镜头前" width="820"/>
 </p>
 
 <!--
@@ -79,7 +79,7 @@ DramaClaw 要做的事很简单：<br/>
 
 <div align="center">
 
-## 🎬 用 DramaClaw 制作
+## 🎬 用 Nuomi Drama Factory 制作
 
 <sub>我们团队用这条流水线亲手制作的真实短剧 &mdash; 点击链接即可播放。</sub>
 
@@ -128,9 +128,9 @@ DramaClaw 要做的事很简单：<br/>
 
 <br/>
 
-## DramaClaw 是什么？
+## Nuomi Drama Factory 是什么？
 
-DramaClaw 是一条**源码可见的漫剧工业化生产线**。丢进一本原稿，DramaClaw 会接管全部繁重工作：抽取角色、规划剧集、生成剧本、绘制分镜与首帧、合成配音、最终剪成成片。
+Nuomi Drama Factory 是一条**源码可见的漫剧工业化生产线**。丢进一本原稿，Nuomi Drama Factory 会接管全部繁重工作：抽取角色、规划剧集、生成剧本、绘制分镜与首帧、合成配音、最终剪成成片。
 
 它为创作者、独立工作室以及创意工程师而生 —— 让你在自己的基础设施上跑完整个「漫剧智造工厂」，不必再去拼接十几个割裂的工具，也不必把素材交给一个看不见内部的黑盒云服务。
 
@@ -141,7 +141,7 @@ DramaClaw 是一条**源码可见的漫剧工业化生产线**。丢进一本原
 ## 核心能力
 
 <p align="center">
-  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/oss-launch.jpg?v=2" width="760" alt="DramaClaw 源码发布"/>
+  <img src="https://nfg-web-assets.cdnfg.com/dramaclaw/readme/oss-launch.jpg?v=2" width="760" alt="Nuomi Drama Factory 源码发布"/>
 </p>
 
 - **小说解析与故事图谱** &mdash; 解析原稿，构建可查询的角色、关系、时间线图谱
@@ -166,7 +166,7 @@ DramaClaw 是一条**源码可见的漫剧工业化生产线**。丢进一本原
 ## 全流程一览
 
 <p align="center">
-  <img src="../assets/pipeline.png" alt="DramaClaw 流水线 —— 摄取、规划、生产、交付" width="900"/>
+  <img src="../assets/pipeline.png" alt="Nuomi Drama Factory 流水线 —— 摄取、规划、生产、交付" width="900"/>
 </p>
 
 每一步都有独立的接口 —— 可以按顺序跑，可以跳过，也可以从任意检查点续跑，甚至接入你自己的编排器。
@@ -175,7 +175,7 @@ DramaClaw 是一条**源码可见的漫剧工业化生产线**。丢进一本原
 
 ## 系统要求
 
-DramaClaw 的所有模型推理都走**远程 OpenAI 兼容网关** —— 本机不跑模型 —— 所以本地占用很低。一台普通笔记本或小 VPS 就够用。
+Nuomi Drama Factory 的所有模型推理都走**远程 OpenAI 兼容网关** —— 本机不跑模型 —— 所以本地占用很低。一台普通笔记本或小 VPS 就够用。
 
 | 项目 | 要求 |
 |---|---|
@@ -197,8 +197,8 @@ DramaClaw 的所有模型推理都走**远程 OpenAI 兼容网关** —— 本�
 ### Docker（推荐）
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 cp .env.example .env
 # 编辑 .env —— 把 PROMPT_EXPORT_PASSWORD 改成非默认值。
@@ -212,7 +212,7 @@ docker compose up -d --build   # 起两个服务：api / web
 **免构建跑法** —— 每次 GitHub Release 都会发布 amd64/arm64 多架构镜像到 Docker Hub,一个文件即可运行:
 
 ```bash
-curl -LO https://raw.githubusercontent.com/dramaclaw/dramaclaw/main/docker-compose.release.yml
+curl -LO https://raw.githubusercontent.com/YuRui-Liu/Nuomi-drama-factory/main/docker-compose.release.yml
 docker compose -f docker-compose.release.yml up -d
 # 固定版本(默认 latest):DRAMACLAW_VERSION=1.0.1 docker compose -f docker-compose.release.yml up -d
 ```
@@ -220,8 +220,8 @@ docker compose -f docker-compose.release.yml up -d
 ### 本地开发（uv + Python 3.11+）
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 uv sync
 cp .env.example .env && $EDITOR .env
@@ -233,16 +233,16 @@ uv run novelvideo api --port 8780   # 启动 REST API（CE 默认 inline 任务�
 
 ## 支持的模型与服务商
 
-DramaClaw 对模型侧保持中立 —— 所有文本/图片/视频/音频模型都经一个 **OpenAI 兼容网关**接入，两种方式：
+Nuomi Drama Factory 对模型侧保持中立 —— 所有文本/图片/视频/音频模型都经一个 **OpenAI 兼容网关**接入，两种方式：
 
-- **DramaClaw 官方 key（推荐）**：`docker compose up`,开 <http://localhost:8080> → 设置 → 模型配置 → 官方渠道,粘贴 DC key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 获取 key。
+- **Nuomi Drama Factory 官方 key（推荐）**：`docker compose up`,开 <http://localhost:8080> → 设置 → 模型配置 → 官方渠道,粘贴 DC key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 获取 key。
 - **自带网关（BYO）**：把 `NEWAPI_BASE_URL` 指向你自己的 OpenAI 兼容端点并映射模型名（详见 [配置模型供应商](../docs/zh/getting-started/configuring-models.md)）。
 
 > 想完全本地?用 `docker compose -f docker-compose.selfhosted.yml up` 起 selfhosted 版 `newapi` 网关自行配置（免构建镜像版:`docker-compose.selfhosted.release.yml`）。
 
 | 环节              | 经网关接入                                                          |
 |-------------------|---------------------------------------------------------------------|
-| **文本 / 大模型** | 经 OpenAI 兼容网关（DramaClaw 官方 key,或 BYO）                     |
+| **文本 / 大模型** | 经 OpenAI 兼容网关（Nuomi Drama Factory 官方 key,或 BYO）                     |
 | **图像**          | gpt-image · nano-banana                                             |
 | **视频**          | Seedance 1.0 / 1.5 / 2.0 系列 · happyhorse                          |
 | **配音**          | IndexTTS2                                                           |
@@ -252,21 +252,21 @@ DramaClaw 对模型侧保持中立 —— 所有文本/图片/视频/音频模�
 
 <br/>
 
-## 为什么是 DramaClaw？
+## 为什么是 Nuomi Drama Factory？
 
-**为小说转短剧而生。** 通用的工作流工具确实可以把节点拼起来，但它们不知道「剧集节拍」是什么，不懂为什么角色的跨场景身份一致性那么重要，也不会在图像 + 配音 + 剪辑里去守护一整章节的情绪弧。DramaClaw 把这些判断全部内建到工具里。
+**为小说转短剧而生。** 通用的工作流工具确实可以把节点拼起来，但它们不知道「剧集节拍」是什么，不懂为什么角色的跨场景身份一致性那么重要，也不会在图像 + 配音 + 剪辑里去守护一整章节的情绪弧。Nuomi Drama Factory 把这些判断全部内建到工具里。
 
 **每一步皆可拆解。** 每个阶段都是一个独立的异步任务，各有独立接口。你可以顺序跑、跳步跑、中途续跑，这套工具本身就是产品 —— 里面不藏黑箱。
 
-**可自托管，模型中立。** 你的原稿、你的角色、你的模型、你的服务器。需要最好的效果时用闭源大模型；需要完全可控时切到开放权重模型。DramaClaw 不会把你绑死在任何一家。
+**可自托管，模型中立。** 你的原稿、你的角色、你的模型、你的服务器。需要最好的效果时用闭源大模型；需要完全可控时切到开放权重模型。Nuomi Drama Factory 不会把你绑死在任何一家。
 
-### DramaClaw 横向对比
+### Nuomi Drama Factory 横向对比
 
 差异化不是「更会生成」，而是把整条短剧生产链（剧本 → 资产 → 镜头 → 画布 → 成片）组织成可复用、可协作、可规模化的系统。
 
 <sub>图例：✅ 完整 · ◐ 局部 · ○ 规划中 · ❌ 无 —— 竞品名称已部分打码；对比基于各家公开文档与产品定位。</sub>
 
-| 能力维度 | L\*TV | R\*Hub | T\*Now | S\*ko | U\*dream | O\*II | 即\*/可\* | **DramaClaw** |
+| 能力维度 | L\*TV | R\*Hub | T\*Now | S\*ko | U\*dream | O\*II | 即\*/可\* | **Nuomi Drama Factory** |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | 分镜预览（脚本拆分镜、分镜图、故事板） | ◐ | ✅ | ◐ | ✅ | ◐ | ❌ | ❌ | ✅ |
 | 互动影游（多剧集、分支叙事、IP 连续） | ◐ | ◐ | ◐ | ✅ | ◐ | ❌ | ❌ | ✅ |
@@ -298,19 +298,19 @@ DramaClaw 对模型侧保持中立 —— 所有文本/图片/视频/音频模�
 
 ## 加入社区 / 一起贡献
 
-- [提交 Bug](https://github.com/dramaclaw/dramaclaw/issues/new?template=bug_report.yml)
-- [提功能建议](https://github.com/dramaclaw/dramaclaw/issues/new?template=feature_request.yml)
-- [参与讨论](https://github.com/dramaclaw/dramaclaw/discussions)
+- [提交 Bug](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=bug_report.yml)
+- [提功能建议](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=feature_request.yml)
+- [参与讨论](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions)
 - [贡献指南](../CONTRIBUTING.md)
 - [安全策略](../SECURITY.md)
 
-我们会持续整理并标记 [`good first issue`](https://github.com/dramaclaw/dramaclaw/labels/good%20first%20issue) —— 欢迎从这里起手。
+我们会持续整理并标记 [`good first issue`](https://github.com/YuRui-Liu/Nuomi-drama-factory/labels/good%20first%20issue) —— 欢迎从这里起手。
 
 <br/>
 
 ## 贡献者
 
-构建 DramaClaw 的伙伴们 —— 谢谢你们。💜
+构建 Nuomi Drama Factory 的伙伴们 —— 谢谢你们。💜
 
 <table>
   <tr>
@@ -351,16 +351,6 @@ DramaClaw 对模型侧保持中立 —— 所有文本/图片/视频/音频模�
 
 
 <br/>
-
-## 星标走势
-
-<a href="https://www.star-history.com/?repos=dramaclaw%2Fdramaclaw&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&theme=dark&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=dramaclaw/dramaclaw&type=date&legend=top-left&sealed_token=CWTXgm9EqgQmnSFWk0inuf_iZSml5r1nclyIsUyisWgYhUzFVJdI8G61vyFACIQe14weeMtjWSxpkzWdtFqyb93uV4uaRElaXWQv2kFxFFyL8KbUQBCOBUWXDtZc81J8YlaSiBVVXeOygLYZliOK4VQo4i1Ioqkxn5js-Bq0gbqVOH_wF3GCQ_EnMGLy" />
- </picture>
-</a>
 
 <br/><br/>
 
