@@ -8,7 +8,6 @@ grid.
 from __future__ import annotations
 
 import math
-import os
 import re
 import uuid
 from io import BytesIO
@@ -72,6 +71,7 @@ from novelvideo.narrative_groups.video_references import (
     resolve_group_video_reference_preview,
     resolve_saved_video_references,
     temporary_upload_path,
+    write_temporary_video_reference,
 )
 from novelvideo.ports import get_task_backend
 from novelvideo.utils.path_resolver import (
@@ -155,16 +155,30 @@ class NarrativeGroupVideoRequest(BaseModel):
 class VideoReferenceSelectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reference_id: str = Field(min_length=1)
-    subject_description: str = Field(min_length=1, max_length=500)
+    subject_description: str = Field(min_length=1)
 
-    @field_validator("reference_id", "subject_description")
+    @field_validator("reference_id", mode="before")
     @classmethod
-    def normalize_single_line(cls, value: str) -> str:
+    def normalize_reference_id(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value cannot be blank")
+        return normalized
+
+    @field_validator("subject_description", mode="before")
+    @classmethod
+    def normalize_subject_description(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
         normalized = value.strip()
         if not normalized:
             raise ValueError("value cannot be blank")
         if "\n" in normalized or "\r" in normalized:
             raise ValueError("value must be a single line")
+        if len(normalized) > 500:
+            raise ValueError("value exceeds the 500 character limit")
         return normalized
 
 
@@ -282,14 +296,13 @@ def _video_reference_candidate_path(
     if candidate.source_kind == "prop_reference":
         return canonical_prop_reference_path(project_dir, candidate.asset_id)
     if candidate.source_kind == "character_identity":
-        character_name = candidate.asset_id.split("_", 1)[0]
         identity = canonical_identity_path(
-            project_dir, character_name, candidate.asset_id
+            project_dir, candidate.character_name, candidate.asset_id
         )
         return (
             identity
             if identity.is_file()
-            else canonical_portrait_path(project_dir, character_name)
+            else canonical_portrait_path(project_dir, candidate.character_name)
         )
     raise ValueError("unsupported video reference source kind")
 
@@ -367,23 +380,6 @@ def _normalize_video_reference_upload(content: bytes, content_type: str) -> byte
     output = BytesIO()
     normalized.save(output, format="PNG")
     return output.getvalue()
-
-
-def _atomic_write_upload(target: Path, content: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(temporary, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) -> list[dict]:
@@ -1316,7 +1312,6 @@ async def upload_group_video_reference(
     if group is None:
         raise HTTPException(status_code=404, detail="Narrative group not found")
     limit = min(MAX_UPLOAD_BYTES, MAX_VIDEO_REFERENCE_BYTES)
-    target: Path | None = None
     try:
         content = await file.read(limit + 1)
         if len(content) > limit:
@@ -1325,14 +1320,13 @@ async def upload_group_video_reference(
             content, str(file.content_type or "")
         )
         upload_id = uuid.uuid4().hex
-        target = temporary_upload_path(
-            resolved.project_dir, episode, group_id, upload_id
+        write_temporary_video_reference(
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group_id=group_id,
+            upload_id=upload_id,
+            content=normalized,
         )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target = temporary_upload_path(
-            resolved.project_dir, episode, group_id, upload_id
-        )
-        _atomic_write_upload(target, normalized)
         store = await make_sqlite_store_for_context(resolved.ctx)
         preview = await resolve_group_video_reference_preview(
             store=store,
@@ -1356,8 +1350,6 @@ async def upload_group_video_reference(
             project, resolved.project_dir, episode, group_id, candidate
         )
     except (OSError, TypeError, ValueError, Image.DecompressionBombError) as exc:
-        if target is not None:
-            target.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         await file.close()

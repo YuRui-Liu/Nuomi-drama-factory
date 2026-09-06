@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import uuid
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ class VideoReferenceCandidate:
     subject_description: str
     asset_id: str = ""
     temporary_upload_id: str = ""
+    character_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -404,11 +406,182 @@ def temporary_upload_path(
     return path
 
 
+def _write_posix_temporary_video_reference(
+    project_dir: Path,
+    target: Path,
+    content: bytes,
+) -> None:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    file_descriptor: int | None = None
+    parent_descriptor: int | None = None
+    temporary_name = f".{target.stem}.{uuid.uuid4().hex}.tmp"
+    operation = "directory"
+    try:
+        relative_parent = Path(os.path.abspath(target.parent)).relative_to(
+            Path(os.path.abspath(project_dir))
+        )
+        current = os.open(project_dir, directory_flags)
+        descriptors.append(current)
+        for component in relative_parent.parts:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            following = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(following)
+            current = following
+        parent_descriptor = current
+
+        operation = "write"
+        file_descriptor = os.open(
+            temporary_name, file_flags, 0o600, dir_fd=parent_descriptor
+        )
+        offset = 0
+        while offset < len(content):
+            written = os.write(file_descriptor, content[offset:])
+            if written <= 0:
+                raise OSError("temporary video reference write made no progress")
+            offset += written
+        os.fsync(file_descriptor)
+        os.close(file_descriptor)
+        file_descriptor = None
+
+        operation = "rename"
+        try:
+            os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError("temporary video reference target already exists")
+        os.rename(
+            temporary_name,
+            target.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"temporary video reference {operation} failed under no-follow policy"
+        ) from exc
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if parent_descriptor is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _write_windows_temporary_video_reference(
+    project_dir: Path,
+    target: Path,
+    content: bytes,
+    *,
+    adapter: object | None = None,
+) -> None:
+    try:
+        win32 = adapter or _CtypesWin32SnapshotAdapter()
+    except (AttributeError, OSError) as exc:
+        raise ValueError("secure Windows reference writes are unavailable") from exc
+    project_root = Path(os.path.abspath(project_dir))
+    group_root = Path(os.path.abspath(target.parent))
+    try:
+        relative = group_root.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError("temporary reference path must remain inside the project") from exc
+
+    handles: list[object] = []
+    temporary = group_root / f".{target.stem}.{uuid.uuid4().hex}.tmp"
+    temporary_handle: object | None = None
+    temporary_created = False
+    try:
+        current = project_root
+        handle = win32.open_write_directory(current)
+        for component in (None, *relative.parts):
+            if component is not None:
+                current /= component
+                win32.create_directory(current)
+                handle = win32.open_write_directory(current)
+            handles.append(handle)
+            attributes = int(win32.attributes(handle))
+            if attributes & int(win32.REPARSE_POINT):
+                raise ValueError("temporary reference directory is a reparse point")
+            if not attributes & int(win32.DIRECTORY):
+                raise ValueError("temporary reference parent must be a directory")
+            final_directory = Path(win32.final_path_for_handle(handle))
+            if os.path.normcase(os.path.abspath(final_directory)) != os.path.normcase(
+                os.path.abspath(current)
+            ):
+                raise ValueError("temporary reference directory path changed")
+
+        temporary_handle = win32.create_new_file(temporary)
+        temporary_created = True
+        attributes = int(win32.attributes(temporary_handle))
+        if attributes & int(win32.REPARSE_POINT | win32.DIRECTORY):
+            raise ValueError("temporary reference file is unsafe")
+        final_temporary = Path(win32.final_path_for_handle(temporary_handle))
+        if not _path_is_within_root(group_root, final_temporary):
+            raise ValueError("temporary reference file escaped its group")
+        win32.write_file(temporary_handle, content)
+        win32.flush_file(temporary_handle)
+        win32.close(temporary_handle)
+        temporary_handle = None
+        win32.move_file(temporary, target)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            "temporary video reference write failed under Windows no-follow policy"
+        ) from exc
+    finally:
+        if temporary_handle is not None:
+            win32.close(temporary_handle)
+        if temporary_created:
+            try:
+                win32.delete_file(temporary)
+            except OSError:
+                pass
+        for handle in reversed(handles):
+            win32.close(handle)
+
+
+def write_temporary_video_reference(
+    *,
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    upload_id: str,
+    content: bytes,
+    win32_adapter: object | None = None,
+    platform_name: str | None = None,
+) -> Path:
+    """Atomically publish an upload through a no-follow directory chain."""
+    if not isinstance(content, bytes) or not content:
+        raise ValueError("temporary video reference content cannot be empty")
+    project = Path(os.path.abspath(project_dir))
+    target = temporary_upload_path(project, episode_number, group_id, upload_id)
+    platform = platform_name or os.name
+    if platform == "nt":
+        _write_windows_temporary_video_reference(
+            project, target, content, adapter=win32_adapter
+        )
+    else:
+        _write_posix_temporary_video_reference(project, target, content)
+    return target
+
+
 def _candidate(
     source_kind: VideoReferenceSourceKind,
     stable_id: str,
     label: str,
     description: str,
+    *,
+    character_name: str = "",
 ) -> VideoReferenceCandidate:
     return VideoReferenceCandidate(
         reference_id=opaque_video_reference_id(source_kind, stable_id),
@@ -417,6 +590,7 @@ def _candidate(
         subject_description=description,
         asset_id="" if source_kind == "temporary_upload" else stable_id,
         temporary_upload_id=stable_id if source_kind == "temporary_upload" else "",
+        character_name=character_name if source_kind == "character_identity" else "",
     )
 
 
@@ -492,7 +666,11 @@ async def resolve_group_video_reference_preview(
             )
         candidates.append(
             _candidate(
-                "character_identity", identity_id, identity_id, description
+                "character_identity",
+                identity_id,
+                identity_id,
+                description,
+                character_name=character_name,
             )
         )
 
@@ -797,6 +975,29 @@ class _CtypesWin32SnapshotAdapter:
             wintypes.LPVOID,
         )
         self._kernel32.ReadFile.restype = wintypes.BOOL
+        self._kernel32.WriteFile.argtypes = (
+            wintypes.HANDLE,
+            wintypes.LPCVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        )
+        self._kernel32.WriteFile.restype = wintypes.BOOL
+        self._kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+        self._kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        self._kernel32.CreateDirectoryW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.LPVOID,
+        )
+        self._kernel32.CreateDirectoryW.restype = wintypes.BOOL
+        self._kernel32.MoveFileExW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+        )
+        self._kernel32.MoveFileExW.restype = wintypes.BOOL
+        self._kernel32.DeleteFileW.argtypes = (wintypes.LPCWSTR,)
+        self._kernel32.DeleteFileW.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         self._kernel32.CloseHandle.restype = wintypes.BOOL
         self._invalid_handle = ctypes.c_void_p(-1).value
@@ -832,6 +1033,82 @@ class _CtypesWin32SnapshotAdapter:
         if handle_value == self._invalid_handle:
             self._raise_last_error()
         return handle
+
+    def create_directory(self, path: Path) -> None:
+        if self._kernel32.CreateDirectoryW(str(path), None):
+            return
+        if self._ctypes.get_last_error() != 183:
+            self._raise_last_error()
+
+    def open_write_directory(self, path: Path) -> object:
+        share_read_write = 0x1 | 0x2
+        open_existing = 3
+        open_reparse_point = 0x00200000
+        backup_semantics = 0x02000000
+        handle = self._kernel32.CreateFileW(
+            str(path),
+            0,
+            share_read_write,
+            None,
+            open_existing,
+            open_reparse_point | backup_semantics,
+            None,
+        )
+        handle_value = getattr(handle, "value", handle)
+        if handle_value == self._invalid_handle:
+            self._raise_last_error()
+        return handle
+
+    def create_new_file(self, path: Path) -> object:
+        generic_write = 0x40000000
+        create_new = 1
+        open_reparse_point = 0x00200000
+        handle = self._kernel32.CreateFileW(
+            str(path),
+            generic_write,
+            0,
+            None,
+            create_new,
+            open_reparse_point,
+            None,
+        )
+        handle_value = getattr(handle, "value", handle)
+        if handle_value == self._invalid_handle:
+            self._raise_last_error()
+        return handle
+
+    def write_file(self, handle: object, content: bytes) -> None:
+        offset = 0
+        while offset < len(content):
+            chunk = content[offset : offset + 1024 * 1024]
+            buffer = self._ctypes.create_string_buffer(chunk)
+            written = self._wintypes.DWORD()
+            if not self._kernel32.WriteFile(
+                handle,
+                buffer,
+                len(chunk),
+                self._ctypes.byref(written),
+                None,
+            ):
+                self._raise_last_error()
+            if written.value == 0:
+                raise OSError("temporary video reference write made no progress")
+            offset += int(written.value)
+
+    def flush_file(self, handle: object) -> None:
+        if not self._kernel32.FlushFileBuffers(handle):
+            self._raise_last_error()
+
+    def move_file(self, source: Path, target: Path) -> None:
+        movefile_write_through = 0x8
+        if not self._kernel32.MoveFileExW(
+            str(source), str(target), movefile_write_through
+        ):
+            self._raise_last_error()
+
+    def delete_file(self, path: Path) -> None:
+        if not self._kernel32.DeleteFileW(str(path)):
+            self._raise_last_error()
 
     def attributes(self, handle: object) -> int:
         return int(self._information(handle).dwFileAttributes)

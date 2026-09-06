@@ -1,4 +1,5 @@
 import json
+import os
 from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
@@ -503,10 +504,19 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
 ):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
-    scene = tmp_path / "assets" / "scenes" / "room" / "master.png"
-    scene.parent.mkdir(parents=True)
-    scene.write_bytes(image_bytes())
-    reference_id = opaque_video_reference_id("scene_master", "room")
+    identity = (
+        tmp_path
+        / "assets"
+        / "characters"
+        / "RealOwner"
+        / "identities"
+        / "identity-007.png"
+    )
+    identity.parent.mkdir(parents=True)
+    identity.write_bytes(image_bytes())
+    reference_id = opaque_video_reference_id(
+        "character_identity", "identity-007"
+    )
 
     async def preview(**kwargs):
         return VideoReferencePreview(
@@ -514,19 +524,20 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
             candidates=(
                 VideoReferenceCandidate(
                     reference_id=reference_id,
-                    source_kind="scene_master",
-                    label="Room",
-                    subject_description="A blue room",
-                    asset_id="room",
+                    source_kind="character_identity",
+                    label="Age Variant",
+                    subject_description="The real owner identity",
+                    asset_id="identity-007",
+                    character_name="RealOwner",
                 ),
             ),
             references=(
                 VideoReferenceItem(
                     reference_id=reference_id,
-                    source_kind="scene_master",
-                    label="Room",
-                    subject_description="The selected room",
-                    asset_id="room",
+                    source_kind="character_identity",
+                    label="Age Variant",
+                    subject_description="The selected identity",
+                    asset_id="identity-007",
                 ),
             ),
             warnings=("one warning",),
@@ -548,14 +559,17 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
         "max_images": 2,
         "candidates": [{
             "reference_id": reference_id,
-            "source_kind": "scene_master",
-            "label": "Room",
-            "subject_description": "A blue room",
-            "thumbnail_url": "/api/v1/projects/demo/media/assets/scenes/room/master.png",
+            "source_kind": "character_identity",
+            "label": "Age Variant",
+            "subject_description": "The real owner identity",
+            "thumbnail_url": (
+                "/api/v1/projects/demo/media/assets/characters/RealOwner/"
+                "identities/identity-007.png"
+            ),
         }],
         "selected": [{
             "reference_id": reference_id,
-            "subject_description": "The selected room",
+            "subject_description": "The selected identity",
         }],
         "warnings": ["one warning"],
     }
@@ -711,6 +725,85 @@ def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
         "expected_revision": 1,
         "references": [{"reference_id": first["reference_id"], "subject_description": "First"}],
     }).status_code == 409
+
+
+def test_put_video_references_validates_trimmed_description_and_top_level_extra(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prefix = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video"
+    candidate = client.post(
+        f"{prefix}/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    ).json()["data"]
+    reference = {
+        "reference_id": candidate["reference_id"],
+        "subject_description": f"  {'x' * 500}  ",
+    }
+
+    accepted = client.put(
+        f"{prefix}/references",
+        json={"expected_revision": 0, "references": [reference]},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["selected"][0]["subject_description"] == "x" * 500
+
+    too_long = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 1,
+            "references": [{**reference, "subject_description": "x" * 501}],
+        },
+    )
+    top_level_extra = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 1,
+            "references": [reference],
+            "path": "/tmp/client-controlled.png",
+        },
+    )
+    assert too_long.status_code == top_level_extra.status_code == 422
+
+
+@pytest.mark.parametrize("failed_operation", ["write", "rename"])
+@pytest.mark.skipif(os.name == "nt", reason="exercises POSIX writer failures")
+def test_video_reference_upload_surfaces_safe_writer_failure_without_temp_files(
+    monkeypatch, tmp_path, failed_operation
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+
+    if failed_operation == "write":
+        monkeypatch.setattr(
+            os,
+            "write",
+            lambda descriptor, content: (_ for _ in ()).throw(OSError("write failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "rename",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failed")),
+        )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert failed_operation in response.json()["detail"]
+    assert list(group_root.iterdir()) == []
 
 
 def test_h3_reference_generate_requires_current_reference_revision_before_reserve(

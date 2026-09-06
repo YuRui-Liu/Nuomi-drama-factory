@@ -235,6 +235,7 @@ def test_preview_discovers_deduplicated_assets_in_stable_source_order(tmp_path):
     assert preview.candidates[0].reference_id == _reference_id(
         "character_identity", "Alice_Hero"
     )
+    assert preview.candidates[0].character_name == "Alice"
     assert "blue coat" in preview.candidates[0].subject_description
     assert "rainy glass" in preview.candidates[1].subject_description
     assert "brass key" in preview.candidates[2].subject_description
@@ -243,6 +244,19 @@ def test_preview_discovers_deduplicated_assets_in_stable_source_order(tmp_path):
         and "Picture" not in item.subject_description
         for item in preview.candidates
     )
+
+
+def test_preview_keeps_character_owner_when_identity_id_has_no_name_prefix(tmp_path):
+    store = _Store([
+        {"id": "beat-1", "detected_identities": ["identity-007"]}
+    ])
+    store.character.identities[0].identity_id = "identity-007"
+    _png(canonical_identity_path(tmp_path, "Alice", "identity-007"))
+
+    preview = _preview(store, tmp_path, group=_group("beat-1"))
+
+    assert preview.candidates[0].asset_id == "identity-007"
+    assert preview.candidates[0].character_name == "Alice"
 
 
 def test_preview_default_descriptions_strip_reference_numbering(tmp_path):
@@ -643,6 +657,70 @@ def test_temporary_upload_path_rejects_symlink_outside_current_group(tmp_path):
         temporary_upload_path(tmp_path, 1, "ng-01", "upload-a")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX openat semantics")
+def test_temporary_upload_writer_rejects_symlinked_ancestor_without_external_write(
+    tmp_path,
+):
+    outside_root = tmp_path.parent / f"{tmp_path.name}-outside-write"
+    outside_root.mkdir()
+    references_root = (
+        tmp_path / "videos" / "ep001" / "narrative_groups" / "references"
+    )
+    references_root.parent.mkdir(parents=True)
+    references_root.symlink_to(outside_root, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="no-follow|symlink|directory"):
+        video_references.write_temporary_video_reference(
+            project_dir=tmp_path,
+            episode_number=1,
+            group_id="ng-01",
+            upload_id="upload-a",
+            content=b"safe normalized png",
+            platform_name="posix",
+        )
+
+    assert list(outside_root.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX openat semantics")
+@pytest.mark.parametrize("failed_operation", ["write", "rename"])
+def test_temporary_upload_writer_cleans_partial_file_on_failure(
+    tmp_path, monkeypatch, failed_operation
+):
+    if failed_operation == "write":
+        monkeypatch.setattr(
+            os,
+            "write",
+            lambda descriptor, content: (_ for _ in ()).throw(OSError("write failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "rename",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failed")),
+        )
+
+    with pytest.raises(ValueError, match=failed_operation):
+        video_references.write_temporary_video_reference(
+            project_dir=tmp_path,
+            episode_number=1,
+            group_id="ng-01",
+            upload_id="upload-a",
+            content=b"safe normalized png",
+            platform_name="posix",
+        )
+
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+    assert list(group_root.iterdir()) == []
+
+
 def test_temporary_group_root_rejects_windows_junction_before_resolving(
     tmp_path, monkeypatch
 ):
@@ -919,6 +997,12 @@ class _FakeWin32SnapshotAdapter:
     def open_path(self, path, *, directory):
         return (Path(path), directory)
 
+    def create_directory(self, path):
+        return None
+
+    def open_write_directory(self, path):
+        return self.open_path(path, directory=True)
+
     def attributes(self, handle):
         path, directory = handle
         attributes = self.DIRECTORY if directory else 0
@@ -938,7 +1022,8 @@ class _FakeWin32SnapshotAdapter:
         return len(self.content)
 
     def final_path_for_handle(self, handle):
-        return self.final_path
+        path, directory = handle
+        return path if directory else self.final_path
 
     def read_file(self, handle, max_bytes):
         return self.content[:max_bytes]
@@ -1003,6 +1088,38 @@ def test_windows_snapshot_rejects_temporary_reparse_ancestor(tmp_path):
             "upload-a",
             expected_root=expected_root,
             adapter=adapter,
+        )
+
+    assert any(handle[0] == references_root for handle in adapter.closed)
+
+
+def test_windows_temporary_writer_rejects_reparse_ancestor(tmp_path):
+    project_root = tmp_path
+    group_root = (
+        project_root
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+    references_root = group_root.parent
+    adapter = _FakeWin32SnapshotAdapter(
+        project_root,
+        group_root / "upload-a.png",
+        b"normalized png",
+        directory_reparse_paths=frozenset({references_root}),
+    )
+
+    with pytest.raises(ValueError, match="reparse"):
+        video_references.write_temporary_video_reference(
+            project_dir=project_root,
+            episode_number=1,
+            group_id="ng-01",
+            upload_id="upload-a",
+            content=b"normalized png",
+            win32_adapter=adapter,
+            platform_name="nt",
         )
 
     assert any(handle[0] == references_root for handle in adapter.closed)
