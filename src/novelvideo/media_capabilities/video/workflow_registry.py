@@ -8,7 +8,11 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from novelvideo.media_capabilities.models import MediaCapability, WorkflowProfile
+from novelvideo.media_capabilities.models import (
+    MediaCapability,
+    RunningHubWorkflowSettingsKey,
+    WorkflowProfile,
+)
 from novelvideo.media_capabilities.runtime.configuration import (
     MediaRuntimeConfigurationError,
     load_runninghub_runtime_configuration,
@@ -59,7 +63,7 @@ class VideoWorkflowDefinition(BaseModel):
     label: str
     provider: str
     adapter_key: str
-    workflow_settings_key: str
+    workflow_settings_key: RunningHubWorkflowSettingsKey
     scenes: frozenset[VideoWorkflowScene]
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
@@ -177,20 +181,34 @@ def _h3_unavailable_reason(
 
 
 def _load_h3_reference_workflow_profile(*, workflow_id: str) -> WorkflowProfile:
+    if not isinstance(workflow_id, str):
+        raise ValueError("H3 reference workflow ID must contain digits only")
+    normalized_workflow_id = workflow_id.strip()
+    if not normalized_workflow_id or not normalized_workflow_id.isdecimal():
+        raise ValueError("H3 reference workflow ID must contain digits only")
+
     profile = WorkflowProfile.model_validate_json(
         _H3_REFERENCE_PROFILE_PATH.read_text(encoding="utf-8")
-    ).model_copy(update={"workflow_id": workflow_id})
-    required_bindings = {"timeline_data"}
-    if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
-        raise ValueError(
-            "H3 reference profile is missing required bindings or output"
-        )
-    return profile
+    )
+    if (
+        profile.provider != "runninghub"
+        or profile.capabilities != [MediaCapability.VIDEO_REF2VA]
+        or profile.bindings
+        != {"timeline_data": {"node_id": "12", "field": "timeline_data"}}
+        or profile.outputs
+        != {"video": {"node_id": "7", "media_type": "video"}}
+    ):
+        raise ValueError("H3 reference profile metadata is incompatible")
+
+    payload = profile.model_dump()
+    payload["workflow_id"] = normalized_workflow_id
+    return WorkflowProfile.model_validate(payload)
 
 
 def _h3_reference_unavailable_reason(
     store: MediaCapabilityStore,
     resolver: CredentialResolver,
+    definition: VideoWorkflowDefinition,
 ) -> str | None:
     account = store.get_provider("runninghub-main")
     if account is None or account.provider_type != "runninghub" or not account.enabled:
@@ -200,7 +218,7 @@ def _h3_reference_unavailable_reason(
     except MediaRuntimeConfigurationError:
         return "credential_unavailable"
     try:
-        workflow_id = runtime.workflow_id_for_key("video_minimax_h3_ref")
+        workflow_id = runtime.workflow_id_for_key(definition.workflow_settings_key)
     except MediaRuntimeConfigurationError:
         return "workflow_not_configured"
     try:
@@ -215,8 +233,42 @@ def build_video_workflow_registry(
     resolver: CredentialResolver,
 ) -> VideoWorkflowRegistry:
     unavailable_reason = _h3_unavailable_reason(store, resolver)
-    reference_unavailable_reason = _h3_reference_unavailable_reason(store, resolver)
     workflows = store.get_runninghub_workflows()
+    reference_definition = VideoWorkflowDefinition(
+        id=H3_REFERENCE_WORKFLOW_ID,
+        label="RunningHub MiniMax H3 · Ref",
+        provider="runninghub",
+        adapter_key="minimax-h3-ref",
+        workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=("auto", "i2va", "fl2va"),
+        default_mode="auto",
+        is_default=False,
+        reference_policy=VideoReferencePolicy(
+            required=True,
+            min_images=1,
+            max_images=workflows.video_minimax_h3_ref_max_images,
+            source_kinds=(
+                "character_identity",
+                "scene_master",
+                "prop_reference",
+                "temporary_upload",
+            ),
+        ),
+    )
+    reference_unavailable_reason = _h3_reference_unavailable_reason(
+        store,
+        resolver,
+        reference_definition,
+    )
+    if reference_unavailable_reason is not None:
+        reference_definition = VideoWorkflowDefinition.model_validate(
+            reference_definition.model_dump()
+            | {
+                "available": False,
+                "unavailable_reason": reference_unavailable_reason,
+            }
+        )
     return VideoWorkflowRegistry(
         (
             VideoWorkflowDefinition(
@@ -224,7 +276,9 @@ def build_video_workflow_registry(
                 label="RunningHub MiniMax H3",
                 provider="runninghub",
                 adapter_key="minimax-h3",
-                workflow_settings_key="video_minimax_h3",
+                workflow_settings_key=(
+                    RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3
+                ),
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                 supported_modes=("auto", "i2va", "fl2va"),
                 is_default=True,
@@ -252,30 +306,7 @@ def build_video_workflow_registry(
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),
-            VideoWorkflowDefinition(
-                id=H3_REFERENCE_WORKFLOW_ID,
-                label="RunningHub MiniMax H3 · Ref",
-                provider="runninghub",
-                adapter_key="minimax-h3-ref",
-                workflow_settings_key="video_minimax_h3_ref",
-                scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                supported_modes=("auto", "i2va", "fl2va"),
-                default_mode="auto",
-                is_default=False,
-                reference_policy=VideoReferencePolicy(
-                    required=True,
-                    min_images=1,
-                    max_images=workflows.video_minimax_h3_ref_max_images,
-                    source_kinds=(
-                        "character_identity",
-                        "scene_master",
-                        "prop_reference",
-                        "temporary_upload",
-                    ),
-                ),
-                available=reference_unavailable_reason is None,
-                unavailable_reason=reference_unavailable_reason,
-            ),
+            reference_definition,
         )
     )
 

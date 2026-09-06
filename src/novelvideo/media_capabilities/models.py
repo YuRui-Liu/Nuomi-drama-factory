@@ -188,6 +188,14 @@ class ProviderAccount(_ExternalModel):
         return normalized
 
 
+class RunningHubWorkflowSettingsKey(StrEnum):
+    IMAGE_UPSCALE = "image_upscale"
+    VIDEO_MINIMAX_H3 = "video_minimax_h3"
+    VIDEO_MINIMAX_H3_REF = "video_minimax_h3_ref"
+    TTS_QWEN3_VOICE_DESIGN = "tts_qwen3_voice_design"
+    TTS_INDEXTTS2_VOICE_CLONE = "tts_indextts2_voice_clone"
+
+
 class RunningHubWorkflowSettings(_ExternalModel):
     """Remote workflow IDs for the RunningHub capabilities shipped by CE."""
 
