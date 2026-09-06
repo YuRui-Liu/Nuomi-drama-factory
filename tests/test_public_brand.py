@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_public_brand.py"
@@ -200,3 +202,109 @@ def test_repository_scan_reports_a_public_file_that_disappears(
     assert findings == []
     assert len(errors) == 1
     assert errors[0].startswith("README.md: unable to read:")
+
+
+@pytest.mark.parametrize(
+    ("path", "line"),
+    [
+        ("docs/zh/config.md", "默认名称为 `dramaclaw-ce-runtime`。"),
+        ("docs/zh/config.md", "示例目录是 `dramaclaw-relay`。"),
+        ("docs/en/self-hosting.md", "-v dramaclaw-ce_ce-data:/data"),
+        ("frontend/src/main.tsx", 'import "dramaclaw-spec-render/style.css";'),
+        ("frontend/src/index.css", '@source "../node_modules/dramaclaw-spec-render/dist";'),
+        (
+            "frontend/src/hooks/use-github-stars.ts",
+            'const KEY = "dramaclaw.login.githubStars";',
+        ),
+        (
+            "frontend/src/lib/release-notification-state.ts",
+            'const KEY = "dramaclaw:release-notifications:muted";',
+        ),
+        (
+            "frontend/src/lib/release-notification-state.ts",
+            'return `dramaclaw:release-seen:${tag}`;',
+        ),
+        (
+            "frontend/src/lib/queries/model-gateway.ts",
+            'type Provider = "deepseek" | "dramaclaw";',
+        ),
+        (
+            "frontend/src/components/settings/text-runtime-panel.tsx",
+            '<SelectItem value="dramaclaw">Nuomi Drama Factory API</SelectItem>',
+        ),
+        (
+            "frontend/src/components/login/cinematic/media.ts",
+            'const CDN_BASE = "https://nfg-web-assets.cdnfg.com/dramaclaw";',
+        ),
+        (
+            "frontend/src/features/canvas/nodes/Pano360ViewerNode.tsx",
+            "// 历史兼容协议接口 /__dramaclaw 已由 JSON 导出替代。",
+        ),
+        (
+            "frontend/src/lib/desktop-download.test.ts",
+            'const oldInstaller = "DramaClaw-Setup-1.1.0.exe";',
+        ),
+        (
+            "frontend/src/__tests__/lib/gateway-error-classify.test.ts",
+            "const oldError = 'DramaClawAPI image generation failed';",
+        ),
+        (
+            "frontend/src/__tests__/components/brand/brand-mark.test.tsx",
+            "expect(html).not.toMatch(/DramaClaw|SuperTale/);",
+        ),
+        (
+            "frontend/src/__tests__/i18n/locales-json.test.ts",
+            "const legacyProductLanguage = /DramaClaw|SuperTale/;",
+        ),
+        (
+            "frontend/src/__tests__/i18n/locales-json.test.ts",
+            "/DramaClaw|SuperTale|Xia Director/;",
+        ),
+        (
+            "frontend/src/__tests__/features/brand/runtime-brand-contract.test.ts",
+            r"expect(source).not.toMatch(/SuperTale|DramaClaw\/SuperTale/);",
+        ),
+        (
+            "frontend/src/components/settings/text-runtime-panel.tsx",
+            "dramaclaw: {",
+        ),
+        (
+            "frontend/src/features/superchat/message.ts",
+            r"/\n?\[(DRAMACLAW_[A-Z0-9_]+)\]/g;",
+        ),
+        (
+            "frontend/src/lib/desktop-download.ts",
+            "&& !/(?:DramaClaw|SuperTale)/i.test(candidate.name)",
+        ),
+    ],
+)
+def test_scan_text_allows_explicit_legacy_machine_contracts(path: str, line: str) -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(Path(path), line) == []
+
+
+def test_explicit_allowlist_does_not_hide_public_brand_on_the_same_line() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        'expect(html).not.toMatch(/DramaClaw/); const label = "DramaClaw";',
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
+
+
+def test_explicit_allowlist_rejects_unknown_machine_brand() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(Path("docs/guide.md"), "`dramaclaw-new-brand`") == [
+        "docs/guide.md:1"
+    ]
+
+
+def test_explicit_allowlist_does_not_allow_arbitrary_test_fixtures() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/new-brand.test.ts"),
+        'const fixture = "DramaClaw-Setup-1.1.0.exe";',
+    ) == ["frontend/src/__tests__/new-brand.test.ts:1"]
