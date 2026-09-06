@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import inspect
+import logging
 import math
 import os
 import threading
@@ -32,6 +33,8 @@ from .models import (
     VideoReferenceSettings,
     VideoSettings,
 )
+
+logger = logging.getLogger(__name__)
 
 SIDECAR_VERSION = 1
 VIDEO_PROMPT_MANIFEST_MAX_BYTES = 12 * 1024 * 1024
@@ -858,7 +861,9 @@ async def _finish_started_sync_commit(
         try:
             await pending
         except Exception:
-            pass
+            logger.exception(
+                "video reference commit failed after cancellation"
+            )
         raise
 
 

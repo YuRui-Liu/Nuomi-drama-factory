@@ -45,6 +45,7 @@ MAX_VIDEO_REFERENCE_BYTES = 20 * 1024 * 1024
 MAX_VIDEO_REFERENCE_PIXELS = 40_000_000
 MAX_VIDEO_REFERENCE_DESCRIPTION_LENGTH = 500
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 @dataclass(frozen=True)
@@ -176,7 +177,8 @@ def _join_description(label: str, *descriptions: object) -> str:
             if (text := normalize(value))
         )
     )
-    return f"{clean_label}: {details}" if details else clean_label
+    result = f"{clean_label}: {details}" if details else clean_label
+    return result[:MAX_VIDEO_REFERENCE_DESCRIPTION_LENGTH].rstrip()
 
 
 async def _asset_descriptions(
@@ -290,7 +292,7 @@ def _lexical_asset_root(project_dir: Path, asset_kind: str) -> Path:
     return Path(os.path.abspath(project_dir / "assets" / asset_kind))
 
 
-def _path_contains_symlink(allowed_root: Path, path: Path) -> bool:
+def _path_contains_reparse_point(allowed_root: Path, path: Path) -> bool:
     root = Path(os.path.abspath(allowed_root))
     candidate = Path(os.path.abspath(path))
     try:
@@ -298,13 +300,24 @@ def _path_contains_symlink(allowed_root: Path, path: Path) -> bool:
     except ValueError:
         return True
     current = root
-    if current.is_symlink():
+    if _is_reparse_point(current):
         return True
     for component in relative.parts:
         current /= component
-        if current.is_symlink():
+        if _is_reparse_point(current):
             return True
     return False
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
 
 
 def _identity_path(
@@ -348,21 +361,30 @@ def _temporary_group_root(
     ):
         raise ValueError("temporary reference group ID is invalid")
 
-    references_root = _path_within_project(
-        project_dir,
-        project_dir
-        / "videos"
-        / f"ep{int(episode_number):03d}"
-        / "narrative_groups"
-        / "references",
+    project_root = Path(os.path.abspath(project_dir))
+    references_root = Path(
+        os.path.abspath(
+            project_dir
+            / "videos"
+            / f"ep{int(episode_number):03d}"
+            / "narrative_groups"
+            / "references"
+        )
     )
+    try:
+        references_root.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(
+            "temporary reference root must remain inside the project"
+        ) from exc
     lexical_group_root = references_root / raw_group_id
-    if lexical_group_root.is_symlink():
-        raise ValueError("temporary reference group directory cannot be a symlink")
-    group_root = lexical_group_root.resolve(strict=False)
-    if group_root.parent != references_root:
+    if lexical_group_root.parent != references_root:
         raise ValueError("temporary reference group directory is invalid")
-    return group_root
+    if _is_reparse_point(lexical_group_root):
+        raise ValueError(
+            "temporary reference group directory cannot be a symlink or reparse point"
+        )
+    return lexical_group_root
 
 
 def temporary_upload_path(
@@ -385,8 +407,10 @@ def temporary_upload_path(
         raise ValueError(
             "temporary upload path must remain inside the current group directory"
         )
-    if path.is_symlink():
-        raise ValueError("temporary upload symlink is forbidden by no-follow policy")
+    if _is_reparse_point(path):
+        raise ValueError(
+            "temporary upload symlink or reparse point is forbidden by no-follow policy"
+        )
     return path
 
 
@@ -466,11 +490,12 @@ async def resolve_group_video_reference_preview(
                 f"Character identity {identity_id} is missing its identity image and portrait."
             )
             continue
-        if _path_contains_symlink(
+        if _path_contains_reparse_point(
             _lexical_asset_root(project, "characters"), path
         ):
             warnings.append(
-                f"Character identity {identity_id} uses a symlink and cannot be selected."
+                f"Character identity {identity_id} uses a symlink or reparse point "
+                "and cannot be selected."
             )
             continue
         if used_portrait:
@@ -497,9 +522,11 @@ async def resolve_group_video_reference_preview(
         if not path.is_file():
             warnings.append(f"Scene {scene_id} is missing its master image.")
             continue
-        if _path_contains_symlink(_lexical_asset_root(project, "scenes"), path):
+        if _path_contains_reparse_point(
+            _lexical_asset_root(project, "scenes"), path
+        ):
             warnings.append(
-                f"Scene {scene_id} uses a symlink and cannot be selected."
+                f"Scene {scene_id} uses a symlink or reparse point and cannot be selected."
             )
             continue
         candidates.append(
@@ -525,9 +552,11 @@ async def resolve_group_video_reference_preview(
         if not path.is_file():
             warnings.append(f"Prop {prop_id} is missing its reference image.")
             continue
-        if _path_contains_symlink(_lexical_asset_root(project, "props"), path):
+        if _path_contains_reparse_point(
+            _lexical_asset_root(project, "props"), path
+        ):
             warnings.append(
-                f"Prop {prop_id} uses a symlink and cannot be selected."
+                f"Prop {prop_id} uses a symlink or reparse point and cannot be selected."
             )
             continue
         candidates.append(

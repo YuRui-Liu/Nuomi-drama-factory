@@ -259,6 +259,31 @@ def test_preview_default_descriptions_strip_reference_numbering(tmp_path):
     )
 
 
+def test_preview_default_descriptions_are_single_line_and_saveable(tmp_path):
+    _prepare_assets(tmp_path)
+    store = _Store(_beats())
+    store.prop.visual_prompt = "first line\n" + ("ornate detail " * 80)
+
+    preview = _preview(store, tmp_path)
+    prop = next(
+        candidate
+        for candidate in preview.candidates
+        if candidate.source_kind == "prop_reference"
+    )
+
+    assert "\n" not in prop.subject_description
+    assert "\r" not in prop.subject_description
+    assert 1 <= len(prop.subject_description) <= 500
+    assert video_references.validate_video_reference_selections(
+        (
+            VideoReferenceSelection(
+                prop.reference_id, prop.subject_description
+            ),
+        ),
+        10,
+    )
+
+
 def test_preview_uses_portrait_fallback_and_warns_for_missing_files(tmp_path):
     _png(tmp_path / "assets" / "characters" / "Alice" / "portrait.png")
     store = _Store(_beats())
@@ -615,6 +640,65 @@ def test_temporary_upload_path_rejects_symlink_outside_current_group(tmp_path):
 
     with pytest.raises(ValueError, match="group|no-follow"):
         temporary_upload_path(tmp_path, 1, "ng-01", "upload-a")
+
+
+def test_temporary_group_root_rejects_windows_junction_before_resolving(
+    tmp_path, monkeypatch
+):
+    references_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+    )
+    lexical_group_root = references_root / "ng-01"
+    sibling_root = references_root / "ng-02"
+    lexical_group_root.mkdir(parents=True)
+    sibling_root.mkdir()
+    real_lstat = Path.lstat
+    real_resolve = Path.resolve
+
+    def fake_lstat(path):
+        result = real_lstat(path)
+        if path == lexical_group_root:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_file_attributes=0x400,
+            )
+        return result
+
+    def fake_resolve(path, strict=False):
+        if path == lexical_group_root:
+            return sibling_root
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+    with pytest.raises(ValueError, match="reparse|group"):
+        video_references._temporary_group_root(tmp_path, 1, "ng-01")
+
+
+def test_preview_warns_and_omits_windows_reparse_candidate(tmp_path, monkeypatch):
+    path = _png(canonical_prop_reference_path(tmp_path, "Key"))
+    real_lstat = Path.lstat
+
+    def fake_lstat(candidate):
+        result = real_lstat(candidate)
+        if candidate == path:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_file_attributes=0x400,
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+    preview = _preview(_Store(_beats()), tmp_path, group=_group("beat-1"))
+
+    assert all(candidate.asset_id != "Key" for candidate in preview.candidates)
+    assert any("reparse" in warning.lower() for warning in preview.warnings)
 
 
 def test_preview_rejects_asset_ids_that_escape_their_canonical_roots(tmp_path):
@@ -1005,6 +1089,31 @@ def test_update_cancellation_waits_for_started_commit_to_finish(
     assert service.load_groups(tmp_path, 1)[
         0
     ].video_reference_settings.revision == 1
+
+
+def test_cancelled_update_logs_commit_failure(caplog):
+    commit_started = threading.Event()
+    release_commit = threading.Event()
+
+    def failing_commit():
+        commit_started.set()
+        release_commit.wait(timeout=5)
+        raise RuntimeError("commit exploded")
+
+    async def scenario():
+        updating = asyncio.create_task(
+            service._finish_started_sync_commit(failing_commit)
+        )
+        await asyncio.to_thread(commit_started.wait, 5)
+        updating.cancel()
+        release_commit.set()
+        with pytest.raises(asyncio.CancelledError):
+            await updating
+
+    _run(scenario())
+
+    assert "commit failed after cancellation" in caplog.text
+    assert "commit exploded" in caplog.text
 
 
 def test_video_reference_models_reject_invalid_runtime_values():
