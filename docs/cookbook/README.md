@@ -62,11 +62,11 @@
 
 以下能力与核心生产管线共用部分基础设施，但有独立的交互或运行边界。需要扩展时先从[共享系统地图](system-map.md)确认入口目录和公共依赖。
 
-- Freezone：从自由创作相关的前端路由、API 与任务入口开始追踪。
-- 导演世界：从导演工作区页面及其项目状态、生成任务入口开始追踪。
-- 聊天助手：从聊天界面、会话 API 和工具调用边界开始追踪。
-- 模型配置：从设置页面、配置 API、provider registry 和环境变量开始追踪。
-- 桌面壳：从 Electron 主进程、预加载桥接和 Web 应用启动边界开始追踪。
+- Freezone：从 `frontend/src/routes/_app/projects.$project/freezone.lazy.tsx`、`src/novelvideo/api/routes/freezone.py` 和 `src/novelvideo/freezone/` 开始追踪。
+- 导演世界：从 `frontend/src/features/viewer-kit/three-d/ThreeDDirectorDialog.tsx` 和 `src/novelvideo/director_world/` 开始追踪。
+- 聊天助手：从 `frontend/src/features/superchat/superchat-panel.tsx`、`src/novelvideo/api/routes/chat.py` 和 `src/novelvideo/chat/` 开始追踪。
+- 模型配置：从 `frontend/src/components/settings/settings-dialog.tsx`、`frontend/src/lib/queries/model-gateway.ts` 和 `src/novelvideo/api/routes/model_gateway.py` 开始追踪。
+- 桌面壳：从 Electron 入口 `desktop/main.cjs`、运行路径处理 `desktop/runtime-paths.cjs` 和打包脚本 `desktop/scripts/stage-runtime.cjs` 开始追踪。
 
 ## 文档维护约定
 

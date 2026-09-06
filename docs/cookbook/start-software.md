@@ -12,7 +12,7 @@ Docker 会同时启动后端 API 和网页前端，并在容器内提供 `ffmpeg
 
 ### 1. 检查 Docker
 
-先启动 Docker Desktop，再执行：
+确保 Docker 服务或 Docker Desktop 已启动，再执行：
 
 ```bash
 docker --version
@@ -146,11 +146,16 @@ ST_WEB_PORT=8081 ST_API_PORT=8781 docker compose up -d --build
 
 此时网页地址是 <http://localhost:8081>，API 地址是 <http://localhost:8781>。
 
-本地开发脚本可以这样改端口：
+本地开发脚本改后端端口时，必须同步设置 Vite 的 API 代理目标。例如，把后端改为 8781、前端改为 5174：
 
 ```bash
-NOVELVIDEO_API_PORT=8781 SUPERTALE_FE_PORT=5174 bash scripts/start-ce.sh
+VITE_API_URL=http://localhost:8781 \
+  NOVELVIDEO_API_PORT=8781 \
+  SUPERTALE_FE_PORT=5174 \
+  bash scripts/start-ce.sh
 ```
+
+也可以把 `frontend/.env` 中的 `VITE_API_URL` 更新为 `http://localhost:8781`，再设置 `NOVELVIDEO_API_PORT=8781` 启动。`SUPERTALE_FE_PORT` 只控制前端监听端口，不会自动改变 Vite 的 API 代理目标。
 
 如果不确定端口被谁占用：
 
