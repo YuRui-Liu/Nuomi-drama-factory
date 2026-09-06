@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Header } from "@/components/layout/header";
 
 const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
+const modelGatewayState = vi.hoisted(() => ({ enabledCalls: [] as boolean[] }));
 const authState = vi.hoisted(() => ({ username: "local", logout: vi.fn() }));
 const resetUserSessionStateMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -33,7 +34,15 @@ vi.mock("@/lib/runtime-config", () => ({
 }));
 
 vi.mock("@/lib/queries/model-gateway", () => ({
-  useModelGatewayConfig: () => ({ data: undefined }),
+  useModelGatewayConfig: (enabled: boolean) => {
+    modelGatewayState.enabledCalls.push(enabled);
+    return { data: undefined };
+  },
+}));
+
+vi.mock("@/components/settings/settings-dialog", () => ({
+  SettingsDialog: ({ open }: { open: boolean }) =>
+    open ? <div role="dialog" aria-label="Settings dialog" /> : null,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -87,6 +96,8 @@ vi.mock("react-i18next", () => ({
     t: (key: string) =>
       ({
         "app.logoHomeTooltip": "Home",
+        "header.settings": "Settings",
+        "header.settingsWithWarning": "Settings need attention",
         "header.account.open": "Open account",
         "header.account.changeAvatar": "Change avatar",
         "header.account.selectLanguage": "Select language",
@@ -175,6 +186,8 @@ describe("Header runtime gating", () => {
     routerState.searchStr = "";
     routerState.hash = "";
     runtimeState.authRequired = true;
+    runtimeState.isCe = false;
+    modelGatewayState.enabledCalls.length = 0;
     authState.username = "local";
     authState.logout.mockReset();
     resetUserSessionStateMock.mockReset();
@@ -198,6 +211,26 @@ describe("Header runtime gating", () => {
     expect(screen.queryByRole("navigation", { name: "旧模式切换" })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "旧制作菜单" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "虾集" })).not.toBeInTheDocument();
+  });
+
+  it("keeps global settings available in EE without enabling the CE gateway query", () => {
+    renderHeader();
+
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    expect(settingsButton).toBeInTheDocument();
+    expect(modelGatewayState.enabledCalls[modelGatewayState.enabledCalls.length - 1]).toBe(false);
+
+    fireEvent.click(settingsButton);
+    expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeInTheDocument();
+  });
+
+  it("keeps the settings entry and gateway warning query enabled in CE", () => {
+    runtimeState.isCe = true;
+
+    renderHeader();
+
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(modelGatewayState.enabledCalls[modelGatewayState.enabledCalls.length - 1]).toBe(true);
   });
 
   it("uses a non-overlapping desktop grid and a scrollable narrow-screen navigation row", () => {
