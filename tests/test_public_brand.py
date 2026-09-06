@@ -254,15 +254,11 @@ def test_repository_scan_reports_a_public_file_that_disappears(
         ),
         (
             "frontend/src/__tests__/i18n/locales-json.test.ts",
-            "const legacyProductLanguage = /DramaClaw|SuperTale/;",
-        ),
-        (
-            "frontend/src/__tests__/i18n/locales-json.test.ts",
-            "/DramaClaw|SuperTale|Xia Director/;",
+            r"/DramaClaw|SuperTale|Xia Director|Xia(?:Hua|Liao|Tang|Jing|Dao|Ge)|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;",
         ),
         (
             "frontend/src/__tests__/features/brand/runtime-brand-contract.test.ts",
-            r"expect(source).not.toMatch(/SuperTale|DramaClaw\/SuperTale/);",
+            r"expect(source).not.toMatch(/SuperTale(?:_N)?|DramaClaw\/SuperTale/);",
         ),
         (
             "frontend/src/components/settings/text-runtime-panel.tsx",
@@ -275,6 +271,14 @@ def test_repository_scan_reports_a_public_file_that_disappears(
         (
             "frontend/src/lib/desktop-download.ts",
             "&& !/(?:DramaClaw|SuperTale)/i.test(candidate.name)",
+        ),
+        (
+            "frontend/src/lib/desktop-download.test.ts",
+            "expect(browserDownloadUrl).not.toMatch(/DramaClaw/i);",
+        ),
+        (
+            "frontend/src/__tests__/components/login/login-stage.test.tsx",
+            r"expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);",
         ),
     ],
 )
@@ -307,15 +311,15 @@ def test_commented_negative_assertion_is_not_allowlisted() -> None:
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
-        "  // expect(label).not.toMatch(/DramaClaw/);",
+        "  // expect(html).not.toMatch(/DramaClaw|SuperTale/);",
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        "const x = 1; // expect(label).not.toMatch(/DramaClaw/);",
-        "const x = 1; /* expect(label).not.toMatch(/DramaClaw/) */",
+        "const x = 1; // expect(html).not.toMatch(/DramaClaw|SuperTale/);",
+        "const x = 1; /* expect(html).not.toMatch(/DramaClaw|SuperTale/); */",
     ],
 )
 def test_inline_commented_negative_assertion_is_not_allowlisted(line: str) -> None:
@@ -327,13 +331,13 @@ def test_inline_commented_negative_assertion_is_not_allowlisted(line: str) -> No
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
 
 
-def test_https_before_real_negative_assertion_is_not_a_comment() -> None:
+def test_unknown_assertion_after_https_string_is_not_allowlisted() -> None:
     scanner = _load_scanner()
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
         'const url = "https://example.test"; expect(label).not.toMatch(/DramaClaw/);',
-    ) == []
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
 
 
 def test_negative_assertion_inside_multiline_comment_is_not_allowlisted() -> None:
@@ -341,21 +345,21 @@ def test_negative_assertion_inside_multiline_comment_is_not_allowlisted() -> Non
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
-        "/* disabled\nexpect(label).not.toMatch(/DramaClaw/);\n*/",
+        "/* disabled\n * expect(html).not.toMatch(/DramaClaw|SuperTale/);\n */",
     ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
 
 
-def test_real_assertion_after_multiline_comment_closes_is_allowlisted() -> None:
+def test_unknown_assertion_after_multiline_comment_closes_is_not_allowlisted() -> None:
     scanner = _load_scanner()
 
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
-        "/* disabled\n*/ expect(label).not.toMatch(/DramaClaw/);",
-    ) == []
+        "/* disabled\n*/ expect(html).not.toMatch(/DramaClaw|SuperTale/);",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
 
 
 @pytest.mark.parametrize("quote", ['"', "'", "`"])
-def test_comment_marker_inside_string_does_not_start_multiline_comment(
+def test_assertion_after_comment_marker_string_is_not_allowlisted(
     quote: str,
 ) -> None:
     scanner = _load_scanner()
@@ -367,7 +371,28 @@ def test_comment_marker_inside_string_does_not_start_multiline_comment(
     assert scanner.scan_text(
         Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
         text,
-    ) == []
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
+
+
+@pytest.mark.parametrize("quote", ['"', "'", "`"])
+def test_exact_brand_protection_line_wrapped_in_string_is_not_allowlisted(
+    quote: str,
+) -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        f"{quote}expect(html).not.toMatch(/DramaClaw|SuperTale/);{quote}",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:1"]
+
+
+def test_exact_brand_protection_line_inside_multiline_template_is_not_allowlisted() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("frontend/src/__tests__/components/brand/brand-mark.test.tsx"),
+        "const fixture = `\nfixture: expect(html).not.toMatch(/DramaClaw|SuperTale/);\n`;",
+    ) == ["frontend/src/__tests__/components/brand/brand-mark.test.tsx:2"]
 
 
 def test_explicit_allowlist_rejects_unknown_machine_brand() -> None:

@@ -80,22 +80,6 @@ _ERROR_FIXTURE_PATHS = {
     "frontend/src/__tests__/lib/gateway-error-classify.test.ts",
     "frontend/src/__tests__/task-center/task-errors.test.ts",
 }
-_NEGATIVE_PATTERN_ASSIGNMENTS = {
-    "frontend/src/__tests__/i18n/locales-json.test.ts": re.compile(
-        r"/(?:\\.|[^/\n])*DramaClaw(?:\\.|[^/\n])*/i?"
-    ),
-}
-_TEST_NEGATIVE_ASSERTION = re.compile(
-    r"\.not\.toMatch\((?P<literal>"
-    r"/(?:\\.|[^/\n])*dramaclaw(?:\\.|[^/\n])*/[a-z]*"
-    r"|[\"'][^\"'\n]*dramaclaw[^\"'\n]*[\"']"
-    r")\)",
-    re.IGNORECASE,
-)
-_SETTINGS_NEGATIVE_ASSERTION = re.compile(
-    r'expect\(screen\.queryByText\("DramaClawAPI"\)\)'
-    r"\.not\.toBeInTheDocument\(\)"
-)
 _DESKTOP_FIXTURE = re.compile(
     r"DramaClaw-(?:Setup-)?1\.1\.0(?:-arm64)?\.(?:exe|zip|dmg)"
     r"|NuomiDrama-dRaMaClAw-Setup-2\.0\.0\.exe"
@@ -105,9 +89,29 @@ _SUPERCHAT_COMPATIBILITY_DESCRIPTION = re.compile(
     r"strips internal (?P<brand>DramaClaw) context blocks from displayed text"
 )
 _INTERNAL_CONTEXT_PATTERN = re.compile(r"DRAMACLAW_(?=\[A-Z0-9_\]\+)")
-_DESKTOP_PRODUCTION_FILTER = re.compile(
-    r"!/(?:\(\?:)?DramaClaw\|SuperTale\)/i\.test\(candidate\.name\)"
-)
+_EXACT_BRAND_PROTECTION_LINES = {
+    "frontend/src/__tests__/components/brand/brand-mark.test.tsx": {
+        "expect(html).not.toMatch(/DramaClaw|SuperTale/);",
+    },
+    "frontend/src/__tests__/components/login/login-stage.test.tsx": {
+        r"expect(sources).not.toMatch(/DRAMACLAW|final-mark\.png|让灵感发生/);",
+    },
+    "frontend/src/__tests__/components/settings/text-runtime-panel.test.tsx": {
+        'expect(screen.queryByText("DramaClawAPI")).not.toBeInTheDocument();',
+    },
+    "frontend/src/__tests__/features/brand/runtime-brand-contract.test.ts": {
+        r"expect(source).not.toMatch(/SuperTale(?:_N)?|DramaClaw\/SuperTale/);",
+    },
+    "frontend/src/__tests__/i18n/locales-json.test.ts": {
+        r"/DramaClaw|SuperTale|Xia Director|Xia(?:Hua|Liao|Tang|Jing|Dao|Ge)|Freezone|XiPaint|\bDC\b|虾导|虾塘|虾画|虾镜|虾料|虾格|虾条|虾集/;",
+    },
+    "frontend/src/lib/desktop-download.test.ts": {
+        "expect(browserDownloadUrl).not.toMatch(/DramaClaw/i);",
+    },
+    "frontend/src/lib/desktop-download.ts": {
+        "&& !/(?:DramaClaw|SuperTale)/i.test(candidate.name)",
+    },
+}
 
 
 def _is_excluded_path(path: Path) -> bool:
@@ -153,54 +157,7 @@ def _compatibility_spans(line: str) -> list[tuple[int, int]]:
     ]
 
 
-def _code_spans(line: str, in_block_comment: bool) -> tuple[list[tuple[int, int]], bool]:
-    spans: list[tuple[int, int]] = []
-    quote: str | None = None
-    code_start: int | None = None if in_block_comment else 0
-    index = 0
-    while index < len(line):
-        if in_block_comment:
-            comment_end = line.find("*/", index)
-            if comment_end < 0:
-                return spans, True
-            in_block_comment = False
-            index = comment_end + 2
-            code_start = index
-            continue
-
-        character = line[index]
-        if quote is not None:
-            if character == "\\":
-                index += 2
-                continue
-            if character == quote:
-                quote = None
-            index += 1
-            continue
-        if character in {'"', "'", "`"}:
-            quote = character
-            index += 1
-            continue
-        if line.startswith("//", index):
-            if code_start is not None and code_start < index:
-                spans.append((code_start, index))
-            return spans, False
-        if line.startswith("/*", index):
-            if code_start is not None and code_start < index:
-                spans.append((code_start, index))
-            in_block_comment = True
-            code_start = None
-            index += 2
-            continue
-        index += 1
-    if not in_block_comment and code_start is not None and code_start < len(line):
-        spans.append((code_start, len(line)))
-    return spans, in_block_comment
-
-
-def _path_specific_spans(
-    path: Path, line: str, code_spans: list[tuple[int, int]]
-) -> list[tuple[int, int]]:
+def _path_specific_spans(path: Path, line: str) -> list[tuple[int, int]]:
     normalized = path.as_posix()
     patterns: list[re.Pattern[str]] = []
 
@@ -211,48 +168,27 @@ def _path_specific_spans(
         patterns.append(_ERROR_FIXTURE)
     if normalized == "frontend/src/lib/desktop-download.test.ts":
         patterns.append(_DESKTOP_FIXTURE)
-    if normalized == "frontend/src/__tests__/components/settings/text-runtime-panel.test.tsx":
-        patterns.append(_SETTINGS_NEGATIVE_ASSERTION)
     if normalized == "frontend/src/__tests__/features/superchat/use-superchat.test.ts":
         patterns.append(_SUPERCHAT_COMPATIBILITY_DESCRIPTION)
     if normalized == "frontend/src/features/superchat/message.ts":
         patterns.append(_INTERNAL_CONTEXT_PATTERN)
-    if normalized == "frontend/src/lib/desktop-download.ts":
-        patterns.append(_DESKTOP_PRODUCTION_FILTER)
-    assignment = _NEGATIVE_PATTERN_ASSIGNMENTS.get(normalized)
-    if assignment is not None:
-        patterns.append(assignment)
     spans = [match.span() for pattern in patterns for match in pattern.finditer(line)]
-    is_test_file = (
-        "/__tests__/" in normalized
-        or normalized.endswith(".test.ts")
-        or normalized.endswith(".test.tsx")
-    )
-    leading_star_comment = line.lstrip().startswith("*") and any(
-        start == 0 for start, _ in code_spans
-    )
-    if is_test_file and not line.lstrip().startswith("#") and not leading_star_comment:
-        spans.extend(
-            match.span("literal")
-            for match in _TEST_NEGATIVE_ASSERTION.finditer(line)
-            if any(start <= match.start() < end for start, end in code_spans)
-        )
+    if line.strip() in _EXACT_BRAND_PROTECTION_LINES.get(normalized, set()):
+        spans.extend(match.span() for match in _BRAND.finditer(line))
     return spans
 
 
 def scan_text(path: Path, text: str) -> list[str]:
     """Return ``path:line`` findings for disallowed legacy-brand occurrences."""
     findings: list[str] = []
-    in_block_comment = False
     for line_number, line in enumerate(text.splitlines(), start=1):
-        code_spans, in_block_comment = _code_spans(line, in_block_comment)
         matches = list(_BRAND.finditer(line))
         if not matches:
             continue
 
         allowed_spans = [match.span() for match in _ALLOWED_OCCURRENCES.finditer(line)]
         allowed_spans.extend(_compatibility_spans(line))
-        allowed_spans.extend(_path_specific_spans(path, line, code_spans))
+        allowed_spans.extend(_path_specific_spans(path, line))
         if any(
             not any(start <= match.start() and match.end() <= end for start, end in allowed_spans)
             for match in matches
