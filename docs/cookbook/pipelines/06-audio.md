@@ -293,11 +293,15 @@ rg -n 'audio_duration_seconds|resolve_target_video_duration|使用独立音频|�
   src/novelvideo/export/episode_export.py
 ```
 
-后端最小回归覆盖统一任务、声音解析、API dispatch、前置检查、RunningHub、声音设计和合成音源：
+### 提交门禁
+
+以下后端命令用 node id 聚焦统一任务的增量重生成、前置检查和余额失败边界，并覆盖声音解析、API dispatch、RunningHub、声音存储与声音设计。它刻意不包含下一节记录的基线差异节点，当前可作为本章文档改动的绿色提交门禁：
 
 ```bash
-uv run pytest -q \
-  tests/test_indextts2_beat_audio_task.py \
+.venv/bin/pytest -q \
+  tests/test_indextts2_beat_audio_task.py::test_indextts2_sync_changed_regenerates_when_text_hash_changes \
+  tests/test_indextts2_beat_audio_task.py::test_indextts2_voice_prereq_check_reports_missing_dialogue_before_task \
+  tests/test_indextts2_beat_audio_task.py::test_indextts2_selected_runner_reraises_insufficient_credit \
   tests/test_seedance2_voice_clone.py \
   tests/test_api_audio_prereq.py \
   tests/test_api_audio_indextts2_cutover.py \
@@ -306,8 +310,7 @@ uv run pytest -q \
   tests/test_character_voice_storage.py \
   tests/test_api_character_voice_samples.py \
   tests/test_api_narrator_voice.py \
-  tests/test_voice_design_runner.py \
-  tests/test_compose_episode_audio_source.py
+  tests/test_voice_design_runner.py
 ```
 
 前端契约与交互回归：
@@ -324,6 +327,20 @@ npm test -- --run \
   src/__tests__/components/assets/narrator-voice-panel.test.tsx \
   src/__tests__/components/assets/narrator-voice-panel.ce.test.tsx
 ```
+
+### 已知基线差异 / 复现
+
+当前基线中，`test_indextts2_selected_runner_generates_narration_and_dialogue` 对第三人称旁白 `emotion_prompt` 的断言与实现传参边界不同。精确复现命令如下；当前预期结果是 **FAIL**，不能把它误记为绿色验证：
+
+```bash
+.venv/bin/pytest -q \
+  tests/test_indextts2_beat_audio_task.py::test_indextts2_selected_runner_generates_narration_and_dialogue
+```
+
+- 断言边界：`tests/test_indextts2_beat_audio_task.py:190` 期望 `generator.calls[0]["emotion_prompt"]` 为第三人称旁白提示词；当前实际值为空字符串。
+- 源码边界：`src/novelvideo/audio/indextts2_beat_audio_task.py` 的统一任务把 `narration_style` 传给 `generate_seedance2_narration_audio()`；`src/novelvideo/seedance2_i2v/voice_clone.py` 中该函数当前从显式 `emotion_prompt` 计算 `resolved_emotion` 并下传，没有在此边界把 `narration_style` 转成 `emotion_prompt`。
+
+这里只记录可复现的测试期望与当前实现差异，不据此断定测试已陈旧或实现存在缺陷。在契约明确前，包含该节点的 `tests/test_indextts2_beat_audio_task.py` 全文件或更大测试组合不能作为“全绿提交门禁”；若运行，须把这项预期失败单独报告。
 
 修改输出格式或时长规则时，再增加真实 ffmpeg/ffprobe 冒烟：生成一个 Beat，确认文件可解码、`GET /beats` 返回正时长、视频重新生成后的时长不短于预期，并导出 SRT 核对累计时间轴。不要用只写任意 bytes 的单元测试代替 codec 验证。
 
