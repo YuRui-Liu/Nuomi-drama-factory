@@ -1694,3 +1694,121 @@ def test_execute_projects_active_director_shots_before_building_segments(
 
     assert result["status"] == "skipped"
     assert [beat["id"] for beat in captured] == ["shot-01-01"]
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected"),
+    [
+        ({}, "legacy"),
+        ({"continuity_policy": "legacy"}, "legacy"),
+        ({"continuity_policy": "observe"}, "observe"),
+        ({"continuity_policy": "guard"}, "guard"),
+        ({"continuity_policy": "enforce"}, "enforce"),
+    ],
+)
+def test_continuity_policy_defaults_and_accepts_staged_values(parameters, expected):
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        continuity_policy,
+    )
+
+    assert continuity_policy(parameters) == expected
+
+
+def test_continuity_policy_rejects_unknown_value():
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        continuity_policy,
+    )
+
+    with pytest.raises(ValueError, match="unknown continuity policy"):
+        continuity_policy({"continuity_policy": "future"})
+
+
+def test_provider_parameters_strip_only_continuity_policy():
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _provider_workflow_parameters,
+    )
+
+    assert _provider_workflow_parameters(
+        {"resolution": "1080p", "continuity_policy": "observe"}
+    ) == {"resolution": "1080p"}
+
+
+def test_prepare_continuity_preserves_double_shot_order_and_predecessor(tmp_path):
+    from datetime import datetime, timezone
+
+    from novelvideo.director_plan.models import (
+        DirectorPlanRevision,
+        NarrativeGroupPlan,
+        ShotPlan,
+        ValidationReport,
+    )
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _prepare_continuity,
+    )
+
+    def shot(shot_id, span):
+        return ShotPlan(
+            id=shot_id,
+            source_span_ids=(span,),
+            subject="hero",
+            action="waits",
+            visible_start_state="still",
+            visible_end_state="ready",
+            duration_seconds=2,
+        )
+
+    plan = DirectorPlanRevision(
+        revision_id="rev-1",
+        episode=1,
+        status="review_required",
+        source_script_hash="source",
+        director_model="director",
+        prompt_version="v1",
+        project_style_snapshot_id="style",
+        groups=(NarrativeGroupPlan(
+            id="group-1",
+            ordinal=1,
+            source_span_ids=("line-1", "line-2"),
+            scene_anchor="room",
+            time_anchor="day",
+            objective="wait",
+            visible_turn="ready",
+            relation_to_previous="single",
+            shots=(shot("shot-1", "line-1"), shot("shot-2", "line-2")),
+        ),),
+        validation_report=ValidationReport(passed=True),
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    store = DirectorPlanStore(tmp_path)
+    store.save(plan)
+    store.activate(1, "rev-1")
+    first = tmp_path / "first.png"
+    last = tmp_path / "last.png"
+    first.write_bytes(b"first")
+    last.write_bytes(b"last")
+    segment = H3DirectorSegment(
+        segment_id="shot-1--shot-2",
+        beat_number=1,
+        prompt="wait",
+        duration_seconds=4,
+        first_frame=str(first),
+        last_frame=str(last),
+    )
+
+    prepared = _prepare_continuity(
+        project_dir=tmp_path,
+        episode=1,
+        payload={"mode": "auto"},
+        segments=[segment],
+        beats=[{"start_beat_number": 1, "target_beat_number": 2}],
+        render_state={},
+    )[segment.segment_id]
+
+    assert [contract.shot_id for contract in prepared.contracts] == [
+        "shot-1",
+        "shot-2",
+    ]
+    assert prepared.contracts[1].predecessor_shot_id == "shot-1"
+    assert prepared.contracts[1].predecessor_revision == 1

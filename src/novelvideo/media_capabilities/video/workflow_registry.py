@@ -151,6 +151,44 @@ def _h3_unavailable_reason(
     return None
 
 
+def _h3_parameters() -> tuple[VideoWorkflowParameterDefinition, ...]:
+    return (
+        VideoWorkflowParameterDefinition(
+            key="resolution",
+            label="分辨率",
+            default="720p",
+            scope="narrative_group",
+            options=(
+                VideoWorkflowParameterOption(
+                    value="720p",
+                    label="标准",
+                    relative_cost="standard",
+                ),
+                VideoWorkflowParameterOption(
+                    value="1080p",
+                    label="高清",
+                    description="画质更高，预计耗时和额度增加。",
+                    relative_cost="higher",
+                ),
+            ),
+        ),
+        VideoWorkflowParameterDefinition(
+            key="continuity_policy",
+            label="连续性策略",
+            default="legacy",
+            scope="narrative_group",
+            options=(
+                VideoWorkflowParameterOption(value="legacy", label="旧流程"),
+                VideoWorkflowParameterOption(value="observe", label="只观察"),
+                VideoWorkflowParameterOption(
+                    value="guard", label="阻断确定性错误"
+                ),
+                VideoWorkflowParameterOption(value="enforce", label="启用新编译"),
+            ),
+        ),
+    )
+
+
 def build_video_workflow_registry(
     store: MediaCapabilityStore,
     resolver: CredentialResolver,
@@ -165,27 +203,7 @@ def build_video_workflow_registry(
                 adapter_key="minimax-h3",
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                 supported_modes=("auto", "i2va", "fl2va"),
-                parameters=(
-                    VideoWorkflowParameterDefinition(
-                        key="resolution",
-                        label="分辨率",
-                        default="720p",
-                        scope="narrative_group",
-                        options=(
-                            VideoWorkflowParameterOption(
-                                value="720p",
-                                label="标准",
-                                relative_cost="standard",
-                            ),
-                            VideoWorkflowParameterOption(
-                                value="1080p",
-                                label="高清",
-                                description="画质更高，预计耗时和额度增加。",
-                                relative_cost="higher",
-                            ),
-                        ),
-                    ),
-                ),
+                parameters=_h3_parameters(),
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),

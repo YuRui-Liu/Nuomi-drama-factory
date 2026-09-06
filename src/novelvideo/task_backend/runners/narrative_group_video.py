@@ -63,7 +63,33 @@ from novelvideo.narrative_groups.service import (
     stage_payload,
 )
 from novelvideo.project_context import ProjectContext
+from novelvideo.shot_continuity import (
+    CompiledShotBundle,
+    H3ModeDecision,
+    ShotContinuityContract,
+    ShotRiskReport,
+)
 from novelvideo.task_backend.registry import register_project_task_runner
+
+
+ContinuityPolicy = Literal["legacy", "observe", "guard", "enforce"]
+
+
+def continuity_policy(parameters: Mapping[str, object]) -> ContinuityPolicy:
+    value = str(parameters.get("continuity_policy") or "legacy").strip().lower()
+    if value not in {"legacy", "observe", "guard", "enforce"}:
+        raise ValueError(f"unknown continuity policy: {value}")
+    return value  # type: ignore[return-value]
+
+
+def _provider_workflow_parameters(
+    parameters: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in parameters.items()
+        if key != "continuity_policy"
+    }
 
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
@@ -331,6 +357,8 @@ async def _optimize_missing_prompts(
     max_parallel: int | None = None,
     evidence_by_segment: dict[str, dict[str, Any]] | None = None,
     episode_beats: list[Mapping[str, Any]] | None = None,
+    policy: ContinuityPolicy = "legacy",
+    continuity_by_segment: dict[str, PreparedContinuity] | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
@@ -338,7 +366,11 @@ async def _optimize_missing_prompts(
     episode_context_beats: list[Mapping[str, Any]] = []
     segment_group_ids: dict[str, str] = {}
     source_beats = list(episode_beats or beats)
-    for group in load_materialized_groups(project_dir, episode):
+    for group in (
+        load_materialized_groups(project_dir, episode)
+        if continuity_by_segment is None
+        else ()
+    ):
         render = stage_payload(project_dir, episode, group.id, "render")
         # Episode-level prompt planning may use already-rendered neighbouring
         # groups for continuity, but an unfinished sibling must never expand
@@ -364,8 +396,9 @@ async def _optimize_missing_prompts(
     optimizer = create_h3_episode_pack_optimizer(
         cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
     )
-    contexts = [
-        _prompt_context(
+    contexts = []
+    for index, (segment, beat) in enumerate(zip(segments, beats, strict=True)):
+        context = _prompt_context(
             segment, beat,
             beats[index - 1] if index else None,
             beats[index + 1] if index + 1 < len(beats) else None,
@@ -373,8 +406,19 @@ async def _optimize_missing_prompts(
                 project_dir, episode, beat
             ),
         )
-        for index, (segment, beat) in enumerate(zip(segments, beats, strict=True))
-    ]
+        prepared = (continuity_by_segment or {}).get(segment.segment_id)
+        if prepared is not None:
+            from novelvideo.shot_continuity import continuity_locks_for
+
+            context = context.model_copy(update={
+                "continuity_locks": continuity_locks_for(prepared.contracts),
+                "continuity_contracts_json": _canonical_json([
+                    contract.model_dump(mode="json")
+                    for contract in prepared.contracts
+                ]),
+                "risk_report_json": _canonical_json(prepared.risk_report),
+            })
+        contexts.append(context)
 
     active = __import__(
         "novelvideo.director_plan.store", fromlist=["DirectorPlanStore"]
@@ -398,7 +442,13 @@ async def _optimize_missing_prompts(
             ),
             source_segment=segment,
             context=context,
-            mode=_mode_for(segment),
+            mode=(
+                H3Mode(continuity_by_segment[segment.segment_id].mode_decision.mode)
+                if policy == "enforce"
+                and continuity_by_segment is not None
+                and continuity_by_segment[segment.segment_id].mode_decision.mode
+                else _mode_for(segment)
+            ),
             summary=context.visual_description or segment.prompt,
             character_anchor=segment.speaker,
             scene_anchor=context.director_context,
@@ -418,6 +468,75 @@ async def _optimize_missing_prompts(
     optimized = []
     for segment, context in zip(segments, contexts, strict=True):
         item = by_id[segment.segment_id]
+        prepared = (continuity_by_segment or {}).get(segment.segment_id)
+        bundle = None
+        diagnostics: tuple[str, ...] = ()
+        if prepared is not None and not prepared.risk_report.blockers:
+            current_mode = _mode_for(segment).value
+            proposed_mode = prepared.mode_decision.mode
+            if policy in {"observe", "guard"} and proposed_mode != current_mode:
+                diagnostics = ("shadow_mode_replan_required",)
+                prepared = replace(
+                    prepared,
+                    mode_decision=prepared.mode_decision.model_copy(update={
+                        "reason_codes": _stable_union(
+                            prepared.mode_decision.reason_codes,
+                            diagnostics,
+                        )
+                    }),
+                )
+            else:
+                from novelvideo.shot_continuity import (
+                    FrameEvidence,
+                    compile_shot_bundle,
+                )
+
+                control_frames = tuple(
+                    FrameEvidence(
+                        asset_id=contract.director_world.control_frame.asset_id,
+                        sha256=contract.director_world.control_frame.sha256,
+                    )
+                    for contract in prepared.contracts
+                    if contract.director_world is not None
+                    and contract.director_world.control_frame is not None
+                )
+                bundle = compile_shot_bundle(
+                    segment_id=segment.segment_id,
+                    source_shot_ids=tuple(segment.segment_id.split("--")),
+                    contracts=prepared.contracts,
+                    optimization=item,
+                    decision=prepared.mode_decision,
+                    risk_report=prepared.risk_report,
+                    first_frame=FrameEvidence(
+                        asset_id=str(segment.first_frame),
+                        sha256=context.first_frame_sha256,
+                    ),
+                    last_frame=(
+                        FrameEvidence(
+                            asset_id=str(segment.last_frame),
+                            sha256=str(context.last_frame_sha256),
+                        )
+                        if segment.last_frame else None
+                    ),
+                    control_frames=control_frames,
+                    adapter="base-h3",
+                    diagnostics=diagnostics,
+                )
+            continuity_by_segment[segment.segment_id] = replace(
+                prepared,
+                provider_segment=(
+                    segment.model_copy(update={
+                        "prompt": bundle.prompt,
+                        "last_frame": (
+                            str(segment.last_frame)
+                            if bundle.mode == "fl2va" else None
+                        ),
+                    })
+                    if policy == "enforce" and bundle is not None
+                    else segment
+                ),
+                bundle=bundle,
+            )
         if evidence_by_segment is not None:
             evidence_by_segment[segment.segment_id] = {
                 "director_plan": item.plan.model_dump(mode="json"),
@@ -427,11 +546,47 @@ async def _optimize_missing_prompts(
                     "compiler_version": item.compiler_version,
                 },
                 "quality_report": item.quality_report.model_dump(mode="json"),
-                "input_summary": _input_summary(segment, context, _mode_for(segment)),
-                "_final_prompt": item.prompt,
+                "input_summary": _input_summary(
+                    segment,
+                    context,
+                    (
+                        H3Mode(prepared.mode_decision.mode)
+                        if policy == "enforce"
+                        and prepared is not None
+                        and prepared.mode_decision.mode
+                        else _mode_for(segment)
+                    ),
+                ),
+                **(
+                    {
+                        "continuity_contracts": tuple(
+                            contract.model_dump(mode="json")
+                            for contract in prepared.contracts
+                        ),
+                        "risk_report": prepared.risk_report.model_dump(mode="json"),
+                        "mode_decision": prepared.mode_decision.model_dump(mode="json"),
+                        "compiled_bundle": (
+                            bundle.model_dump(mode="json") if bundle is not None else None
+                        ),
+                    }
+                    if prepared is not None else {}
+                ),
+                **(
+                    {"_final_prompt": item.prompt}
+                    if policy == "legacy"
+                    else (
+                        {"_final_prompt": bundle.prompt}
+                        if policy == "enforce" and bundle is not None else {}
+                    )
+                ),
             }
         if segment.segment_id in requested_ids:
-            optimized.append(segment.model_copy(update={"prompt": item.prompt}))
+            if prepared is not None:
+                optimized.append(
+                    continuity_by_segment[segment.segment_id].provider_segment
+                )
+            else:
+                optimized.append(segment.model_copy(update={"prompt": item.prompt}))
     return optimized
 
 
@@ -574,6 +729,10 @@ def _manifest_with_segment_status(
 
 class H3ManifestPersistenceError(RuntimeError):
     """A local manifest write failed outside the provider transport."""
+
+
+class H3ContinuityQualityError(RuntimeError):
+    """A staged continuity policy rejected transport deterministically."""
 
 
 def _persist_generation_evidence(
@@ -820,6 +979,271 @@ class SegmentProviderRequest:
 
 
 @dataclass(frozen=True)
+class PreparedContinuity:
+    provider_segment: H3DirectorSegment
+    contracts: tuple[ShotContinuityContract, ...]
+    risk_report: ShotRiskReport
+    mode_decision: H3ModeDecision
+    bundle: CompiledShotBundle | None = None
+
+
+def _canonical_json(value: object) -> str:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")  # type: ignore[union-attr]
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _stable_union(*values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(item for group in values for item in group))
+
+
+def _merge_risk_reports(
+    reports: tuple[ShotRiskReport, ...], *blockers: str
+) -> ShotRiskReport:
+    from novelvideo.shot_continuity import RiskDimensionScore, ShotRiskReport
+
+    dimensions = {}
+    for name in ("spatial", "identity", "motion", "continuity"):
+        scores = [getattr(report, name) for report in reports]
+        level = max(score.level for score in scores)
+        dimensions[name] = RiskDimensionScore(
+            dimension=name,
+            level=level,
+            reasons=_stable_union(
+                *(score.reasons for score in scores if score.level == level)
+            ),
+        )
+    return ShotRiskReport(
+        **dimensions,
+        blockers=_stable_union(
+            *(report.blockers for report in reports), tuple(blockers)
+        ),
+    )
+
+
+def _explicit_asset_evidence(
+    render_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read only render-sidecar references that name both entity and real file."""
+    from novelvideo.shot_continuity import AssetEvidence
+
+    result: dict[str, AssetEvidence] = {}
+    for cell in render_state.get("cell_assets") or ():
+        if not isinstance(cell, Mapping):
+            continue
+        references: list[object] = []
+        for field in ("references", "asset_references"):
+            raw = cell.get(field)
+            if isinstance(raw, list):
+                references.extend(raw)
+        if cell.get("entity_key") and (
+            cell.get("asset_path") or cell.get("reference_path")
+        ):
+            references.append(cell)
+        for raw in references:
+            if not isinstance(raw, Mapping):
+                continue
+            entity_key = str(raw.get("entity_key") or "").strip()
+            asset_path = str(
+                raw.get("asset_path")
+                or raw.get("reference_path")
+                or raw.get("path")
+                or ""
+            ).strip()
+            asset_id = str(raw.get("asset_id") or "").strip()
+            if not entity_key or not asset_id or not asset_path:
+                continue
+            path = Path(asset_path)
+            if not path.is_file():
+                continue
+            digest = _frame_sha256(asset_path)
+            declared_digest = str(raw.get("sha256") or "").strip().lower()
+            if declared_digest and declared_digest != digest:
+                continue
+            result.setdefault(
+                entity_key, AssetEvidence(asset_id=asset_id, sha256=digest)
+            )
+    return result
+
+
+def _director_world_snapshot(
+    project_dir: Path, episode: int, beat_number: int
+) -> tuple[dict[str, Any], bool]:
+    from novelvideo.director_world.store import load_beat_blocking
+
+    try:
+        blocking = load_beat_blocking(project_dir, episode, beat_number) or {}
+    except (OSError, ValueError):
+        return {}, False
+    if not isinstance(blocking, Mapping):
+        return {}, False
+    snapshot = dict(blocking.get("snapshot") or {})
+    raw_control = snapshot.get("control_frame") or blocking.get("control_frame")
+    if isinstance(raw_control, Mapping):
+        raw_path = raw_control.get("path") or raw_control.get("asset_path")
+        asset_id = str(raw_control.get("asset_id") or "").strip()
+        declared_digest = str(raw_control.get("sha256") or "").strip().lower()
+        if not raw_path and asset_id and Path(asset_id).is_file():
+            raw_path = asset_id
+    else:
+        raw_path = raw_control
+        asset_id = ""
+        declared_digest = ""
+    path = Path(str(raw_path or ""))
+    if not path.is_file():
+        return snapshot, False
+    asset_id = asset_id or str(path)
+    actual_digest = _frame_sha256(str(path))
+    if declared_digest and declared_digest != actual_digest:
+        return snapshot, False
+    snapshot["control_frame"] = {
+        "asset_id": asset_id,
+        "sha256": actual_digest,
+    }
+    return snapshot, True
+
+
+def _shot_beat_numbers(
+    segments: list[H3DirectorSegment], beats: list[Mapping[str, Any]]
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for segment, beat in zip(segments, beats, strict=True):
+        shot_ids = segment.segment_id.split("--")
+        numbers = (
+            (beat.get("start_beat_number"), beat.get("target_beat_number"))
+            if len(shot_ids) == 2
+            else (beat.get("beat_number"),)
+        )
+        for index, shot_id in enumerate(shot_ids):
+            try:
+                result[shot_id] = int(numbers[index])
+            except (IndexError, TypeError, ValueError):
+                result[shot_id] = segment.beat_number + index
+    return result
+
+
+def _prepare_continuity(
+    *,
+    project_dir: Path,
+    episode: int,
+    payload: Mapping[str, Any],
+    segments: list[H3DirectorSegment],
+    beats: list[Mapping[str, Any]],
+    render_state: Mapping[str, Any],
+) -> dict[str, PreparedContinuity]:
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.shot_continuity import (
+        ShotContinuityStore,
+        audit_h3_shot,
+        build_shot_continuity_contract,
+        select_h3_mode,
+        signals_for_shot,
+    )
+
+    plan = DirectorPlanStore(project_dir).load_active(episode)
+    if plan is None:
+        raise ValueError("active DirectorPlan is required for continuity policy")
+    shot_context = {
+        shot.id: (shot, group.scene_anchor, group.time_anchor)
+        for group in plan.groups
+        for shot in group.shots
+    }
+    plan_order = tuple(shot.id for group in plan.groups for shot in group.shots)
+    predecessor_ids = {
+        shot_id: (plan_order[index - 1] if index else None)
+        for index, shot_id in enumerate(plan_order)
+    }
+    assets = _explicit_asset_evidence(render_state)
+    beat_numbers = _shot_beat_numbers(segments, beats)
+    continuity_store = ShotContinuityStore(project_dir)
+    saved_this_run: dict[str, Any] = {}
+    prepared: dict[str, PreparedContinuity] = {}
+    requested = str(payload.get("mode") or "auto").strip().lower()
+    if requested not in {"auto", "i2va", "fl2va"}:
+        raise ValueError("MiniMax H3 group mode must be auto, i2va, or fl2va")
+
+    for segment in segments:
+        contracts = []
+        reports = []
+        extra_blockers: list[str] = []
+        for shot_id in segment.segment_id.split("--"):
+            try:
+                shot, scene_id, scene_state = shot_context[shot_id]
+            except KeyError as exc:
+                raise ValueError(
+                    f"continuity contract shot is absent from DirectorPlan: {shot_id}"
+                ) from exc
+            predecessor_id = predecessor_ids[shot_id]
+            predecessor = (
+                saved_this_run.get(predecessor_id)
+                if predecessor_id is not None
+                else None
+            )
+            if predecessor_id is not None and predecessor is None:
+                predecessor = continuity_store.load_active(episode, predecessor_id)
+            dw_snapshot, dw_available = _director_world_snapshot(
+                project_dir, episode, beat_numbers[shot_id]
+            )
+            candidate = build_shot_continuity_contract(
+                shot,
+                scene_id=scene_id,
+                scene_state=scene_state,
+                predecessor=predecessor,
+                director_world=dw_snapshot,
+                asset_evidence_by_entity=assets,
+            )
+            report = audit_h3_shot(
+                signals_for_shot(shot, candidate),
+                ref_available=False,
+                director_world_available=dw_available,
+            )
+            if any(
+                requirement.required
+                and requirement.entity_key not in assets
+                for requirement in shot.asset_requirements
+            ):
+                extra_blockers.append("required_asset_evidence_missing")
+            if report.continuity.level == 2 and predecessor is not None:
+                if predecessor.boundary.observed_carry_out is None:
+                    extra_blockers.append("predecessor_observation_required")
+                existing = continuity_store.load_active(episode, shot_id)
+                if existing is not None and (
+                    existing.predecessor_shot_id != predecessor.shot_id
+                    or existing.predecessor_revision != predecessor.revision
+                ):
+                    extra_blockers.append("predecessor_revision_stale")
+            existing = continuity_store.load_active(episode, shot_id)
+            saved = continuity_store.put(
+                episode,
+                candidate,
+                0 if existing is None else existing.revision,
+            )
+            saved_this_run[shot_id] = saved
+            contracts.append(saved)
+            reports.append(report)
+
+        risk_report = _merge_risk_reports(tuple(reports), *extra_blockers)
+        decision = select_h3_mode(
+            requested=requested,  # type: ignore[arg-type]
+            has_first_frame=bool(segment.first_frame),
+            has_last_frame=bool(segment.last_frame),
+            exact_terminal_state=risk_report.continuity.level == 2,
+            endpoint_reachable=risk_report.motion.level < 2,
+            motion_level=risk_report.motion.level,
+        )
+        risk_report = _merge_risk_reports(
+            (risk_report,), *decision.blockers
+        )
+        prepared[segment.segment_id] = PreparedContinuity(
+            provider_segment=segment,
+            contracts=tuple(contracts),
+            risk_report=risk_report,
+            mode_decision=decision,
+        )
+    return prepared
+
+
+@dataclass(frozen=True)
 class SegmentRunResult:
     segment_id: str
     status: Literal["completed", "failed"]
@@ -914,6 +1338,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     workflow_parameters = dict(payload.get("workflow_parameters") or {})
     if not workflow_parameters:
         workflow_parameters = {"resolution": str(payload.get("resolution") or "720p")}
+    policy = continuity_policy(workflow_parameters)
+    provider_workflow_parameters = _provider_workflow_parameters(
+        workflow_parameters
+    )
     saved = stage_payload(project_dir, episode, group_id, "video")
     if saved["revision"] != revision:
         return {"status": "stale", "group_id": group_id, "revision": revision}
@@ -981,13 +1409,131 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         output = video_dir / f"{group_id}_r{revision}{segment_suffix}.mp4"
         manifest_path = output.with_suffix(".manifest.json")
         evidence_by_segment: dict[str, dict[str, Any]] = {}
-        try:
-            segments = await _optimize_missing_prompts(
-                raw_segments, segment_beats, ctx=ctx,
-                project_dir=project_dir, episode=episode,
-                evidence_by_segment=evidence_by_segment,
-                episode_beats=source_beats,
+        continuity_by_segment: dict[str, PreparedContinuity] | None = None
+        if policy != "legacy":
+            continuity_by_segment = _prepare_continuity(
+                project_dir=project_dir,
+                episode=episode,
+                payload=payload,
+                segments=raw_segments,
+                beats=segment_beats,
+                render_state=render_state,
             )
+            for segment_id, prepared in continuity_by_segment.items():
+                evidence_by_segment[segment_id] = {
+                    "continuity_contracts": tuple(
+                        contract.model_dump(mode="json")
+                        for contract in prepared.contracts
+                    ),
+                    "risk_report": prepared.risk_report.model_dump(mode="json"),
+                    "mode_decision": prepared.mode_decision.model_dump(mode="json"),
+                    "compiled_bundle": None,
+                }
+            blocked = {
+                segment_id: prepared.risk_report.blockers
+                for segment_id, prepared in continuity_by_segment.items()
+                if prepared.risk_report.blockers
+            }
+            if blocked and policy in {"guard", "enforce"}:
+                rejected_timeline = build_h3_timeline_data(
+                    raw_segments, strict_first_frame=True
+                )
+                rejected_manifest = H3DirectorOutputManifest(
+                    physical_video=None,
+                    entries=_entries_with_evidence(
+                        rejected_timeline.entries,
+                        evidence_by_segment,
+                        default_status="quality_rejected",
+                    ),
+                    workflow_id=workflow.id,
+                    workflow_parameters=workflow_parameters,
+                    status="quality_rejected",
+                )
+                if manifest_path.is_file():
+                    rejected_manifest = _merge_replay_evidence(
+                        rejected_manifest,
+                        load_h3_director_manifest(manifest_path),
+                    )
+                save_h3_director_manifest(manifest_path, rejected_manifest)
+                error_payload = {
+                    "error_code": "H3_CONTINUITY_QUALITY_REJECTED",
+                    "transport_called": False,
+                    "continuity_policy": policy,
+                    "blockers": blocked,
+                }
+                error = H3ContinuityQualityError(
+                    json.dumps(
+                        error_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+                record_stage_result(
+                    project_dir,
+                    episode,
+                    group_id,
+                    "video",
+                    expected_revision=revision,
+                    status="failed",
+                    error=str(error),
+                    manifest_asset=str(manifest_path),
+                )
+                raise error
+        try:
+            if policy == "legacy":
+                segments = await _optimize_missing_prompts(
+                    raw_segments, segment_beats, ctx=ctx,
+                    project_dir=project_dir, episode=episode,
+                    evidence_by_segment=evidence_by_segment,
+                    episode_beats=source_beats,
+                )
+            else:
+                legacy_segments = await _optimize_missing_prompts(
+                    raw_segments, segment_beats, ctx=ctx,
+                    project_dir=project_dir, episode=episode,
+                    episode_beats=source_beats,
+                )
+                try:
+                    continuity_segments = await _optimize_missing_prompts(
+                        raw_segments, segment_beats, ctx=ctx,
+                        project_dir=project_dir, episode=episode,
+                        evidence_by_segment=evidence_by_segment,
+                        episode_beats=source_beats,
+                        policy=policy,
+                        continuity_by_segment=continuity_by_segment,
+                    )
+                except H3PromptQualityError:
+                    if policy == "enforce":
+                        raise
+                    continuity_segments = raw_segments
+                    for segment_id, prepared in (
+                        continuity_by_segment or {}
+                    ).items():
+                        diagnostic_decision = prepared.mode_decision.model_copy(
+                            update={
+                                "reason_codes": _stable_union(
+                                    prepared.mode_decision.reason_codes,
+                                    ("shadow_prompt_quality_rejected",),
+                                )
+                            }
+                        )
+                        evidence_by_segment[segment_id] = {
+                            "continuity_contracts": tuple(
+                                contract.model_dump(mode="json")
+                                for contract in prepared.contracts
+                            ),
+                            "risk_report": prepared.risk_report.model_dump(
+                                mode="json"
+                            ),
+                            "mode_decision": diagnostic_decision.model_dump(
+                                mode="json"
+                            ),
+                            "compiled_bundle": None,
+                        }
+                segments = (
+                    continuity_segments
+                    if policy == "enforce" else legacy_segments
+                )
         except H3PromptQualityError as exc:
             report = exc.report.model_dump(mode="json")
             for segment in raw_segments:
@@ -1111,7 +1657,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             segments=(segment,),
                             output_path=str(segment_output),
                             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
-                            workflow_parameters=workflow_parameters,
+                            workflow_parameters=provider_workflow_parameters,
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )
@@ -1391,6 +1937,8 @@ register_project_task_runner(
 )
 
 __all__ = [
+    "ContinuityPolicy",
+    "PreparedContinuity",
     "SegmentProviderRequest",
     "SegmentRunResult",
     "run_narrative_group_video",
