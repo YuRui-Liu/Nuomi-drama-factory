@@ -22,6 +22,53 @@ from .models import (
 
 H3_SHOT_COMPILER_VERSION = 1
 
+_REF_SUFFIX = {
+    "character_identity": "preserve identity, hair, and wardrobe",
+    "scene_base": "preserve architecture and set dressing",
+    "prop": "preserve shape, material, and visible state",
+}
+
+
+def compile_reference_definitions(
+    bindings: tuple[H3ReferenceBinding, ...],
+) -> str:
+    """Compile validated H3 reference bindings into ordered prompt lines."""
+    if not bindings:
+        raise ValueError("reference bindings must be non-empty")
+
+    for binding in bindings:
+        if (
+            not isinstance(binding.source_kind, str)
+            or binding.source_kind not in _REF_SUFFIX
+        ):
+            raise ValueError(
+                "reference source kind must be character_identity, scene_base, or prop"
+            )
+
+    ordered = tuple(sorted(bindings, key=lambda binding: binding.picture_index))
+    expected_indices = tuple(range(1, len(ordered) + 1))
+    if tuple(binding.picture_index for binding in ordered) != expected_indices:
+        raise ValueError("reference picture indices must be contiguous from 1")
+    if tuple(binding.subject_index for binding in ordered) != expected_indices:
+        raise ValueError(
+            "reference subject indices must be contiguous from 1 in picture order"
+        )
+
+    unique_fields = {
+        "reference_id": tuple(binding.reference_id for binding in ordered),
+        "asset_id": tuple(binding.asset.asset_id for binding in ordered),
+        "sha256": tuple(binding.asset.sha256 for binding in ordered),
+    }
+    for field, values in unique_fields.items():
+        if len(set(values)) != len(values):
+            raise ValueError(f"reference {field} values must be unique")
+
+    return "\n".join(
+        f"<Subject {binding.subject_index}> is {binding.label} "
+        f"from <Picture {binding.picture_index}>; {_REF_SUFFIX[binding.source_kind]}."
+        for binding in ordered
+    )
+
 
 def continuity_locks_for(
     contracts: tuple[ShotContinuityContract, ...],
@@ -98,8 +145,8 @@ def compile_shot_bundle(
     """Compile one validated H3 optimization result into a hashed bundle."""
     if decision.mode is None:
         raise ValueError("blocked mode decision cannot compile a bundle")
-    if adapter == "h3-ref" and not references:
-        raise ValueError("h3-ref adapter requires reference bindings")
+    if adapter == "h3-ref":
+        compile_reference_definitions(references)
 
     try:
         optimization_mode = H3Mode(optimization.plan.mode).value
@@ -151,6 +198,7 @@ def compile_shot_bundle(
 
 __all__ = [
     "H3_SHOT_COMPILER_VERSION",
+    "compile_reference_definitions",
     "compile_shot_bundle",
     "continuity_locks_for",
 ]

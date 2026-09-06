@@ -8,6 +8,7 @@ from .builder import (
 )
 from .compiler import (
     H3_SHOT_COMPILER_VERSION,
+    compile_reference_definitions,
     compile_shot_bundle,
     continuity_locks_for,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "build_shot_continuity_contract",
     "canonical_sha256",
     "continuity_score",
+    "compile_reference_definitions",
     "compile_shot_bundle",
     "continuity_locks_for",
     "contracts_for_segment",

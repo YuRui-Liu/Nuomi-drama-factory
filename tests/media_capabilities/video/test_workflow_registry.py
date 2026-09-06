@@ -68,7 +68,8 @@ def test_registry_filters_workflows_by_scene(tmp_path) -> None:
     registry = _configured_registry(tmp_path)
 
     assert [item.id for item in registry.list(VideoWorkflowScene.NARRATIVE_GROUP)] == [
-        "runninghub:minimax-h3"
+        "runninghub:minimax-h3",
+        "runninghub:minimax-h3-ref",
     ]
     assert registry.list(VideoWorkflowScene.SINGLE_BEAT) == ()
     assert registry.list(VideoWorkflowScene.FREEZONE) == ()
@@ -129,6 +130,29 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
         ),
         available=True,
     )
+
+
+def test_registry_lists_ref_after_base_as_unavailable_local_contract(
+    tmp_path,
+) -> None:
+    registry = _configured_registry(tmp_path)
+    base, ref = registry.list(VideoWorkflowScene.NARRATIVE_GROUP)
+
+    assert registry.default(VideoWorkflowScene.NARRATIVE_GROUP) is base
+    assert ref == VideoWorkflowDefinition(
+        id="runninghub:minimax-h3-ref",
+        label="RunningHub MiniMax H3 · Ref",
+        provider="runninghub",
+        adapter_key="minimax-h3-ref",
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=("auto", "i2va", "fl2va"),
+        default_mode="auto",
+        parameters=base.parameters,
+        available=False,
+        unavailable_reason="hybrid_input_unverified",
+    )
+    with pytest.raises(VideoWorkflowUnavailable, match="hybrid_input_unverified"):
+        registry.resolve(ref.id, VideoWorkflowScene.NARRATIVE_GROUP)
 
 
 def test_workflow_definition_rejects_extra_fields() -> None:

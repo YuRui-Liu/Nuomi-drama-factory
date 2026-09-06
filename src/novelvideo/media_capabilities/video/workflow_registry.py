@@ -207,6 +207,17 @@ def build_video_workflow_registry(
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),
+            VideoWorkflowDefinition(
+                id="runninghub:minimax-h3-ref",
+                label="RunningHub MiniMax H3 · Ref",
+                provider="runninghub",
+                adapter_key="minimax-h3-ref",
+                scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+                supported_modes=("auto", "i2va", "fl2va"),
+                parameters=_h3_parameters(),
+                available=False,
+                unavailable_reason="hybrid_input_unverified",
+            ),
         )
     )
 

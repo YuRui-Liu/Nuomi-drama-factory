@@ -20,9 +20,14 @@ def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
     store = MediaCapabilityStore(tmp_path / "settings.db")
     models = list_video_models(store, CredentialResolver(env={}))
 
-    assert [item.id for item in models] == ["runninghub:minimax-h3"]
+    assert [item.id for item in models] == [
+        "runninghub:minimax-h3",
+        "runninghub:minimax-h3-ref",
+    ]
     assert models[0].available is False
     assert models[0].supported_modes == ("auto", "i2va", "fl2va")
+    assert models[1].available is False
+    assert models[1].unavailable_reason == "hybrid_input_unverified"
     assert "credential" not in models[0].model_dump_json().lower()
     assert "api_key" not in models[0].model_dump_json().lower()
 
@@ -72,11 +77,11 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
 
 
 def test_catalog_publishes_only_product_parameter_schema(tmp_path) -> None:
-    item = list_video_models(
+    items = list_video_models(
         MediaCapabilityStore(tmp_path / "settings.db"), CredentialResolver(env={})
-    )[0]
+    )
 
-    assert item.model_dump(mode="json")["parameters"] == [
+    expected_parameters = [
         {
             "key": "resolution",
             "type": "enum",
@@ -98,11 +103,47 @@ def test_catalog_publishes_only_product_parameter_schema(tmp_path) -> None:
                     "relative_cost": "higher",
                 },
             ],
-        }
+        },
+        {
+            "key": "continuity_policy",
+            "type": "enum",
+            "label": "连续性策略",
+            "description": "",
+            "default": "legacy",
+            "scope": "narrative_group",
+            "options": [
+                {
+                    "value": "legacy",
+                    "label": "旧流程",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "observe",
+                    "label": "只观察",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "guard",
+                    "label": "阻断确定性错误",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "enforce",
+                    "label": "启用新编译",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+            ],
+        },
     ]
-    serialized = item.model_dump_json().lower()
-    for internal_name in ("megapixels", "node_id", "width", "height"):
-        assert internal_name not in serialized
+    for item in items:
+        assert item.model_dump(mode="json")["parameters"] == expected_parameters
+        serialized = item.model_dump_json().lower()
+        for internal_name in ("megapixels", "node_id", "width", "height"):
+            assert internal_name not in serialized
 
 
 def test_video_route_priority_keeps_explicit_runninghub_ahead_of_generic_models() -> None:

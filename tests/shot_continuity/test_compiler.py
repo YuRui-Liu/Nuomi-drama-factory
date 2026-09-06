@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import novelvideo.shot_continuity as shot_continuity
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptOptimizationResult,
 )
@@ -34,6 +37,15 @@ from novelvideo.shot_continuity import (
     canonical_sha256,
     compile_shot_bundle,
     continuity_locks_for,
+)
+from novelvideo.shot_continuity import compiler as compiler_module
+
+
+_FIXTURE_PATH = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "runninghub"
+    / "minimax_h3_ref_compiler_contract.json"
 )
 
 
@@ -153,17 +165,145 @@ def _binding(
     reference_id: str,
     *,
     picture_index: int,
-    label: str = "Lin identity",
+    subject_index: int | None = None,
+    source_kind: str = "character_identity",
+    label: str = "Shen Li",
+    asset_id: str | None = None,
     digest_char: str = "d",
 ) -> H3ReferenceBinding:
     return H3ReferenceBinding(
         reference_id=reference_id,
-        source_kind="character_identity",
-        subject_index=1,
+        source_kind=source_kind,
+        subject_index=subject_index or picture_index,
         picture_index=picture_index,
         label=label,
-        asset=_frame(f"asset-{reference_id}", digest_char),
+        asset=_frame(asset_id or f"asset-{reference_id}", digest_char),
     )
+
+
+def test_reference_definitions_match_local_contract_fixture() -> None:
+    fixture = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+    bindings = tuple(
+        H3ReferenceBinding.model_validate(binding)
+        for binding in fixture["bindings"]
+    )
+
+    definitions = compiler_module.compile_reference_definitions(bindings)
+
+    assert set(fixture) == {
+        "schema_version",
+        "fixture_kind",
+        "provider_payload",
+        "bindings",
+        "expected_reference_definitions",
+    }
+    assert fixture["schema_version"] == 1
+    assert fixture["fixture_kind"] == "local_h3_ref_compiler_contract"
+    assert fixture["provider_payload"] is False
+    assert definitions.splitlines() == fixture["expected_reference_definitions"]
+    assert shot_continuity.compile_reference_definitions is (
+        compiler_module.compile_reference_definitions
+    )
+
+
+def test_reference_definitions_sort_by_picture_and_keep_label_verbatim() -> None:
+    definitions = compiler_module.compile_reference_definitions(
+        (
+            _binding(
+                "scene:atrium",
+                source_kind="scene_base",
+                picture_index=2,
+                subject_index=2,
+                label="Atrium 夜景",
+                digest_char="e",
+            ),
+            _binding(
+                "character:shen-li",
+                picture_index=1,
+                subject_index=1,
+                label="Shen Li",
+            ),
+            _binding(
+                "prop:jade-cup",
+                source_kind="prop",
+                picture_index=3,
+                subject_index=3,
+                label="Jade cup",
+                digest_char="f",
+            ),
+        )
+    )
+
+    assert definitions.splitlines() == [
+        "<Subject 1> is Shen Li from <Picture 1>; preserve identity, hair, and wardrobe.",
+        "<Subject 2> is Atrium 夜景 from <Picture 2>; preserve architecture and set dressing.",
+        "<Subject 3> is Jade cup from <Picture 3>; preserve shape, material, and visible state.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bindings", "message"),
+    [
+        ((), "non-empty"),
+        (
+            (
+                _binding("one", picture_index=1),
+                _binding("three", picture_index=3),
+            ),
+            "picture indices",
+        ),
+        (
+            (
+                _binding("one", picture_index=1, subject_index=2),
+                _binding("two", picture_index=2, subject_index=1),
+            ),
+            "subject indices",
+        ),
+    ],
+)
+def test_reference_definitions_reject_empty_or_non_contiguous_indices(
+    bindings: tuple[H3ReferenceBinding, ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        compiler_module.compile_reference_definitions(bindings)
+
+
+@pytest.mark.parametrize("duplicate_field", ["reference_id", "asset_id", "sha256"])
+def test_reference_definitions_reject_duplicate_identity_fields(
+    duplicate_field: str,
+) -> None:
+    first = _binding("one", picture_index=1, digest_char="a")
+    second = _binding("two", picture_index=2, digest_char="b")
+    if duplicate_field == "reference_id":
+        second = second.model_copy(update={"reference_id": first.reference_id})
+    elif duplicate_field == "asset_id":
+        second = second.model_copy(
+            update={"asset": second.asset.model_copy(update={"asset_id": first.asset.asset_id})}
+        )
+    else:
+        second = second.model_copy(
+            update={"asset": second.asset.model_copy(update={"sha256": first.asset.sha256})}
+        )
+
+    with pytest.raises(ValueError, match=duplicate_field):
+        compiler_module.compile_reference_definitions((first, second))
+
+
+@pytest.mark.parametrize("source_kind", ["unknown", ["character_identity"]])
+def test_reference_definitions_reject_model_constructed_source_kind(
+    source_kind: object,
+) -> None:
+    invalid = H3ReferenceBinding.model_construct(
+        reference_id="bad",
+        source_kind=source_kind,
+        subject_index=1,
+        picture_index=1,
+        label="Shen Li",
+        asset=_frame("bad-asset", "a"),
+    )
+
+    with pytest.raises(ValueError, match="source kind"):
+        compiler_module.compile_reference_definitions((invalid,))
 
 
 def test_continuity_locks_preserve_contract_and_domain_order() -> None:
@@ -241,6 +381,30 @@ def test_ref_bundle_requires_bindings_and_never_replaces_first_frame() -> None:
     assert bundle.references == (binding,)
 
 
+def test_ref_bundle_rejects_invalid_bindings_at_compile_boundary() -> None:
+    invalid = H3ReferenceBinding.model_construct(
+        reference_id="character:shen-li",
+        source_kind="not-a-source-kind",
+        subject_index=1,
+        picture_index=1,
+        label="Shen Li",
+        asset=_frame("asset-shen-li", "d"),
+    )
+
+    with pytest.raises(ValueError, match="source kind"):
+        compile_shot_bundle(
+            segment_id="shot-1",
+            source_shot_ids=("shot-1",),
+            contracts=(_contract("shot-1"),),
+            optimization=_optimization(),
+            decision=H3ModeDecision(requested="auto", mode="i2va"),
+            risk_report=_risk_report(),
+            first_frame=_frame("first", "1"),
+            adapter="h3-ref",
+            references=(invalid,),
+        )
+
+
 def test_bundle_rejects_zero_revision_and_unresolved_decision() -> None:
     arguments = {
         "segment_id": "shot-1",
@@ -288,7 +452,9 @@ def test_bundle_rejects_optimization_mode_mismatch_for_enum_and_string() -> None
         )
 
 
-def test_bundle_hash_changes_with_reference_order_description_and_asset_hash() -> None:
+def test_bundle_hash_tracks_references_while_preserving_all_frames() -> None:
+    last_frame = _frame("last", "2")
+    control_frames = (_frame("control-1", "3"), _frame("control-2", "4"))
     base_arguments = {
         "segment_id": "shot-1",
         "source_shot_ids": ("shot-1",),
@@ -297,27 +463,34 @@ def test_bundle_hash_changes_with_reference_order_description_and_asset_hash() -
         "decision": H3ModeDecision(requested="auto", mode="i2va"),
         "risk_report": _risk_report(),
         "first_frame": _frame("first", "1"),
+        "last_frame": last_frame,
+        "control_frames": control_frames,
         "adapter": "h3-ref",
     }
     first = _binding("one", picture_index=1)
-    second = _binding("two", picture_index=2)
+    second = _binding("two", picture_index=2, digest_char="e")
 
-    original = compile_shot_bundle(
-        **base_arguments, references=(first, second)
+    bundle = compile_shot_bundle(**base_arguments, references=(first, second))
+    original = bundle.bundle_sha256
+    fewer = compile_shot_bundle(
+        **base_arguments, references=(first,)
     ).bundle_sha256
     reordered = compile_shot_bundle(
         **base_arguments, references=(second, first)
     ).bundle_sha256
     relabeled = compile_shot_bundle(
         **base_arguments,
-        references=(first.model_copy(update={"label": "alternate identity"}), second),
+        references=(first.model_copy(update={"label": "Shen Li variant"}), second),
     ).bundle_sha256
     rehashed = compile_shot_bundle(
         **base_arguments,
         references=(
-            first.model_copy(update={"asset": _frame("asset-one", "e")}),
+            first.model_copy(update={"asset": _frame("asset-one", "f")}),
             second,
         ),
     ).bundle_sha256
 
-    assert len({original, reordered, relabeled, rehashed}) == 4
+    assert len({original, fewer, reordered, relabeled, rehashed}) == 5
+    assert bundle.first_frame == _frame("first", "1")
+    assert bundle.last_frame == last_frame
+    assert bundle.control_frames == control_frames

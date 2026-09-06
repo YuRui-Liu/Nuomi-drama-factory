@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "local_h3_ref_compiler_contract",
+  "provider_payload": false,
+  "bindings": [
+    {
+      "reference_id": "character:shen-li",
+      "source_kind": "character_identity",
+      "subject_index": 1,
+      "picture_index": 1,
+      "label": "Shen Li",
+      "asset": {
+        "asset_id": "asset-shen-li",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "reference_id": "scene:atrium",
+      "source_kind": "scene_base",
+      "subject_index": 2,
+      "picture_index": 2,
+      "label": "Atrium",
+      "asset": {
+        "asset_id": "asset-atrium",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "reference_id": "prop:jade-cup",
+      "source_kind": "prop",
+      "subject_index": 3,
+      "picture_index": 3,
+      "label": "Jade cup",
+      "asset": {
+        "asset_id": "asset-jade-cup",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    }
+  ],
+  "expected_reference_definitions": [
+    "<Subject 1> is Shen Li from <Picture 1>; preserve identity, hair, and wardrobe.",
+    "<Subject 2> is Atrium from <Picture 2>; preserve architecture and set dressing.",
+    "<Subject 3> is Jade cup from <Picture 3>; preserve shape, material, and visible state."
+  ]
+}
