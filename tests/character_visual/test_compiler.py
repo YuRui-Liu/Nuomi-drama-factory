@@ -43,3 +43,34 @@ def test_compiler_uses_only_visual_bible_style_and_explicit_references():
         "project_style",
         "explicit_reference",
     ]
+
+
+def test_portrait_compiler_excludes_body_and_outfit_context():
+    bible = CharacterVisualBible(
+        character_id="xie-yan-qiu",
+        revision_id="vb-portrait",
+        status="confirmed",
+        face_shape="窄鹅蛋脸",
+        facial_features=["眼尾微垂", "鼻梁偏直"],
+        hair_style="黑色长发",
+        body_type="高挑纤细",
+        distinctive_features=["左眉尾浅痣"],
+        outfit_states={"default": "黑色长袍与银色腰带"},
+        identity_anchors=["窄鹅蛋脸", "眼尾微垂", "左眉尾浅痣"],
+        confirmed_by="user-1",
+    )
+
+    snapshot = compile_visual_prompt_snapshot(
+        bible=bible,
+        project_style="金石证痕",
+        reference_paths=[],
+        portrait_only=True,
+    )
+
+    assert "Face shape: 窄鹅蛋脸" in snapshot.prompt
+    assert "Facial features: 眼尾微垂, 鼻梁偏直" in snapshot.prompt
+    assert "Hair: 黑色长发" in snapshot.prompt
+    assert "Distinctive identity features: 左眉尾浅痣" in snapshot.prompt
+    assert "Identity anchors to preserve:" in snapshot.prompt
+    assert "高挑纤细" not in snapshot.prompt
+    assert "黑色长袍" not in snapshot.prompt

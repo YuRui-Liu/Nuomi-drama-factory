@@ -739,8 +739,10 @@ LEFT HALF = Face close-up (identity source)
 RIGHT HALF = Full body (proportions & costume source)
 
 LEFT HALF (Face Close-up):
-- Head and shoulders portrait
-- Face fills 60-70% of this panel
+- TIGHT HEAD-AND-FACE CLOSE-UP
+- Include the complete hairstyle and top of head, both ears, full face, and entire chin
+- Frame ends immediately below the chin
+- No neck, shoulders, chest, clothing, hands, or props visible
 - Neutral soft gradient background
 - Focus on facial features: eyes, nose, lips, skin texture
 - Well-lit face with clear details
@@ -912,13 +914,14 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & PRESENTATION (CRITICAL):
-- LARGE THREE-QUARTER head-and-shoulders portrait, face turned slightly from camera
-- Face fills 60-70% of frame
+- TIGHT HEAD-AND-FACE CLOSE-UP, near-frontal view
+- Include the complete hairstyle and top of head, both ears, full face, and entire chin
+- Frame ends immediately below the chin
+- No neck, shoulders, chest, clothing, hands, or props visible
 - Neutral expression, mouth closed
 - Plain solid neutral background only
 - Use flat, even, neutral lighting with natural eye highlights
 - Preserve subtle natural facial asymmetry and the configured project style
-- Minimal visible clothing; keep attention on face, hair silhouette, and head shape
 - This is a clean animation identity anchor, not a photographic actor portrait
 
 FACIAL FEATURES TO CAPTURE (from character description):
@@ -951,14 +954,14 @@ DEFAULT ETHNICITY (FALLBACK ONLY):
 {_default_ethnicity_instruction(ethnicity)}
 
 FRAMING & CAMERA (CRITICAL):
-- LARGE THREE-QUARTER head-and-shoulders portrait, face turned slightly from camera
-- Head-and-shoulders close-up, face fills 60-70% of the frame
+- TIGHT HEAD-AND-FACE CLOSE-UP, near-frontal view
+- Include the complete hairstyle and top of head, both ears, full face, and entire chin
+- Frame ends immediately below the chin
+- No neck, shoulders, chest, clothing, hands, or props visible
 - Neutral expression, mouth closed
 - Solid matte gray seamless studio background — NO environment, NO scenery, NO props
 - Use flat, even, neutral lighting with natural eye highlights
 - Preserve subtle natural facial asymmetry and the configured project style
-- Plain simple dark top (like a basic t-shirt), MINIMAL clothing visible
-- Do NOT show elaborate costumes, accessories, or period clothing
 - This should follow the project visual style while remaining clear enough for identity locking.
 
 FACIAL FEATURES TO CAPTURE (from character description):
@@ -968,7 +971,7 @@ VISUAL STYLE:
 {style_keywords}
 
 STRICT REQUIREMENTS:
-- This is a CHARACTER IDENTITY ANCHOR — the three-quarter face must remain clearly visible
+- This is a CHARACTER IDENTITY ANCHOR — the complete head and face must remain clearly visible
 - High-quality, 4K resolution
 - Maintain strict facial fidelity to the character description
 - Keep facial structure, hairstyle, skin tone, and expression readable for downstream identity matching

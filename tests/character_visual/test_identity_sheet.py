@@ -283,7 +283,7 @@ def test_compose_v2_masks_exactly_top_twenty_two_percent(tmp_path: Path) -> None
     assert image.getpixel((800, mask_bottom)) == (30, 210, 40)
 
 
-def test_portrait_prompts_use_three_quarter_identity_presentation(monkeypatch) -> None:
+def test_portrait_prompts_use_face_only_identity_presentation(monkeypatch) -> None:
     from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
 
     generator = NanoBananaCharacterGenerator.__new__(NanoBananaCharacterGenerator)
@@ -304,13 +304,17 @@ def test_portrait_prompts_use_three_quarter_identity_presentation(monkeypatch) -
         )
 
     for prompt in (build("animation"), build("live_action")):
-        assert "LARGE THREE-QUARTER" in prompt
+        assert "TIGHT HEAD-AND-FACE CLOSE-UP" in prompt
+        assert "complete hairstyle and top of head, both ears, full face, and entire chin" in prompt
+        assert "Frame ends immediately below the chin" in prompt
+        assert "No neck, shoulders, chest, clothing, hands, or props visible" in prompt
         assert "flat, even, neutral lighting" in prompt
         assert "subtle natural facial asymmetry" in prompt
         assert "natural eye highlights" in prompt
-        assert "FRONT-FACING" not in prompt
-        assert "perfectly front-facing" not in prompt
-        assert "symmetrical composition" not in prompt
+        assert "head-and-shoulders" not in prompt
+        assert "THREE-QUARTER" not in prompt
+        assert "Minimal visible clothing" not in prompt
+        assert "Plain simple dark top" not in prompt
 
 
 @pytest.mark.asyncio

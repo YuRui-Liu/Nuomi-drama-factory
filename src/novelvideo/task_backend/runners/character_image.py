@@ -64,6 +64,82 @@ def _strip_known_style_prefix(prompt: str) -> str:
     return text
 
 
+def _normalize_explicit_gender(value: Any) -> str | None:
+    """Normalize only explicit, recognized binary values used by the UI.
+
+    Deliberately avoid fuzzy or substring matching: an unknown value may describe
+    a non-human subject, so guessing here would silently change its identity.
+    """
+
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"女", "女性", "female", "woman", "girl", "f"}:
+        return "female"
+    if normalized in {"男", "男性", "male", "man", "boy", "m"}:
+        return "male"
+    return None
+
+
+def _build_face_portrait_prompt(
+    *,
+    face_details: str,
+    gender: Any,
+    ethnicity: str,
+    style: str,
+    identity_name: str = "",
+) -> str:
+    """Build the shared main/identity portrait generation contract."""
+
+    normalized_gender = _normalize_explicit_gender(gender)
+    if normalized_gender == "female":
+        gender_constraint = (
+            "Gender constraint: female. The depicted subject must read "
+            "unambiguously as female; do not depict a male subject."
+        )
+    elif normalized_gender == "male":
+        gender_constraint = (
+            "Gender constraint: male. The depicted subject must read "
+            "unambiguously as male; do not depict a female subject."
+        )
+    else:
+        gender_constraint = (
+            "Gender is unspecified or unrecognized. Do not infer or assign gender, "
+            "sex, or a human species; follow only the confirmed visual identity details."
+        )
+
+    context_parts = []
+    clean_identity = str(identity_name or "").strip()
+    if clean_identity:
+        context_parts.append(f"Identity variant: {clean_identity}")
+    if normalized_gender and str(ethnicity or "").strip():
+        context_parts.append(
+            "Human ethnicity context, only if this subject is human: "
+            f"{str(ethnicity).strip()}"
+        )
+    if str(style or "").strip():
+        context_parts.append(f"Visual style: {str(style).strip()}")
+    if str(face_details or "").strip():
+        context_parts.append(
+            "Confirmed face-only identity details: "
+            f"{_strip_known_style_prefix(face_details)}"
+        )
+
+    return " ".join(
+        [
+            "Square 1:1 pure head-and-face identity portrait on a neutral clean background.",
+            gender_constraint,
+            (
+                "Composition: show the complete hair, both ears, the entire face, and the full chin; "
+                "the frame ends immediately below the chin."
+            ),
+            (
+                "Strict framing exclusion: no neck, shoulders, chest, clothing, hands, or props; "
+                "no text or watermark."
+            ),
+            *context_parts,
+        ]
+    )
+
+
 def _asset_suffix() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S%f")
 
@@ -127,6 +203,7 @@ def _character_portrait_prompt(character: Any, *, style: str, visual_bible=None)
             bible=visual_bible,
             project_style=style,
             reference_paths=[],
+            portrait_only=True,
         ).prompt
     return _character_portrait_face_prompt(character)
 
@@ -341,10 +418,14 @@ async def _generate_character_portrait(
         update(0.45, "调用图像模型生成角色 Portrait...")
         generated = await _generate_grsai_image(
             model=model,
-            prompt=("Single close-up character portrait, centered head and shoulders, neutral clean background, "
-                    f"no text, no watermark. Ethnicity: {ethnicity}. Visual style: {style}. "
-                    f"Face: {_strip_known_style_prefix(face_prompt)}"),
+            prompt=_build_face_portrait_prompt(
+                face_details=face_prompt,
+                gender=getattr(character, "gender", ""),
+                ethnicity=ethnicity,
+                style=style,
+            ),
             output_path=temp_dir / "reference_01.png",
+            aspect_ratio="1:1",
         )
         return _replace_canonical_asset(generated, portrait_path)
     finally:
@@ -382,11 +463,11 @@ async def _generate_identity_portrait(
         bible=visual_bible,
         project_style=style,
         reference_paths=[],
+        portrait_only=True,
     ).prompt
     variant_parts = [
         base_prompt,
         f"Identity age group: {identity.age_group}" if identity.age_group else "",
-        f"Identity body type: {identity.body_type}" if identity.body_type else "",
     ]
     face_prompt = ". ".join(part for part in variant_parts if part)
     safe_name = _safe_asset_name(identity.identity_name)
@@ -398,10 +479,15 @@ async def _generate_identity_portrait(
         update(0.45, "调用图像模型生成身份 Portrait...")
         generated = await _generate_grsai_image(
             model=model,
-            prompt=("Single close-up character portrait, centered head and shoulders, neutral clean background, "
-                    f"no text, no watermark. Identity: {identity.identity_name}. Ethnicity: {ethnicity}. "
-                    f"Visual style: {style}. Face: {_strip_known_style_prefix(face_prompt)}"),
+            prompt=_build_face_portrait_prompt(
+                face_details=face_prompt,
+                gender=getattr(character, "gender", ""),
+                ethnicity=ethnicity,
+                style=style,
+                identity_name=identity.identity_name,
+            ),
             output_path=temp_dir / "reference_01.png",
+            aspect_ratio="1:1",
         )
         _replace_canonical_asset(generated, portrait_path)
         await store.update_character_identity(
