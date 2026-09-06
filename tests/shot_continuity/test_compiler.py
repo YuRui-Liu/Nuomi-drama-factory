@@ -7,6 +7,16 @@ import pytest
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptOptimizationResult,
 )
+from novelvideo.media_capabilities.video.h3_director_plan import (
+    H3ActionPlan,
+    H3CameraPlan,
+    H3DirectorPlan,
+    H3FrameDifference,
+    H3ShotPlan,
+)
+from novelvideo.media_capabilities.video.h3_prompt_quality import (
+    H3PromptQualityReport,
+)
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.shot_continuity import (
     BoundaryState,
@@ -86,9 +96,56 @@ def _risk_report() -> ShotRiskReport:
 
 
 def _optimization(mode: H3Mode = H3Mode.I2VA) -> H3PromptOptimizationResult:
-    return H3PromptOptimizationResult.model_construct(
+    final_phase = "settle" if mode is H3Mode.FL2VA else "execute"
+    plan = H3DirectorPlan(
+        mode=mode,
+        total_frames=24,
+        visual_style="cinematic realism",
+        continuity_locks=("preserve identity",),
+        shots=(
+            H3ShotPlan(
+                shot_id="1",
+                start_frame=0,
+                end_frame=24,
+                framing="medium",
+                angle="eye-level",
+                focus="Lin",
+                composition="Lin remains on the left third",
+                camera=H3CameraPlan(type="static"),
+                actions=(
+                    H3ActionPlan(
+                        phase="establish",
+                        start_frame=0,
+                        end_frame=6,
+                        description="Hold the exact frame-zero pose.",
+                    ),
+                    H3ActionPlan(
+                        phase=final_phase,
+                        start_frame=6,
+                        end_frame=24,
+                        description="Lin turns and holds his hand on the door.",
+                    ),
+                ),
+            ),
+        ),
+        frame_differences=(
+            (
+                H3FrameDifference(
+                    description="Lin reaches the terminal pose.",
+                    convergence_frame=18,
+                ),
+            )
+            if mode is H3Mode.FL2VA
+            else ()
+        ),
+        soundscape="Quiet corridor ambience.",
+        music="No music.",
+    )
+    return H3PromptOptimizationResult(
         prompt="A continuity-aware H3 prompt.",
-        plan=SimpleNamespace(mode=mode),
+        plan=plan,
+        quality_report=H3PromptQualityReport(passed=True),
+        input_hash="a" * 64,
     )
 
 
