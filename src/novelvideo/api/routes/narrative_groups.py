@@ -68,6 +68,7 @@ from novelvideo.narrative_groups.video_references import (
     VideoReferenceCandidate,
     VideoReferencePreview,
     VideoReferenceSelection,
+    delete_temporary_video_reference,
     resolve_group_video_reference_preview,
     resolve_saved_video_references,
     temporary_upload_path,
@@ -1312,6 +1313,8 @@ async def upload_group_video_reference(
     if group is None:
         raise HTTPException(status_code=404, detail="Narrative group not found")
     limit = min(MAX_UPLOAD_BYTES, MAX_VIDEO_REFERENCE_BYTES)
+    target: Path | None = None
+    upload_id = ""
     try:
         content = await file.read(limit + 1)
         if len(content) > limit:
@@ -1320,7 +1323,7 @@ async def upload_group_video_reference(
             content, str(file.content_type or "")
         )
         upload_id = uuid.uuid4().hex
-        write_temporary_video_reference(
+        target = write_temporary_video_reference(
             project_dir=resolved.project_dir,
             episode_number=episode,
             group_id=group_id,
@@ -1349,7 +1352,21 @@ async def upload_group_video_reference(
         data = _serialize_video_reference_candidate(
             project, resolved.project_dir, episode, group_id, candidate
         )
-    except (OSError, TypeError, ValueError, Image.DecompressionBombError) as exc:
+    except Exception as exc:
+        if target is not None:
+            try:
+                delete_temporary_video_reference(
+                    project_dir=resolved.project_dir,
+                    episode_number=episode,
+                    group_id=group_id,
+                    upload_id=upload_id,
+                    target=target,
+                )
+            except (OSError, TypeError, ValueError) as cleanup_exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{exc}; upload cleanup failed: {cleanup_exc}",
+                ) from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         await file.close()

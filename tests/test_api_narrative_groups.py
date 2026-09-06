@@ -806,6 +806,48 @@ def test_video_reference_upload_surfaces_safe_writer_failure_without_temp_files(
     assert list(group_root.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure_mode", ["resolver-error", "candidate-missing"])
+def test_video_reference_upload_cleans_published_file_when_preview_fails(
+    monkeypatch, tmp_path, failure_mode
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+
+    async def failed_preview(**kwargs):
+        if failure_mode == "resolver-error":
+            raise OSError("simulated preview failure")
+        return VideoReferencePreview(
+            revision=0,
+            candidates=(),
+            references=(),
+            warnings=(),
+            max_images=2,
+        )
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "resolve_group_video_reference_preview",
+        failed_preview,
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert group_root.is_dir()
+    assert list(group_root.iterdir()) == []
+
+
 def test_h3_reference_generate_requires_current_reference_revision_before_reserve(
     monkeypatch, tmp_path
 ):

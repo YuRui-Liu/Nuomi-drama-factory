@@ -575,6 +575,139 @@ def write_temporary_video_reference(
     return target
 
 
+def _validated_published_target(
+    project_dir: Path,
+    episode_number: int,
+    group_id: str,
+    upload_id: str,
+    target: str | Path,
+) -> Path:
+    expected = temporary_upload_path(
+        project_dir, episode_number, group_id, upload_id
+    )
+    supplied = Path(os.path.abspath(target))
+    if supplied != Path(os.path.abspath(expected)):
+        raise ValueError("temporary video reference cleanup target is not canonical")
+    return supplied
+
+
+def _delete_posix_temporary_video_reference(
+    project_dir: Path, target: Path
+) -> bool:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    try:
+        relative_parent = target.parent.relative_to(project_dir)
+        current = os.open(project_dir, directory_flags)
+        descriptors.append(current)
+        for component in relative_parent.parts:
+            following = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(following)
+            current = following
+        try:
+            metadata = os.stat(
+                target.name, dir_fd=current, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            return False
+        if stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("temporary video reference cleanup target is a directory")
+        os.unlink(target.name, dir_fd=current)
+        return True
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            "temporary video reference cleanup failed under no-follow policy"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _delete_windows_temporary_video_reference(
+    project_dir: Path,
+    target: Path,
+    *,
+    adapter: object | None = None,
+) -> bool:
+    try:
+        win32 = adapter or _CtypesWin32SnapshotAdapter()
+    except (AttributeError, OSError) as exc:
+        raise ValueError("secure Windows reference cleanup is unavailable") from exc
+    group_root = target.parent
+    relative = group_root.relative_to(project_dir)
+    handles: list[object] = []
+    file_handle: object | None = None
+    try:
+        current = project_dir
+        handle = win32.open_write_directory(current)
+        for component in (None, *relative.parts):
+            if component is not None:
+                current /= component
+                handle = win32.open_write_directory(current)
+            handles.append(handle)
+            attributes = int(win32.attributes(handle))
+            if attributes & int(win32.REPARSE_POINT):
+                raise ValueError("temporary reference cleanup directory is a reparse point")
+            if not attributes & int(win32.DIRECTORY):
+                raise ValueError("temporary reference cleanup parent is not a directory")
+            final_directory = Path(win32.final_path_for_handle(handle))
+            if os.path.normcase(os.path.abspath(final_directory)) != os.path.normcase(
+                os.path.abspath(current)
+            ):
+                raise ValueError("temporary reference cleanup directory path changed")
+
+        file_handle = win32.open_path(target, directory=False)
+        attributes = int(win32.attributes(file_handle))
+        if attributes & int(win32.DIRECTORY):
+            raise ValueError("temporary video reference cleanup target is a directory")
+        final_target = Path(win32.final_path_for_handle(file_handle))
+        if os.path.normcase(os.path.abspath(final_target)) != os.path.normcase(
+            os.path.abspath(target)
+        ):
+            raise ValueError("temporary video reference cleanup target path changed")
+        win32.close(file_handle)
+        file_handle = None
+        win32.delete_file(target)
+        return True
+    except ValueError:
+        raise
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValueError(
+            "temporary video reference cleanup failed under Windows no-follow policy"
+        ) from exc
+    finally:
+        if file_handle is not None:
+            win32.close(file_handle)
+        for handle in reversed(handles):
+            win32.close(handle)
+
+
+def delete_temporary_video_reference(
+    *,
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    upload_id: str,
+    target: str | Path,
+    win32_adapter: object | None = None,
+    platform_name: str | None = None,
+) -> bool:
+    """Safely remove one canonical temporary upload without following links."""
+    project = Path(os.path.abspath(project_dir))
+    canonical_target = _validated_published_target(
+        project, episode_number, group_id, upload_id, target
+    )
+    if (platform_name or os.name) == "nt":
+        return _delete_windows_temporary_video_reference(
+            project, canonical_target, adapter=win32_adapter
+        )
+    return _delete_posix_temporary_video_reference(project, canonical_target)
+
+
 def _candidate(
     source_kind: VideoReferenceSourceKind,
     stable_id: str,

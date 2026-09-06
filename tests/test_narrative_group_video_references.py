@@ -721,6 +721,61 @@ def test_temporary_upload_writer_cleans_partial_file_on_failure(
     assert list(group_root.iterdir()) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX openat semantics")
+def test_temporary_upload_deleter_removes_only_canonical_published_file(tmp_path):
+    target = video_references.write_temporary_video_reference(
+        project_dir=tmp_path,
+        episode_number=1,
+        group_id="ng-01",
+        upload_id="upload-a",
+        content=b"safe normalized png",
+        platform_name="posix",
+    )
+    sibling = target.with_name("keep.png")
+    sibling.write_bytes(b"keep")
+
+    removed = video_references.delete_temporary_video_reference(
+        project_dir=tmp_path,
+        episode_number=1,
+        group_id="ng-01",
+        upload_id="upload-a",
+        target=target,
+        platform_name="posix",
+    )
+
+    assert removed is True
+    assert not target.exists()
+    assert sibling.read_bytes() == b"keep"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX directory symlink")
+def test_temporary_upload_deleter_rejects_symlinked_ancestor_without_external_delete(
+    tmp_path,
+):
+    outside_root = tmp_path.parent / f"{tmp_path.name}-outside-delete"
+    outside_target = outside_root / "ng-01" / "upload-a.png"
+    outside_target.parent.mkdir(parents=True)
+    outside_target.write_bytes(b"outside")
+    references_root = (
+        tmp_path / "videos" / "ep001" / "narrative_groups" / "references"
+    )
+    references_root.parent.mkdir(parents=True)
+    references_root.symlink_to(outside_root, target_is_directory=True)
+    lexical_target = references_root / "ng-01" / "upload-a.png"
+
+    with pytest.raises(ValueError, match="no-follow|directory"):
+        video_references.delete_temporary_video_reference(
+            project_dir=tmp_path,
+            episode_number=1,
+            group_id="ng-01",
+            upload_id="upload-a",
+            target=lexical_target,
+            platform_name="posix",
+        )
+
+    assert outside_target.read_bytes() == b"outside"
+
+
 def test_temporary_group_root_rejects_windows_junction_before_resolving(
     tmp_path, monkeypatch
 ):
