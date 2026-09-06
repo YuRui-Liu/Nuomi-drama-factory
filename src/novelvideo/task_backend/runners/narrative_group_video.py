@@ -540,6 +540,7 @@ def _manifest_with_status(
     *,
     physical_video: str | None = None,
     provider_task_id: str | None = None,
+    entry_provider_task_ids: Mapping[str, str | None] | None = None,
     **updates: Any,
 ) -> H3DirectorOutputManifest:
     payload = manifest.model_dump(mode="python")
@@ -554,11 +555,41 @@ def _manifest_with_status(
             **entry.model_dump(mode="python"),
             "status": status,
             "physical_video": physical_video,
-            "provider_task_id": provider_task_id,
+            "provider_task_id": (
+                entry_provider_task_ids.get(
+                    entry.segment.segment_id, entry.provider_task_id
+                )
+                if entry_provider_task_ids is not None
+                else (
+                    entry.provider_task_id
+                    if provider_task_id is None
+                    else provider_task_id
+                )
+            ),
         }
         for entry in manifest.entries
     ]
     return H3DirectorOutputManifest.model_validate(payload)
+
+
+def _manifest_with_segment_provider_task(
+    manifest: H3DirectorOutputManifest,
+    segment_id: str,
+    provider_task_id: str,
+) -> H3DirectorOutputManifest:
+    entries = tuple(
+        entry.model_copy(update={
+            "status": "submitted",
+            "provider_task_id": provider_task_id,
+        })
+        if entry.segment.segment_id == segment_id
+        else entry
+        for entry in manifest.entries
+    )
+    return manifest.model_copy(update={
+        "provider_task_id": provider_task_id if len(entries) == 1 else None,
+        "entries": entries,
+    })
 
 
 def _finalize_segment_manifest(
@@ -1036,14 +1067,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             NarrativeGroupVideoRequest,
         )
 
-        async def on_provider_submitted(provider_task_id: str) -> None:
-            nonlocal manifest
-            manifest = _manifest_with_status(
-                manifest,
-                "submitted",
-                provider_task_id=provider_task_id,
-            )
-            save_h3_director_manifest(manifest_path, manifest)
+        def submission_callback(segment_id: str):
+            async def on_provider_submitted(provider_task_id: str) -> None:
+                nonlocal manifest
+                manifest = _manifest_with_segment_provider_task(
+                    manifest, segment_id, provider_task_id
+                )
+                save_h3_director_manifest(manifest_path, manifest)
+
+            return on_provider_submitted
 
         try:
             generated_segments = []
@@ -1070,7 +1102,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             reference_limit=reference_limit,
                             provider_workflow_id=provider_workflow_id,
                             frozen_frames=frozen_frames,
-                            on_provider_submitted=on_provider_submitted,
+                            on_provider_submitted=submission_callback(
+                                segment.segment_id
+                            ),
                         ),
                     )
                     generated_segments.append((segment_index, segment, item))
@@ -1120,11 +1154,19 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             save_h3_director_manifest(manifest_path, manifest)
             raise
 
+        entry_provider_task_ids = {
+            segment.segment_id: item.provider_task_id
+            for _, segment, item in generated_segments
+        }
+        aggregate_provider_task_id = (
+            generated.provider_task_id if len(generated_segments) == 1 else None
+        )
         manifest = _manifest_with_status(
             manifest,
             "partial_failure" if segment_errors else "generated",
             physical_video=str(generated.output_path),
-            provider_task_id=generated.provider_task_id,
+            provider_task_id=aggregate_provider_task_id,
+            entry_provider_task_ids=entry_provider_task_ids,
             provider_parameters=generated.provider_parameters,
             actual_output=generated.actual_output,
         )
@@ -1157,7 +1199,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 manifest,
                 "quality_mismatch",
                 physical_video=str(generated.output_path),
-                provider_task_id=generated.provider_task_id,
+                provider_task_id=aggregate_provider_task_id,
+                entry_provider_task_ids=entry_provider_task_ids,
                 provider_parameters=generated.provider_parameters,
                 actual_output=generated.actual_output,
             )
@@ -1208,7 +1251,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 manifest,
                 "postprocess_failed",
                 physical_video=str(generated.output_path),
-                provider_task_id=generated.provider_task_id,
+                provider_task_id=aggregate_provider_task_id,
+                entry_provider_task_ids=entry_provider_task_ids,
             )
             save_h3_director_manifest(manifest_path, manifest)
             raise

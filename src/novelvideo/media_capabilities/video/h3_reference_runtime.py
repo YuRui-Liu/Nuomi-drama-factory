@@ -39,9 +39,18 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     load_h3_reference_workflow_profile,
 )
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+from novelvideo.narrative_groups.video_references import (
+    MAX_VIDEO_REFERENCE_BYTES,
+    MAX_VIDEO_REFERENCE_PIXELS,
+)
 
 
 _COMPILER_VERSION = 5
+H3_FRAME_MAX_BYTES = MAX_VIDEO_REFERENCE_BYTES
+H3_FRAME_MAX_PIXELS = MAX_VIDEO_REFERENCE_PIXELS
+H3_FRAME_ALLOWED_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
+# A narrative group normally has at most five physical units with two frames each.
+H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES = 5 * H3_FRAME_MAX_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,21 +65,31 @@ class H3FrozenFrame:
 
 def _image_metadata(content: bytes, *, label: str) -> tuple[int, int, str]:
     try:
-        with Image.open(BytesIO(content)) as image:
+        image = Image.open(BytesIO(content))
+    except OSError as exc:
+        raise ValueError(f"{label} is not a valid image") from exc
+    with image:
+        image_format = str(image.format or "").upper()
+        if image_format not in H3_FRAME_ALLOWED_FORMATS:
+            raise ValueError(f"{label} must use PNG, JPEG, or WEBP format")
+        if image.width * image.height > H3_FRAME_MAX_PIXELS:
+            raise ValueError(f"{label} exceeds the pixel limit")
+        try:
             image.load()
             suffix = {
                 "JPEG": ".jpg",
                 "PNG": ".png",
                 "WEBP": ".webp",
-            }.get(str(image.format or "").upper(), ".img")
+            }[image_format]
             return image.width, image.height, suffix
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"{label} is not a valid image") from exc
+        except OSError as exc:
+            raise ValueError(f"{label} is not a valid image") from exc
 
 
 def freeze_h3_reference_frames(segments) -> MappingProxyType:
     """Read and validate every frame in a physical group before transport."""
     frozen_frames: dict[str, H3FrozenFrame] = {}
+    cumulative_bytes = 0
     for segment in tuple(segments):
         for raw_source in (segment.first_frame, segment.last_frame):
             if not raw_source or raw_source in frozen_frames:
@@ -79,7 +98,14 @@ def freeze_h3_reference_frames(segments) -> MappingProxyType:
             path = Path(source)
             if not path.is_file():
                 raise FileNotFoundError(f"H3 frame is unavailable: {path}")
+            if path.stat().st_size > H3_FRAME_MAX_BYTES:
+                raise ValueError(f"H3 frame exceeds the byte limit: {path}")
             content = path.read_bytes()
+            if len(content) > H3_FRAME_MAX_BYTES:
+                raise ValueError(f"H3 frame exceeds the byte limit: {path}")
+            cumulative_bytes += len(content)
+            if cumulative_bytes > H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES:
+                raise ValueError("H3 frame snapshot exceeds the group byte limit")
             width, height, suffix = _image_metadata(content, label=f"frame {path}")
             frozen_frames[source] = H3FrozenFrame(
                 source=source,

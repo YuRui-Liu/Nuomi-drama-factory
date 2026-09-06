@@ -118,6 +118,94 @@ def test_reference_manifest_snapshot_is_path_and_content_free_and_legacy_compati
     ).global_references == ()
 
 
+def test_frame_snapshot_enforces_single_file_byte_limit(tmp_path: Path, monkeypatch) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (4, 4), "black").save(frame)
+    monkeypatch.setattr(runtime, "H3_FRAME_MAX_BYTES", frame.stat().st_size - 1)
+
+    with pytest.raises(ValueError, match="byte limit"):
+        runtime.freeze_h3_reference_frames((H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(frame),
+        ),))
+    monkeypatch.setattr(runtime, "H3_FRAME_MAX_BYTES", frame.stat().st_size)
+    assert runtime.freeze_h3_reference_frames((H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+        first_frame=str(frame),
+    ),))[str(frame)].content == frame.read_bytes()
+
+
+def test_frame_snapshot_enforces_pixel_and_format_limits(tmp_path: Path, monkeypatch) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    large = tmp_path / "large.png"
+    Image.new("RGB", (4, 4), "black").save(large)
+    monkeypatch.setattr(runtime, "H3_FRAME_MAX_PIXELS", 15)
+    with pytest.raises(ValueError, match="pixel limit"):
+        runtime.freeze_h3_reference_frames((H3DirectorSegment(
+            segment_id="large", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(large),
+        ),))
+    monkeypatch.setattr(runtime, "H3_FRAME_MAX_PIXELS", 16)
+    assert runtime.freeze_h3_reference_frames((H3DirectorSegment(
+        segment_id="large", beat_number=1, prompt="one", duration_seconds=2,
+        first_frame=str(large),
+    ),))[str(large)].width == 4
+
+    gif = tmp_path / "frame.gif"
+    Image.new("RGB", (2, 2), "black").save(gif, format="GIF")
+    with pytest.raises(ValueError, match="PNG, JPEG, or WEBP"):
+        runtime.freeze_h3_reference_frames((H3DirectorSegment(
+            segment_id="gif", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(gif),
+        ),))
+
+
+def test_frame_snapshot_enforces_group_cumulative_byte_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    Image.new("RGB", (3, 3), "black").save(first)
+    Image.new("RGB", (3, 3), "white").save(second)
+    monkeypatch.setattr(
+        runtime,
+        "H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES",
+        first.stat().st_size + second.stat().st_size - 1,
+    )
+
+    with pytest.raises(ValueError, match="group byte limit"):
+        runtime.freeze_h3_reference_frames((
+            H3DirectorSegment(
+                segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+                first_frame=str(first),
+            ),
+            H3DirectorSegment(
+                segment_id="s2", beat_number=2, prompt="two", duration_seconds=2,
+                first_frame=str(second),
+            ),
+        ))
+    monkeypatch.setattr(
+        runtime,
+        "H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES",
+        first.stat().st_size + second.stat().st_size,
+    )
+    assert len(runtime.freeze_h3_reference_frames((
+        H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+            first_frame=str(first),
+        ),
+        H3DirectorSegment(
+            segment_id="s2", beat_number=2, prompt="two", duration_seconds=2,
+            first_frame=str(second),
+        ),
+    ))) == 2
+
+
 @pytest.mark.asyncio
 async def test_reference_runtime_validates_all_local_inputs_before_upload(
     tmp_path: Path, monkeypatch

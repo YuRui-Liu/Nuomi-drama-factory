@@ -340,11 +340,15 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     class Adapter:
         async def generate_narrative_group(self, _ctx, request):
             requests.append(request)
+            task_id = f"task-{len(requests)}"
+            submitted = request.on_provider_submitted(task_id)
+            if asyncio.iscoroutine(submitted):
+                await submitted
             Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(request.output_path).write_bytes(b"video")
             return NarrativeGroupVideoResult(
                 output_path=request.output_path,
-                provider_task_id=f"task-{len(requests)}",
+                provider_task_id=task_id,
                 actual_mode="i2va",
                 provider_parameters={"width": 736, "height": 1280},
                 actual_output={"width": 736, "height": 1280},
@@ -434,6 +438,16 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     assert manifests[-1].provider_workflow_id == "2096502793044582401"
     assert manifests[-1].reference_settings_revision == 7
     assert manifests[-1].global_references[0].sha256 == reference.sha256
+    assert [entry.provider_task_id for entry in manifests[-1].entries] == [
+        "task-1", "task-2"
+    ]
+    assert manifests[-1].provider_task_id is None
+    provider_snapshots = [
+        [entry.provider_task_id for entry in item.entries]
+        for item in manifests
+    ]
+    assert ["task-1", None] in provider_snapshots
+    assert ["task-1", "task-2"] in provider_snapshots
     requests.clear()
     missing = tmp_path / "missing.png"
     segments[1] = segments[1].model_copy(update={"first_frame": str(missing)})
