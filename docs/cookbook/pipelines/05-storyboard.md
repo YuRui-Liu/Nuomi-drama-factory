@@ -2,7 +2,7 @@
 
 > **所属阶段**：核心生产管线 · 05 分镜与图像<br>
 > **上游**：[剧本与语义](04-screenplay.md)<br>
-> **下游**：[视频与合成](06-video-compose.md)<br>
+> **下游**：[声音与音频](06-audio.md)<br>
 > **相关横向手册**：[共享系统地图](../system-map.md) · [功能反查](../development/trace-a-feature.md) · [新增 API 与长任务](../development/add-api-and-task.md) · [存储与项目文件](../development/storage-and-files.md) · [测试策略](../development/testing-strategy.md)<br>
 > **代码核对基线**：`55504a0`<br>
 > **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
@@ -285,6 +285,6 @@ rg -n 'T[O]DO|T[B]D|待[补]|占[位]|/(U[s]ers|h[o]me|private|tmp|var)/|[A-Za-z
 ## 继续追踪
 
 - 上游：[剧本与语义](04-screenplay.md)，继续追踪 DramaticBeat、VisualBeat 与 Director Shot 如何形成图像输入。
-- 下游：[视频与合成](06-video-compose.md)，继续追踪 canonical frame 与 group render 如何进入视频生产。
+- 下游：[声音与音频](06-audio.md)，继续追踪 canonical 画面与 Beat 的台词、音效及音乐如何汇合；普通生产顺序随后进入 07 视频与 08 合成。
 - 横向入口：[共享系统地图](../system-map.md)、[功能反查](../development/trace-a-feature.md)、[新增 API 与长任务](../development/add-api-and-task.md)、[存储与项目文件](../development/storage-and-files.md)、[测试策略](../development/testing-strategy.md)。
 - 返回 [Cookbook 首页](../README.md)。
