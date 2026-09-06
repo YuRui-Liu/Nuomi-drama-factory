@@ -7,21 +7,35 @@ import { useEffect, useState } from "react";
 // 成功时刷新显示并写回本地，徽标不再因为一次 403 就消失。
 const STARS_STORAGE_KEY = "dramaclaw.login.githubStars";
 
-function readStoredStars(): number | null {
+type StoredStars = {
+  repo: string;
+  count: number;
+};
+
+function isValidStarCount(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function readStoredStars(repo: string): StoredStars | null {
   try {
     const raw = window.localStorage.getItem(STARS_STORAGE_KEY);
     if (!raw) return null;
-    const value = Number.parseInt(raw, 10);
-    return Number.isFinite(value) && value >= 0 ? value : null;
+    const value = JSON.parse(raw) as Partial<StoredStars> | number;
+    if (typeof value !== "object" || value === null) return null;
+    return value.repo === repo && isValidStarCount(value.count)
+      ? { repo, count: value.count }
+      : null;
   } catch {
     // localStorage 在隐私模式/受限环境可能不可用。
     return null;
   }
 }
 
-function writeStoredStars(count: number): void {
+function writeStoredStars(repo: string, count: number): void {
   try {
-    window.localStorage.setItem(STARS_STORAGE_KEY, String(count));
+    window.localStorage.setItem(STARS_STORAGE_KEY, JSON.stringify({ repo, count }));
   } catch {
     // 写入失败无所谓，star 数仅为锦上添花。
   }
@@ -34,19 +48,22 @@ function writeStoredStars(count: number): void {
  * - 请求失败/限速：静默保留上次落地的值，不隐藏徽标。
  */
 export function useGithubStars(repo: string): number | null {
-  const [stars, setStars] = useState<number | null>(() => readStoredStars());
+  const [storedStars, setStoredStars] = useState<StoredStars | null>(
+    () => readStoredStars(repo),
+  );
 
   useEffect(() => {
     let active = true;
+    setStoredStars(readStoredStars(repo));
     fetch(`https://api.github.com/repos/${repo}`, {
       headers: { Accept: "application/vnd.github+json" },
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { stargazers_count?: number } | null) => {
         const count = data?.stargazers_count;
-        if (typeof count !== "number") return;
-        writeStoredStars(count);
-        if (active) setStars(count);
+        if (!isValidStarCount(count)) return;
+        writeStoredStars(repo, count);
+        if (active) setStoredStars({ repo, count });
       })
       .catch(() => {
         /* 静默失败：保留上次落地的 star 数 */
@@ -56,5 +73,5 @@ export function useGithubStars(repo: string): number | null {
     };
   }, [repo]);
 
-  return stars;
+  return storedStars?.repo === repo ? storedStars.count : null;
 }

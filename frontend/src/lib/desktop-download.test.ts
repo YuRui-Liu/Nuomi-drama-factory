@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   detectDesktopPlatform,
   FALLBACK_DOWNLOAD_URL,
   pickInstallerFromManifest,
+  resolveDesktopDownloadUrl,
 } from "./desktop-download";
 
 it("falls back to the public Nuomi Drama Factory releases page", () => {
@@ -55,6 +56,94 @@ describe("pickInstallerFromManifest", () => {
   it("returns null when the wanted installer type is absent", () => {
     expect(pickInstallerFromManifest(WINDOWS_MANIFEST, "mac")).toBeNull();
     expect(pickInstallerFromManifest("", "windows")).toBeNull();
+  });
+});
+
+describe("resolveDesktopDownloadUrl", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["mac", "NuomiDrama-2.0.0-arm64.dmg"],
+    ["windows", "Nuomi-Drama-Factory-Setup-2.0.0.exe"],
+  ] as const)("selects a new-brand %s asset from the public GitHub release", async (platform, name) => {
+    const browserDownloadUrl = `https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/download/v2.0.0/${name}`;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        assets: [{ name, browser_download_url: browserDownloadUrl }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resolveDesktopDownloadUrl(platform)).resolves.toBe(browserDownloadUrl);
+    expect(browserDownloadUrl).not.toMatch(/DramaClaw/i);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/YuRui-Liu/Nuomi-drama-factory/releases/latest",
+      expect.objectContaining({ headers: { Accept: "application/vnd.github+json" } }),
+    );
+  });
+
+  it("returns null for a non-ok GitHub response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    await expect(resolveDesktopDownloadUrl("mac")).resolves.toBeNull();
+  });
+
+  it("returns null when the GitHub request rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await expect(resolveDesktopDownloadUrl("windows")).resolves.toBeNull();
+  });
+
+  it("returns null when no new-brand installer matches the platform", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        assets: [
+          {
+            name: "DramaClaw-Setup-1.1.0.exe",
+            browser_download_url: "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/download/v1.1.0/DramaClaw-Setup-1.1.0.exe",
+          },
+          {
+            name: "NuomiDrama-2.0.0.zip",
+            browser_download_url: "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/download/v2.0.0/NuomiDrama-2.0.0.zip",
+          },
+        ],
+      }),
+    }));
+
+    await expect(resolveDesktopDownloadUrl("windows")).resolves.toBeNull();
+  });
+
+  it("rejects a matching asset whose download URL is outside the public repository", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        assets: [{
+          name: "NuomiDrama-Setup-2.0.0.exe",
+          browser_download_url: "https://evil.example/NuomiDrama-Setup-2.0.0.exe",
+        }],
+      }),
+    }));
+
+    await expect(resolveDesktopDownloadUrl("windows")).resolves.toBeNull();
+  });
+
+  it.each([
+    "https://github.com:444/YuRui-Liu/Nuomi-drama-factory/releases/download/v2.0.0/NuomiDrama-Setup-2.0.0.exe",
+    "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/download/v2.0.0/different-file.exe",
+  ])("rejects a non-canonical or mismatched asset URL: %s", async (browserDownloadUrl) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        assets: [{
+          name: "NuomiDrama-Setup-2.0.0.exe",
+          browser_download_url: browserDownloadUrl,
+        }],
+      }),
+    }));
+
+    await expect(resolveDesktopDownloadUrl("windows")).resolves.toBeNull();
   });
 });
 

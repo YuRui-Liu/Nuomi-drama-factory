@@ -3,20 +3,16 @@
 /**
  * Desktop installer downloads offered on the login hero.
  *
- * 安装包文件名带版本号(如 DramaClaw-Setup-1.1.0.exe),写死必随发版腐烂。
- * 发布流水线维护着一对"当前版本指针"—— electron-updater 的 latest.yml /
- * latest-mac.yml(CDN 对 *.yml 零缓存,即发即新)。这里按需解析指针拿到
- * 当前安装包的真实文件名;文件名从清单的 url: 字段取,绝不自拼版本号,
- * 将来命名模式变化时本文件无需跟改。
+ * Resolve current installers from the public Nuomi Drama Factory GitHub release.
+ * Asset names must use a supported new-brand prefix and the download URL must
+ * remain under this repository's GitHub release-download path.
  */
 export type DesktopPlatform = "mac" | "windows";
 
-const DOWNLOAD_BASE = "https://dramaclaw-dl.cdnfg.com/desktop/";
-
-const MANIFEST: Record<DesktopPlatform, string> = {
-  mac: "latest-mac.yml",
-  windows: "latest.yml",
-};
+const RELEASE_API_URL =
+  "https://api.github.com/repos/YuRui-Liu/Nuomi-drama-factory/releases/latest";
+const RELEASE_DOWNLOAD_PATH =
+  "/YuRui-Liu/Nuomi-drama-factory/releases/download/";
 
 // latest-mac.yml 同时列出 zip(自动更新的载体)与 dmg(首次安装的载体),
 // 官网必须发 dmg;Windows 清单里只有 exe。
@@ -32,7 +28,7 @@ const INSTALLER_EXT: Record<DesktopPlatform, string> = {
 export const FALLBACK_DOWNLOAD_URL =
   "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/latest";
 
-/** 从 electron-updater 清单文本里挑出目标平台的安装包文件名。 */
+/** Legacy manifest compatibility parser; no longer used by the public download path. */
 export function pickInstallerFromManifest(
   manifest: string,
   platform: DesktopPlatform,
@@ -44,17 +40,47 @@ export function pickInstallerFromManifest(
   return null;
 }
 
-/** 解析当前版本安装包的 CDN 直链;任何一步失败都返回 null(调用方走兜底)。 */
+type ReleaseAsset = {
+  name?: unknown;
+  browser_download_url?: unknown;
+};
+
+function isPublicReleaseDownload(url: string, assetName: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const pathSegments = parsed.pathname.split("/");
+    const encodedName = pathSegments[pathSegments.length - 1];
+    return parsed.origin === "https://github.com"
+      && parsed.pathname.startsWith(RELEASE_DOWNLOAD_PATH)
+      && typeof encodedName === "string"
+      && decodeURIComponent(encodedName) === assetName;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a current new-brand installer; callers use the Releases fallback on failure. */
 export async function resolveDesktopDownloadUrl(
   platform: DesktopPlatform,
 ): Promise<string | null> {
   try {
-    const res = await fetch(DOWNLOAD_BASE + MANIFEST[platform], {
-      cache: "no-store",
+    const res = await fetch(RELEASE_API_URL, {
+      headers: { Accept: "application/vnd.github+json" },
     });
     if (!res.ok) return null;
-    const file = pickInstallerFromManifest(await res.text(), platform);
-    return file ? DOWNLOAD_BASE + encodeURIComponent(file) : null;
+    const data = await res.json() as { assets?: unknown };
+    if (!Array.isArray(data.assets)) return null;
+    const ext = INSTALLER_EXT[platform];
+    const asset = (data.assets as ReleaseAsset[]).find((candidate) => {
+      if (typeof candidate.name !== "string") return false;
+      if (typeof candidate.browser_download_url !== "string") return false;
+      return /^(?:NuomiDrama|Nuomi-Drama-Factory)(?:[-_.]|$)/i.test(candidate.name)
+        && candidate.name.toLowerCase().endsWith(ext)
+        && isPublicReleaseDownload(candidate.browser_download_url, candidate.name);
+    });
+    return typeof asset?.browser_download_url === "string"
+      ? asset.browser_download_url
+      : null;
   } catch {
     return null;
   }
