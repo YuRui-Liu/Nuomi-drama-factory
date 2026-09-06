@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -680,6 +681,67 @@ def test_temporary_group_root_rejects_windows_junction_before_resolving(
         video_references._temporary_group_root(tmp_path, 1, "ng-01")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX directory symlink")
+def test_temporary_references_ancestor_symlink_is_not_scanned_or_read(tmp_path):
+    outside_root = tmp_path.parent / f"{tmp_path.name}-outside-references"
+    _png(outside_root / "ng-01" / "upload-a.png")
+    references_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+    )
+    references_root.parent.mkdir(parents=True)
+    references_root.symlink_to(outside_root, target_is_directory=True)
+
+    preview = _preview(_Store([]), tmp_path, group=_group("beat-1"))
+
+    assert preview.candidates == ()
+    assert any(
+        "symlink" in warning.lower() or "unsafe" in warning.lower()
+        for warning in preview.warnings
+    )
+    with pytest.raises(ValueError, match="no-follow|symlink|reparse"):
+        _resolve_saved(
+            _Store([]),
+            tmp_path,
+            _saved_group("temporary_upload", "upload-a"),
+        )
+
+
+def test_preview_omits_temporary_upload_below_windows_reparse_ancestor(
+    tmp_path, monkeypatch
+):
+    upload = _png(
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+        / "upload-a.png"
+    )
+    references_root = upload.parents[1]
+    real_lstat = Path.lstat
+
+    def fake_lstat(candidate):
+        result = real_lstat(candidate)
+        if candidate == references_root:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_file_attributes=0x400,
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+    preview = _preview(_Store([]), tmp_path, group=_group("beat-1"))
+
+    assert preview.candidates == ()
+    assert any("reparse" in warning.lower() for warning in preview.warnings)
+
+
 def test_preview_warns_and_omits_windows_reparse_candidate(tmp_path, monkeypatch):
     path = _png(canonical_prop_reference_path(tmp_path, "Key"))
     real_lstat = Path.lstat
@@ -781,10 +843,10 @@ def test_resolved_no_follow_read_rejects_regular_file_swapped_to_symlink(
     target = _png(canonical_prop_reference_path(tmp_path, "Other"))
     real_snapshot = video_references._snapshot_reference_image
 
-    def swap_then_snapshot(project_dir, lexical_path, label):
+    def swap_then_snapshot(project_dir, lexical_path, label, **kwargs):
         path.unlink()
         path.symlink_to(target)
-        return real_snapshot(project_dir, lexical_path, label)
+        return real_snapshot(project_dir, lexical_path, label, **kwargs)
 
     monkeypatch.setattr(
         video_references, "_snapshot_reference_image", swap_then_snapshot
@@ -841,6 +903,7 @@ class _FakeWin32SnapshotAdapter:
         content: bytes,
         *,
         parent_reparse: bool = False,
+        directory_reparse_paths: frozenset[Path] = frozenset(),
         file_reparse: bool = False,
         final_path: Path | None = None,
     ):
@@ -848,6 +911,7 @@ class _FakeWin32SnapshotAdapter:
         self.file_path = file_path
         self.content = content
         self.parent_reparse = parent_reparse
+        self.directory_reparse_paths = directory_reparse_paths
         self.file_reparse = file_reparse
         self.final_path = final_path or file_path
         self.closed = []
@@ -858,7 +922,10 @@ class _FakeWin32SnapshotAdapter:
     def attributes(self, handle):
         path, directory = handle
         attributes = self.DIRECTORY if directory else 0
-        if directory and path != self.root and self.parent_reparse:
+        if directory and (
+            path in self.directory_reparse_paths
+            or (path != self.root and self.parent_reparse)
+        ):
             attributes |= self.REPARSE_POINT
         if not directory and self.file_reparse:
             attributes |= self.REPARSE_POINT
@@ -892,18 +959,53 @@ def _fake_windows_snapshot(tmp_path, **adapter_options):
 
 def test_windows_snapshot_reads_bytes_from_verified_handle_and_hashes(tmp_path):
     root, path, content, adapter = _fake_windows_snapshot(tmp_path)
+    project_root = tmp_path
+    adapter.root = project_root
 
     snapshot, digest = video_references._snapshot_reference_image(
-        root,
+        project_root,
         path,
         "Key",
+        expected_root=root,
         win32_adapter=adapter,
         platform_name="nt",
     )
 
     assert snapshot == content
     assert digest == hashlib.sha256(content).hexdigest()
-    assert len(adapter.closed) == 3
+    assert len(adapter.closed) == 5
+
+
+def test_windows_snapshot_rejects_temporary_reparse_ancestor(tmp_path):
+    project_root = tmp_path
+    expected_root = (
+        project_root
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+    references_root = expected_root.parent
+    path = expected_root / "upload-a.png"
+    content = _png(tmp_path / "fixture.png").read_bytes()
+    adapter = _FakeWin32SnapshotAdapter(
+        project_root,
+        path,
+        content,
+        directory_reparse_paths=frozenset({references_root}),
+    )
+
+    with pytest.raises(ValueError, match="reparse"):
+        video_references._read_windows_file_snapshot(
+            project_root,
+            path,
+            "upload-a",
+            expected_root=expected_root,
+            adapter=adapter,
+        )
+
+    assert any(handle[0] == references_root for handle in adapter.closed)
 
 
 @pytest.mark.parametrize(

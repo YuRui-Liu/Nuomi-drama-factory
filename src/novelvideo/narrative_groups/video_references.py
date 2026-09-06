@@ -240,16 +240,6 @@ async def _asset_descriptions(
     return identities, scenes, props
 
 
-def _path_within_project(project_dir: Path, path: Path) -> Path:
-    project_root = project_dir.resolve(strict=False)
-    resolved = path.resolve(strict=False)
-    try:
-        resolved.relative_to(project_root)
-    except ValueError as exc:
-        raise ValueError("video reference path must remain inside the project") from exc
-    return resolved
-
-
 def _safe_path_segment(value: str, label: str) -> str:
     raw = str(value or "").strip()
     try:
@@ -490,9 +480,7 @@ async def resolve_group_video_reference_preview(
                 f"Character identity {identity_id} is missing its identity image and portrait."
             )
             continue
-        if _path_contains_reparse_point(
-            _lexical_asset_root(project, "characters"), path
-        ):
+        if _path_contains_reparse_point(project, path):
             warnings.append(
                 f"Character identity {identity_id} uses a symlink or reparse point "
                 "and cannot be selected."
@@ -522,9 +510,7 @@ async def resolve_group_video_reference_preview(
         if not path.is_file():
             warnings.append(f"Scene {scene_id} is missing its master image.")
             continue
-        if _path_contains_reparse_point(
-            _lexical_asset_root(project, "scenes"), path
-        ):
+        if _path_contains_reparse_point(project, path):
             warnings.append(
                 f"Scene {scene_id} uses a symlink or reparse point and cannot be selected."
             )
@@ -552,9 +538,7 @@ async def resolve_group_video_reference_preview(
         if not path.is_file():
             warnings.append(f"Prop {prop_id} is missing its reference image.")
             continue
-        if _path_contains_reparse_point(
-            _lexical_asset_root(project, "props"), path
-        ):
+        if _path_contains_reparse_point(project, path):
             warnings.append(
                 f"Prop {prop_id} uses a symlink or reparse point and cannot be selected."
             )
@@ -568,7 +552,15 @@ async def resolve_group_video_reference_preview(
             )
         )
 
-    if safe_upload_root.is_dir():
+    unsafe_upload_root = _path_contains_reparse_point(
+        project, safe_upload_root
+    )
+    if unsafe_upload_root:
+        warnings.append(
+            "Temporary reference directory uses a symlink or reparse point "
+            "and cannot be scanned."
+        )
+    elif safe_upload_root.is_dir():
         for upload in sorted(safe_upload_root.glob("*.png"), key=lambda item: item.name):
             upload_id = upload.stem
             try:
@@ -647,8 +639,33 @@ def _resolve_item_path(
     raise ValueError(f"unsupported video reference source kind: {item.source_kind}")
 
 
+def _lexical_reference_path(
+    trusted_root: Path,
+    path: Path,
+    expected_root: Path | None,
+) -> tuple[Path, Path, Path, Path]:
+    trusted = Path(os.path.abspath(trusted_root))
+    expected = Path(os.path.abspath(expected_root or trusted))
+    candidate = Path(os.path.abspath(path))
+    try:
+        expected.relative_to(trusted)
+        candidate.relative_to(expected)
+        relative = candidate.relative_to(trusted)
+    except ValueError as exc:
+        raise ValueError(
+            "video reference path must remain inside the project and its canonical root"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("video reference image path is invalid")
+    return trusted, expected, candidate, relative
+
+
 def _read_posix_file_snapshot(
-    allowed_root: Path, path: Path, label: str
+    trusted_root: Path,
+    path: Path,
+    label: str,
+    *,
+    expected_root: Path | None = None,
 ) -> bytes:
     """Read one regular file through directory FDs without following symlinks."""
     if (
@@ -658,14 +675,9 @@ def _read_posix_file_snapshot(
     ):
         raise ValueError("no-follow reference reads are unsupported on this platform")
 
-    project_root = Path(os.path.abspath(allowed_root))
-    lexical_path = Path(os.path.abspath(path))
-    try:
-        relative = lexical_path.relative_to(project_root)
-    except ValueError as exc:
-        raise ValueError("video reference path must remain inside the project") from exc
-    if not relative.parts:
-        raise ValueError("video reference image path is invalid")
+    project_root, _, _, relative = _lexical_reference_path(
+        trusted_root, path, expected_root
+    )
 
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW
@@ -887,10 +899,11 @@ def _path_is_within_root(allowed_root: Path, candidate: Path) -> bool:
 
 
 def _read_windows_file_snapshot(
-    allowed_root: Path,
+    trusted_root: Path,
     path: Path,
     label: str,
     *,
+    expected_root: Path | None = None,
     adapter: object | None = None,
 ) -> bytes:
     """Read through Win32 handles while rejecting reparse-point traversal."""
@@ -898,16 +911,9 @@ def _read_windows_file_snapshot(
         win32 = adapter or _CtypesWin32SnapshotAdapter()
     except (AttributeError, OSError) as exc:
         raise ValueError("secure Windows reference reads are unavailable") from exc
-    root = Path(os.path.abspath(allowed_root))
-    candidate = Path(os.path.abspath(path))
-    try:
-        relative = candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(
-            "video reference path must remain inside its canonical root"
-        ) from exc
-    if not relative.parts:
-        raise ValueError("video reference image path is invalid")
+    root, expected, candidate, relative = _lexical_reference_path(
+        trusted_root, path, expected_root
+    )
 
     handles: list[object] = []
     try:
@@ -938,9 +944,11 @@ def _read_windows_file_snapshot(
             raise ValueError("video reference must be a regular disk file")
 
         final_path = Path(win32.final_path_for_handle(file_handle))
-        if not _path_is_within_root(root, final_path):
+        if not _path_is_within_root(
+            root, final_path
+        ) or not _path_is_within_root(expected, final_path):
             raise ValueError(
-                "video reference final handle path escaped its canonical root"
+                "video reference final handle path escaped the project or canonical root"
             )
         before_size = int(win32.file_size(file_handle))
         if before_size <= 0:
@@ -969,10 +977,11 @@ def _read_windows_file_snapshot(
 
 
 def _read_file_snapshot(
-    allowed_root: Path,
+    trusted_root: Path,
     path: Path,
     label: str,
     *,
+    expected_root: Path | None = None,
     win32_adapter: object | None = None,
     platform_name: str | None = None,
 ) -> bytes:
@@ -983,9 +992,15 @@ def _read_file_snapshot(
     )
     if platform == "nt":
         return _read_windows_file_snapshot(
-            allowed_root, path, label, adapter=win32_adapter
+            trusted_root,
+            path,
+            label,
+            expected_root=expected_root,
+            adapter=win32_adapter,
         )
-    return _read_posix_file_snapshot(allowed_root, path, label)
+    return _read_posix_file_snapshot(
+        trusted_root, path, label, expected_root=expected_root
+    )
 
 
 def _validate_decoded_image(content: bytes, label: str) -> None:
@@ -1021,17 +1036,19 @@ def _validate_decoded_image(content: bytes, label: str) -> None:
 
 
 def _snapshot_reference_image(
-    allowed_root: Path,
+    trusted_root: Path,
     path: Path,
     label: str,
     *,
+    expected_root: Path | None = None,
     win32_adapter: object | None = None,
     platform_name: str | None = None,
 ) -> tuple[bytes, str]:
     content = _read_file_snapshot(
-        allowed_root,
+        trusted_root,
         path,
         label,
+        expected_root=expected_root,
         win32_adapter=win32_adapter,
         platform_name=platform_name,
     )
@@ -1071,11 +1088,15 @@ async def resolve_saved_video_references(
         expected_id = opaque_video_reference_id(reference.source_kind, stable_id)
         if reference.reference_id != expected_id:
             raise ValueError("video reference ID does not match its stable asset ID")
-        path, allowed_root = _resolve_item_path(
+        path, expected_root = _resolve_item_path(
             project, episode_number, group, reference, identities
         )
         content, content_sha256 = await asyncio.to_thread(
-            _snapshot_reference_image, allowed_root, path, reference.label
+            _snapshot_reference_image,
+            project,
+            path,
+            reference.label,
+            expected_root=expected_root,
         )
         resolved.append(
             ResolvedVideoReference(
