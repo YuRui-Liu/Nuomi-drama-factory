@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -20,6 +21,9 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 import portalocker
+
+
+logger = logging.getLogger(__name__)
 
 
 class EpisodeImportGraphError(RuntimeError):
@@ -146,7 +150,13 @@ class EpisodeImportService:
     async def _finalize_graph_activation(self, activation: object) -> None:
         finalize = getattr(self._graph, "finalize_activation", None)
         if finalize is not None:
-            await finalize(activation)
+            try:
+                await finalize(activation)
+            except Exception:
+                logger.exception(
+                    "graph activation committed but journal cleanup failed; "
+                    "retaining journal for recovery"
+                )
 
 
 @dataclass(frozen=True, slots=True)

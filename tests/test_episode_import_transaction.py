@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -187,6 +188,62 @@ async def test_incremental_success_commits_after_graph_activation() -> None:
     assert repository.active_revision == 5
     assert graph.active_marker == "active-v5"
     assert graph.restored == []
+
+
+@pytest.mark.asyncio
+async def test_post_commit_activation_cleanup_failure_keeps_commit_successful(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    from novelvideo.episode_import_service import CogneeShadowBuild, CogneeShadowGraph
+
+    prepared = PreparedEpisodeImport(5, "第五集新版", True, "candidate-v5")
+    repository = FakeRepository(prepared)
+    state_dir = tmp_path / "state"
+    old_runtime = state_dir / "cognee_builds" / "4-old" / "runtime"
+    new_runtime = state_dir / "cognee_builds" / "5-new" / "runtime"
+    old_runtime.mkdir(parents=True)
+    new_runtime.mkdir(parents=True)
+    old_pointer = json.dumps(
+        {"revision": 4, "runtime_dir": str(old_runtime)}, separators=(",", ":")
+    ).encode()
+    new_shadow = CogneeShadowBuild(5, new_runtime.parent, new_runtime)
+
+    class PrebuiltGraph(CogneeShadowGraph):
+        async def build_shadow(self, **_kwargs):
+            return new_shadow
+
+    graph = PrebuiltGraph(
+        project_name="demo/project",
+        project_dir=tmp_path / "project",
+        state_dir=state_dir,
+    )
+    graph.active_pointer_path.write_bytes(old_pointer)
+    real_unlink = Path.unlink
+
+    def fail_journal_cleanup(path, *args, **kwargs):
+        if path == graph.pointer_journal_path:
+            raise PermissionError("journal cleanup denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_journal_cleanup)
+
+    result = await EpisodeImportService(repository=repository, graph=graph).commit(
+        object()
+    )
+
+    assert result is prepared
+    assert repository.active_revision == 5
+    assert repository.commits == 1
+    assert repository.discards == 0
+    assert graph.pointer_journal_path.is_file()
+    assert "journal cleanup denied" in caplog.text
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    await graph.recover_pending(repository.active_revision)
+    assert not graph.pointer_journal_path.exists()
+    assert json.loads(graph.active_pointer_path.read_bytes())["revision"] == 5
 
 
 @pytest.mark.asyncio

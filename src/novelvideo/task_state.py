@@ -105,7 +105,11 @@ CREATE TABLE IF NOT EXISTS task_states (
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT '',
     completed_at TEXT NOT NULL DEFAULT '',
-    expires_at TEXT
+    expires_at TEXT,
+    execution_owner_id TEXT NOT NULL DEFAULT '',
+    lease_expires_at TEXT NOT NULL DEFAULT '',
+    heartbeat_at TEXT NOT NULL DEFAULT '',
+    cancel_requested_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_task_states_user_updated
 ON task_states(username, updated_at DESC);
@@ -119,6 +123,16 @@ _TASK_STATE_COLUMN_UPGRADES = {
     ),
     "owner_username": "ALTER TABLE task_states ADD COLUMN owner_username TEXT NOT NULL DEFAULT ''",
     "project_name": "ALTER TABLE task_states ADD COLUMN project_name TEXT NOT NULL DEFAULT ''",
+    "execution_owner_id": (
+        "ALTER TABLE task_states ADD COLUMN execution_owner_id TEXT NOT NULL DEFAULT ''"
+    ),
+    "lease_expires_at": (
+        "ALTER TABLE task_states ADD COLUMN lease_expires_at TEXT NOT NULL DEFAULT ''"
+    ),
+    "heartbeat_at": "ALTER TABLE task_states ADD COLUMN heartbeat_at TEXT NOT NULL DEFAULT ''",
+    "cancel_requested_at": (
+        "ALTER TABLE task_states ADD COLUMN cancel_requested_at TEXT NOT NULL DEFAULT ''"
+    ),
 }
 
 
@@ -133,15 +147,6 @@ def compute_expiry(ttl_seconds: int | None) -> str | None:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-# inline 后端的 worker 与 API 同进程:早于本进程启动仍标记 ACTIVE 的
-# inline 任务必然已中断(见 _sweep_interrupted_inline_tasks_once)。
-_PROCESS_STARTED_AT = utc_now_iso()
-if "." not in _PROCESS_STARTED_AT:
-    # isoformat 在整秒时省略小数位;同秒内 "...:56Z" 字典序大于 "...:56.4Z",
-    # 会把启动后同秒更新的活任务误判为过期,补齐小数位消除该反转。
-    _PROCESS_STARTED_AT = _PROCESS_STARTED_AT.replace("Z", ".000000Z")
 
 
 def parse_task_timestamp(value: str | None) -> datetime | None:
@@ -220,6 +225,10 @@ class TaskState:
     updated_at: str = ""
     completed_at: str = ""
     expires_at: str = ""
+    execution_owner_id: str = ""
+    lease_expires_at: str = ""
+    heartbeat_at: str = ""
+    cancel_requested_at: str = ""
 
     def is_starting_stale(self, timeout_seconds: int) -> bool:
         if self.status != "starting":
@@ -243,6 +252,7 @@ class TaskStateManager:
 
     MAX_LOGS = 100  # 保留最近 100 条日志
     COMPLETED_TTL = 3600  # 完成后保留 1 小时
+    LEASE_EXPIRED_ERROR = "TASK_LEASE_EXPIRED"
 
     def __init__(self) -> None:
         # 僵尸清扫按库只跑一次(见 _sweep_interrupted_inline_tasks_once)
@@ -335,7 +345,7 @@ class TaskStateManager:
         )
 
     @contextmanager
-    def _connect_path(self, db_path: Path):
+    def _connect_path(self, db_path: Path, *, sweep_inline: bool = True):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db_path, timeout=5, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -356,7 +366,8 @@ class TaskStateManager:
             "ON task_states(project_id, queue_kind, status)"
         )
         conn.commit()
-        self._sweep_interrupted_inline_tasks_once(conn, db_path)
+        if sweep_inline:
+            self._sweep_interrupted_inline_tasks_once(conn, db_path)
         try:
             yield conn
             conn.commit()
@@ -421,7 +432,86 @@ class TaskStateManager:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
             expires_at=row["expires_at"] if "expires_at" in row.keys() else "",
+            execution_owner_id=(
+                row["execution_owner_id"] if "execution_owner_id" in row.keys() else ""
+            ),
+            lease_expires_at=(
+                row["lease_expires_at"] if "lease_expires_at" in row.keys() else ""
+            ),
+            heartbeat_at=row["heartbeat_at"] if "heartbeat_at" in row.keys() else "",
+            cancel_requested_at=(
+                row["cancel_requested_at"] if "cancel_requested_at" in row.keys() else ""
+            ),
         )
+
+    @classmethod
+    def _lease_expired_result_json(cls, raw_result: str | None) -> str:
+        try:
+            result = json.loads(raw_result) if raw_result else {}
+        except (TypeError, json.JSONDecodeError):
+            result = {}
+        if not isinstance(result, dict):
+            result = {"value": result}
+        metadata = result.get("task_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        result["task_metadata"] = {
+            **metadata,
+            "error_code": cls.LEASE_EXPIRED_ERROR,
+        }
+        result["error_code"] = cls.LEASE_EXPIRED_ERROR
+        result["error"] = cls.LEASE_EXPIRED_ERROR
+        return json.dumps(result, ensure_ascii=False)
+
+    @classmethod
+    def _expire_task_leases_on_connection(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        now: str,
+        inline_only: bool,
+    ) -> int:
+        predicates = [
+            "status IN ('submitting', 'queued', 'running')",
+            "lease_expires_at IS NOT NULL",
+            "TRIM(lease_expires_at) <> ''",
+            "julianday(lease_expires_at) <= julianday('now')",
+        ]
+        params: list[str] = []
+        if inline_only:
+            predicates.extend(
+                [
+                    "json_valid(result_json)",
+                    "json_extract(result_json, '$.task_metadata.backend') = 'inline'",
+                ]
+            )
+        where_sql = " AND ".join(predicates)
+        rows = conn.execute(
+            f"SELECT task_key, result_json FROM task_states WHERE {where_sql}",
+            tuple(params),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        completed_expires_at = compute_expiry(cls.COMPLETED_TTL)
+        expired = 0
+        for row in rows:
+            cursor = conn.execute(
+                "UPDATE task_states SET status = 'failed', error = ?, result_json = ?, "
+                "completed_at = ?, updated_at = ?, expires_at = ? "
+                f"WHERE task_key = ? AND {where_sql}",
+                (
+                    cls.LEASE_EXPIRED_ERROR,
+                    cls._lease_expired_result_json(row["result_json"]),
+                    now,
+                    now,
+                    completed_expires_at,
+                    row["task_key"],
+                    *params,
+                ),
+            )
+            expired += max(cursor.rowcount, 0)
+        return expired
 
     @staticmethod
     def _is_expired(expires_at: str | None) -> bool:
@@ -768,6 +858,7 @@ class TaskStateManager:
         metadata: dict | None = None,
         status: str = "running",
         expected_task_id: str | None = None,
+        expected_execution_owner_id: str | None = None,
         queue_kind: str | None = None,
     ):
         expected_task_id = expected_task_id or _CURRENT_PROJECT_TASK_ID.get()
@@ -783,7 +874,7 @@ class TaskStateManager:
                     expected_task_id,
                     scope,
                 )
-                return
+                return False
             state = self.create_task_for_project(
                 ctx,
                 task_type,
@@ -803,7 +894,18 @@ class TaskStateManager:
                 expected_task_id,
                 state.task_id,
             )
-            return
+            return False
+        if (
+            expected_execution_owner_id is not None
+            and state.execution_owner_id != expected_execution_owner_id
+        ):
+            logger.warning(
+                "Ignore non-owner project task update: task_id=%s expected_owner=%s owner=%s",
+                state.task_id,
+                expected_execution_owner_id,
+                state.execution_owner_id,
+            )
+            return False
         if state.status in TERMINAL_TASK_STATUSES:
             logger.warning(
                 "Ignore progress update for terminal project task: %s/%s/%s status=%s",
@@ -812,7 +914,7 @@ class TaskStateManager:
                 episode,
                 state.status,
             )
-            return
+            return False
 
         state.status = status
         if status in {"completed", "failed", "cancelled"} and not state.completed_at:
@@ -828,7 +930,16 @@ class TaskStateManager:
             state.result = self._merge_metadata_into_result(state.result, state.metadata)
         state.updated_at = utc_now_iso()
         ttl = self.COMPLETED_TTL if status in TERMINAL_TASK_STATUSES else None
+        if expected_execution_owner_id is not None:
+            return self._save_for_context_owner_cas(
+                ctx,
+                state,
+                expected_task_id=expected_task_id or state.task_id,
+                expected_execution_owner_id=expected_execution_owner_id,
+                ttl=ttl,
+            )
         self._save_for_context(ctx, state, ttl=ttl)
+        return True
 
     def complete_task(
         self,
@@ -904,6 +1015,7 @@ class TaskStateManager:
         logs: List[str] | None = None,
         metadata: dict | None = None,
         expected_task_id: str | None = None,
+        expected_execution_owner_id: str | None = None,
         queue_kind: str | None = None,
     ):
         expected_task_id = expected_task_id or _CURRENT_PROJECT_TASK_ID.get()
@@ -919,7 +1031,7 @@ class TaskStateManager:
                     expected_task_id,
                     scope,
                 )
-                return
+                return False
             state = self.create_task_for_project(
                 ctx,
                 task_type,
@@ -939,7 +1051,18 @@ class TaskStateManager:
                 expected_task_id,
                 state.task_id,
             )
-            return
+            return False
+        if (
+            expected_execution_owner_id is not None
+            and state.execution_owner_id != expected_execution_owner_id
+        ):
+            logger.warning(
+                "Ignore non-owner project task complete: task_id=%s expected_owner=%s owner=%s",
+                state.task_id,
+                expected_execution_owner_id,
+                state.execution_owner_id,
+            )
+            return False
         if state.status == "cancelled":
             logger.warning(
                 "Ignore complete update for cancelled project task: %s/%s/%s",
@@ -947,7 +1070,7 @@ class TaskStateManager:
                 ctx.project_id,
                 episode,
             )
-            return
+            return False
         state.status = "completed"
         state.progress = 1.0 if progress is None else progress
         if current_task is not None:
@@ -961,8 +1084,21 @@ class TaskStateManager:
             state.metadata = merged_metadata
         state.completed_at = utc_now_iso()
         state.updated_at = utc_now_iso()
+        if expected_execution_owner_id is not None:
+            written = self._save_for_context_owner_cas(
+                ctx,
+                state,
+                expected_task_id=expected_task_id or state.task_id,
+                expected_execution_owner_id=expected_execution_owner_id,
+                ttl=self.COMPLETED_TTL,
+            )
+            if not written:
+                return False
+            logger.info("Project task completed: %s/%s/%s", task_type, ctx.project_id, episode)
+            return True
         self._save_for_context(ctx, state, ttl=self.COMPLETED_TTL)
         logger.info("Project task completed: %s/%s/%s", task_type, ctx.project_id, episode)
+        return True
 
     def fail_task(
         self,
@@ -1029,6 +1165,7 @@ class TaskStateManager:
         logs: List[str] | None = None,
         metadata: dict | None = None,
         expected_task_id: str | None = None,
+        expected_execution_owner_id: str | None = None,
         queue_kind: str | None = None,
     ):
         expected_task_id = expected_task_id or _CURRENT_PROJECT_TASK_ID.get()
@@ -1044,7 +1181,7 @@ class TaskStateManager:
                     expected_task_id,
                     scope,
                 )
-                return
+                return False
             state = self.create_task_for_project(
                 ctx,
                 task_type,
@@ -1063,7 +1200,18 @@ class TaskStateManager:
                 expected_task_id,
                 state.task_id,
             )
-            return
+            return False
+        if (
+            expected_execution_owner_id is not None
+            and state.execution_owner_id != expected_execution_owner_id
+        ):
+            logger.warning(
+                "Ignore non-owner project task fail: task_id=%s expected_owner=%s owner=%s",
+                state.task_id,
+                expected_execution_owner_id,
+                state.execution_owner_id,
+            )
+            return False
         if state.status == "cancelled":
             logger.warning(
                 "Ignore fail update for cancelled project task: %s/%s/%s",
@@ -1071,7 +1219,7 @@ class TaskStateManager:
                 ctx.project_id,
                 episode,
             )
-            return
+            return False
         state.status = "failed"
         if error is not None:
             state.error = error
@@ -1086,6 +1234,24 @@ class TaskStateManager:
             state.result = self._merge_metadata_into_result(state.result, state.metadata)
         state.completed_at = utc_now_iso()
         state.updated_at = utc_now_iso()
+        if expected_execution_owner_id is not None:
+            written = self._save_for_context_owner_cas(
+                ctx,
+                state,
+                expected_task_id=expected_task_id or state.task_id,
+                expected_execution_owner_id=expected_execution_owner_id,
+                ttl=self.COMPLETED_TTL,
+            )
+            if not written:
+                return False
+            logger.warning(
+                "Project task failed: %s/%s/%s: %s",
+                task_type,
+                ctx.project_id,
+                episode,
+                error,
+            )
+            return True
         self._save_for_context(ctx, state, ttl=self.COMPLETED_TTL)
         logger.warning(
             "Project task failed: %s/%s/%s: %s",
@@ -1094,6 +1260,95 @@ class TaskStateManager:
             episode,
             error,
         )
+        return True
+
+    @staticmethod
+    def _positive_lease_seconds(lease_seconds: float) -> float:
+        try:
+            duration = float(lease_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("lease_seconds must be a positive number") from exc
+        if duration <= 0:
+            raise ValueError("lease_seconds must be a positive number")
+        return duration
+
+    def claim_task_lease(
+        self,
+        ctx: ProjectContext,
+        task_id: str,
+        execution_owner_id: str,
+        *,
+        lease_seconds: float,
+    ) -> bool:
+        """Atomically claim an active task lease by immutable task_id."""
+        owner_id = str(execution_owner_id or "").strip()
+        if not owner_id:
+            raise ValueError("execution_owner_id is required")
+        duration = self._positive_lease_seconds(lease_seconds)
+        with self._connect_context(ctx) as conn:
+            cursor = conn.execute(
+                "UPDATE task_states SET execution_owner_id = ?, "
+                "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+                "lease_expires_at = strftime("
+                "'%Y-%m-%dT%H:%M:%fZ', julianday('now') + (? / 86400.0)), "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                "WHERE project_id = ? AND task_id = ? "
+                "AND status IN ('submitting', 'queued', 'running') "
+                "AND (COALESCE(execution_owner_id, '') = '' OR ("
+                "execution_owner_id = ? "
+                "AND julianday(lease_expires_at) > julianday('now')))",
+                (
+                    owner_id,
+                    duration,
+                    ctx.project_id,
+                    str(task_id),
+                    owner_id,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def heartbeat_task_lease(
+        self,
+        ctx: ProjectContext,
+        task_id: str,
+        execution_owner_id: str,
+        *,
+        lease_seconds: float,
+    ) -> bool:
+        """Extend an active lease only when its current owner matches."""
+        owner_id = str(execution_owner_id or "").strip()
+        if not owner_id:
+            raise ValueError("execution_owner_id is required")
+        duration = self._positive_lease_seconds(lease_seconds)
+        with self._connect_context(ctx) as conn:
+            cursor = conn.execute(
+                "UPDATE task_states SET "
+                "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+                "lease_expires_at = strftime("
+                "'%Y-%m-%dT%H:%M:%fZ', julianday('now') + (? / 86400.0)), "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                "WHERE project_id = ? AND task_id = ? AND execution_owner_id = ? "
+                "AND status IN ('submitting', 'queued', 'running') "
+                "AND julianday(lease_expires_at) > julianday('now')",
+                (
+                    duration,
+                    ctx.project_id,
+                    str(task_id),
+                    owner_id,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def expire_task_leases(self, ctx: ProjectContext) -> int:
+        """Fail all active expired leases in one project without requeueing them."""
+        require_project_home_node(ctx, operation="expire project task leases")
+        db_path = get_project_task_db_path_for_context(ctx)
+        with self._connect_path(db_path, sweep_inline=False) as conn:
+            return self._expire_task_leases_on_connection(
+                conn,
+                now=utc_now_iso(),
+                inline_only=False,
+            )
 
     def get_task(
         self,
@@ -1132,35 +1387,16 @@ class TaskStateManager:
         return self._row_to_state(row)
 
     def _sweep_interrupted_inline_tasks_once(self, conn, db_path: Path) -> None:
-        """把进程启动前遗留的 ACTIVE inline 任务落为 failed(僵尸回收)。
-
-        inline worker 随 API 进程消亡,这类任务不可能仍在执行;不回收会永久
-        挡住去重守卫与并发限额。Celery/EE worker 独立于本进程,按 backend
-        标记排除。挂在 _connect_path 上、按库记忆化只跑一次/进程,因此
-        reserve/lane/legacy 等所有路径同样受益且无每次读写的写放大。
-        时间戳按字符串比较:两侧均为 utc_now_iso 产物且保证含小数位。
-        """
+        """启动时只回收 lease 已明确过期的 ACTIVE inline 任务。"""
         key = str(db_path)
         with self._sweep_lock:
             if key in self._swept_dbs:
                 return
-        now = utc_now_iso()
         try:
-            conn.execute(
-                "UPDATE task_states SET status = 'failed', "
-                "error = COALESCE(NULLIF(error, ''), ?), "
-                "completed_at = ?, updated_at = ?, expires_at = ? "
-                "WHERE status IN ('submitting', 'queued', 'running') "
-                "AND updated_at < ? "
-                "AND json_valid(result_json) "
-                "AND json_extract(result_json, '$.task_metadata.backend') = 'inline'",
-                (
-                    "服务重启,任务已中断,请重新发起",
-                    now,
-                    now,
-                    compute_expiry(self.COMPLETED_TTL),
-                    _PROCESS_STARTED_AT,
-                ),
+            self._expire_task_leases_on_connection(
+                conn,
+                now=utc_now_iso(),
+                inline_only=True,
             )
             conn.commit()
         except sqlite3.OperationalError as exc:
@@ -1385,6 +1621,46 @@ class TaskStateManager:
         with self._connect_context(ctx) as conn:
             self._save_on_connection(conn, task_key, state, expires_at)
 
+    def _save_for_context_owner_cas(
+        self,
+        ctx: ProjectContext,
+        state: TaskState,
+        *,
+        expected_task_id: str,
+        expected_execution_owner_id: str,
+        ttl: int | None = None,
+    ) -> bool:
+        """Persist an owner-scoped state transition with one lease-aware SQL CAS."""
+        expires_at = compute_expiry(ttl)
+        with self._connect_context(ctx) as conn:
+            cursor = conn.execute(
+                "UPDATE task_states SET status = ?, progress = ?, current_task = ?, "
+                "result_json = ?, error = ?, logs_json = ?, updated_at = ?, "
+                "completed_at = ?, expires_at = ? "
+                "WHERE project_id = ? AND task_id = ? AND execution_owner_id = ? "
+                "AND status IN ('submitting', 'queued', 'running') "
+                "AND julianday(lease_expires_at) > julianday('now')",
+                (
+                    state.status,
+                    state.progress,
+                    state.current_task,
+                    (
+                        json.dumps(state.result, ensure_ascii=False)
+                        if state.result is not None
+                        else None
+                    ),
+                    state.error,
+                    json.dumps(state.logs, ensure_ascii=False),
+                    state.updated_at,
+                    state.completed_at,
+                    expires_at,
+                    ctx.project_id,
+                    str(expected_task_id),
+                    str(expected_execution_owner_id),
+                ),
+            )
+        return cursor.rowcount == 1
+
     @staticmethod
     def _task_key_for_state(state: TaskState) -> str:
         if state.project_id:
@@ -1412,8 +1688,9 @@ class TaskStateManager:
                 task_key, task_id, task_type, queue_kind, project_id, requester_user_id,
                 owner_username, project_name, username, project, episode, beat_num,
                 status, progress, current_task, result_json, error, logs_json,
-                created_at, updated_at, completed_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, completed_at, expires_at, execution_owner_id,
+                lease_expires_at, heartbeat_at, cancel_requested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_key) DO UPDATE SET
                 task_id = excluded.task_id,
                 task_type = excluded.task_type,
@@ -1464,6 +1741,10 @@ class TaskStateManager:
                 state.updated_at,
                 state.completed_at,
                 expires_at,
+                state.execution_owner_id,
+                state.lease_expires_at,
+                state.heartbeat_at,
+                state.cancel_requested_at,
             ),
         )
 

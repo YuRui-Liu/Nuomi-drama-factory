@@ -9,7 +9,7 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, Callable, Iterable, Literal
 
 from novelvideo.models import NovelCharacter, NovelEpisode, NovelScene
 
@@ -55,6 +55,8 @@ class StructuredSceneInput:
     environment: str = ""
     spatial_anchors: tuple[str, ...] = ()
     source_refs: tuple[StructuredSourceRef, ...] = ()
+    aliases: tuple[str, ...] = ()
+    scene_type: str = "interior"
 
 
 class CharacterBuildResult(list[str]):
@@ -78,8 +80,6 @@ class CharacterBuildResult(list[str]):
             "preserved_characters": len(self.stats["preserved"]),
             "character_build": self.stats,
         }
-    aliases: tuple[str, ...] = ()
-    scene_type: str = "interior"
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +359,11 @@ async def _write_scene(db: Any, scene: NovelScene) -> None:
 
 
 async def publish_structured_publication(
-    store: Any, publication: StructuredPublication, *, run_id: str | None = None
+    store: Any,
+    publication: StructuredPublication,
+    *,
+    run_id: str | None = None,
+    before_commit: Callable[[], Any] | None = None,
 ) -> dict[str, int]:
     """Publish all formal rows in one SQLite transaction or leave all unchanged."""
     db = await store._ensure_db()
@@ -374,6 +378,10 @@ async def publish_structured_publication(
         if run_id:
             from novelvideo.structured_evidence import write_publication_evidence
             await write_publication_evidence(db, run_id=run_id, publication=publication)
+        if before_commit is not None:
+            ready = before_commit()
+            if inspect.isawaitable(ready):
+                await ready
         await db.commit()
     except BaseException:
         await db.rollback()

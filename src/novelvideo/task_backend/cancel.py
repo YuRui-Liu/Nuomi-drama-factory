@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from typing import Any
 
@@ -27,6 +28,35 @@ class TaskTimedOut(Exception):
     def __init__(self, *, timeout_seconds: int | None = None) -> None:
         self.timeout_seconds = timeout_seconds or 30 * 60
         super().__init__(self.timeout_seconds)
+
+
+class TaskLeaseLost(Exception):
+    """Raised when an inline worker no longer owns its task or lane lease."""
+
+
+_LOCAL_STOP_LOCK = threading.Lock()
+_LOCAL_STOP_REASONS: dict[str, str] = {}
+
+
+def request_local_task_stop(task_id: str, *, reason: str) -> None:
+    if not task_id:
+        return
+    with _LOCAL_STOP_LOCK:
+        _LOCAL_STOP_REASONS[str(task_id)] = str(reason or "cancelled")
+
+
+def clear_local_task_stop(task_id: str) -> None:
+    with _LOCAL_STOP_LOCK:
+        _LOCAL_STOP_REASONS.pop(str(task_id), None)
+
+
+def raise_if_local_task_stop_requested(task_id: str) -> None:
+    with _LOCAL_STOP_LOCK:
+        reason = _LOCAL_STOP_REASONS.get(str(task_id))
+    if reason == "lease_lost":
+        raise TaskLeaseLost(str(task_id))
+    if reason:
+        raise TaskCancelled()
 
 
 async def request_cancel(
@@ -98,6 +128,7 @@ async def await_with_cancel_watch(
         nonlocal stop_reason
         try:
             while not main_task.done():
+                raise_if_local_task_stop_requested(task_id)
                 if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                     stop_reason = "timeout"
                     main_task.cancel()
@@ -128,7 +159,10 @@ async def await_with_cancel_watch(
                         max(deadline_monotonic - time.monotonic(), 0.0),
                     )
                 await asyncio.sleep(sleep_seconds)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, TaskCancelled, TaskLeaseLost) as exc:
+            if isinstance(exc, (TaskCancelled, TaskLeaseLost)):
+                stop_reason = "lease_lost" if isinstance(exc, TaskLeaseLost) else "cancelled"
+                main_task.cancel()
             pass
 
     watcher = asyncio.create_task(_watch())
@@ -137,6 +171,8 @@ async def await_with_cancel_watch(
     except asyncio.CancelledError:
         if stop_reason == "timeout":
             raise TaskTimedOut(timeout_seconds=timeout_seconds)
+        if stop_reason == "lease_lost":
+            raise TaskLeaseLost(task_id)
         raise TaskCancelled()
     finally:
         watcher.cancel()
@@ -254,6 +290,8 @@ def raise_if_envelope_cancel_requested(
     scope: str | None = None,
 ) -> None:
     """Synchronous cancellation checkpoint for non-async runner boundaries."""
+    task_id = str(envelope.get("__run_task_id") or "")
+    raise_if_local_task_stop_requested(task_id)
     deadline_monotonic = _optional_float(envelope.get("__deadline_monotonic"))
     if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
         raise TaskTimedOut(timeout_seconds=_optional_int(envelope.get("__timeout_seconds")))

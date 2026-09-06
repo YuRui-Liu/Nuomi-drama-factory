@@ -16,7 +16,13 @@ from novelvideo.shared.billing_errors import (
     insufficient_credits_payload,
     is_insufficient_credits_error,
 )
-from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, is_cancel_requested
+from novelvideo.task_backend.cancel import (
+    TaskCancelled,
+    TaskLeaseLost,
+    TaskTimedOut,
+    is_cancel_requested,
+    raise_if_local_task_stop_requested,
+)
 from novelvideo.task_backend.registry import get_project_task_runner_registration
 from novelvideo.task_backend.subprocesses import project_task_subprocess_context
 from novelvideo.task_state import project_task_run_context
@@ -469,6 +475,8 @@ def run_project_task_core_sync(
     billing_metadata = _clean_billing_metadata(envelope.get("billing_metadata"))
     run_metadata = {**dict(metadata or {}), **billing_metadata}
     feature_reservation_id = _feature_credit_reservation_id(run_metadata)
+    execution_owner_id = str(envelope.get("__execution_owner_id") or "").strip()
+    execution_lease_seconds = float(envelope.get("__execution_lease_seconds") or 30.0)
     timeout_seconds = _project_task_timeout_seconds()
     deadline_monotonic = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
 
@@ -501,6 +509,7 @@ def run_project_task_core_sync(
             metadata=run_metadata,
             status="cancelled",
             expected_task_id=run_task_id,
+            expected_execution_owner_id=execution_owner_id or None,
         )
         return {"cancelled": True}
 
@@ -520,7 +529,7 @@ def run_project_task_core_sync(
                 task_type,
                 billing_metadata=billing_metadata,
             )
-            manager.update_progress_for_project(
+            started = manager.update_progress_for_project(
                 ctx,
                 task_type,
                 episode,
@@ -529,7 +538,22 @@ def run_project_task_core_sync(
                 progress=0.01,
                 current_task="任务已开始",
                 metadata=run_metadata,
+                expected_task_id=run_task_id,
+                expected_execution_owner_id=execution_owner_id or None,
             )
+            # Older/custom managers returned None for successful writes.  Only
+            # an explicit CAS rejection means this worker no longer owns the run.
+            if started is False:
+                asyncio.run(
+                    _refund_feature_credit_reservation(
+                        feature_reservation_id,
+                        metadata={
+                            "source": "task_start_lease_lost",
+                            "error_code": "TASK_LEASE_LOST",
+                        },
+                    )
+                )
+                return {"failed": True, "error_code": "TASK_LEASE_LOST"}
 
             try:
                 _ensure_builtin_runners_registered()
@@ -554,6 +578,7 @@ def run_project_task_core_sync(
                     error=error,
                     metadata={**run_metadata, **failure_payload},
                     expected_task_id=run_task_id,
+                    expected_execution_owner_id=execution_owner_id or None,
                 )
                 if handled:
                     return {"failed": True, **failure_payload}
@@ -576,6 +601,7 @@ def run_project_task_core_sync(
                     error=error,
                     metadata=run_metadata,
                     expected_task_id=run_task_id,
+                    expected_execution_owner_id=execution_owner_id or None,
                 )
                 raise RuntimeError(error)
             runner = registration.runner
@@ -606,6 +632,48 @@ def run_project_task_core_sync(
                     runtime_scope = text_task_runtime_scope(snapshot)
                 with runtime_scope:
                     result = runner(envelope, ctx)
+                raise_if_local_task_stop_requested(run_task_id)
+                if execution_owner_id and not manager.heartbeat_task_lease(
+                    ctx,
+                    run_task_id,
+                    execution_owner_id,
+                    lease_seconds=execution_lease_seconds,
+                ):
+                    raise TaskLeaseLost(run_task_id)
+                if isinstance(result, dict) and result.get("status") == "partial_failure":
+                    asyncio.run(
+                        _refund_feature_credit_reservation(
+                            feature_reservation_id,
+                            metadata={"source": "task_partial_failure", "result": result},
+                        )
+                    )
+                    manager.fail_task_for_project(
+                        ctx,
+                        task_type,
+                        episode,
+                        beat_num=beat_num,
+                        scope=scope,
+                        error="PARTIAL_FAILURE",
+                        metadata={
+                            **run_metadata,
+                            "error_code": "PARTIAL_FAILURE",
+                            "partial_failure_result": result,
+                        },
+                        expected_task_id=run_task_id,
+                        expected_execution_owner_id=execution_owner_id or None,
+                    )
+                    asyncio.run(
+                        _emit_project_task_metrics(
+                            ctx,
+                            task_type,
+                            episode=episode,
+                            beat_num=beat_num,
+                            scope=scope,
+                            result=result,
+                            outcome="failed",
+                        )
+                    )
+                    return {"failed": True, "result": result}
             except BaseException as exc:
                 if isinstance(exc, TaskCancelled):
                     asyncio.run(
@@ -625,8 +693,29 @@ def run_project_task_core_sync(
                         metadata=run_metadata,
                         status="cancelled",
                         expected_task_id=run_task_id,
+                        expected_execution_owner_id=execution_owner_id or None,
                     )
                     return {"cancelled": True}
+                if isinstance(exc, TaskLeaseLost):
+                    failure_payload = {"error_code": "TASK_LEASE_LOST"}
+                    asyncio.run(
+                        _refund_feature_credit_reservation(
+                            feature_reservation_id,
+                            metadata={"source": "task_lease_lost", **failure_payload},
+                        )
+                    )
+                    manager.fail_task_for_project(
+                        ctx,
+                        task_type,
+                        episode,
+                        beat_num=beat_num,
+                        scope=scope,
+                        error="TASK_LEASE_LOST",
+                        metadata={**run_metadata, **failure_payload},
+                        expected_task_id=run_task_id,
+                        expected_execution_owner_id=execution_owner_id or None,
+                    )
+                    return {"failed": True, **failure_payload}
                 error, failure_payload, handled = _project_task_failure_for_exception(exc)
                 asyncio.run(
                     _refund_feature_credit_reservation(
@@ -647,6 +736,7 @@ def run_project_task_core_sync(
                     error=error,
                     metadata={**run_metadata, **failure_payload},
                     expected_task_id=run_task_id,
+                    expected_execution_owner_id=execution_owner_id or None,
                 )
                 asyncio.run(
                     _emit_project_task_metrics(
@@ -662,6 +752,30 @@ def run_project_task_core_sync(
                     return {"failed": True, **failure_payload}
                 raise
 
+            completed = manager.complete_task_for_project(
+                ctx,
+                task_type,
+                episode,
+                beat_num=beat_num,
+                scope=scope,
+                result=result or {"ok": True},
+                current_task="完成",
+                logs=["完成"],
+                metadata=_completion_metadata_with_provider_task_id(run_metadata, result),
+                expected_task_id=run_task_id,
+                expected_execution_owner_id=execution_owner_id or None,
+            )
+            if completed is False:
+                asyncio.run(
+                    _refund_feature_credit_reservation(
+                        feature_reservation_id,
+                        metadata={
+                            "source": "task_completion_lease_lost",
+                            "error_code": "TASK_LEASE_LOST",
+                        },
+                    )
+                )
+                return {"failed": True, "error_code": "TASK_LEASE_LOST"}
             asyncio.run(
                 _emit_project_task_metrics(
                     ctx,
@@ -677,18 +791,6 @@ def run_project_task_core_sync(
                     feature_reservation_id,
                     metadata={"source": "task_completed"},
                 )
-            )
-            manager.complete_task_for_project(
-                ctx,
-                task_type,
-                episode,
-                beat_num=beat_num,
-                scope=scope,
-                result=result or {"ok": True},
-                current_task="完成",
-                logs=["完成"],
-                metadata=_completion_metadata_with_provider_task_id(run_metadata, result),
-                expected_task_id=run_task_id,
             )
         return result or {"ok": True}
     finally:

@@ -1549,10 +1549,25 @@ async def extract_props_from_graph(
         import logging
 
         logging.warning(f"cognee.search 失败: {e}")
+        log(f"cognee.search 失败: {e}")
+        raise
 
-    if not context_text.strip():
+    if not results:
         log("⚠️ 图谱搜索无数据，请先构建图谱")
         return []
+
+    parts = []
+    for item in results:
+        if hasattr(item, "search_result"):
+            parts.append(_stringify_search_fragment(item.search_result))
+        elif isinstance(item, dict):
+            parts.append(_stringify_search_fragment(item))
+        else:
+            parts.append(_stringify_search_fragment(item))
+    context_text = "\n".join(parts)
+    log(f"图谱上下文获取成功: {len(context_text)} 字符")
+    if not context_text.strip():
+        raise RuntimeError("cognee.search returned results without usable context")
 
     if novel_text:
         context_text += f"\n\n【剧本原文全文】\n{novel_text}"
@@ -1612,7 +1627,7 @@ async def extract_props_from_graph(
         import logging
 
         logging.error(f"LLM 道具提取失败: {e}")
-        return []
+        raise
 
     report(1.0, "完成")
     return props

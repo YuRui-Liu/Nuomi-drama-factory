@@ -45,9 +45,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+import portalocker
 
 from .paths import safe_name
 
@@ -112,12 +116,27 @@ def save_manifest(
     body.setdefault("version", version)
     body.setdefault("created_at", _utcnow_iso())
     body["updated_at"] = _utcnow_iso()
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(body, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    try:
+        output_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        output_mode = 0o644
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
     )
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(json.dumps(body, ensure_ascii=False, indent=2) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_name, output_mode)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
     return path
 
 
@@ -130,11 +149,18 @@ def update_manifest(
     **fields: Any,
 ) -> Path:
     """Merge fields into existing manifest (or create new). Atomic."""
-    existing = load_manifest(project_dir, scene_id, version) or {}
-    for field in clear_fields or ():
-        existing[field] = None
-    existing.update({k: v for k, v in fields.items() if v is not None})
-    return save_manifest(project_dir, scene_id, existing, version=version)
+    path = manifest_path(project_dir, scene_id, version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(f"{path.suffix}.lock")
+    with portalocker.Lock(str(lock_path), mode="a+", timeout=60):
+        existing = load_manifest(project_dir, scene_id, version) or {}
+        for field in clear_fields or ():
+            existing[field] = None
+        existing.update({k: v for k, v in fields.items() if v is not None})
+        # save_manifest deliberately does not acquire this lock: callers that
+        # perform a read-modify-write already hold it, and nested OS locks are
+        # not reliably re-entrant across platforms.
+        return save_manifest(project_dir, scene_id, existing, version=version)
 
 
 def has_3gs_assets(

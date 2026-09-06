@@ -83,7 +83,7 @@ async def _run_indextts2_audio(
             + result.skipped_silence
             + result.skipped_non_dialogue
         )
-        return {
+        response = {
             "generated": result.generated,
             "total": result.total_targets,
             "skipped": skipped,
@@ -91,6 +91,9 @@ async def _run_indextts2_audio(
             "generated_beats": list(result.generated_beats),
             "indextts2_detail": result.to_dict(),
         }
+        if result.failed:
+            response["status"] = "partial_failure"
+        return response
     finally:
         await store.close()
 

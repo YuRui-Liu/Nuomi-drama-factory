@@ -213,7 +213,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             "add_subtitles": bool(payload.get("add_subtitles")),
         },
     }
-    result = run_compose_episode(compose_envelope, ctx)
+    result = await asyncio.to_thread(run_compose_episode, compose_envelope, ctx)
     return {**result, "group_id": group_id, "revision": revision, "recomposition_only": True}
 
 

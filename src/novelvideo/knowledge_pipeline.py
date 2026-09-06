@@ -16,6 +16,7 @@ KNOWLEDGE_PIPELINE_KEY = "knowledge_pipeline"
 KNOWLEDGE_PIPELINE_STATUS_KEY = "knowledge_pipeline_status"
 KNOWLEDGE_PIPELINE_ERROR_KEY = "knowledge_pipeline_error"
 KNOWLEDGE_PIPELINE_RUN_IDENTITY_KEY = "knowledge_pipeline_run_identity"
+KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY = "knowledge_pipeline_attempt_id"
 
 COGNEE_LEGACY = "cognee_legacy"
 KNOWLEDGE_PIPELINE_STRUCTURED = "structured_v1"
@@ -78,6 +79,7 @@ class KnowledgePipelineState:
     status: str
     error: str | None = None
     run_identity: dict[str, str] | None = None
+    attempt_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +87,7 @@ class KnowledgePipelineState:
             "knowledge_pipeline_status": self.status,
             "knowledge_pipeline_error": self.error,
             "knowledge_pipeline_run_identity": self.run_identity,
+            "knowledge_pipeline_attempt_id": self.attempt_id,
         }
 
 
@@ -93,6 +96,10 @@ def _normalize_run_identity(value: object) -> dict[str, str] | None:
         return None
     normalized = {key: str(value.get(key) or "").strip() for key in RUN_IDENTITY_KEYS}
     return normalized if all(normalized.values()) else None
+
+
+def _normalize_attempt_id(value: object) -> str | None:
+    return str(value or "").strip() or None
 
 
 def _state_from_config(config: Mapping[str, Any]) -> KnowledgePipelineState:
@@ -114,7 +121,8 @@ def _state_from_config(config: Mapping[str, Any]) -> KnowledgePipelineState:
         )
     error = str(config.get(KNOWLEDGE_PIPELINE_ERROR_KEY) or "").strip() or None
     identity = _normalize_run_identity(config.get(KNOWLEDGE_PIPELINE_RUN_IDENTITY_KEY))
-    return KnowledgePipelineState(raw_pipeline, status, error, identity)
+    attempt_id = _normalize_attempt_id(config.get(KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY))
+    return KnowledgePipelineState(raw_pipeline, status, error, identity, attempt_id)
 
 
 def knowledge_pipeline_state_from_state_dir(
@@ -153,6 +161,7 @@ def transition_structured_pipeline(
     expected_status: str | None = None,
     error: str | None = None,
     run_identity: Mapping[str, object] | None = None,
+    attempt_id: str | None = None,
 ) -> KnowledgePipelineState:
     """Atomically apply one legal structured pipeline state transition."""
 
@@ -165,6 +174,9 @@ def transition_structured_pipeline(
         raise KnowledgePipelineTransitionError(
             "run_identity requires source_sha256, schema_version, and pipeline_version"
         )
+    normalized_attempt_id = _normalize_attempt_id(attempt_id)
+    if attempt_id is not None and normalized_attempt_id is None:
+        raise KnowledgePipelineTransitionError("attempt_id must be non-empty")
 
     def _apply(config: dict) -> None:
         current = _state_from_config(config)
@@ -176,9 +188,24 @@ def transition_structured_pipeline(
             raise KnowledgePipelineTransitionError(
                 f"Expected {expected_status}, found {current.status}"
             )
+        if (
+            current.attempt_id is not None
+            and next_status in {STATUS_STRUCTURED_READY, STATUS_STRUCTURED_FAILED}
+            and normalized_attempt_id != current.attempt_id
+        ):
+            raise KnowledgePipelineTransitionError(
+                "Structured pipeline attempt does not match the active attempt"
+            )
         if current.status == STATUS_STRUCTURED_READY and (
             normalized_identity is None
-            or normalized_identity == current.run_identity
+            or (
+                normalized_identity == current.run_identity
+                and (
+                    normalized_attempt_id is None
+                    or current.attempt_id is None
+                    or normalized_attempt_id == current.attempt_id
+                )
+            )
         ):
             raise KnowledgePipelineTransitionError(
                 "A ready pipeline requires a different run_identity for a new run"
@@ -194,6 +221,11 @@ def transition_structured_pipeline(
             config.pop(KNOWLEDGE_PIPELINE_ERROR_KEY, None)
         if normalized_identity is not None:
             config[KNOWLEDGE_PIPELINE_RUN_IDENTITY_KEY] = normalized_identity
+        if next_status == STATUS_STRUCTURED_RUNNING:
+            if normalized_attempt_id is None:
+                config.pop(KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY, None)
+            else:
+                config[KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY] = normalized_attempt_id
 
     try:
         updated = update_project_config_file_in_state_dir(
@@ -232,6 +264,7 @@ def switch_to_cognee_legacy(
         config[KNOWLEDGE_PIPELINE_STATUS_KEY] = STATUS_LEGACY_READY
         config.pop(KNOWLEDGE_PIPELINE_ERROR_KEY, None)
         config.pop(KNOWLEDGE_PIPELINE_RUN_IDENTITY_KEY, None)
+        config.pop(KNOWLEDGE_PIPELINE_ATTEMPT_ID_KEY, None)
 
     try:
         updated = update_project_config_file_in_state_dir(

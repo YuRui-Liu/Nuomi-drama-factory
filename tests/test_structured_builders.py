@@ -6,6 +6,20 @@ from pathlib import Path
 import pytest
 
 
+def test_structured_scene_input_accepts_aliases_and_scene_type() -> None:
+    from novelvideo.structured_builders import StructuredSceneInput
+
+    scene = StructuredSceneInput(
+        name="旧车站·夜",
+        location="旧车站",
+        aliases=("老车站",),
+        scene_type="exterior",
+    )
+
+    assert scene.aliases == ("老车站",)
+    assert scene.scene_type == "exterior"
+
+
 def _inputs():
     from novelvideo.structured_builders import (
         StructuredCharacterInput,
@@ -237,6 +251,44 @@ async def test_successful_atomic_publish_refreshes_episode_graph_compatible_cach
     assert structured_store.get_character("沈青").body_type == "清瘦高挑"
     scene = await structured_store.get_scene("旧车站·夜")
     assert scene.time_of_day == "夜"
+
+
+@pytest.mark.asyncio
+async def test_before_commit_failure_rolls_back_the_publication(
+    structured_store,
+) -> None:
+    from novelvideo.models import NovelEpisode
+    from novelvideo.structured_builders import (
+        build_structured_publication,
+        publish_structured_publication,
+    )
+
+    await structured_store.add_episode(
+        NovelEpisode(
+            number=1,
+            title="上一版",
+            raw_content="上一版正式内容",
+        )
+    )
+    publication = build_structured_publication(
+        episodes=_inputs()[0],
+        characters=_inputs()[1],
+        scenes=_inputs()[2],
+    )
+
+    async def reject_ready() -> None:
+        raise RuntimeError("ready transition failed")
+
+    with pytest.raises(RuntimeError, match="ready transition failed"):
+        await publish_structured_publication(
+            structured_store,
+            publication,
+            before_commit=reject_ready,
+        )
+
+    await structured_store.load_graph_state()
+    assert structured_store.get_episode(1).title == "上一版"
+    assert structured_store.get_character("沈青") is None
 
 
 @pytest.mark.asyncio
