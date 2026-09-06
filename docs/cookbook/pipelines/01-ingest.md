@@ -86,9 +86,15 @@ sequenceDiagram
     Runner-->>Tasks: result / error / cancelled
     Tasks-->>Page: 任务列表与 SSE 状态
     Page->>Query: refetch chapters; invalidate graph
-    Query->>Data: GET /api/v1/projects/{project}/chapters
-    Query->>Data: GET /api/v1/projects/{project}/ingest/graph
-    Data-->>Page: 持久化结果
+    Query->>API: GET /api/v1/projects/{project}/chapters
+    API->>Data: detect_chapters 读取 novel.txt
+    Data-->>API: 已持久化原文
+    API-->>Query: ChaptersResult
+    Query->>API: GET /api/v1/projects/{project}/ingest/graph
+    API->>Data: get_ingest_knowledge_graph 调用 get_graph_snapshot
+    Data-->>API: KnowledgeGraphSnapshot
+    API-->>Query: KnowledgeGraphSnapshot
+    Query-->>Page: 刷新章节与知识图谱视图
 ```
 
 页面的具体编排如下：
