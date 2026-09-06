@@ -60,9 +60,13 @@ sequenceDiagram
     participant Query as queries/ingest.ts
     participant API as api/routes/ingest.py
     participant Tasks as TaskBackend
+    participant State as TaskStateManager
+    participant Core as task_backend/run_core.py
     participant Runner as runners/ingest.py
     participant Work as Structured / Cognee
     participant Data as Store / 项目文件
+    participant TaskUI as useTasks / useTaskStream
+    participant TasksAPI as api/routes/tasks.py
 
     Page->>Query: useUploadNovel(file)
     Query->>API: POST /api/v1/projects/{project}/ingest/upload
@@ -75,7 +79,13 @@ sequenceDiagram
     Query->>API: POST /api/v1/projects/{project}/ingest/start
     API->>API: 复核文件并计算 billable_chars
     API->>Tasks: enqueue ingest_fast, episode=0
-    Tasks->>Runner: run_ingest_fast(envelope, ctx)
+    Tasks->>State: reserve + queued
+    Tasks-->>API: QueuedTask
+    API-->>Query: TaskResponse
+    Query-->>Page: task_id / backend / queue
+    Tasks->>Core: run_project_task_core_sync(envelope, ctx)
+    Core->>State: running
+    Core->>Runner: run_ingest_fast(envelope, ctx)
     alt structured_v1
         Runner->>Work: ingest_source_text_structured
         Work->>Data: manifest + novel.txt + SQLite 正式资产
@@ -83,8 +93,25 @@ sequenceDiagram
         Runner->>Work: add + cognify + memify
         Work->>Data: Cognee runtime + novel.txt
     end
-    Runner-->>Tasks: result / error / cancelled
-    Tasks-->>Page: 任务列表与 SSE 状态
+    Runner->>State: progress / logs（处理期间）
+    Runner-->>Core: result / exception
+    Core->>State: completed / failed / cancelled
+    Page->>TaskUI: useTasks({project, episode: 0})
+    TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks
+    TasksAPI->>State: list_tasks_for_project(ctx)
+    State-->>TasksAPI: task state list
+    TasksAPI-->>TaskUI: JSON task list
+    TaskUI-->>Page: 重新挂载时对账
+    Page->>TaskUI: useTaskStream(ingest_fast, project, 0)
+    TaskUI->>TasksAPI: GET /api/v1/projects/{project}/tasks/ingest_fast/0/stream
+    loop 单任务 SSE 轮询
+        TasksAPI->>State: get_task_for_project(ctx, ingest_fast, 0)
+        State-->>TasksAPI: current task state
+        opt 状态有变化或已进入终态
+            TasksAPI-->>TaskUI: named SSE status event
+            TaskUI-->>Page: progress / logs / terminal state
+        end
+    end
     Page->>Query: refetch chapters; invalidate graph
     Query->>API: GET /api/v1/projects/{project}/chapters
     API->>Data: detect_chapters 读取 novel.txt
@@ -96,6 +123,8 @@ sequenceDiagram
     API-->>Query: KnowledgeGraphSnapshot
     Query-->>Page: 刷新章节与知识图谱视图
 ```
+
+图中状态流按导入页自己的消费方式展开：`useTasks` 通过任务列表 GET 完成重新挂载对账，`useTaskStream` 连接 `ingest_fast + episode 0` 的单任务 SSE。顶层 `TaskCenterProvider` 还会连接 `/api/v1/projects/{project}/tasks/stream`；项目级与单任务 stream 都由 `api/routes/tasks.py` 轮询 `TaskStateManager` 后返回事件，不是 TaskBackend 直接向页面推送。
 
 页面的具体编排如下：
 
@@ -171,7 +200,7 @@ flowchart LR
 ### 新增输入格式
 
 1. **前端类型与交互**：更新文件选择器的 `accept`、提示文案、粘贴转文件策略和 `UploadResult`（如果响应字段变化）。检查 `frontend/src/routes/_app/projects.$project/ingest.tsx` 与分集对话框是否都应接受新格式。
-2. **API**：在 `document_parsers.py` 的支持扩展集合与 `load_novel_text` 增加解析分支；保持 `DocumentParseError` 的 format、location、reason 契约。小说上传与 `episode_imports._read_upload` 共用这套判断。
+2. **API**：在 `document_parsers.py` 的支持扩展集合与 `load_novel_text` 增加解析分支；`DocumentParseError` 自身的属性是 `source_format`、`location`、`reason`。`upload_novel` 和 `start_ingest` 捕获异常后，把 `exc.source_format` 映射为 API 响应的 `format` 字段。小说上传与 `episode_imports._read_upload` 共用这套判断。
 3. **Runner 解析**：`start_ingest` 为计费会再解析一次，structured 与 Cognee 也会从文件重读；确认三处得到相同规范化纯文本，而不是只让上传预检成功。
 4. **Store / 产物**：确定是否保留原扩展上传文件，`novel.txt` 仍应为 UTF-8 纯文本成功标志。
 5. **测试**：补解析器、上传/计费、structured/legacy Runner，以及 episode import preview 的有效与损坏文件用例。
