@@ -9,9 +9,6 @@ export default withMermaid(
     lang: "zh-CN",
     title: "Nuomi Drama Factory 开发者 Cookbook",
     description: "按修改目标定位原理、调用管线、关键代码和验证方式。",
-    rewrites: {
-      "README.md": "index.md",
-    },
     // Keep internal-link validation strict while allowing the local service URLs
     // intentionally documented in start-software.md.
     ignoreDeadLinks: "localhostLinks",

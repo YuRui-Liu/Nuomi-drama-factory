@@ -39,7 +39,7 @@ test('root scripts do not auto-install the whole workspace before running', () =
 
 test('cookbook package exposes VitePress commands and Mermaid dependencies', () => {
   assert.deepEqual(cookbookPackageJson.scripts, {
-    dev: 'vitepress dev .',
+    dev: 'vitepress build . && vitepress preview .',
     build: 'vitepress build .',
     preview: 'vitepress preview .',
   });
@@ -88,7 +88,7 @@ test('cookbook configuration enables local search and Mermaid', () => {
 test('cookbook configuration keeps the approved Chinese information architecture', () => {
   assert.match(cookbookConfig, /defineConfig\s*\(/);
   assert.match(cookbookConfig, /lang:\s*['\"]zh-CN['\"]/);
-  assert.match(cookbookConfig, /['\"]README\.md['\"]:\s*['\"]index\.md['\"]/);
+  assert.doesNotMatch(cookbookConfig, /rewrites\s*:/);
   assert.match(cookbookConfig, /ignoreDeadLinks:\s*['\"]localhostLinks['\"]/);
 
   for (const label of [
@@ -150,7 +150,7 @@ test('cookbook theme extends the VitePress default theme', () => {
 
 test('cookbook home documents the HTML reading commands', () => {
   const home = readFileSync(
-    new URL('../docs/cookbook/README.md', import.meta.url),
+    new URL('../docs/cookbook/index.md', import.meta.url),
     'utf8',
   );
 

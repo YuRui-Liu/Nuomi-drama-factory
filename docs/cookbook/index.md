@@ -4,7 +4,7 @@
 
 ## HTML 阅读入口
 
-从仓库根目录运行以下命令，可以通过带侧边栏、全文搜索和 Mermaid 流程图的 HTML 文档站阅读本 Cookbook。Markdown 仍是唯一内容源，修改后开发服务器会自动刷新。
+从仓库根目录运行以下命令，可以通过带侧边栏、全文搜索和 Mermaid 流程图的 HTML 文档站阅读本 Cookbook。Markdown 仍是唯一内容源；修改后重启本地文档站即可看到更新。
 
 ```bash
 pnpm --dir docs/cookbook install  # 首次使用时安装独立的文档站依赖
