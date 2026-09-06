@@ -63,7 +63,21 @@ sequenceDiagram
             C->>M: failed + error metadata
         end
     end
-    M-->>F: GET hydrate / SSE task_updated
+    F->>R: GET /api/v1/projects/{project}/tasks
+    R->>M: list_tasks_for_project(ctx)
+    M-->>R: task state list
+    R-->>F: JSON hydrate
+    F->>R: GET /api/v1/projects/{project}/tasks/stream
+    loop SSE polling interval
+        R->>M: list_tasks_for_project(ctx)
+        M-->>R: current task states
+        opt task state changed
+            R-->>F: SSE task_updated / deleted
+        end
+        opt heartbeat due
+            R-->>F: SSE heartbeat
+        end
+    end
 ```
 
 ### 入队 envelope 与任务身份
