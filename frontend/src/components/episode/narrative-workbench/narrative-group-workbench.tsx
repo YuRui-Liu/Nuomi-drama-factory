@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, updateNarrativeGroupVideoPlan, updateNarrativeGroupVideoSettings, useChangeNarrativeGroupStyle, useGenerateNarrativeGroupVideo, useGenerateNarrativeGroupVideoSegment, useNarrativeGroupAction, useNarrativeGroupReferences, useNarrativeGroups, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage, type NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
+import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, updateNarrativeGroupVideoPlan, updateNarrativeGroupVideoSettings, useChangeNarrativeGroupStyle, useGenerateNarrativeGroupVideo, useGenerateNarrativeGroupVideoSegment, useNarrativeGroupAction, useNarrativeGroupReferences, useNarrativeGroups, useNarrativeGroupVideoPrompts, useNarrativeGroupVideoReferencePreview, useUpdateNarrativeGroupVideoDialogueSource, type NarrativeGridStage, type NarrativeGroupGenerationSelection, type VideoReferencePreview } from "@/lib/queries/narrative-groups";
 import { availableVideoModels, resolveVideoModel, resolveVideoMode, useMediaDefaults, useUpdateMediaDefaults, useVideoModels } from "@/lib/queries/media-models";
 import { episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import { useTaskController } from "@/hooks/use-task-controller";
@@ -24,6 +25,7 @@ import { useStyles } from "@/lib/queries/styles";
 import { GenerationBatchSummary } from "./group-grid-stage";
 import { StyleChangeDialog, type StyleChangeDecision } from "./style-change-dialog";
 import { GroupVideoSegmentList } from "./group-video-segment-list";
+import { GroupVideoReferenceDialog } from "./group-video-reference-dialog";
 
 function taskScope(response: unknown): string | undefined {
   if (!response || typeof response !== "object") return undefined;
@@ -45,7 +47,23 @@ function activeStageScope(
   return narrativeGroupTaskScope(group.id, stage, group.stages[stage].revision);
 }
 
+function validVideoReferences(
+  preview: VideoReferencePreview | null,
+  policy: { min_images: number; max_images: number } | undefined,
+) {
+  if (!preview || !policy) return false;
+  const selected = preview.selected;
+  return selected.length >= policy.min_images
+    && selected.length <= policy.max_images
+    && new Set(selected.map((item) => item.reference_id)).size === selected.length
+    && selected.every((item) => {
+      const value = item.subject_description.trim();
+      return value.length > 0 && value.length <= 500 && !/\r|\n/.test(value);
+    });
+}
+
 export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { project: string; episode: number; onRepairBeat: (beatId: string) => void }) {
+  const { t } = useTranslation();
   const { orientation, setOrientation } = useProjectAspectRatio(project);
   const updateProject = useUpdateProject(project);
   const aspectRatio = orientation === "landscape" ? "16:9" as const : "9:16" as const;
@@ -62,6 +80,9 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
   const [renderModelDraft, setRenderModelDraft] = useState("gpt-image-2");
   const [renderImageSizeDraft, setRenderImageSizeDraft] = useState<NarrativeImageSize>("1K");
+  const [videoReferenceDialogOpen, setVideoReferenceDialogOpen] = useState(false);
+  const [videoReferenceDirty, setVideoReferenceDirty] = useState(false);
+  const [savedReferencePreview, setSavedReferencePreview] = useState<{ groupId: string; preview: VideoReferencePreview } | null>(null);
   const generateVideo = useGenerateNarrativeGroupVideo(project, episode);
   const generateVideoSegment = useGenerateNarrativeGroupVideoSegment(project, episode);
   const changeGroupStyle = useChangeNarrativeGroupStyle(project, episode);
@@ -81,6 +102,28 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const videoMode = model
     ? resolveVideoMode(mediaDefaults?.h3_mode ?? model.default_mode, model)
     : "auto";
+  const referencePolicy = model?.reference_policy?.required ? model.reference_policy : undefined;
+  const videoReferenceQuery = useNarrativeGroupVideoReferencePreview(
+    project, episode, group?.id ?? "", Boolean(referencePolicy && group?.id),
+  );
+  const generatedVideoPromptQuery = useNarrativeGroupVideoPrompts(
+    project, episode, group?.id ?? "",
+    Boolean(referencePolicy && group?.stages.video.manifest_asset),
+  );
+  const queriedReferencePreview = videoReferenceQuery.data?.ok ? videoReferenceQuery.data.data : null;
+  useEffect(() => {
+    if (group && queriedReferencePreview) setSavedReferencePreview({ groupId: group.id, preview: queriedReferencePreview });
+  }, [group?.id, queriedReferencePreview]);
+  const currentReferencePreview = savedReferencePreview && savedReferencePreview.groupId === group?.id
+    ? savedReferencePreview.preview : queriedReferencePreview;
+  const referenceRevisionSynchronized = !group?.video_reference_settings
+    || currentReferencePreview?.revision === group.video_reference_settings.revision;
+  useEffect(() => {
+    if (referencePolicy && group?.video_reference_settings && queriedReferencePreview
+      && queriedReferencePreview.revision !== group.video_reference_settings.revision) {
+      void videoReferenceQuery.refetch();
+    }
+  }, [referencePolicy, group?.video_reference_settings?.revision, queriedReferencePreview?.revision]);
   const invalidateKeys = [
     queryKeys.narrativeGroups(project, episode),
     queryKeys.grids(project, episode),
@@ -101,7 +144,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     invalidateKeys,
     showCompleteToast: false,
   });
-  useEffect(() => { setPendingAction(null); }, [project, episode, group?.id]);
+  useEffect(() => { setPendingAction(null); setVideoReferenceDialogOpen(false); setVideoReferenceDirty(false); }, [project, episode, group?.id]);
   useEffect(() => { setSelectedVideoModelId(null); }, [project]);
   const groupVideoTask = useTaskController({
     key: { project, episode, taskType: "narrative_group_video", scope: groupVideoScope },
@@ -165,8 +208,20 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     catch (error) { toast.error(error instanceof Error ? error.message : "任务提交失败"); }
   };
   const runGroupVideo = async (request: { video_model: string; h3_mode: "auto" | "i2va" | "fl2va" }) => {
+    if (request.video_model !== modelId) return;
+    if (!model?.available || !frames.allHaveFirst || videoPlanSaving || videoSettingsSaving
+      || updateDefaults.isPending || (group.video_settings?.workflow_id && group.video_settings.workflow_id !== modelId)
+      || group.stages.video.status === "queued" || group.stages.video.status === "running") return;
+    if (referencePolicy && (
+      videoReferenceQuery.isFetching
+      || videoReferenceQuery.isError
+      || videoReferenceQuery.data?.ok !== true
+      || videoReferenceDirty
+      || !referenceRevisionSynchronized
+      || !validVideoReferences(currentReferencePreview, {...referencePolicy, max_images: currentReferencePreview?.max_images ?? referencePolicy.max_images})
+    )) return;
     try {
-      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}) });
+      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}), ...(referencePolicy && currentReferencePreview ? { referenceRevision: currentReferencePreview.revision } : {}) });
       groupVideoTask.start({ scope: taskScope(response) });
       toast.success("H3 导演台组合视频已进入队列");
     } catch (error) { toast.error(error instanceof Error ? error.message : "组合视频任务提交失败"); }
@@ -189,8 +244,14 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     }
   };
   const retryVideoSegment = async (segmentId: string) => {
+    if (!model?.available || !frames.allHaveFirst || videoPlanSaving || videoSettingsSaving
+      || updateDefaults.isPending || (group.video_settings?.workflow_id && group.video_settings.workflow_id !== modelId)
+      || group.stages.video.status === "queued" || group.stages.video.status === "running") return;
+    if (referencePolicy && (videoReferenceQuery.isFetching || videoReferenceQuery.isError
+      || videoReferenceQuery.data?.ok !== true || videoReferenceDirty || !referenceRevisionSynchronized
+      || !validVideoReferences(currentReferencePreview, {...referencePolicy, max_images: currentReferencePreview?.max_images ?? referencePolicy.max_images}))) return;
     try {
-      await generateVideoSegment.mutateAsync({ groupId: group.id, segmentId });
+      await generateVideoSegment.mutateAsync({ groupId: group.id, segmentId, model: modelId, mode: videoMode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}), ...(referencePolicy && currentReferencePreview ? { referenceRevision: currentReferencePreview.revision } : {}) });
       toast.success(`片段 ${segmentId} 已重新进入队列`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "片段重试失败");
@@ -221,6 +282,25 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     group.stages.video.video_asset
     && group.stages.video.workflow_parameters?.resolution
     && group.stages.video.workflow_parameters.resolution !== effectiveVideoResolution,
+  );
+  const generatedReferenceRevision = generatedVideoPromptQuery.data?.ok
+    ? generatedVideoPromptQuery.data.data.reference_settings_revision : null;
+  const backendReportsStaleReferences = Boolean(
+    referencePolicy
+    && group.stages.video.needs_regeneration
+    && group.stages.video.stale_reason === "video_reference_settings_changed"
+  );
+  const referenceNeedsVideoRegeneration = Boolean(
+    backendReportsStaleReferences
+    || (referencePolicy
+      && group.stages.video.manifest_asset
+      && !generatedVideoPromptQuery.isLoading
+      && !generatedVideoPromptQuery.isFetching
+      && !generatedVideoPromptQuery.isError
+      && generatedVideoPromptQuery.data?.ok === true
+      && typeof generatedReferenceRevision === "number"
+      && group.video_reference_settings
+      && generatedReferenceRevision !== group.video_reference_settings.revision)
   );
   const saveVideoOverride = async (key: string, value: string) => {
     setVideoSettingsSaving(true);
@@ -291,6 +371,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     const targetMode = resolveVideoMode(mediaDefaults?.h3_mode ?? targetModel.default_mode, targetModel);
     const previous = selectedVideoModelId;
     setSelectedVideoModelId(videoModel);
+    setVideoSettingsSaving(true);
     try {
       await updateDefaults.mutateAsync({
         videoModel,
@@ -301,10 +382,21 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
         narrativeRenderModel: mediaDefaults?.narrative_render_model,
         narrativeRenderImageSize: mediaDefaults?.narrative_render_image_size,
       });
+      if (group.video_settings?.workflow_id !== videoModel) {
+        await updateNarrativeGroupVideoSettings(project, episode, {
+          groupId: group.id,
+          expectedRevision: group.video_settings?.revision ?? 0,
+          workflowId: videoModel,
+          overrides: {},
+        });
+        await groupsQuery.refetch();
+      }
       toast.success("项目默认视频模型已保存");
     } catch (error) {
       setSelectedVideoModelId(previous);
       toast.error(error instanceof Error ? error.message : "默认模型保存失败");
+    } finally {
+      setVideoSettingsSaving(false);
     }
   };
   const openRenderSettings = () => {
@@ -330,11 +422,27 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
       toast.error(error instanceof Error ? error.message : "实图设置保存失败");
     }
   };
+  const referencePreview = videoReferenceQuery.data?.ok === true && queriedReferencePreview
+    ? (savedReferencePreview?.groupId === group.id ? savedReferencePreview.preview : queriedReferencePreview)
+    : null;
+  const selectedReferences = referencePreview?.selected ?? [];
+  const referenceMaxImages = referencePreview?.max_images ?? referencePolicy?.max_images ?? 0;
+  const referenceValid = referenceRevisionSynchronized && validVideoReferences(
+    referencePreview,
+    referencePolicy ? {...referencePolicy, max_images: referenceMaxImages} : undefined,
+  );
+  const videoWorkflowSynchronized = !group.video_settings || group.video_settings.workflow_id === modelId;
+  const videoRequestAllowed = Boolean(model?.available && frames.allHaveFirst && !videoPlanSaving
+    && !videoSettingsSaving && !updateDefaults.isPending && videoWorkflowSynchronized
+    && group.stages.video.status !== "queued" && group.stages.video.status !== "running"
+    && (!referencePolicy || (referenceValid && !videoReferenceDirty && !videoReferenceQuery.isFetching
+      && !videoReferenceQuery.isError && videoReferenceQuery.data?.ok === true)));
   return <div className="flex h-full min-h-0 overflow-hidden" data-narrative-group-workbench>
     <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/10 p-4"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">叙事组生产</h2><Button variant="ghost" size="icon" onClick={() => groupsQuery.refetch()}><RefreshCw className="size-4" /></Button></div><NarrativeGroupList groups={groups} selectedId={group.id} onSelect={(id) => select({ project, episode }, id)} /></aside>
     <StyleChangeDialog open={styleDialogOpen} currentStyleId={group.effective_style_snapshot?.style_id ?? null} availableStyles={(stylesQuery.data?.data ?? []).map((style) => ({ id: style.id, label: style.label || style.name }))} saving={changeGroupStyle.isPending} onOpenChange={setStyleDialogOpen} onApply={applyStyleChange} />
     <GroupReferenceDialog project={project} episode={episode} groupId={pendingAction?.groupId ?? ""} open={pendingAction !== null} preview={referencesQuery.data?.ok ? referencesQuery.data.data : null} loading={referencesQuery.isLoading} error={referencesQuery.error instanceof Error ? referencesQuery.error : null} submitting={action.isPending} stage={pendingAction?.stage ?? "render"} defaultProvider={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_provider : mediaDefaults?.narrative_render_provider} defaultModel={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_model : mediaDefaults?.narrative_render_model} defaultImageSize={mediaDefaults?.narrative_render_image_size} sketchReady={group.stages.sketch.status === "completed" && !!group.stages.sketch.grid_asset} onCreateProp={() => toast.info("请在项目道具资产页新建道具，完成后返回并点击重试刷新引用")} onRetry={() => referencesQuery.refetch()} onSubmit={confirmAction} onOpenChange={(open) => { if (!open) setPendingAction(null); }} />
-    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p>{group.stages.render.requested_image_size || group.stages.render.actual_pixel_size ? <p className="mt-1 text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"}{group.stages.render.requested_pixel_size ? ` / ${group.stages.render.requested_pixel_size}` : ""} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p> : null}</div><div className="flex flex-wrap items-start justify-end gap-3">{aspectSelector}<Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><Button variant="outline" size="sm" onClick={() => setStyleDialogOpen(true)}>修改风格</Button><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending} onChange={changeVideoModel} /></div></div>{renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}<GenerationBatchSummary batches={group.generation_batches ?? []} /><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4 space-y-3"><GroupVideoParameters parameters={model?.parameters ?? []} projectDefaults={projectVideoDefaults} overrides={videoOverrides} aspectRatio={aspectRatio} busy={group.stages.video.status === "queued" || group.stages.video.status === "running"} saving={videoSettingsSaving || updateDefaults.isPending} onSaveOverride={saveVideoOverride} onRestoreDefault={restoreVideoDefault} onPromoteDefault={promoteVideoDefault} />{needsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">清晰度设置已变化，当前旧视频仍可预览；点击生成组合视频后才会按新设置重新生成。</p> : null}<GroupVideoStage modelId={modelId} mode={videoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} /><GroupVideoSegmentList segments={group.video_segments ?? []} onRetrySegment={retryVideoSegment} /><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
+    {referencePolicy ? <GroupVideoReferenceDialog open={videoReferenceDialogOpen} onOpenChange={(open) => { setVideoReferenceDialogOpen(open); if (!open) setVideoReferenceDirty(false); }} project={project} episode={episode} groupId={group.id} preview={referencePreview} loading={videoReferenceQuery.isFetching} error={videoReferenceQuery.error instanceof Error ? videoReferenceQuery.error : videoReferenceQuery.data?.ok === false ? new Error(videoReferenceQuery.data.error) : null} minImages={referencePolicy.min_images} maxImages={referenceMaxImages} onDirtyChange={setVideoReferenceDirty} onRefresh={async () => { const response = await videoReferenceQuery.refetch(); return response.data?.ok ? response.data.data : undefined; }} onSaved={(saved) => { setSavedReferencePreview({ groupId: group.id, preview: saved }); setVideoReferenceDirty(false); void groupsQuery.refetch(); }} /> : null}
+    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p>{group.stages.render.requested_image_size || group.stages.render.actual_pixel_size ? <p className="mt-1 text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"}{group.stages.render.requested_pixel_size ? ` / ${group.stages.render.requested_pixel_size}` : ""} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p> : null}</div><div className="flex flex-wrap items-start justify-end gap-3">{aspectSelector}<Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><Button variant="outline" size="sm" onClick={() => setStyleDialogOpen(true)}>修改风格</Button><ProjectVideoModelSelect value={modelId} models={models} saving={updateDefaults.isPending || videoSettingsSaving} onChange={changeVideoModel} /></div></div>{renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}<GenerationBatchSummary batches={group.generation_batches ?? []} /><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} /><div className="mt-4 space-y-3"><GroupVideoParameters parameters={model?.parameters ?? []} projectDefaults={projectVideoDefaults} overrides={videoOverrides} aspectRatio={aspectRatio} busy={group.stages.video.status === "queued" || group.stages.video.status === "running"} saving={videoSettingsSaving || updateDefaults.isPending} onSaveOverride={saveVideoOverride} onRestoreDefault={restoreVideoDefault} onPromoteDefault={promoteVideoDefault} />{referenceNeedsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{t("narrativeVideoReferences.staleVideo")}</p> : needsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">清晰度设置已变化，当前旧视频仍可预览；点击生成组合视频后才会按新设置重新生成。</p> : null}<GroupVideoStage modelId={modelId} mode={videoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving || videoSettingsSaving || updateDefaults.isPending || !videoWorkflowSynchronized} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} reference={referencePolicy ? { required: true, count: selectedReferences.length, max: referenceMaxImages, valid: referenceValid, loading: videoReferenceQuery.isFetching, error: videoReferenceQuery.isError || videoReferenceQuery.data?.ok === false, dirty: videoReferenceDirty, onManage: () => setVideoReferenceDialogOpen(true) } : undefined} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} /><GroupVideoSegmentList segments={group.video_segments ?? []} onRetrySegment={videoRequestAllowed ? retryVideoSegment : undefined} /><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
       try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
     }} /></div></main>

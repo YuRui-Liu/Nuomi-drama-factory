@@ -15,6 +15,7 @@ import {
   effectiveVideoMode,
   resolveVideoModel,
   resolveVideoMode,
+  useVideoModels,
   useUpdateMediaDefaults,
   videoModelRequest,
   type VideoModelCatalogItem,
@@ -124,6 +125,53 @@ describe("video media model contract", () => {
     };
 
     expect(model.parameters[0]?.default).toBe(values[model.id]?.resolution);
+  });
+
+  it("parses an optional video reference policy while keeping legacy models compatible", async () => {
+    server.use(http.get(
+      "http://localhost:3000/api/v1/media-capabilities/video/models",
+      () => HttpResponse.json({
+        ok: true,
+        data: [
+          {
+            id: "runninghub:minimax-h3-ref",
+            label: "MiniMax H3 Ref",
+            provider: "runninghub",
+            available: true,
+            supported_modes: ["auto"],
+            default_mode: "auto",
+            parameters: [],
+            reference_policy: {
+              required: true,
+              min_images: 1,
+              max_images: 5,
+              source_kinds: ["character_identity", "scene_master", "prop_reference", "temporary_upload"],
+            },
+          },
+          {
+            id: "runninghub:minimax-h3",
+            label: "MiniMax H3",
+            provider: "runninghub",
+            available: true,
+            supported_modes: ["auto"],
+            default_mode: "auto",
+            parameters: [],
+          },
+        ],
+      }),
+    ));
+
+    const { result } = renderHook(() => useVideoModels(), { wrapper });
+    await waitFor(() => expect(result.current.data?.ok).toBe(true));
+    if (!result.current.data?.ok) throw new Error("catalog did not load");
+
+    expect(result.current.data.data[0].reference_policy).toEqual({
+      required: true,
+      min_images: 1,
+      max_images: 5,
+      source_kinds: ["character_identity", "scene_master", "prop_reference", "temporary_upload"],
+    });
+    expect(result.current.data.data[1].reference_policy).toBeUndefined();
   });
 
   it("sends workflow parameters only when the mutation input provides them", async () => {

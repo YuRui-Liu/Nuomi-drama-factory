@@ -78,6 +78,8 @@ export interface SaveMediaProviderInput {
 export interface RunningHubWorkflowSettings {
   image_upscale: string;
   video_minimax_h3: string;
+  video_minimax_h3_ref: string;
+  video_minimax_h3_ref_max_images: number;
   tts_qwen3_voice_design: string;
   tts_indextts2_voice_clone: string;
 }
@@ -152,6 +154,14 @@ export function useMediaProviderAccounts(enabled = true) {
   });
 }
 
+function invalidateVideoReferenceConsumers(client: ReturnType<typeof useQueryClient>) {
+  client.invalidateQueries({ queryKey: queryKeys.videoModels() });
+  client.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === "projects"
+      && query.queryKey.includes("narrative-groups"),
+  });
+}
+
 export function useSaveMediaProviderAccount() {
   const client = useQueryClient();
   return useMutation({
@@ -173,6 +183,7 @@ export function useSaveMediaProviderAccount() {
       client.invalidateQueries({
         queryKey: [...queryKeys.mediaProviderAccounts(), "runninghub-workflows"],
       });
+      invalidateVideoReferenceConsumers(client);
     },
   });
 }
@@ -202,6 +213,7 @@ export function useSaveRunningHubWorkflows() {
       client.invalidateQueries({
         queryKey: [...queryKeys.mediaProviderAccounts(), "runninghub-workflows"],
       });
+      invalidateVideoReferenceConsumers(client);
     },
   });
 }

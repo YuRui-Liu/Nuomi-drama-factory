@@ -3852,6 +3852,11 @@
   "settings": {
     "title": "Settings",
     "close": "Close",
+    "runtime": {
+      "runningHubVideoRefWorkflow": "MiniMax H3 multi-reference workflow ID",
+      "runningHubVideoRefMaxImages": "Maximum reference images",
+      "runningHubVideoRefMaxInvalid": "Maximum reference images must be between {{min}} and {{max}}"
+    },
     "navigationLabel": "Settings categories",
     "statusConfigured": "{{page}} is configured",
     "statusNotConfigured": "{{page}} is not configured",
@@ -4238,6 +4243,34 @@
     "technicalDetails": "Technical details",
     "serviceConfigTitle": "Generation service is not configured",
     "openRouterConfigMessage": "This model requires OpenRouter, but the backend API key is not configured. Please contact an administrator."
+  },
+  "narrativeVideoReferences": {
+    "title": "Manage video references",
+    "modelLabel": "MiniMax H3 Multi-reference",
+    "manage": "Manage references",
+    "selectedCount": "Selected {{count}}/{{max}}",
+    "candidates": "Reference candidates",
+    "selected": "Selected references",
+    "upload": "Upload temporary reference",
+    "uploadFailed": "Reference upload failed",
+    "saveFailed": "Failed to save references",
+    "save": "Save references",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "loading": "Loading references…",
+    "loadFailed": "Failed to load references. Refresh and try again.",
+    "dirty": "Save the reference configuration first",
+    "staleVideo": "Reference settings changed. The existing video is still available; regenerate the group video to apply them.",
+    "moveUp": "Move {{label}} up",
+    "moveDown": "Move {{label}} down",
+    "remove": "Remove",
+    "picture": "Picture {{index}}",
+    "subject": "Subject {{index}}",
+    "description": "Subject description {{label}}",
+    "source": {"character_identity": "Character identity", "scene_master": "Scene master", "prop_reference": "Prop reference", "temporary_upload": "Temporary upload"},
+    "validation": {"min": "Select at least {{min}} references", "max": "Select at most {{max}} references", "duplicate": "References must be unique", "empty": "Subject description is required", "singleLine": "Subject description must be one line", "tooLong": "Subject description must be at most 500 characters"},
+    "conflict": "The reference configuration was updated elsewhere. Refresh and try again.",
+    "history": {"title": "Reference snapshot", "modelId": "Model ID", "workflowId": "Actual workflow ID", "sha": "SHA"}
   },
   "videoCompose": {
     "title": "Video Compose",

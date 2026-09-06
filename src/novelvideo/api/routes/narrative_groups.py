@@ -7,10 +7,12 @@ grid.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
-import hashlib
+import uuid
 from dataclasses import asdict
+from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
@@ -18,7 +20,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.schemas import NarrativeReferenceResolutionRequest
@@ -35,6 +38,12 @@ from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterError,
     resolve_workflow_parameters,
+)
+from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    bind_h3_reference_snapshot_owner,
+    freeze_h3_reference_frames,
+    persist_h3_reference_input_snapshot,
+    retain_h3_reference_snapshot,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowScene,
@@ -66,6 +75,7 @@ from novelvideo.narrative_groups.reference_uploads import (
 )
 from novelvideo.utils.path_resolver import (
     canonical_identity_path,
+    canonical_portrait_path,
     canonical_prop_reference_path,
     canonical_scene_master_path,
 )
@@ -81,11 +91,88 @@ from novelvideo.narrative_groups.service import (
     stage_history,
     update_video_manifest_dialogue_source,
     update_video_plan,
+    update_video_reference_settings,
     update_video_settings,
 )
+from novelvideo.narrative_groups.video_references import (
+    MAX_VIDEO_REFERENCE_BYTES,
+    MAX_VIDEO_REFERENCE_PIXELS,
+    VideoReferenceCandidate,
+    VideoReferencePreview,
+    VideoReferenceSelection,
+    delete_temporary_video_reference,
+    resolve_group_video_reference_preview,
+    resolve_saved_video_references,
+    temporary_upload_path,
+    write_temporary_video_reference,
+)
 from novelvideo.ports import get_task_backend
+from novelvideo.task_state import (
+    ACTIVE_PROJECT_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    get_task_manager,
+)
+from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES
 
 router = APIRouter()
+
+
+def _reference_enqueue_ownership(
+    *, ctx, episode: int, scope: str, snapshot_id: str, snapshot_digest: str
+) -> Literal["owned", "unowned", "unknown"]:
+    """Classify durable ownership without treating corrupt state as absence."""
+    try:
+        task = get_task_manager().get_task_for_project(
+            ctx,
+            "narrative_group_video",
+            episode,
+            scope=scope,
+        )
+    except Exception:
+        return "unknown"
+    if task is None:
+        return "unowned"
+    try:
+        raw_metadata = task.metadata
+        if isinstance(raw_metadata, Mapping):
+            metadata = dict(raw_metadata)
+        elif raw_metadata is None and isinstance(task.result, Mapping):
+            nested_metadata = task.result.get("task_metadata")
+            if not isinstance(nested_metadata, Mapping):
+                return "unknown"
+            metadata = dict(nested_metadata)
+        else:
+            return "unknown"
+        task_status = task.status
+        if not isinstance(task_status, str):
+            return "unknown"
+        if (
+            task_status not in ACTIVE_PROJECT_TASK_STATUSES
+            and task_status not in TERMINAL_TASK_STATUSES
+            and task_status != "retryable"
+        ):
+            return "unknown"
+        persisted_id = metadata.get("reference_snapshot_id")
+        persisted_digest = metadata.get("reference_snapshot_digest")
+        if persisted_id is None or persisted_digest is None:
+            return "unknown"
+        if not isinstance(persisted_id, str) or not isinstance(
+            persisted_digest, str
+        ):
+            return "unknown"
+        if persisted_id != snapshot_id or persisted_digest != snapshot_digest:
+            return "unowned"
+        if (
+            task_status in ACTIVE_PROJECT_TASK_STATUSES
+            or task_status == "retryable"
+            or metadata.get("retryable") is True
+        ):
+            return "owned"
+        if task_status in TERMINAL_TASK_STATUSES:
+            return "unowned"
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 class NarrativeGroupGenerationRequest(BaseModel):
@@ -153,6 +240,43 @@ class NarrativeGroupVideoRequest(BaseModel):
     revision: int = Field(ge=0)
     plan_revision: int = Field(ge=1)
     settings_revision: int | None = Field(default=None, ge=0)
+    reference_revision: int | None = Field(default=None, ge=0)
+
+
+class VideoReferenceSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reference_id: str = Field(min_length=1)
+    subject_description: str = Field(min_length=1)
+
+    @field_validator("reference_id", mode="before")
+    @classmethod
+    def normalize_reference_id(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value cannot be blank")
+        return normalized
+
+    @field_validator("subject_description", mode="before")
+    @classmethod
+    def normalize_subject_description(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value cannot be blank")
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("value must be a single line")
+        if len(normalized) > 500:
+            raise ValueError("value exceeds the 500 character limit")
+        return normalized
+
+
+class UpdateVideoReferencesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0)
+    references: list[VideoReferenceSelectionRequest]
 
 
 class NarrativeGroupVideoSettingsRequest(BaseModel):
@@ -240,6 +364,114 @@ def _asset_url(project: str, project_dir: Path, value: str) -> str:
     encoded_project = quote(project, safe="")
     encoded_path = quote(relative.as_posix(), safe="/")
     return f"/api/v1/projects/{encoded_project}/media/{encoded_path}"
+
+
+def _video_reference_max_images(media_store: MediaCapabilityStore) -> int:
+    return int(
+        media_store.get_runninghub_workflows().video_minimax_h3_ref_max_images
+    )
+
+
+def _video_reference_candidate_path(
+    project_dir: Path,
+    episode: int,
+    group_id: str,
+    candidate: VideoReferenceCandidate,
+) -> Path:
+    if candidate.source_kind == "temporary_upload":
+        return temporary_upload_path(
+            project_dir, episode, group_id, candidate.temporary_upload_id
+        )
+    if candidate.source_kind == "scene_master":
+        return canonical_scene_master_path(project_dir, candidate.asset_id)
+    if candidate.source_kind == "prop_reference":
+        return canonical_prop_reference_path(project_dir, candidate.asset_id)
+    if candidate.source_kind == "character_identity":
+        identity = canonical_identity_path(
+            project_dir, candidate.character_name, candidate.asset_id
+        )
+        return (
+            identity
+            if identity.is_file()
+            else canonical_portrait_path(project_dir, candidate.character_name)
+        )
+    raise ValueError("unsupported video reference source kind")
+
+
+def _serialize_video_reference_candidate(
+    project: str,
+    project_dir: Path,
+    episode: int,
+    group_id: str,
+    candidate: VideoReferenceCandidate,
+) -> dict[str, Any]:
+    path = _video_reference_candidate_path(
+        project_dir, episode, group_id, candidate
+    )
+    thumbnail_url = _asset_url(project, project_dir, str(path))
+    if not thumbnail_url:
+        raise ValueError("video reference thumbnail path is unsafe")
+    return {
+        "reference_id": candidate.reference_id,
+        "source_kind": candidate.source_kind,
+        "label": candidate.label,
+        "subject_description": candidate.subject_description,
+        "thumbnail_url": thumbnail_url,
+        "beat_ids": list(candidate.beat_ids),
+    }
+
+
+def _serialize_video_reference_preview(
+    project: str,
+    project_dir: Path,
+    episode: int,
+    group_id: str,
+    preview: VideoReferencePreview,
+) -> dict[str, Any]:
+    return {
+        "revision": preview.revision,
+        "max_images": preview.max_images,
+        "candidates": [
+            _serialize_video_reference_candidate(
+                project, project_dir, episode, group_id, candidate
+            )
+            for candidate in preview.candidates
+        ],
+        "selected": [
+            {
+                "reference_id": reference.reference_id,
+                "subject_description": reference.subject_description,
+            }
+            for reference in preview.references
+        ],
+        "warnings": list(preview.warnings),
+    }
+
+
+def _normalize_video_reference_upload(content: bytes, content_type: str) -> bytes:
+    accepted = {
+        "image/jpeg": "JPEG",
+        "image/png": "PNG",
+        "image/webp": "WEBP",
+    }
+    expected_format = accepted.get(content_type.lower())
+    if expected_format is None:
+        raise ValueError("video reference must be JPEG, PNG, or WebP")
+    if not content:
+        raise ValueError("video reference upload cannot be empty")
+    try:
+        with Image.open(BytesIO(content)) as image:
+            if image.format != expected_format:
+                raise ValueError("video reference MIME type does not match its image")
+            if image.width * image.height > MAX_VIDEO_REFERENCE_PIXELS:
+                raise ValueError("video reference exceeds the 40 megapixel limit")
+            image.load()
+            normalized = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+        raise ValueError("video reference image cannot be decoded") from exc
+    output = BytesIO()
+    normalized.save(output, format="PNG")
+    return output.getvalue()
 
 
 def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) -> list[dict]:
@@ -844,7 +1076,68 @@ def _serialize_prompt_review(
         value = manifest.get(name)
         return dict(value) if isinstance(value, Mapping) else {}
 
+    workflow_id = _safe_review_string(manifest.get("workflow_id"))
+    provider_workflow_id = _safe_review_string(
+        manifest.get("provider_workflow_id")
+    )
+    reference_revision = manifest.get("reference_settings_revision")
+    if (
+        isinstance(reference_revision, bool)
+        or not isinstance(reference_revision, int)
+        or reference_revision < 0
+    ):
+        reference_revision = None
+    reference_limit = manifest.get("reference_limit")
+    if (
+        isinstance(reference_limit, bool)
+        or not isinstance(reference_limit, int)
+        or not 1 <= reference_limit <= 10
+    ):
+        reference_limit = None
+    global_references = []
+    raw_global_references = manifest.get("global_references")
+    if not isinstance(raw_global_references, (list, tuple)):
+        raw_global_references = ()
+    for raw_reference in raw_global_references[:10]:
+        reference = _manifest_mapping(raw_reference)
+        picture_index = reference.get("picture_index")
+        reference_id = _safe_review_string(reference.get("reference_id"))
+        source_kind = reference.get("source_kind")
+        label = _safe_review_string(reference.get("label"))
+        description = _safe_review_string(
+            reference.get("subject_description"), max_length=500
+        )
+        sha256 = reference.get("sha256")
+        if not (
+            isinstance(picture_index, int)
+            and not isinstance(picture_index, bool)
+            and picture_index >= 1
+            and reference_id
+            and source_kind in {
+                "character_identity", "scene_master", "prop_reference",
+                "temporary_upload",
+            }
+            and label
+            and description
+            and isinstance(sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", sha256)
+        ):
+            continue
+        global_references.append({
+            "picture_index": picture_index,
+            "reference_id": reference_id,
+            "source_kind": source_kind,
+            "label": label,
+            "subject_description": description,
+            "sha256": sha256,
+        })
+
     return {
+        "workflow_id": workflow_id or None,
+        "provider_workflow_id": provider_workflow_id or None,
+        "reference_settings_revision": reference_revision,
+        "reference_limit": reference_limit,
+        "global_references": global_references,
         "workflow_parameters": snapshot("workflow_parameters"),
         "provider_parameters": snapshot("provider_parameters"),
         "actual_output": snapshot("actual_output"),
@@ -1333,7 +1626,7 @@ async def _enqueue_group_video(
             status_code=422,
             detail="Video mode is unsupported by the selected workflow",
         )
-    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    resolved, groups, beats = await _resolve_groups(project, episode, user)
     source_group = next((item for item in groups if item.id == group_id), None)
     if source_group is None:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
@@ -1349,6 +1642,77 @@ async def _enqueue_group_video(
                 status_code=409,
                 detail="Narrative group video workflow does not match saved settings",
             )
+    reference_revision: int | None = None
+    provider_workflow_id: str | None = None
+    reference_limit: int | None = None
+    reference_snapshot_id: str | None = None
+    resolved_references = ()
+    reference_segments = ()
+    if workflow.reference_policy.required:
+        reference_revision = source_group.video_reference_settings.revision
+        provider_workflow_id = str(workflow.provider_workflow_id or "").strip()
+        reference_limit = workflow.reference_policy.max_images
+        if not provider_workflow_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Video reference provider workflow is unavailable",
+            )
+        if (
+            request.reference_revision is None
+            or request.reference_revision != reference_revision
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Narrative group video reference revision is stale",
+            )
+        try:
+            store = await make_sqlite_store_for_context(resolved.ctx)
+            resolved_references = await resolve_saved_video_references(
+                store=store,
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group=source_group,
+                max_images=workflow.reference_policy.max_images,
+            )
+            from novelvideo.task_backend.runners.narrative_group_video import (
+                _build_segments,
+            )
+
+            render = source_group.stages["render"]
+            segments = _build_segments(
+                {"mode": request.mode},
+                generation_beats_for_group(
+                    resolved.project_dir, episode, group_id, beats
+                ),
+                {
+                    "beat_ids": list(source_group.beat_ids),
+                    "cell_assets": list(render.cell_assets),
+                    "video_plan": source_group.video_plan.to_dict(),
+                },
+            )
+            if segment_id:
+                segment_ids = [
+                    str(item.get("id")) for item in source_group.video_segments
+                ]
+                segments = [segments[segment_ids.index(segment_id)]]
+            reference_segments = tuple(segments)
+            for segment in segments:
+                frame_paths = [segment.first_frame]
+                if segment.last_frame:
+                    frame_paths.append(segment.last_frame)
+                if request.mode == "fl2va" and not segment.last_frame:
+                    raise ValueError(
+                        "MiniMax H3 fl2va mode requires a last frame"
+                    )
+                for frame_path in frame_paths:
+                    if not frame_path or not Path(str(frame_path)).is_file():
+                        raise ValueError("rendered video frame is unavailable")
+                    if not _asset_url(
+                        project, resolved.project_dir, str(frame_path)
+                    ):
+                        raise ValueError("rendered video frame path is unsafe")
+        except (IndexError, OSError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         project_defaults = _project_video_workflow_defaults(resolved, workflow)
         parameter_overrides = dict(settings.overrides)
@@ -1365,6 +1729,8 @@ async def _enqueue_group_video(
             resolved.project_dir, episode, group_id,
             expected_revision=request.revision,
             expected_plan_revision=request.plan_revision,
+            expected_settings_revision=settings.revision,
+            expected_reference_revision=reference_revision,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -1381,17 +1747,85 @@ async def _enqueue_group_video(
         "mode": request.mode,
         "aspect_ratio": request.aspect_ratio,
         "workflow_parameters": workflow_parameters,
-        "settings_revision": settings.revision,
+        "settings_revision": group.video_settings.revision,
         "segment_id": segment_id,
     }
+    if reference_revision is not None:
+        try:
+            frozen_frames = freeze_h3_reference_frames(
+                reference_segments,
+                project_root=resolved.project_dir,
+            )
+            persisted_snapshot = persist_h3_reference_input_snapshot(
+                state_root=resolved.ctx.state_dir,
+                references=resolved_references,
+                frames=frozen_frames,
+                reference_revision=group.video_reference_settings.revision,
+                reference_limit=int(reference_limit),
+                provider_workflow_id=str(provider_workflow_id),
+            )
+            reference_snapshot_id = persisted_snapshot.snapshot_id
+        except (OSError, TypeError, ValueError) as exc:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            raise HTTPException(
+                status_code=422,
+                detail="Video reference input snapshot is invalid",
+            ) from exc
+        except Exception:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            raise
+        payload.update({
+            "reference_contract_version": 1,
+            "reference_revision": group.video_reference_settings.revision,
+            "provider_workflow_id": provider_workflow_id,
+            "reference_limit": reference_limit,
+            "reference_snapshot_id": reference_snapshot_id,
+            "reference_snapshot_digest": persisted_snapshot.digest,
+        })
     try:
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",
             episode=episode, scope=scope, payload=payload,
         )
     except Exception as exc:
-        restore_video_reservation(resolved.project_dir, episode, reservation)
+        if reference_snapshot_id is not None:
+            try:
+                retain_h3_reference_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
+            ownership = _reference_enqueue_ownership(
+                ctx=resolved.ctx,
+                episode=episode,
+                scope=scope,
+                snapshot_id=reference_snapshot_id,
+                snapshot_digest=persisted_snapshot.digest,
+            )
+            if ownership == "unowned":
+                restore_video_reservation(
+                    resolved.project_dir, episode, reservation
+                )
+        else:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
         raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
+    if reference_snapshot_id is not None:
+        try:
+            bind_h3_reference_snapshot_owner(
+                state_root=resolved.ctx.state_dir,
+                snapshot_id=reference_snapshot_id,
+                snapshot_digest=persisted_snapshot.digest,
+                task_id=str(queued.task_state.task_id),
+            )
+        except Exception:
+            try:
+                retain_h3_reference_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,
@@ -1435,6 +1869,173 @@ async def generate_render_group(
     return await _enqueue_group_action(
         project, episode, group_id, "render", user, generation_request=body
     )
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/"
+    "video/reference-preview"
+)
+async def get_group_video_reference_preview(
+    project: str,
+    episode: int,
+    group_id: str,
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        preview = await resolve_group_video_reference_preview(
+            store=store,
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group=group,
+            max_images=_video_reference_max_images(media_store),
+        )
+        data = _serialize_video_reference_preview(
+            project, resolved.project_dir, episode, group_id, preview
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": data}
+
+
+@router.post(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/"
+    "video/reference-uploads"
+)
+async def upload_group_video_reference(
+    project: str,
+    episode: int,
+    group_id: str,
+    file: UploadFile = File(...),
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    limit = min(MAX_UPLOAD_BYTES, MAX_VIDEO_REFERENCE_BYTES)
+    target: Path | None = None
+    upload_id = ""
+    try:
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            raise ValueError("video reference upload exceeds the size limit")
+        normalized = _normalize_video_reference_upload(
+            content, str(file.content_type or "")
+        )
+        if len(normalized) > limit:
+            raise ValueError(
+                "normalized video reference upload exceeds the size limit"
+            )
+        upload_id = uuid.uuid4().hex
+        target = write_temporary_video_reference(
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group_id=group_id,
+            upload_id=upload_id,
+            content=normalized,
+        )
+        store = await make_sqlite_store_for_context(resolved.ctx)
+        preview = await resolve_group_video_reference_preview(
+            store=store,
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group=group,
+            max_images=_video_reference_max_images(media_store),
+        )
+        candidate = next(
+            (
+                item
+                for item in preview.candidates
+                if item.source_kind == "temporary_upload"
+                and item.temporary_upload_id == upload_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("uploaded video reference is unavailable")
+        data = _serialize_video_reference_candidate(
+            project, resolved.project_dir, episode, group_id, candidate
+        )
+    except (ValueError, Image.DecompressionBombError) as exc:
+        if target is not None:
+            delete_temporary_video_reference(
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group_id=group_id,
+                upload_id=upload_id,
+                target=target,
+            )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        if target is not None:
+            delete_temporary_video_reference(
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group_id=group_id,
+                upload_id=upload_id,
+                target=target,
+            )
+        raise
+    finally:
+        await file.close()
+    return {"ok": True, "data": data}
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/"
+    "video/references"
+)
+async def put_group_video_references(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: UpdateVideoReferencesRequest,
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    user: dict = Depends(get_api_user),
+):
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    max_images = _video_reference_max_images(media_store)
+    try:
+        group = await update_video_reference_settings(
+            store=store,
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group_id=group_id,
+            expected_revision=request.expected_revision,
+            selections=[
+                VideoReferenceSelection(
+                    reference_id=item.reference_id,
+                    subject_description=item.subject_description,
+                )
+                for item in request.references
+            ],
+            max_images=max_images,
+        )
+        preview = await resolve_group_video_reference_preview(
+            store=store,
+            project_dir=resolved.project_dir,
+            episode_number=episode,
+            group=group,
+            max_images=max_images,
+        )
+        data = _serialize_video_reference_preview(
+            project, resolved.project_dir, episode, group_id, preview
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": data}
 
 
 @router.put(

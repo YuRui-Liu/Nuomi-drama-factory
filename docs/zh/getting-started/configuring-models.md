@@ -292,13 +292,18 @@ secret://media/runninghub-main
 ### 后续供应商能力
 
 - **GRSAI**：计划实现 `image.storyboard_grid` 和 `image.single`，按叙事组生成多宫格；后续再通过 `image.grid_upscale_split` 完成超分、切割、去边和确定性格位映射。
-- **RunningHub 视频**：能力契约已为 `video.i2va`（首帧）、`video.l2va`（尾帧）、`video.fl2va`（首尾帧）、`video.ref2va`（参考素材）和 `video.t2va` 预留扩展边界；真实工作流执行器仍需后续接入。
+- **RunningHub MiniMax H3 视频**：`runninghub:minimax-h3` 仍为默认模型，使用工作流 `2089723723468328961`，不使用全局 Ref。另行选择的 `runninghub:minimax-h3-ref` 读取工作流设置 `video_minimax_h3_ref`（默认 `2096502793044582401`），把全局 Ref 与首帧、可选尾帧一并提交。两者都向节点 12 提交一份 version-5 `timeline_data`，从节点 7 下载视频；产品仍不开放仅尾帧模式。
 - **RunningHub TTS**：契约已包含 `tts.synthesize`、`tts.voice_design` 和 `tts.voice_clone`；工作流提交、分段并行、顺序合并和音频质量检查仍属后续实现。
 - **MiniMax H3 Skills**：这是将结构化分镜编译为 H3 视频提示词的增强层，不是模型供应商，也不负责提交任务。参考 [MiniMax H3 官方 Skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills)。
 
 ### MiniMax H3 导演台运行约定
 
 - 一个 Director 任务可产出一个包含多个镜头的视频；合成、字幕和导出都读取 manifest 的 span，不按“一个 Beat 一个 MP4”重复插入。
+- 原导演台始终保留为默认模型。选择 H3 Ref 不会迁移现有项目，也不会暗中改变旧 payload。
+- H3 Ref 会从叙事组的角色身份图、场景主图与关键道具图生成全局候选；临时上传会复制到项目管理的目录中，不是任意服务端路径。用户可调整 Ref 顺序并编辑每项 Subject 描述。
+- `video_minimax_h3_ref_max_images` 默认为 5，只接受 1–10。它仅限制全局角色、场景、道具和临时上传 Ref；首帧与尾帧不计入。H3 Ref 至少需要 1 张 Ref 和首帧，FL2V 还需要尾帧。
+- 保存 Ref 会递增 revision；生成必须携带当前 revision。系统在任何远端上传前冻结所选 Ref 与全部首尾帧字节，结果 manifest 仅记录摘要和元数据，不记录本地路径或图片内容。
+- 无效或过期输入直接失败。系统不会回退到原导演台，不会删除 Ref、删除尾帧、截断列表，也不会把被拒绝的混合 payload 降级重试。
 - 仅首帧为图生视频（i2v）；首帧加尾帧为首尾帧视频（fl2v）。产品界面不开放仅尾帧模式。
 - 提示词经 H3 中文优化层生成，不直接透传草稿；有对白的镜头必须写入可辨识的说话人、台词和时间信息，保证模型可对口型。
 - 默认保留 H3 原生环境声/音效；新生成 span 的对白来源默认 `external_tts`。迁移旧 MP4 时，因没有可验证的分轨，所有条目默认 `h3_native`，避免合成阶段错误地丢弃原视频音频。
@@ -313,6 +318,7 @@ secret://media/runninghub-main
 - 发布前确认所有必需 semantic bindings、输出节点、媒体类型和参数约束。
 - 显式配置回退链；不要依赖供应商之间的隐式切换。
 - 并发值应符合账号配额，并同时限制轮询和本地队列，避免批量生产压垮单个账号。
+- `scripts/smoke_runninghub_h3_ref.py` 是可能产生费用的人工发布关卡。只有明确确认工作流、输入文件、分辨率与成本后才设置 `RUNNINGHUB_REAL_SMOKE=1`；CI 中禁止启用。
 
 ### 验证基础层
 

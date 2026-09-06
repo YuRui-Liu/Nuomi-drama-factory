@@ -94,6 +94,489 @@ def test_group_video_rejects_explicit_fl2va_without_last_frames(tmp_path):
         )
 
 
+@pytest.mark.asyncio
+async def test_reference_adapter_requires_frozen_reference_arguments() -> None:
+    from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    called = []
+
+    async def generate(*args, **kwargs):
+        called.append((args, kwargs))
+
+    adapter = H3ReferenceWorkflowAdapter(generator=generate)
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+            first_frame="first.png",
+        ),),
+        output_path="out.mp4", aspect_ratio="9:16",
+    )
+
+    with pytest.raises(ValueError, match="global references"):
+        await adapter.generate_narrative_group(object(), request)
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_reference_adapter_requires_reference_revision_before_generator() -> None:
+    import hashlib
+
+    from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+
+    calls = []
+    content = b"frozen"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=Path("gone.png"),
+        content=content, sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    async def generate(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+            first_frame="first.png",
+        ),),
+        output_path="out.mp4", aspect_ratio="9:16",
+        global_references=(reference,), reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+
+    with pytest.raises(ValueError, match="reference revision"):
+        await H3ReferenceWorkflowAdapter(generator=generate).generate_narrative_group(
+            object(), request
+        )
+    assert calls == []
+
+
+def test_narrative_group_request_preserves_legacy_six_positional_fields() -> None:
+    from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoRequest
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    def callback(_task_id):
+        return None
+    segment = H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+        first_frame="first.png",
+    )
+    request = NarrativeGroupVideoRequest(
+        (segment,), "out.mp4", "9:16", {"resolution": "1080p"}, "1080p", callback
+    )
+
+    assert request.on_provider_submitted is callback
+    assert request.mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow() -> None:
+    import hashlib
+
+    from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+
+    captured = {}
+    content = b"frozen"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=Path("deleted.png"),
+        content=content, sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    async def generate(_ctx, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            output_path="out.mp4", provider_task_id="task-1", actual_mode="i2va",
+            actual_output={"width": 736, "height": 1280},
+        )
+
+    result = await H3ReferenceWorkflowAdapter(generator=generate).generate_narrative_group(
+        object(),
+        NarrativeGroupVideoRequest(
+            segments=(H3DirectorSegment(
+                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+                first_frame="first.png",
+            ),),
+            output_path="out.mp4", aspect_ratio="9:16", mode="i2va",
+            reference_revision=2, global_references=(reference,), reference_limit=5,
+            provider_workflow_id="2096502793044582401",
+        ),
+    )
+
+    assert captured["global_references"] is not None
+    assert captured["global_references"][0] is reference
+    assert captured["reference_limit"] == 5
+    assert captured["workflow_id"] == "2096502793044582401"
+    assert captured["mode"] == "i2va"
+    assert result.provider_parameters["workflowId"] == "2096502793044582401"
+
+
+def test_runner_rejects_stale_reference_revision_before_running_or_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    records = []
+    reference_calls = []
+    transport_calls = []
+    cleanup_calls = []
+    workflow = SimpleNamespace(
+        adapter_key="minimax-h3-ref",
+        reference_policy=SimpleNamespace(required=True, max_images=5),
+    )
+    group = SimpleNamespace(
+        id="ng-01",
+        video_reference_settings=SimpleNamespace(revision=4),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "stage_payload",
+        lambda *_args: {"revision": 2, "video_plan": {"revision": 1}},
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_workflow_definition_for_payload", lambda _payload: workflow
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "load_materialized_groups", lambda *_args: [group]
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "record_stage_result",
+        lambda *_args, **kwargs: records.append(kwargs),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "delete_h3_reference_input_snapshot",
+        lambda **kwargs: cleanup_calls.append(kwargs) or True,
+    )
+
+    async def resolve_snapshot(**_kwargs):
+        reference_calls.append(True)
+
+    monkeypatch.setattr(
+        narrative_group_video, "_reference_execution_snapshot", resolve_snapshot
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: transport_calls.append(True),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state"
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 2,
+                "plan_revision": 1,
+                "reference_revision": 3,
+                "reference_contract_version": 1,
+                "reference_limit": 5,
+                "provider_workflow_id": "2096502793044582401",
+                "reference_snapshot_id": "a" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+        },
+        ctx,
+    )
+
+    assert result == {"status": "stale", "group_id": "ng-01", "revision": 2}
+    assert records == []
+    assert reference_calls == []
+    assert transport_calls == []
+    assert cleanup_calls == []
+
+
+def test_reference_snapshot_owner_resolver_only_protects_active_or_retryable(
+    monkeypatch,
+) -> None:
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    metadata = {
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }
+    tasks = [SimpleNamespace(
+        task_id="task-owner",
+        status="queued",
+        metadata=metadata,
+        result=None,
+    )]
+    monkeypatch.setattr(
+        narrative_group_video,
+        "get_task_manager",
+        lambda: SimpleNamespace(list_tasks_for_project=lambda _ctx: tasks),
+    )
+    resolver = narrative_group_video._reference_snapshot_owner_resolver(
+        SimpleNamespace()
+    )
+    ownership = {
+        "snapshot_id": "a" * 32,
+        "snapshot_digest": "b" * 64,
+        "owner_task_id": "task-owner",
+    }
+
+    assert resolver(**ownership) is True
+    tasks[0].status = "failed"
+    assert resolver(**ownership) is False
+    tasks[0].status = "cancelled"
+    assert resolver(**ownership) is False
+    tasks[0].status = "retryable"
+    assert resolver(**ownership) is True
+
+
+@pytest.mark.asyncio
+async def test_reference_execution_contract_uses_queued_values_after_runtime_drift(
+) -> None:
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    workflow = SimpleNamespace(
+        reference_policy=SimpleNamespace(max_images=2),
+        workflow_settings_key="minimax_h3_ref_workflow_id",
+    )
+    await narrative_group_video._reference_execution_snapshot(
+        workflow=workflow,
+        reference_limit=5,
+        provider_workflow_id="queued-provider-workflow",
+        reference_snapshot_id="a" * 32,
+        reference_snapshot_digest="b" * 64,
+    )
+
+
+def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import hashlib
+
+    from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoResult
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+    from novelvideo.task_backend.runners import narrative_group_video
+    from novelvideo.task_backend.runners import narrative_group_video_compose
+
+    frame = tmp_path / "frame.png"
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), "black").save(frame)
+    reference_content = b"frozen-reference"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=tmp_path / "gone.png",
+        content=reference_content,
+        sha256=hashlib.sha256(reference_content).hexdigest(),
+    )
+    group = SimpleNamespace(
+        id="ng-01", video_reference_settings=SimpleNamespace(revision=7),
+        video_segments=({"id": "durable-1"}, {"id": "durable-2"}),
+    )
+    workflow = SimpleNamespace(
+        id="runninghub:minimax-h3-ref", provider="runninghub",
+        adapter_key="minimax-h3-ref", default_mode="auto",
+        reference_policy=SimpleNamespace(required=True, max_images=5),
+    )
+    segments = [
+        H3DirectorSegment(
+            segment_id=f"s{index}", beat_number=index, prompt=f"prompt-{index}",
+            duration_seconds=2, first_frame=str(frame), dialogue_source="h3_native",
+        )
+        for index in (1, 2)
+    ]
+    requests = []
+    snapshot_calls = []
+    manifests = []
+    load_calls = []
+    cleanup_calls = []
+    fail_first_attempt = [True]
+    cancel_attempt = [False]
+
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+    frozen_frames = freeze_h3_reference_frames(segments, project_root=tmp_path)
+
+    async def resolve_snapshot(**_kwargs):
+        snapshot_calls.append(True)
+
+    def load_snapshot(**kwargs):
+        load_calls.append(kwargs)
+        requested_sources = {
+            str(source) for source in kwargs["frame_sources"] if source
+        }
+        if not requested_sources.issubset(frozen_frames):
+            raise ValueError("frame snapshot is missing")
+        return SimpleNamespace(
+            reference_revision=7,
+            reference_limit=5,
+            provider_workflow_id="2096502793044582401",
+            digest="b" * 64,
+            references=(reference,),
+            frames=frozen_frames,
+        )
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            requests.append(request)
+            if cancel_attempt[0]:
+                raise asyncio.CancelledError
+            if fail_first_attempt[0]:
+                raise TimeoutError("provider timed out")
+            task_id = f"task-{len(requests)}"
+            submitted = request.on_provider_submitted(task_id)
+            if asyncio.iscoroutine(submitted):
+                await submitted
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id=task_id,
+                actual_mode="i2va",
+                provider_parameters={"width": 736, "height": 1280},
+                actual_output={"width": 736, "height": 1280},
+            )
+
+    def stage(_project, _episode, _group, name):
+        return (
+            {"revision": 2, "video_plan": {"revision": 1}}
+            if name == "video"
+            else {"video_plan": {"revision": 1}}
+        )
+
+    monkeypatch.setattr(narrative_group_video, "stage_payload", stage)
+    monkeypatch.setattr(
+        narrative_group_video, "_workflow_definition_for_payload", lambda _p: workflow
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "load_materialized_groups", lambda *_args: [group]
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_reference_execution_snapshot", resolve_snapshot
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "load_h3_reference_input_snapshot", load_snapshot
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "delete_h3_reference_input_snapshot",
+        lambda **kwargs: cleanup_calls.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_load_canonical_beats",
+        lambda *_args: asyncio.sleep(0, result=[{"id": "s1"}, {"id": "s2"}]),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "generation_beats_for_group",
+        lambda *_args: [{"id": "s1"}, {"id": "s2"}],
+    )
+    monkeypatch.setattr(narrative_group_video, "_build_segments", lambda *_args: segments)
+    monkeypatch.setattr(
+        narrative_group_video, "_canonical_beats_for_segments",
+        lambda *_args: [{"id": "s1"}, {"id": "s2"}],
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_optimize_missing_prompts",
+        lambda values, *_args, **_kwargs: asyncio.sleep(0, result=values),
+    )
+    monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        narrative_group_video, "record_video_segment_result", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "save_h3_director_manifest",
+        lambda _path, manifest: manifests.append(manifest),
+    )
+    monkeypatch.setattr(
+        narrative_group_video_compose, "build_local_composition_plan",
+        lambda _items: SimpleNamespace(paths=("one", "two")),
+    )
+    monkeypatch.setattr(
+        narrative_group_video_compose, "compose_local_segments",
+        lambda _plan, output: Path(output).write_bytes(b"composed"),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state"
+    )
+    envelope = {"episode": 1, "payload": {
+        "group_id": "ng-01", "revision": 2, "plan_revision": 1,
+        "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+        "reference_contract_version": 1, "reference_limit": 5,
+        "provider_workflow_id": "2096502793044582401",
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }}
+
+    with pytest.raises(RuntimeError, match="all video segments failed"):
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert cleanup_calls == []
+    assert len(requests) == 2
+    fail_first_attempt[0] = False
+    frame.unlink()
+    requests.clear()
+
+    result = narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert result["status"] == "completed"
+    assert snapshot_calls == [True, True]
+    assert len(load_calls) == 2
+    assert len(cleanup_calls) == 1
+    assert len(requests) == 2
+    assert requests[0].global_references is requests[1].global_references
+    assert requests[0].frozen_frames is requests[1].frozen_frames
+    assert requests[0].global_references == (reference,)
+    assert {item.provider_workflow_id for item in requests} == {"2096502793044582401"}
+    assert manifests[-1].provider_workflow_id == "2096502793044582401"
+    assert manifests[-1].reference_settings_revision == 7
+    assert manifests[-1].global_references[0].sha256 == reference.sha256
+    assert [entry.provider_task_id for entry in manifests[-1].entries] == [
+        "task-1", "task-2"
+    ]
+    assert manifests[-1].provider_task_id is None
+    provider_snapshots = [
+        [entry.provider_task_id for entry in item.entries]
+        for item in manifests
+    ]
+    assert ["task-1", None] in provider_snapshots
+    assert ["task-1", "task-2"] in provider_snapshots
+    requests.clear()
+    cancel_attempt[0] = True
+
+    with pytest.raises(asyncio.CancelledError):
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert len(cleanup_calls) == 1
+    requests.clear()
+    cancel_attempt[0] = False
+    missing = tmp_path / "missing.png"
+    segments[1] = segments[1].model_copy(update={"first_frame": str(missing)})
+
+    with pytest.raises(ValueError, match="frame snapshot"):
+        narrative_group_video.run_narrative_group_video(envelope, ctx)
+
+    assert requests == []
+    assert len(cleanup_calls) == 1
+
+
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import narrative_group_video
     from novelvideo.narrative_groups.service import load_groups

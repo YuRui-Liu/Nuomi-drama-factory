@@ -1,0 +1,194 @@
+{
+  "input_node": {
+    "node_id": "12",
+    "class_type": "MiniMaxH3Director",
+    "field_names": [
+      "task_type",
+      "global_prompt",
+      "frame_rate",
+      "width",
+      "height",
+      "ref_max_size",
+      "total_frames",
+      "timeline_data"
+    ]
+  },
+  "output_node": {
+    "node_id": "7",
+    "class_type": "SaveVideo",
+    "field_names": [
+      "codec",
+      "filename_prefix",
+      "format",
+      "fw_video_preview",
+      "video"
+    ]
+  },
+  "confirmed_reference_contract": {
+    "version": 5,
+    "edit_mode": "segment",
+    "task_type": "r2v — 参考主体生视频(Reference to Video)",
+    "timeline_mode": "prompt_batch",
+    "evidence": "reference-only-api-example",
+    "global": {
+      "required_fields": ["taskType", "prompt", "refs"],
+      "optional_fields": [
+        "referenceVideo",
+        "continuousReference",
+        "genImage",
+        "sourceWidth",
+        "sourceHeight",
+        "refAudios",
+        "refVideos",
+        "commonEnabled",
+        "commonCollapsed"
+      ],
+      "inferred_fields": [],
+      "field_types": {
+        "taskType": "non-empty-single-line-string",
+        "prompt": "non-empty-string",
+        "refs": "array",
+        "referenceVideo": "object",
+        "continuousReference": "boolean",
+        "genImage": "object",
+        "sourceWidth": "integer",
+        "sourceHeight": "integer",
+        "refAudios": "array",
+        "refVideos": "array",
+        "commonEnabled": "boolean",
+        "commonCollapsed": "boolean"
+      },
+      "representative_shape": {
+        "taskType": "r2v — 参考主体生视频(Reference to Video)",
+        "prompt": "subject_definitions:<sanitized>",
+        "refs": [],
+        "referenceVideo": {},
+        "continuousReference": false,
+        "genImage": {},
+        "sourceWidth": 864,
+        "sourceHeight": 480,
+        "refAudios": [],
+        "refVideos": [],
+        "commonEnabled": true,
+        "commonCollapsed": true
+      }
+    },
+    "global_reference": {
+      "required_fields": ["index", "imageFile"],
+      "optional_fields": ["fileName", "type", "subfolder"],
+      "inferred_fields": [],
+      "field_types": {
+        "index": "integer",
+        "imageFile": "non-empty-single-line-string",
+        "fileName": "string",
+        "type": "input-literal",
+        "subfolder": "string"
+      },
+      "representative_shape": {
+        "index": 0,
+        "imageFile": "sanitized-reference.png",
+        "fileName": "",
+        "type": "input",
+        "subfolder": ""
+      }
+    }
+  },
+  "hybrid_extensions": {
+    "evidence": "local-contract-pending-paid-smoke",
+    "segment": {
+      "required_fields": [
+        "id", "start", "length", "frameCount", "durationSec", "prompt",
+        "negativePrompt", "continuityFromPrev", "genImage", "refs"
+      ],
+      "optional_fields": [],
+      "inferred_fields": ["isStartFrame", "isEndFrame", "endImage", "taskType"],
+      "field_types": {
+        "id": "non-empty-single-line-string",
+        "start": "integer",
+        "length": "integer",
+        "frameCount": "integer",
+        "durationSec": "number",
+        "prompt": "non-empty-string",
+        "negativePrompt": "string",
+        "continuityFromPrev": "boolean",
+        "genImage": "object",
+        "refs": "array",
+        "isStartFrame": "boolean",
+        "isEndFrame": "boolean",
+        "endImage": "object-or-null",
+        "taskType": "non-empty-single-line-string"
+      },
+      "representative_shape": {
+        "id": "segment-1",
+        "start": 0,
+        "length": 73,
+        "frameCount": 73,
+        "durationSec": 3,
+        "prompt": "sanitized motion",
+        "negativePrompt": "",
+        "continuityFromPrev": false,
+        "genImage": {"imageFile": "sanitized-first.png"},
+        "refs": [],
+        "isStartFrame": true,
+        "isEndFrame": false,
+        "endImage": null,
+        "taskType": "Ref-I2V"
+      }
+    },
+    "keyframe": {
+      "required_fields": [],
+      "optional_fields": [],
+      "inferred_fields": [
+        "id", "imageFile", "start", "length", "frameCount", "durationSec",
+        "prompt", "negativePrompt", "isStartFrame", "isEndFrame"
+      ],
+      "field_types": {
+        "id": "non-empty-single-line-string",
+        "imageFile": "non-empty-single-line-string",
+        "start": "integer",
+        "length": "integer",
+        "frameCount": "integer",
+        "durationSec": "number",
+        "prompt": "string",
+        "negativePrompt": "string",
+        "isStartFrame": "boolean",
+        "isEndFrame": "boolean"
+      },
+      "representative_shape": {
+        "id": "segment-1_s",
+        "imageFile": "sanitized-first.png",
+        "start": 0,
+        "length": 36,
+        "frameCount": 36,
+        "durationSec": 3,
+        "prompt": "sanitized motion",
+        "negativePrompt": "",
+        "isStartFrame": true,
+        "isEndFrame": false
+      }
+    },
+    "shot": {
+      "required_fields": ["id", "durationSec", "prompt", "negativePrompt"],
+      "optional_fields": [],
+      "inferred_fields": ["continuityFromPrev", "startImage", "endImage"],
+      "field_types": {
+        "id": "non-empty-single-line-string",
+        "durationSec": "number",
+        "prompt": "non-empty-string",
+        "negativePrompt": "string",
+        "continuityFromPrev": "boolean",
+        "startImage": "object",
+        "endImage": "object-or-null"
+      },
+      "representative_shape": {
+        "id": "segment-1",
+        "durationSec": 3,
+        "prompt": "sanitized motion",
+        "negativePrompt": "",
+        "continuityFromPrev": false,
+        "startImage": {"imageFile": "sanitized-first.png"},
+        "endImage": null
+      }
+    }
+  }
+}

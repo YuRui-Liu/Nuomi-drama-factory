@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const knowledgeRuntimeMockState = vi.hoisted(() => ({
@@ -15,14 +16,19 @@ const knowledgeRuntimeMockState = vi.hoisted(() => ({
   runningHubWorkflows: {
     image_upscale: "",
     video_minimax_h3: "2087934731806658562",
+    video_minimax_h3_ref: "2096502793044582401",
+    video_minimax_h3_ref_max_images: 7,
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
   } as {
     image_upscale: string;
     video_minimax_h3: string;
+    video_minimax_h3_ref: string;
+    video_minimax_h3_ref_max_images: number;
     tts_qwen3_voice_design: string;
     tts_indextts2_voice_clone: string;
   } | undefined,
+  saveProvider: vi.fn(),
   recognize: vi.fn(),
   recognizePending: false,
   concurrencyOpen: undefined as boolean | undefined,
@@ -96,7 +102,7 @@ vi.mock("@/lib/queries/knowledge-runtime", () => {
     isPending: knowledgeRuntimeMockState.recognizePending,
   }),
   useMediaProviderAccounts: () => ({ data: [], isLoading: false }),
-  useSaveMediaProviderAccount: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSaveMediaProviderAccount: () => ({ mutateAsync: knowledgeRuntimeMockState.saveProvider, isPending: false }),
   useRunningHubWorkflows: () => ({ data: knowledgeRuntimeMockState.runningHubWorkflows }),
   useSaveRunningHubWorkflows: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
@@ -116,11 +122,16 @@ beforeEach(() => {
     state: "ready",
   };
   knowledgeRuntimeMockState.recognize.mockReset().mockResolvedValue(undefined);
+  knowledgeRuntimeMockState.saveProvider.mockReset().mockResolvedValue(undefined);
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.success).mockClear();
   knowledgeRuntimeMockState.recognizePending = false;
   knowledgeRuntimeMockState.concurrencyOpen = undefined;
   knowledgeRuntimeMockState.runningHubWorkflows = {
     image_upscale: "",
     video_minimax_h3: "2087934731806658562",
+    video_minimax_h3_ref: "2096502793044582401",
+    video_minimax_h3_ref_max_images: 7,
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
   };
@@ -132,6 +143,8 @@ it("uses the director MiniMax H3 workflow before saved workflow settings load", 
   render(<KnowledgeRuntimeSection open />);
 
   expect(screen.getByLabelText("MiniMax H3 图生视频 Workflow ID")).toHaveValue("2089723723468328961");
+  expect(screen.getByLabelText("MiniMax H3 带 Ref 导演台 Workflow ID")).toHaveValue("2096502793044582401");
+  expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveValue(5);
 });
 
 it("shows the actual local knowledge and media providers", () => {
@@ -152,6 +165,11 @@ it("shows the actual local knowledge and media providers", () => {
   expect(screen.getByText("RunningHub")).toBeInTheDocument();
   expect(screen.getByLabelText("图片超分 Workflow ID")).toBeInTheDocument();
   expect(screen.getByLabelText("MiniMax H3 图生视频 Workflow ID")).toHaveValue("2087934731806658562");
+  expect(screen.getByLabelText("MiniMax H3 带 Ref 导演台 Workflow ID")).toHaveValue("2096502793044582401");
+  expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveValue(7);
+  expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveAttribute("min", "1");
+  expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveAttribute("max", "10");
+  expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveAttribute("step", "1");
   expect(screen.getByLabelText("Qwen3 音色设计 Workflow ID")).toBeInTheDocument();
   expect(screen.getByLabelText("IndexTTS2 声音克隆 Workflow ID")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "测试并保存" })).toBeInTheDocument();
@@ -163,6 +181,37 @@ it("passes the closed state to the task concurrency card", () => {
   render(<KnowledgeRuntimeSection open={false} />);
 
   expect(knowledgeRuntimeMockState.concurrencyOpen).toBe(false);
+});
+
+it.each(["1", "10"])("accepts a Ref image limit of %s and preserves the legacy workflow", async (limit) => {
+  render(<KnowledgeRuntimeSection open />);
+
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "rh-secret" } });
+  fireEvent.change(screen.getByLabelText("MiniMax H3 带 Ref 导演台 Workflow ID"), {
+    target: { value: "ref-workflow" },
+  });
+  fireEvent.change(screen.getByLabelText("带 Ref 导演台全局 Ref 上限"), { target: { value: limit } });
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+
+  await waitFor(() => expect(knowledgeRuntimeMockState.saveProvider).toHaveBeenCalledTimes(1));
+  expect(knowledgeRuntimeMockState.saveProvider).toHaveBeenCalledWith(expect.objectContaining({
+    workflows: expect.objectContaining({
+      video_minimax_h3: "2087934731806658562",
+      video_minimax_h3_ref: "ref-workflow",
+      video_minimax_h3_ref_max_images: Number(limit),
+    }),
+  }));
+});
+
+it.each(["", "0", "11", "1.5"])("rejects an invalid Ref image limit of %j", async (limit) => {
+  render(<KnowledgeRuntimeSection open />);
+
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "rh-secret" } });
+  fireEvent.change(screen.getByLabelText("带 Ref 导演台全局 Ref 上限"), { target: { value: limit } });
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+
+  await waitFor(() => expect(toast.error).toHaveBeenCalled());
+  expect(knowledgeRuntimeMockState.saveProvider).not.toHaveBeenCalled();
 });
 
 it("shows an available Codex runtime with its resolved path, version and message", () => {

@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import enTranslation from "../../../../../public/locales/en/translation.json";
+import zhTranslation from "../../../../../public/locales/zh/translation.json";
 
 import { GroupVideoPromptDrawer } from "@/components/episode/narrative-workbench/group-video-prompt-drawer";
 import {
@@ -32,7 +35,14 @@ describe("GroupVideoPromptDrawer", () => {
     );
   });
 
-  beforeEach(() => {
+  beforeAll(async () => {
+    if (!i18n.isInitialized) await i18n.init({ lng: "zh", fallbackLng: "zh", resources: { en: { translation: enTranslation }, zh: { translation: zhTranslation } } });
+    i18n.addResourceBundle("en", "translation", enTranslation, true, true);
+    i18n.addResourceBundle("zh", "translation", zhTranslation, true, true);
+  });
+
+  beforeEach(async () => {
+    await i18n.changeLanguage("zh");
     mockedQuery.mockReturnValue({
       data: { ok: true, data: { units: [{
         beat_ids: ["8", "9"], label: "Beat 8 → Beat 9", mode: "fl2va", duration_seconds: 10,
@@ -98,5 +108,31 @@ describe("GroupVideoPromptDrawer", () => {
     render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
     expect(screen.getByText("旧版本无导演计划")).toBeInTheDocument();
     expect(screen.getByText("legacy prompt")).toBeInTheDocument();
+  });
+
+  it("renders the immutable reference snapshot from the manifest", () => {
+    mockedQuery.mockReturnValue({ data: { ok: true, data: {
+      workflow_id: "runninghub:minimax-h3-ref", provider_workflow_id: "workflow-actual-42", reference_limit: 5,
+      global_references: [
+        { reference_id: "hero", picture_index: 1, subject_description: "Hero", source_kind: "character_identity", label: "Lead", sha256: "abcdef1234567890" },
+      ], units: [],
+    } }, isLoading: false, isError: false } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
+    render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+    expect(screen.getByText("runninghub:minimax-h3-ref")).toBeInTheDocument();
+    expect(screen.getByText("workflow-actual-42")).toBeInTheDocument();
+    expect(screen.getByText(/1\/5/)).toBeInTheDocument();
+    expect(screen.getByText(/Picture 1.*Subject 1/)).toBeInTheDocument();
+    expect(screen.getByText(/abcdef12/)).toBeInTheDocument();
+  });
+
+  it("renders reference history labels in English", async () => {
+    await i18n.changeLanguage("en");
+    mockedQuery.mockReturnValue({ data: { ok: true, data: {
+      workflow_id: "runninghub:minimax-h3-ref", provider_workflow_id: "workflow-42", reference_limit: 5,
+      global_references: [{ reference_id: "hero", picture_index: 1, subject_description: "Hero", source_kind: "character_identity", label: "Lead", sha256: "abcdef1234567890" }], units: [],
+    } }, isLoading: false, isError: false } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
+    render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+    expect(screen.getByText(/Reference snapshot/)).toBeInTheDocument();
+    expect(screen.getByText(/Actual workflow ID/)).toBeInTheDocument();
   });
 });

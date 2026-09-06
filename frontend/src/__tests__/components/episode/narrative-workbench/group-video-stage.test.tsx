@@ -1,5 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import enTranslation from "../../../../../public/locales/en/translation.json";
+import zhTranslation from "../../../../../public/locales/zh/translation.json";
 
 import { GroupVideoStage } from "@/components/episode/narrative-workbench/group-video-stage";
 import { groupFrameSummary } from "@/components/episode/narrative-workbench/group-video-stage";
@@ -13,6 +16,13 @@ const recommendedPlan = {
   ],
   total_duration_seconds: 10,
 };
+
+beforeAll(async () => {
+  if (!i18n.isInitialized) await i18n.init({ lng: "zh", fallbackLng: "zh", resources: { en: { translation: enTranslation }, zh: { translation: zhTranslation } } });
+  i18n.addResourceBundle("en", "translation", enTranslation, true, true);
+  i18n.addResourceBundle("zh", "translation", zhTranslation, true, true);
+});
+beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
   it("shows inherited H3 and the actual automatic mode", () => {
@@ -35,6 +45,33 @@ describe("GroupVideoStage", () => {
     fireEvent.click(screen.getByRole("button", { name: "生成组合视频" }));
     expect(generate).toHaveBeenCalledWith({ video_model: "runninghub:minimax-h3", h3_mode: "auto" });
     expect(screen.getByText(/I2V/)).toBeInTheDocument();
+  });
+
+  it("hides reference controls for legacy models", () => {
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame reference={{ required: false, count: 2, max: 5, valid: true }} />);
+    expect(screen.queryByRole("button", { name: "管理参考图" })).not.toBeInTheDocument();
+  });
+
+  it("shows selected count and combines reference loading, error, invalid, and dirty generation gates", () => {
+    const { rerender } = render(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame onGenerate={vi.fn()} reference={{ required: true, count: 2, max: 5, valid: true, onManage: vi.fn() }} />);
+    expect(screen.getByText("已选 2/5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeEnabled();
+    for (const reference of [
+      { required: true, count: 2, max: 5, valid: true, loading: true },
+      { required: true, count: 2, max: 5, valid: true, error: true },
+      { required: true, count: 0, max: 5, valid: false },
+      { required: true, count: 2, max: 5, valid: true, dirty: true },
+    ]) {
+      rerender(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame onGenerate={vi.fn()} reference={reference} />);
+      expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+    }
+  });
+
+  it("renders reference controls in English", async () => {
+    await i18n.changeLanguage("en");
+    render(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="auto" hasFirstFrame hasLastFrame reference={{ required: true, count: 2, max: 5, valid: true }} />);
+    expect(screen.getByText("Selected 2/5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage references" })).toBeInTheDocument();
   });
 
   it("reports the single director task state and never offers tail-frame-only mode", () => {

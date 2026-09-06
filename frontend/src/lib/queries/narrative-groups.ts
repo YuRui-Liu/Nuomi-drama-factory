@@ -109,6 +109,33 @@ export interface NarrativeGroupReferencePreview {
   warnings: string[];
 }
 
+export type VideoReferenceSourceKind =
+  | "character_identity"
+  | "scene_master"
+  | "prop_reference"
+  | "temporary_upload";
+
+export interface VideoReferenceCandidate {
+  reference_id: string;
+  source_kind: VideoReferenceSourceKind;
+  label: string;
+  subject_description: string;
+  thumbnail_url: string;
+}
+
+export interface VideoReferenceSelection {
+  reference_id: string;
+  subject_description: string;
+}
+
+export interface VideoReferencePreview {
+  revision: number;
+  max_images: number;
+  candidates: VideoReferenceCandidate[];
+  selected: VideoReferenceSelection[];
+  warnings: string[];
+}
+
 export interface NarrativeGroupGenerationSelection {
   useStyle: boolean;
   selectedCharacterReferenceIds: string[];
@@ -146,6 +173,8 @@ export interface NarrativeStageState {
   dialogue_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
   ambience_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
   error?: string | null;
+  needs_regeneration?: boolean;
+  stale_reason?: string | null;
   video_spans?: Array<{
     beat_numbers: number[];
     start_seconds: number;
@@ -175,6 +204,16 @@ export interface NarrativeGroupVideoSettings {
   overrides: Record<string, string>;
 }
 
+export interface NarrativeGroupVideoReferenceSettings {
+  revision: number;
+  references: Array<VideoReferenceSelection & {
+    source_kind?: VideoReferenceSourceKind;
+    label?: string;
+    asset_id?: string | null;
+    temporary_upload_id?: string | null;
+  }>;
+}
+
 export interface NarrativeGroupVideoPromptUnit {
   beat_ids: string[];
   label?: string | null;
@@ -195,6 +234,18 @@ export interface NarrativeGroupVideoPromptUnit {
 }
 
 export interface NarrativeGroupVideoPromptManifest {
+  workflow_id?: string | null;
+  provider_workflow_id?: string | null;
+  reference_settings_revision?: number | null;
+  reference_limit?: number | null;
+  global_references?: Array<{
+    reference_id: string;
+    picture_index: number;
+    subject_description: string;
+    source_kind: VideoReferenceSourceKind;
+    label: string;
+    sha256: string;
+  }>;
   workflow_parameters?: Record<string, string>;
   provider_parameters?: Record<string, unknown>;
   actual_output?: Record<string, number>;
@@ -275,6 +326,7 @@ export interface NarrativeGroup {
   }>;
   video_plan?: NarrativeGroupVideoPlan;
   video_settings?: NarrativeGroupVideoSettings;
+  video_reference_settings?: NarrativeGroupVideoReferenceSettings;
   generation_batches?: NarrativeGenerationBatch[];
   video_segments?: NarrativeVideoSegment[];
   effective_style_snapshot?: EffectiveStyleSnapshot | null;
@@ -326,6 +378,30 @@ export function narrativeGroupVideoPromptsPath(project: string, episode: number,
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/prompts`;
 }
 
+export function narrativeGroupVideoReferencePreviewPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/reference-preview`;
+}
+
+export function narrativeGroupVideoReferenceUploadPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/reference-uploads`;
+}
+
+export function narrativeGroupVideoReferencesPath(
+  project: string, episode: number, groupId: string,
+) {
+  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/references`;
+}
+
+export function narrativeGroupVideoReferencePreviewQueryKey(
+  project: string, episode: number, groupId: string,
+) {
+  return [...queryKeys.narrativeGroups(project, episode), groupId, "video", "reference-preview"] as const;
+}
+
 /** Exact backend task scope for one narrative-group stage revision. */
 export function narrativeGroupTaskScope(
   groupId: string,
@@ -351,6 +427,7 @@ export function narrativeGroupVideoPayload(input: {
   revision: number;
   planRevision?: number;
   settingsRevision?: number;
+  referenceRevision?: number;
   aspectRatio: "9:16" | "16:9";
   resolution?: string;
 }) {
@@ -360,6 +437,7 @@ export function narrativeGroupVideoPayload(input: {
     revision: input.revision,
     ...(input.planRevision !== undefined ? { plan_revision: input.planRevision } : {}),
     ...(input.settingsRevision !== undefined ? { settings_revision: input.settingsRevision } : {}),
+    ...(input.referenceRevision !== undefined ? { reference_revision: input.referenceRevision } : {}),
     aspect_ratio: input.aspectRatio,
     ...(input.resolution ? { resolution: input.resolution } : {}),
   };
@@ -585,21 +663,25 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }: {
+    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
       mode: "auto" | "i2va" | "fl2va";
       revision: number;
       planRevision?: number;
       settingsRevision?: number;
+      referenceRevision?: number;
       aspectRatio: "9:16" | "16:9";
       resolution?: string;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({ model, mode, revision, planRevision, settingsRevision, aspectRatio, resolution }),
+      json: narrativeGroupVideoPayload({
+        model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution,
+      }),
     }).json<TaskResponse>(),
-    onSuccess: () => Promise.all([
+    onSuccess: (_response, input) => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+      qc.invalidateQueries({ queryKey: [...queryKeys.narrativeGroups(project, episode), input.groupId, "video", "prompts"] }),
     ]),
   });
 }
@@ -607,13 +689,18 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
 export function useGenerateNarrativeGroupVideoSegment(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, segmentId }: { groupId: string; segmentId: string }) => api.post(
+    mutationFn: ({ groupId, segmentId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
+      groupId: string; segmentId: string; model: string; mode: "auto" | "i2va" | "fl2va";
+      revision: number; planRevision?: number; settingsRevision?: number; referenceRevision?: number;
+      aspectRatio: "9:16" | "16:9"; resolution?: string;
+    }) => api.post(
       narrativeGroupVideoSegmentPath(project, episode, groupId, segmentId),
-      { json: {} },
+      { json: narrativeGroupVideoPayload({model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution}) },
     ).json<TaskResponse>(),
-    onSuccess: () => qc.invalidateQueries({
-      queryKey: queryKeys.narrativeGroups(project, episode),
-    }),
+    onSuccess: (_response, input) => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: [...queryKeys.narrativeGroups(project, episode), input.groupId, "video", "prompts"] }),
+    ]),
   });
 }
 
@@ -692,6 +779,75 @@ export function useNarrativeGroupReferences(
       narrativeGroupReferencePath(project, episode, groupId, stage), { signal },
     ).json<ApiResponse<NarrativeGroupReferencePreview>>(),
     enabled: enabled && !!project && episode > 0 && !!groupId,
+  });
+}
+
+export function useNarrativeGroupVideoReferencePreview(
+  project: string,
+  episode: number,
+  groupId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, groupId),
+    queryFn: ({ signal }) => api.get(
+      narrativeGroupVideoReferencePreviewPath(project, episode, groupId), { signal },
+    ).json<ApiResponse<VideoReferencePreview>>(),
+    enabled,
+  });
+}
+
+function invalidateNarrativeGroupVideoReferenceQueries(
+  qc: ReturnType<typeof useQueryClient>,
+  project: string,
+  episode: number,
+  groupId: string,
+) {
+  return Promise.all([
+    qc.invalidateQueries({
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, groupId),
+      exact: true,
+    }),
+    qc.invalidateQueries({
+      queryKey: queryKeys.narrativeGroups(project, episode),
+      exact: true,
+    }),
+  ]);
+}
+
+export function useUploadNarrativeGroupVideoReference(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, file }: { groupId: string; file: File }) => {
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      return api.post(narrativeGroupVideoReferenceUploadPath(project, episode, groupId), {
+        body: formData,
+      }).json<ApiResponse<VideoReferenceCandidate>>();
+    },
+    onSuccess: (_response, input) => qc.invalidateQueries({
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey(project, episode, input.groupId),
+      exact: true,
+    }),
+  });
+}
+
+export function useUpdateNarrativeGroupVideoReferences(project: string, episode: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, expectedRevision, references }: {
+      groupId: string;
+      expectedRevision: number;
+      references: VideoReferenceSelection[];
+    }) => api.put(narrativeGroupVideoReferencesPath(project, episode, groupId), {
+      json: {
+        expected_revision: expectedRevision,
+        references,
+      },
+    }).json<ApiResponse<VideoReferencePreview>>(),
+    onSuccess: (_response, input) => invalidateNarrativeGroupVideoReferenceQueries(
+      qc, project, episode, input.groupId,
+    ),
   });
 }
 

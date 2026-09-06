@@ -12,6 +12,7 @@ from novelvideo.media_capabilities.models import (
     MediaCapability,
     ProviderAccount,
     RunningHubWorkflowSettings,
+    RunningHubWorkflowSettingsKey,
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubClient
@@ -22,13 +23,19 @@ class MediaRuntimeConfigurationError(RuntimeError):
     """Persisted media configuration is incomplete or unavailable."""
 
 
-_WORKFLOW_FIELDS: dict[MediaCapability, str] = {
-    MediaCapability.IMAGE_GRID_UPSCALE_SPLIT: "image_upscale",
-    MediaCapability.VIDEO_I2VA: "video_minimax_h3",
-    MediaCapability.VIDEO_L2VA: "video_minimax_h3",
-    MediaCapability.VIDEO_FL2VA: "video_minimax_h3",
-    MediaCapability.TTS_VOICE_DESIGN: "tts_qwen3_voice_design",
-    MediaCapability.TTS_VOICE_CLONE: "tts_indextts2_voice_clone",
+_WORKFLOW_FIELDS: dict[MediaCapability, RunningHubWorkflowSettingsKey] = {
+    MediaCapability.IMAGE_GRID_UPSCALE_SPLIT: (
+        RunningHubWorkflowSettingsKey.IMAGE_UPSCALE
+    ),
+    MediaCapability.VIDEO_I2VA: RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
+    MediaCapability.VIDEO_L2VA: RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
+    MediaCapability.VIDEO_FL2VA: RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
+    MediaCapability.TTS_VOICE_DESIGN: (
+        RunningHubWorkflowSettingsKey.TTS_QWEN3_VOICE_DESIGN
+    ),
+    MediaCapability.TTS_VOICE_CLONE: (
+        RunningHubWorkflowSettingsKey.TTS_INDEXTTS2_VOICE_CLONE
+    ),
 }
 
 RUNNINGHUB_DOWNLOAD_HOSTS = (
@@ -44,13 +51,30 @@ class RunningHubRuntimeConfiguration:
     api_key: str
     workflows: RunningHubWorkflowSettings
 
+    def workflow_id_for_key(
+        self, settings_key: RunningHubWorkflowSettingsKey
+    ) -> str:
+        try:
+            normalized_key = RunningHubWorkflowSettingsKey(settings_key)
+        except (TypeError, ValueError) as exc:
+            raise MediaRuntimeConfigurationError(
+                f"RunningHub does not support workflow settings key: {settings_key}"
+            ) from exc
+        value = str(getattr(self.workflows, normalized_key.value)).strip()
+        if not value:
+            raise MediaRuntimeConfigurationError(
+                "RunningHub workflow is not configured for settings key: "
+                f"{normalized_key.value}"
+            )
+        return value
+
     def workflow_id(self, capability: MediaCapability) -> str:
         field = _WORKFLOW_FIELDS.get(capability)
         if field is None:
             raise MediaRuntimeConfigurationError(
                 f"RunningHub does not support {capability.value}"
             )
-        value = str(getattr(self.workflows, field)).strip()
+        value = str(getattr(self.workflows, field.value)).strip()
         if not value:
             raise MediaRuntimeConfigurationError(
                 f"RunningHub workflow is not configured for {capability.value}"

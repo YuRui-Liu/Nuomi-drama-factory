@@ -29,6 +29,19 @@ export interface VideoWorkflowParameterDefinition {
 
 export type VideoWorkflowParameterValues = Record<string, Record<string, string>>;
 
+export type VideoReferenceSourceKind =
+  | "character_identity"
+  | "scene_master"
+  | "prop_reference"
+  | "temporary_upload";
+
+export interface VideoReferencePolicy {
+  required: boolean;
+  min_images: number;
+  max_images: number;
+  source_kinds: VideoReferenceSourceKind[];
+}
+
 export interface VideoModelCatalogItem {
   id: string;
   label: string;
@@ -38,6 +51,7 @@ export interface VideoModelCatalogItem {
   supported_modes: VideoModelMode[];
   default_mode: VideoModelMode;
   parameters: VideoWorkflowParameterDefinition[];
+  reference_policy?: VideoReferencePolicy;
 }
 
 export function effectiveVideoMode(mode: VideoModelMode, hasFirst: boolean, hasLast: boolean) {

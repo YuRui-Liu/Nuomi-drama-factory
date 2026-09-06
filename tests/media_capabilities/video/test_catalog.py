@@ -11,16 +11,17 @@ from novelvideo.media_capabilities.video.catalog import (
     list_video_models,
     resolve_video_model_route,
 )
-from novelvideo.media_capabilities.video.workflow_registry import (
-    build_video_workflow_registry,
-)
+from novelvideo.media_capabilities.video.workflow_registry import build_video_workflow_registry
 
 
 def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
     store = MediaCapabilityStore(tmp_path / "settings.db")
     models = list_video_models(store, CredentialResolver(env={}))
 
-    assert [item.id for item in models] == ["runninghub:minimax-h3"]
+    assert [item.id for item in models] == [
+        "runninghub:minimax-h3",
+        "runninghub:minimax-h3-ref",
+    ]
     assert models[0].available is False
     assert models[0].supported_modes == ("auto", "i2va", "fl2va")
     assert "credential" not in models[0].model_dump_json().lower()
@@ -54,21 +55,33 @@ def test_catalog_is_credential_free_registry_projection(tmp_path) -> None:
     store = MediaCapabilityStore(tmp_path / "settings.db")
     resolver = CredentialResolver(env={})
 
-    definition = build_video_workflow_registry(store, resolver).list()[0]
-    item = list_video_models(store, resolver)[0]
+    definitions = build_video_workflow_registry(store, resolver).list()
+    items = list_video_models(store, resolver)
 
-    assert item.parameters == definition.parameters
-    assert item.model_dump() == {
-        "id": definition.id,
-        "label": definition.label,
-        "provider": definition.provider,
-        "available": definition.available,
-        "supported_modes": definition.supported_modes,
-        "default_mode": definition.default_mode,
-        "parameters": definition.model_dump()["parameters"],
-        "unavailable_reason": definition.unavailable_reason,
+    for definition, item in zip(definitions, items, strict=True):
+        assert item.parameters == definition.parameters
+        assert item.reference_policy == definition.reference_policy
+        assert item.model_dump() == {
+            "id": definition.id,
+            "label": definition.label,
+            "provider": definition.provider,
+            "available": definition.available,
+            "supported_modes": definition.supported_modes,
+            "default_mode": definition.default_mode,
+            "parameters": definition.model_dump()["parameters"],
+            "reference_policy": definition.model_dump()["reference_policy"],
+            "unavailable_reason": definition.unavailable_reason,
+        }
+        assert "credential" not in item.model_dump_json().lower()
+
+    assert items[0].id == H3_MODEL_ID
+    assert items[0].reference_policy.model_dump(mode="json") == {
+        "required": False,
+        "min_images": 0,
+        "max_images": 0,
+        "source_kinds": [],
     }
-    assert "credential" not in item.model_dump_json().lower()
+    assert items[1].reference_policy.required is True
 
 
 def test_catalog_publishes_only_product_parameter_schema(tmp_path) -> None:

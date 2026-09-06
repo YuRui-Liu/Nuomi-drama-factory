@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -40,12 +41,21 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorOutputManifest,
     H3DirectorSegment,
     H3TimelineEntry,
+    H3ReferenceManifestEntry,
     build_h3_timeline_data,
     save_h3_director_manifest,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
+from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    delete_h3_reference_input_snapshot,
+    garbage_collect_h3_reference_input_snapshots,
+    generate_h3_reference_director_video,
+    load_h3_reference_input_snapshot,
+    mark_h3_reference_snapshot_running,
+    retain_h3_reference_snapshot,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
@@ -62,6 +72,7 @@ from novelvideo.narrative_groups.service import (
 )
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
@@ -91,6 +102,7 @@ def _workflow_definition_for_payload(
 
 def _video_workflow_adapters():
     from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
         H3WorkflowAdapter,
         VideoWorkflowAdapters,
     )
@@ -98,8 +110,101 @@ def _video_workflow_adapters():
     # Inject through this module so existing tests and runtime instrumentation
     # can replace the H3 transport without changing adapter internals.
     return VideoWorkflowAdapters(
-        (H3WorkflowAdapter(generator=generate_h3_director_video),)
+        (
+            H3WorkflowAdapter(generator=generate_h3_director_video),
+            H3ReferenceWorkflowAdapter(
+                generator=generate_h3_reference_director_video
+            ),
+        )
     )
+
+
+async def _reference_execution_snapshot(
+    *,
+    workflow: VideoWorkflowDefinition,
+    reference_limit: int,
+    provider_workflow_id: str,
+    reference_snapshot_id: str,
+    reference_snapshot_digest: str,
+):
+    del workflow
+    if not 1 <= int(reference_limit) <= 10:
+        raise ValueError("queued reference limit is invalid")
+    if not str(provider_workflow_id).strip():
+        raise ValueError("provider_workflow_id is required")
+    if not str(reference_snapshot_id).strip():
+        raise ValueError("reference_snapshot_id is required")
+    if re.fullmatch(r"[0-9a-f]{64}", str(reference_snapshot_digest)) is None:
+        raise ValueError("reference_snapshot_digest is required")
+
+
+def _reference_manifest_entries(references) -> tuple[H3ReferenceManifestEntry, ...]:
+    return tuple(
+        H3ReferenceManifestEntry(
+            picture_index=index,
+            reference_id=reference.reference_id,
+            source_kind=str(reference.source_kind),
+            label=reference.label,
+            subject_description=reference.subject_description,
+            sha256=reference.sha256,
+        )
+        for index, reference in enumerate(references, start=1)
+    )
+
+
+def _delete_terminal_reference_snapshot(
+    ctx: ProjectContext, payload: Mapping[str, Any]
+) -> bool:
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
+        return False
+    try:
+        return delete_h3_reference_input_snapshot(
+            state_root=ctx.state_dir, snapshot_id=snapshot_id
+        )
+    except (OSError, ValueError):
+        # TTL GC will recover an orphan that cannot be removed at terminal time.
+        return False
+
+
+def _retain_reference_snapshot(
+    ctx: ProjectContext, payload: Mapping[str, Any]
+) -> None:
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
+        return
+    try:
+        retain_h3_reference_snapshot(
+            state_root=ctx.state_dir, snapshot_id=snapshot_id
+        )
+    except (OSError, ValueError):
+        pass
+
+
+def _reference_snapshot_owner_resolver(ctx: ProjectContext):
+    def owner_resolver(
+        *, snapshot_id: str, snapshot_digest: str, owner_task_id: str
+    ) -> bool:
+        for task in get_task_manager().list_tasks_for_project(ctx):
+            metadata = dict(task.metadata or {})
+            if not metadata and isinstance(task.result, dict):
+                metadata = dict(task.result.get("task_metadata") or {})
+            if metadata.get("reference_snapshot_id") != snapshot_id:
+                continue
+            if snapshot_digest and metadata.get(
+                "reference_snapshot_digest"
+            ) != snapshot_digest:
+                continue
+            if owner_task_id and str(task.task_id) != owner_task_id:
+                continue
+            return (
+                task.status in ACTIVE_PROJECT_TASK_STATUSES
+                or task.status == "retryable"
+                or metadata.get("retryable") is True
+            )
+        return False
+
+    return owner_resolver
 
 
 async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[str, Any]]:
@@ -477,6 +582,7 @@ def _manifest_with_status(
     *,
     physical_video: str | None = None,
     provider_task_id: str | None = None,
+    entry_provider_task_ids: Mapping[str, str | None] | None = None,
     **updates: Any,
 ) -> H3DirectorOutputManifest:
     payload = manifest.model_dump(mode="python")
@@ -491,11 +597,41 @@ def _manifest_with_status(
             **entry.model_dump(mode="python"),
             "status": status,
             "physical_video": physical_video,
-            "provider_task_id": provider_task_id,
+            "provider_task_id": (
+                entry_provider_task_ids.get(
+                    entry.segment.segment_id, entry.provider_task_id
+                )
+                if entry_provider_task_ids is not None
+                else (
+                    entry.provider_task_id
+                    if provider_task_id is None
+                    else provider_task_id
+                )
+            ),
         }
         for entry in manifest.entries
     ]
     return H3DirectorOutputManifest.model_validate(payload)
+
+
+def _manifest_with_segment_provider_task(
+    manifest: H3DirectorOutputManifest,
+    segment_id: str,
+    provider_task_id: str,
+) -> H3DirectorOutputManifest:
+    entries = tuple(
+        entry.model_copy(update={
+            "status": "submitted",
+            "provider_task_id": provider_task_id,
+        })
+        if entry.segment.segment_id == segment_id
+        else entry
+        for entry in manifest.entries
+    )
+    return manifest.model_copy(update={
+        "provider_task_id": provider_task_id if len(entries) == 1 else None,
+        "entries": entries,
+    })
 
 
 def _finalize_segment_manifest(
@@ -772,7 +908,9 @@ async def run_video_segments(
     return tuple(await asyncio.gather(*(isolated(segment) for segment in segments)))
 
 
-async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+async def _execute_inner(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     project_dir = _project_dir(payload, ctx)
@@ -792,13 +930,68 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         and int(plan_revision) != int(saved_plan_revision or 0)
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
-    record_stage_result(
-        project_dir, episode, group_id, "video", expected_revision=revision,
-        status="running", error="", workflow_parameters=workflow_parameters,
+    workflow = _workflow_definition_for_payload(payload)
+    materialized_group = None
+    global_references = ()
+    reference_revision = None
+    reference_limit = None
+    provider_workflow_id = None
+    reference_snapshot_id = None
+    reference_snapshot_digest = None
+    frozen_frames = None
+    reference_policy = getattr(workflow, "reference_policy", None)
+    reference_required = (
+        getattr(reference_policy, "required", False)
+        or workflow.adapter_key == "minimax-h3-ref"
     )
+    if reference_required:
+        contract_version = payload.get("reference_contract_version")
+        if isinstance(contract_version, bool) or contract_version != 1:
+            raise ValueError("reference_contract_version 1 is required")
+        try:
+            raw_reference_limit = payload["reference_limit"]
+            if isinstance(raw_reference_limit, bool):
+                raise TypeError
+            reference_limit = int(raw_reference_limit)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("reference_limit is required") from exc
+        provider_workflow_id = str(payload.get("provider_workflow_id") or "").strip()
+        if not provider_workflow_id:
+            raise ValueError("provider_workflow_id is required")
+        reference_snapshot_id = str(payload.get("reference_snapshot_id") or "").strip()
+        reference_snapshot_digest = str(
+            payload.get("reference_snapshot_digest") or ""
+        ).strip()
+        materialized_group = next(
+            group for group in load_materialized_groups(project_dir, episode)
+            if group.id == group_id
+        )
+        requested_reference_revision = payload.get("reference_revision")
+        reference_revision = materialized_group.video_reference_settings.revision
+        if (
+            requested_reference_revision is None
+            or int(requested_reference_revision) != int(reference_revision)
+        ):
+            return {"status": "stale", "group_id": group_id, "revision": revision}
+        await _reference_execution_snapshot(
+            workflow=workflow,
+            reference_limit=reference_limit,
+            provider_workflow_id=provider_workflow_id,
+            reference_snapshot_id=reference_snapshot_id,
+            reference_snapshot_digest=reference_snapshot_digest,
+        )
+    reference_manifest_fields = {
+        "provider_workflow_id": provider_workflow_id,
+        "reference_settings_revision": reference_revision,
+        "reference_limit": reference_limit,
+        "global_references": _reference_manifest_entries(global_references),
+    }
     manifest_path: Path | None = None
     try:
-        workflow = _workflow_definition_for_payload(payload)
+        record_stage_result(
+            project_dir, episode, group_id, "video", expected_revision=revision,
+            status="running", error="", workflow_parameters=workflow_parameters,
+        )
         adapter = _video_workflow_adapters().resolve(workflow.adapter_key)
         source_beats = await _load_canonical_beats(ctx, episode)
         beats = generation_beats_for_group(
@@ -811,13 +1004,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             # one-beat-per-segment interpretation.
             render_state = {**render_state, "video_plan": {}}
         raw_segments = _build_segments(payload, beats, render_state)
-        materialized_group = next(
-            group for group in load_materialized_groups(project_dir, episode)
-            if group.id == group_id
+        durable_segment_ids = (
+            [str(item.get("id")) for item in materialized_group.video_segments]
+            if materialized_group is not None
+            else [segment.segment_id for segment in raw_segments]
         )
-        durable_segment_ids = [
-            str(item.get("id")) for item in materialized_group.video_segments
-        ]
         if requested_segment_id:
             try:
                 requested_index = durable_segment_ids.index(requested_segment_id)
@@ -834,10 +1025,36 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 actual_provider="none", actual_model="none",
                 actual_mode="skipped_nonvisual",
             )
-            return {
+            result = {
                 "status": "skipped", "reason": "nonvisual_beats",
                 "group_id": group_id, "revision": revision,
             }
+            return result
+        if reference_required:
+            frame_sources = tuple(
+                str(source)
+                for segment in raw_segments
+                for source in (segment.first_frame, segment.last_frame)
+                if source
+            )
+            input_snapshot = load_h3_reference_input_snapshot(
+                state_root=ctx.state_dir,
+                snapshot_id=reference_snapshot_id,
+                expected_digest=reference_snapshot_digest,
+                frame_sources=frame_sources,
+            )
+            if (
+                input_snapshot.reference_revision != reference_revision
+                or input_snapshot.reference_limit != reference_limit
+                or input_snapshot.provider_workflow_id != provider_workflow_id
+                or input_snapshot.digest != reference_snapshot_digest
+            ):
+                raise ValueError("queued H3 reference snapshot contract does not match payload")
+            global_references = input_snapshot.references
+            frozen_frames = input_snapshot.frames
+            reference_manifest_fields["global_references"] = (
+                _reference_manifest_entries(global_references)
+            )
         segment_beats = _canonical_beats_for_segments(raw_segments, beats)
         video_dir = project_dir / "videos" / f"ep{episode:03d}" / "narrative_groups"
         segment_suffix = (
@@ -891,6 +1108,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 workflow_id=workflow.id,
                 workflow_parameters=workflow_parameters,
                 status="quality_rejected",
+                **reference_manifest_fields,
             )
             save_h3_director_manifest(manifest_path, rejected_manifest)
             error_payload = {
@@ -908,6 +1126,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             )
             raise
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+        if global_references and frozen_frames is None:
+            raise ValueError("queued H3 reference frame snapshot is required")
         evidenced_entries = _entries_with_evidence(
             timeline.entries, evidence_by_segment, default_status="submitted"
         )
@@ -917,6 +1137,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             workflow_id=workflow.id,
             workflow_parameters=workflow_parameters,
             status="submitted",
+            **reference_manifest_fields,
         )
         save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
@@ -930,14 +1151,15 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             NarrativeGroupVideoRequest,
         )
 
-        async def on_provider_submitted(provider_task_id: str) -> None:
-            nonlocal manifest
-            manifest = _manifest_with_status(
-                manifest,
-                "submitted",
-                provider_task_id=provider_task_id,
-            )
-            save_h3_director_manifest(manifest_path, manifest)
+        def submission_callback(segment_id: str):
+            async def on_provider_submitted(provider_task_id: str) -> None:
+                nonlocal manifest
+                manifest = _manifest_with_segment_provider_task(
+                    manifest, segment_id, provider_task_id
+                )
+                save_h3_director_manifest(manifest_path, manifest)
+
+            return on_provider_submitted
 
         try:
             generated_segments = []
@@ -955,22 +1177,35 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                             output_path=str(segment_output),
                             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
                             workflow_parameters=workflow_parameters,
-                            on_provider_submitted=on_provider_submitted,
+                            mode=str(
+                                payload.get("mode")
+                                or getattr(workflow, "default_mode", "auto")
+                            ),
+                            reference_revision=reference_revision,
+                            global_references=global_references,
+                            reference_limit=reference_limit,
+                            provider_workflow_id=provider_workflow_id,
+                            frozen_frames=frozen_frames,
+                            on_provider_submitted=submission_callback(
+                                segment.segment_id
+                            ),
                         ),
                     )
                     generated_segments.append((segment_index, segment, item))
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_id,
-                        status="completed", provider_task_id=item.provider_task_id,
-                        result={"output_path": str(item.output_path)},
-                    )
+                    if materialized_group is not None:
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_id,
+                            status="completed", provider_task_id=item.provider_task_id,
+                            result={"output_path": str(item.output_path)},
+                        )
                 except Exception as exc:
                     message = f"{type(exc).__name__}: {exc}"
                     segment_errors.append({"segment_id": segment.segment_id, "error": message})
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_id,
-                        status="failed", error=message,
-                    )
+                    if materialized_group is not None:
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_id,
+                            status="failed", error=message,
+                        )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")
             from novelvideo.task_backend.runners.narrative_group_video_compose import (
@@ -1005,11 +1240,19 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             save_h3_director_manifest(manifest_path, manifest)
             raise
 
+        entry_provider_task_ids = {
+            segment.segment_id: item.provider_task_id
+            for _, segment, item in generated_segments
+        }
+        aggregate_provider_task_id = (
+            generated.provider_task_id if len(generated_segments) == 1 else None
+        )
         manifest = _manifest_with_status(
             manifest,
             "partial_failure" if segment_errors else "generated",
             physical_video=str(generated.output_path),
-            provider_task_id=generated.provider_task_id,
+            provider_task_id=aggregate_provider_task_id,
+            entry_provider_task_ids=entry_provider_task_ids,
             provider_parameters=generated.provider_parameters,
             actual_output=generated.actual_output,
         )
@@ -1042,7 +1285,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 manifest,
                 "quality_mismatch",
                 physical_video=str(generated.output_path),
-                provider_task_id=generated.provider_task_id,
+                provider_task_id=aggregate_provider_task_id,
+                entry_provider_task_ids=entry_provider_task_ids,
                 provider_parameters=generated.provider_parameters,
                 actual_output=generated.actual_output,
             )
@@ -1093,7 +1337,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                 manifest,
                 "postprocess_failed",
                 physical_video=str(generated.output_path),
-                provider_task_id=generated.provider_task_id,
+                provider_task_id=aggregate_provider_task_id,
+                entry_provider_task_ids=entry_provider_task_ids,
             )
             save_h3_director_manifest(manifest_path, manifest)
             raise
@@ -1147,6 +1392,45 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             **failure_assets,
         )
         raise
+
+
+async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    payload = dict(envelope.get("payload") or {})
+    state_root = getattr(ctx, "state_dir", None)
+    snapshot_id = str(payload.get("reference_snapshot_id") or "")
+    has_snapshot = (
+        state_root is not None
+        and re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is not None
+    )
+    if has_snapshot:
+        try:
+            mark_h3_reference_snapshot_running(
+                state_root=state_root, snapshot_id=snapshot_id
+            )
+        except (OSError, ValueError):
+            pass
+    if state_root is not None:
+        try:
+            garbage_collect_h3_reference_input_snapshots(
+                state_root=state_root,
+                protected_ids=(snapshot_id,),
+                owner_resolver=_reference_snapshot_owner_resolver(ctx),
+            )
+        except (OSError, ValueError):
+            pass
+    try:
+        result = await _execute_inner(envelope, ctx)
+    except BaseException:
+        if has_snapshot:
+            _retain_reference_snapshot(ctx, payload)
+        raise
+    if has_snapshot:
+        if result.get("status") in {"completed", "skipped"}:
+            if not _delete_terminal_reference_snapshot(ctx, payload):
+                _retain_reference_snapshot(ctx, payload)
+        else:
+            _retain_reference_snapshot(ctx, payload)
+    return result
 
 
 def run_narrative_group_video(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:

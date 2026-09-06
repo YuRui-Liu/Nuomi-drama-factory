@@ -239,11 +239,13 @@ Nuomi Drama Factory 对模型侧保持中立 —— 所有文本/图片/视频/�
 |-------------------|---------------------------------------------------------------------|
 | **文本 / 大模型** | 经 OpenAI 兼容网关（Nuomi Drama Factory 官方 key,或 BYO）                     |
 | **图像**          | gpt-image · nano-banana                                             |
-| **视频**          | Seedance 1.0 / 1.5 / 2.0 系列 · happyhorse                          |
+| **视频**          | Seedance 1.0 / 1.5 / 2.0 系列 · happyhorse · RunningHub MiniMax H3 导演台 / Ref 导演台 |
 | **配音**          | IndexTTS2                                                           |
 | **故事图谱**      | Cognee                                                              |
 | **任务运行时**    | 进程内 inline（无需 Ray / Redis / Celery）                          |
 | **存储**          | 本地文件系统                                                        |
+
+RunningHub 原 MiniMax H3 导演台继续作为默认视频工作流；另行选择的 Ref 导演台可按顺序加入全局角色、场景和道具参考图（默认 5 张，可设为 1–10），同时保留首帧与可选尾帧控制。详见[媒体生产中心](../docs/zh/guides/media-production.md)。
 
 <br/>
 

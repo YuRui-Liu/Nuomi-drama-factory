@@ -222,6 +222,7 @@ function MediaProviderSettings({ open }: { open: boolean }) {
 }
 
 function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind: "grsai" | "runninghub"; icon: React.ReactNode; account?: MediaProviderAccount }) {
+  const { t } = useTranslation();
   const save = useSaveMediaProviderAccount();
   const isRunningHub = kind === "runninghub";
   const [baseUrl, setBaseUrl] = useState(isRunningHub ? "https://www.runninghub.cn" : "");
@@ -232,9 +233,12 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
   const [workflowIds, setWorkflowIds] = useState<RunningHubWorkflowSettings>({
     image_upscale: "",
     video_minimax_h3: "2089723723468328961",
+    video_minimax_h3_ref: "2096502793044582401",
+    video_minimax_h3_ref_max_images: 5,
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
   });
+  const [videoRefMaxImages, setVideoRefMaxImages] = useState("5");
 
   useEffect(() => {
     if (!account) return;
@@ -244,16 +248,35 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
   }, [account]);
 
   useEffect(() => {
-    if (workflows.data) setWorkflowIds(workflows.data);
+    if (!workflows.data) return;
+    setWorkflowIds((current) => ({ ...current, ...workflows.data }));
+    setVideoRefMaxImages(String(workflows.data.video_minimax_h3_ref_max_images ?? 5));
   }, [workflows.data]);
 
-  const setWorkflowId = (key: keyof RunningHubWorkflowSettings, value: string) => {
+  const setWorkflowId = (
+    key: Exclude<keyof RunningHubWorkflowSettings, "video_minimax_h3_ref_max_images">,
+    value: string,
+  ) => {
     setWorkflowIds((current) => ({ ...current, [key]: value }));
   };
 
   const handleSave = async () => {
     if (!baseUrl.trim() || (!account?.credential_configured && !apiKey.trim())) {
       toast.error("请填写服务地址与 API Key");
+      return;
+    }
+    const normalizedVideoRefMaxImages = videoRefMaxImages.trim();
+    const parsedVideoRefMaxImages = Number(normalizedVideoRefMaxImages);
+    if (
+      isRunningHub
+      && (!/^\d+$/.test(normalizedVideoRefMaxImages)
+        || !Number.isInteger(parsedVideoRefMaxImages)
+        || parsedVideoRefMaxImages < 1
+        || parsedVideoRefMaxImages > 10)
+    ) {
+      toast.error(t("settings.runtime.runningHubVideoRefMaxInvalid", {
+        defaultValue: "带 Ref 导演台全局 Ref 上限必须是 1 到 10 的整数",
+      }));
       return;
     }
     try {
@@ -263,7 +286,9 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
         base_url: baseUrl.trim(),
         model: isRunningHub ? undefined : grsaiModel,
         api_key: apiKey,
-        workflows: isRunningHub ? workflowIds : undefined,
+        workflows: isRunningHub
+          ? { ...workflowIds, video_minimax_h3_ref_max_images: parsedVideoRefMaxImages }
+          : undefined,
         max_concurrency: concurrency,
         poll_concurrency: Math.max(concurrency, isRunningHub ? 10 : 4),
         queue_limit: isRunningHub ? 100 : 50,
@@ -322,6 +347,28 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
             </div>
             <WorkflowIdField label="图片超分 Workflow ID" value={workflowIds.image_upscale} onChange={(value) => setWorkflowId("image_upscale", value)} />
             <WorkflowIdField label="MiniMax H3 图生视频 Workflow ID" value={workflowIds.video_minimax_h3} onChange={(value) => setWorkflowId("video_minimax_h3", value)} />
+            <WorkflowIdField
+              label={t("settings.runtime.runningHubVideoRefWorkflow", {
+                defaultValue: "MiniMax H3 带 Ref 导演台 Workflow ID",
+              })}
+              value={workflowIds.video_minimax_h3_ref}
+              onChange={(value) => setWorkflowId("video_minimax_h3_ref", value)}
+            />
+            <Field label={t("settings.runtime.runningHubVideoRefMaxImages", {
+              defaultValue: "带 Ref 导演台全局 Ref 上限",
+            })}>
+              <Input
+                aria-label={t("settings.runtime.runningHubVideoRefMaxImages", {
+                  defaultValue: "带 Ref 导演台全局 Ref 上限",
+                })}
+                type="number"
+                min={1}
+                max={10}
+                step={1}
+                value={videoRefMaxImages}
+                onChange={(event) => setVideoRefMaxImages(event.target.value)}
+              />
+            </Field>
             <WorkflowIdField label="Qwen3 音色设计 Workflow ID" value={workflowIds.tts_qwen3_voice_design} onChange={(value) => setWorkflowId("tts_qwen3_voice_design", value)} />
             <WorkflowIdField label="IndexTTS2 声音克隆 Workflow ID" value={workflowIds.tts_indextts2_voice_clone} onChange={(value) => setWorkflowId("tts_indextts2_voice_clone", value)} />
           </div>

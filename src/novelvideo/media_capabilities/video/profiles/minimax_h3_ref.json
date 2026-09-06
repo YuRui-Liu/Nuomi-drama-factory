@@ -1,0 +1,17 @@
+{
+  "id": "minimax-h3-ref-video",
+  "version": 1,
+  "provider": "runninghub",
+  "workflow_id": "2096502793044582401",
+  "workflow_revision": "director-v5-ref",
+  "api_schema_sha256": "7787e72203d1a653e2f3ad7702fc5d0d73b18a366a37ea8ffccf37861a581b27",
+  "capabilities": ["video.ref2va"],
+  "bindings": {
+    "timeline_data": {"node_id": "12", "field": "timeline_data"}
+  },
+  "outputs": {"video": {"node_id": "7", "media_type": "video"}},
+  "constraints": {"required": ["timeline_data"]},
+  "source_sha256": "5b44dbe86bfce52d358eda37e47f78ac60bf02cc3a96fb04eeb4567db255c684",
+  "status": "active",
+  "health_status": "healthy"
+}

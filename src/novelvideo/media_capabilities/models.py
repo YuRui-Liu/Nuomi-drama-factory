@@ -10,6 +10,7 @@ from pydantic import (
     field_validator,
     JsonValue,
     PositiveInt,
+    StrictInt,
     StringConstraints,
     model_validator,
 )
@@ -187,17 +188,28 @@ class ProviderAccount(_ExternalModel):
         return normalized
 
 
+class RunningHubWorkflowSettingsKey(StrEnum):
+    IMAGE_UPSCALE = "image_upscale"
+    VIDEO_MINIMAX_H3 = "video_minimax_h3"
+    VIDEO_MINIMAX_H3_REF = "video_minimax_h3_ref"
+    TTS_QWEN3_VOICE_DESIGN = "tts_qwen3_voice_design"
+    TTS_INDEXTTS2_VOICE_CLONE = "tts_indextts2_voice_clone"
+
+
 class RunningHubWorkflowSettings(_ExternalModel):
     """Remote workflow IDs for the RunningHub capabilities shipped by CE."""
 
     image_upscale: str = ""
     video_minimax_h3: str = "2089723723468328961"
+    video_minimax_h3_ref: str = "2096502793044582401"
+    video_minimax_h3_ref_max_images: StrictInt = Field(default=5, ge=1, le=10)
     tts_qwen3_voice_design: str = ""
     tts_indextts2_voice_clone: str = ""
 
     @field_validator(
         "image_upscale",
         "video_minimax_h3",
+        "video_minimax_h3_ref",
         "tts_qwen3_voice_design",
         "tts_indextts2_voice_clone",
         mode="before",

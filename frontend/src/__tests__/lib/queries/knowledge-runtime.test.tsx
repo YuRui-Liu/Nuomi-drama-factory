@@ -20,6 +20,7 @@ import {
   useSaveRunningHubWorkflows,
   useSaveKnowledgeRuntimeSettings,
 } from "@/lib/queries/knowledge-runtime";
+import { queryKeys } from "@/lib/query-keys";
 
 const server = setupServer();
 
@@ -179,6 +180,8 @@ it("loads and saves the supported RunningHub workflow IDs", async () => {
   const workflows = {
     image_upscale: "1001",
     video_minimax_h3: "2087934731806658562",
+    video_minimax_h3_ref: "2096502793044582401",
+    video_minimax_h3_ref_max_images: 5,
     tts_qwen3_voice_design: "3003",
     tts_indextts2_voice_clone: "4004",
   };
@@ -246,4 +249,21 @@ it("saves provider, API key and workflows through one settings request", async (
     api_key: "rh-secret",
     workflows: null,
   });
+});
+
+it("refreshes video models and narrative reference consumers after saving RunningHub settings", async () => {
+  server.use(http.put(
+    "http://localhost:3000/api/v1/media-capabilities/providers/runninghub-main/settings",
+    () => HttpResponse.json({provider:{id:"runninghub-main"},workflows:{video_minimax_h3_ref:"wf",video_minimax_h3_ref_max_images:3}}),
+  ));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(client, "invalidateQueries").mockResolvedValue();
+  const localWrapper = ({children}:{children:ReactNode}) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const {result} = renderHook(() => useSaveMediaProviderAccount(), {wrapper:localWrapper});
+  result.current.mutate({id:"runninghub-main",provider_type:"runninghub",base_url:"https://www.runninghub.cn",max_concurrency:5,poll_concurrency:10,queue_limit:100,workflows:{video_minimax_h3_ref:"wf",video_minimax_h3_ref_max_images:3}} as never);
+  await waitFor(()=>expect(result.current.isSuccess).toBe(true));
+  expect(invalidate).toHaveBeenCalledWith({queryKey:queryKeys.videoModels()});
+  const predicate = invalidate.mock.calls.map(([filters])=>filters?.predicate).find(Boolean);
+  expect(predicate?.({queryKey:queryKeys.narrativeGroups("p",1)} as never)).toBe(true);
+  expect(predicate?.({queryKey:[...queryKeys.narrativeGroups("p",1),"g1","video","reference-preview"]} as never)).toBe(true);
 });

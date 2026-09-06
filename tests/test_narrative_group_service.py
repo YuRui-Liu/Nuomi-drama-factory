@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -18,6 +19,7 @@ from novelvideo.narrative_groups.service import (
     ensure_groups,
     update_video_plan,
 )
+from novelvideo.narrative_groups.models import VideoReferenceSettings
 
 
 @pytest.mark.parametrize(
@@ -166,6 +168,33 @@ def test_concurrent_video_reservations_accept_only_one_expected_revision(tmp_pat
 
     assert results.count(1) == 1
     assert sum(isinstance(item, RuntimeError) for item in results) == 1
+
+
+def test_video_reservation_cas_checks_settings_and_reference_revisions(tmp_path):
+    groups = group_beats([{"id": "1"}])
+    group = groups[0]
+    groups = (
+        replace(
+            group,
+            video_reference_settings=VideoReferenceSettings(revision=2),
+        ),
+    )
+    save_groups(tmp_path, 1, groups)
+
+    with pytest.raises(RuntimeError, match="reference"):
+        reserve_video_revision(
+            tmp_path,
+            1,
+            "ng-01",
+            expected_revision=0,
+            expected_plan_revision=1,
+            expected_settings_revision=0,
+            expected_reference_revision=1,
+        )
+
+    restored = load_groups(tmp_path, 1)[0]
+    assert restored.stages["video"].status == "pending"
+    assert restored.stages["video"].revision == 0
 
 
 def test_rebuild_resets_stage_when_mapping_changes(tmp_path):

@@ -115,6 +115,7 @@ class H3TimelineEntry(BaseModel):
         "transport_failed",
         "postprocess_failed",
         "quality_mismatch",
+        "partial_failure",
     ] = "completed"
 
     @model_validator(mode="after")
@@ -168,6 +169,35 @@ class H3CompiledTimeline(BaseModel):
 H3Timeline = H3CompiledTimeline
 
 
+class H3ReferenceManifestEntry(BaseModel):
+    """Serializable evidence for one frozen global reference."""
+
+    model_config = _MODEL_CONFIG
+    picture_index: int = Field(ge=1)
+    reference_id: str = Field(min_length=1)
+    source_kind: Literal[
+        "character_identity",
+        "scene_master",
+        "prop_reference",
+        "temporary_upload",
+    ]
+    label: str = Field(min_length=1)
+    subject_description: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator(
+        "reference_id", "source_kind", "label", "subject_description", mode="before"
+    )
+    @classmethod
+    def trim_reference_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("sha256", mode="before")
+    @classmethod
+    def normalize_reference_sha256(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
+
+
 class H3DirectorOutputManifest(BaseModel):
     model_config = _MODEL_CONFIG
     physical_video: str | None = Field(default=None, min_length=1)
@@ -176,7 +206,11 @@ class H3DirectorOutputManifest(BaseModel):
     total_frames: int = Field(default=0, ge=0)
     format_version: int = Field(default=1, gt=0)
     workflow_id: str | None = None
+    provider_workflow_id: str | None = None
     provider_task_id: str | None = None
+    reference_settings_revision: int | None = Field(default=None, ge=0)
+    reference_limit: int | None = Field(default=None, ge=1, le=10)
+    global_references: tuple[H3ReferenceManifestEntry, ...] = ()
     workflow_parameters: dict[str, str] = Field(default_factory=dict)
     provider_parameters: dict[str, object] = Field(default_factory=dict)
     transition_rules: tuple[H3TransitionRule, ...] = ()
@@ -200,7 +234,7 @@ class H3DirectorOutputManifest(BaseModel):
     ] = "completed"
 
     @field_validator(
-        "physical_video", "workflow_id", "provider_task_id",
+        "physical_video", "workflow_id", "provider_workflow_id", "provider_task_id",
         "original_audio_path", "dialogue_stem_path", "ambience_stem_path",
         mode="before",
     )
@@ -221,6 +255,20 @@ class H3DirectorOutputManifest(BaseModel):
 
     @model_validator(mode="after")
     def validate_and_normalize(self) -> "H3DirectorOutputManifest":
+        expected_indexes = tuple(range(1, len(self.global_references) + 1))
+        if tuple(item.picture_index for item in self.global_references) != expected_indexes:
+            raise ValueError("global reference picture indexes must be contiguous from 1")
+        reference_ids = tuple(item.reference_id for item in self.global_references)
+        reference_hashes = tuple(item.sha256 for item in self.global_references)
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("global reference IDs must be unique")
+        if len(reference_hashes) != len(set(reference_hashes)):
+            raise ValueError("global reference hashes must be unique")
+        if (
+            self.reference_limit is not None
+            and len(self.global_references) > self.reference_limit
+        ):
+            raise ValueError("global references exceed reference_limit")
         normalized = tuple(
             entry.model_copy(
                 update={
@@ -332,6 +380,7 @@ __all__ = [
     "DialogueSource",
     "H3DirectorManifest",
     "H3DirectorOutputManifest",
+    "H3ReferenceManifestEntry",
     "H3DirectorSegment",
     "H3CompiledTimeline",
     "H3Timeline",

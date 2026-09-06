@@ -248,6 +248,8 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
     assert defaults.json() == {
         "image_upscale": "",
         "video_minimax_h3": "2089723723468328961",
+        "video_minimax_h3_ref": "2096502793044582401",
+        "video_minimax_h3_ref_max_images": 5,
         "tts_qwen3_voice_design": "",
         "tts_indextts2_voice_clone": "",
     }
@@ -257,6 +259,8 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
         json={
             "image_upscale": " 1001 ",
             "video_minimax_h3": "2002",
+            "video_minimax_h3_ref": "2003",
+            "video_minimax_h3_ref_max_images": 7,
             "tts_qwen3_voice_design": "3003",
             "tts_indextts2_voice_clone": "4004",
         },
@@ -265,6 +269,8 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
     assert saved.json() == {
         "image_upscale": "1001",
         "video_minimax_h3": "2002",
+        "video_minimax_h3_ref": "2003",
+        "video_minimax_h3_ref_max_images": 7,
         "tts_qwen3_voice_design": "3003",
         "tts_indextts2_voice_clone": "4004",
     }

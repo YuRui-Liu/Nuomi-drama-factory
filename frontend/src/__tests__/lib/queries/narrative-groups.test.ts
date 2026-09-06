@@ -19,6 +19,10 @@ import {
   narrativeGroupVideoDialogueSourcePath,
   narrativeGroupVideoDialogueSourcePayload,
   narrativeGroupVideoPayload,
+  narrativeGroupVideoReferencePreviewPath,
+  narrativeGroupVideoReferencePreviewQueryKey,
+  narrativeGroupVideoReferenceUploadPath,
+  narrativeGroupVideoReferencesPath,
   narrativeGroupVideoTaskScope,
   narrativeGroupTaskScope,
   narrativeGroupReferencePath,
@@ -26,8 +30,14 @@ import {
   narrativeGroupRollbackPath,
   useNarrativeGroupAction,
   useNarrativeGroupReferences,
+  useNarrativeGroupVideoReferencePreview,
+  useGenerateNarrativeGroupVideo,
+  useGenerateNarrativeGroupVideoSegment,
+  useUpdateNarrativeGroupVideoReferences,
   useUpdateNarrativeGroupVideoPlan,
+  useUploadNarrativeGroupVideoReference,
 } from "@/lib/queries/narrative-groups";
+import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 describe("narrative group query contract", () => {
@@ -43,11 +53,18 @@ describe("narrative group query contract", () => {
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
     expect(narrativeGroupVideoPayload({
       model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
-      planRevision: 7, aspectRatio: "16:9", resolution: "720p",
+      planRevision: 7, referenceRevision: 3, aspectRatio: "16:9", resolution: "720p",
     })).toEqual({
       model: "runninghub:minimax-h3", mode: "fl2va", revision: 4,
-      plan_revision: 7, aspect_ratio: "16:9", resolution: "720p",
+      plan_revision: 7, reference_revision: 3, aspect_ratio: "16:9", resolution: "720p",
     });
+  });
+
+  it("omits reference_revision from legacy video generation requests", () => {
+    expect(narrativeGroupVideoPayload({
+      model: "runninghub:minimax-h3", mode: "auto", revision: 4,
+      planRevision: 7, aspectRatio: "9:16",
+    })).not.toHaveProperty("reference_revision");
   });
 
   it("builds the video-plan endpoint and serializes only ordered Beat groups", () => {
@@ -131,6 +148,170 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("narrative group reference hooks", () => {
+  it("sends the complete revisioned request when retrying one segment", async () => {
+    let body: unknown;
+    server.use(http.post(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/segments/seg-1/generate",
+      async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ok: true, task_type: "video", scope: "segment", message: "started" });
+      },
+    ));
+    const { result } = renderHook(() => useGenerateNarrativeGroupVideoSegment("demo", 2), { wrapper });
+    await result.current.mutateAsync({groupId:"ng-1",segmentId:"seg-1",model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,planRevision:3,settingsRevision:5,referenceRevision:7,aspectRatio:"16:9"});
+    expect(body).toEqual({model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,plan_revision:3,settings_revision:5,reference_revision:7,aspect_ratio:"16:9"});
+  });
+  it("sends a reference revision for the Ref model without changing legacy generation bodies", async () => {
+    const bodies: unknown[] = [];
+    server.use(http.post(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/generate",
+      async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ ok: true, task_type: "video", scope: "group_ng-1_video_r4", message: "started" });
+      },
+    ));
+    const { result } = renderHook(() => useGenerateNarrativeGroupVideo("demo", 2), { wrapper });
+
+    await result.current.mutateAsync({
+      groupId: "ng-1",
+      model: "runninghub:minimax-h3-ref",
+      mode: "auto",
+      revision: 4,
+      planRevision: 7,
+      referenceRevision: 3,
+      aspectRatio: "9:16",
+    });
+    await result.current.mutateAsync({
+      groupId: "ng-1",
+      model: "runninghub:minimax-h3",
+      mode: "auto",
+      revision: 4,
+      planRevision: 7,
+      aspectRatio: "9:16",
+    });
+
+    expect(bodies[0]).toMatchObject({
+      model: "runninghub:minimax-h3-ref",
+      reference_revision: 3,
+    });
+    expect(bodies[1]).not.toHaveProperty("reference_revision");
+  });
+
+  it("uses the exact encoded video reference endpoints", () => {
+    expect(narrativeGroupVideoReferencePreviewPath("demo project", 2, "组 一"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/%E7%BB%84%20%E4%B8%80/video/reference-preview");
+    expect(narrativeGroupVideoReferenceUploadPath("demo project", 2, "组 一"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/%E7%BB%84%20%E4%B8%80/video/reference-uploads");
+    expect(narrativeGroupVideoReferencesPath("demo project", 2, "组 一"))
+      .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/%E7%BB%84%20%E4%B8%80/video/references");
+  });
+
+  it("requests the video reference preview only according to caller enabled", async () => {
+    const get = vi.spyOn((await import("@/lib/api")).api, "get");
+    const disabled = renderHook(
+      () => useNarrativeGroupVideoReferencePreview("demo", 2, "ng-1", false),
+      { wrapper },
+    );
+    expect(disabled.result.current.fetchStatus).toBe("idle");
+    expect(get).not.toHaveBeenCalled();
+    disabled.unmount();
+
+    const enabled = renderHook(
+      () => useNarrativeGroupVideoReferencePreview("", 0, "", true),
+      { wrapper },
+    );
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    enabled.unmount();
+  });
+
+  it("uploads a video reference as multipart and invalidates only its preview", async () => {
+    let contentType = "";
+    server.use(http.post(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/reference-uploads",
+      ({ request }) => {
+        contentType = request.headers.get("content-type") ?? "";
+        return HttpResponse.json({
+          ok: true,
+          data: {
+            reference_id: "upload-1",
+            source_kind: "temporary_upload",
+            label: "ref.png",
+            subject_description: "temporary uploaded reference image",
+            thumbnail_url: "/api/v1/projects/demo/assets/ref.png",
+          },
+        });
+      },
+    ));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateQueries = vi.spyOn(client, "invalidateQueries");
+    const uploadWrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const post = vi.spyOn(api, "post");
+    const { result } = renderHook(() => useUploadNarrativeGroupVideoReference("demo", 2), {
+      wrapper: uploadWrapper,
+    });
+    const file = new File(["image"], "ref.png", { type: "image/png" });
+
+    const response = await result.current.mutateAsync({ groupId: "ng-1", file });
+
+    expect(contentType).toContain("multipart/form-data");
+    expect(response).toMatchObject({
+      ok: true,
+      data: { reference_id: "upload-1", source_kind: "temporary_upload" },
+    });
+    expect(post).toHaveBeenCalledWith(
+      "api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/reference-uploads",
+      { body: expect.any(FormData) },
+    );
+    const body = post.mock.calls[0][1]?.body as FormData;
+    expect(body.get("file")).toMatchObject({ name: "ref.png", type: "image/png", size: 5 });
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey("demo", 2, "ng-1"), exact: true,
+    });
+  });
+
+  it("puts ordered references with the expected revision and invalidates only scoped caches", async () => {
+    let body: unknown;
+    server.use(http.put(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/references",
+      async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ok: true, data: { revision: 4, max_images: 5, candidates: [], selected: [], warnings: [] } });
+      },
+    ));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateQueries = vi.spyOn(client, "invalidateQueries");
+    const updateWrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useUpdateNarrativeGroupVideoReferences("demo", 2), {
+      wrapper: updateWrapper,
+    });
+
+    await result.current.mutateAsync({
+      groupId: "ng-1",
+      expectedRevision: 3,
+      references: [
+        { reference_id: "prop-2", subject_description: "brass key" },
+        { reference_id: "char-1", subject_description: "Alice in blue" },
+      ],
+    });
+
+    expect(body).toEqual({
+      expected_revision: 3,
+      references: [
+        { reference_id: "prop-2", subject_description: "brass key" },
+        { reference_id: "char-1", subject_description: "Alice in blue" },
+      ],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: narrativeGroupVideoReferencePreviewQueryKey("demo", 2, "ng-1"), exact: true,
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: queryKeys.narrativeGroups("demo", 2), exact: true,
+    });
+  });
+
   it("puts a manual video plan and returns the updated group", async () => {
     let body: unknown;
     server.use(http.put(

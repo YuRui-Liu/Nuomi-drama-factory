@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
+import logging
 import math
 import os
 import threading
@@ -27,8 +29,12 @@ from .models import (
     StageName,
     VideoPlan,
     VideoPlanUnit,
+    VideoReferenceItem,
+    VideoReferenceSettings,
     VideoSettings,
 )
+
+logger = logging.getLogger(__name__)
 
 SIDECAR_VERSION = 1
 VIDEO_PROMPT_MANIFEST_MAX_BYTES = 12 * 1024 * 1024
@@ -292,6 +298,21 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         revision=int(raw_settings.get("revision") or 0),
         overrides=raw_settings.get("overrides") or {},
     )
+    raw_reference_settings = dict(data.get("video_reference_settings") or {})
+    video_reference_settings = VideoReferenceSettings(
+        revision=int(raw_reference_settings.get("revision") or 0),
+        references=tuple(
+            VideoReferenceItem(
+                reference_id=str(item.get("reference_id") or ""),
+                source_kind=str(item.get("source_kind") or ""),
+                label=str(item.get("label") or ""),
+                subject_description=str(item.get("subject_description") or ""),
+                asset_id=str(item.get("asset_id") or ""),
+                temporary_upload_id=str(item.get("temporary_upload_id") or ""),
+            )
+            for item in raw_reference_settings.get("references") or ()
+        ),
+    )
     return NarrativeGroup(
         id=str(data["id"]),
         ordinal=int(data["ordinal"]),
@@ -300,6 +321,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
         video_plan=video_plan,
         video_settings=video_settings,
+        video_reference_settings=video_reference_settings,
         stages=stages or default_stages,
         errors=tuple(data.get("errors") or ()),
         source_span_ids=tuple(
@@ -436,6 +458,11 @@ def _materialize_active_groups(
                 ),
                 video_settings=(
                     previous.video_settings if previous else VideoSettings()
+                ),
+                video_reference_settings=(
+                    previous.video_reference_settings
+                    if previous
+                    else VideoReferenceSettings()
                 ),
                 source_span_ids=group.source_span_ids,
                 shot_ids=shot_ids,
@@ -709,6 +736,7 @@ def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) 
                             else group.video_plan
                         ),
                         video_settings=old.video_settings,
+                        video_reference_settings=old.video_reference_settings,
                         stages=old.stages,
                         errors=old.errors,
                     )
@@ -773,6 +801,175 @@ def update_video_settings(
         save_groups(
             project_dir,
             episode,
+            [updated_group if item.id == group_id else item for item in groups],
+        )
+        return updated_group
+
+
+async def update_video_reference_settings(
+    *,
+    store: object,
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+    selections: Any,
+    max_images: int,
+) -> NarrativeGroup:
+    """Validate and atomically persist ordered logical video references."""
+    from .video_references import (
+        resolve_group_video_reference_preview,
+        validate_video_reference_selections,
+    )
+
+    requested = validate_video_reference_selections(selections, max_images)
+    initial_group = await asyncio.to_thread(
+        _load_video_reference_update_group,
+        project_dir,
+        episode_number,
+        group_id,
+        expected_revision,
+    )
+    preview = await resolve_group_video_reference_preview(
+        store=store,
+        project_dir=project_dir,
+        episode_number=episode_number,
+        group=initial_group,
+        max_images=max_images,
+    )
+    by_id = {candidate.reference_id: candidate for candidate in preview.candidates}
+    unknown = [
+        selection.reference_id
+        for selection in requested
+        if selection.reference_id not in by_id
+    ]
+    if unknown:
+        raise ValueError(
+            "unknown narrative-group video reference IDs: "
+            + ", ".join(sorted(set(unknown)))
+        )
+    references = tuple(
+        VideoReferenceItem(
+            reference_id=selection.reference_id,
+            source_kind=by_id[selection.reference_id].source_kind,
+            label=by_id[selection.reference_id].label,
+            subject_description=selection.subject_description,
+            asset_id=by_id[selection.reference_id].asset_id,
+            temporary_upload_id=by_id[
+                selection.reference_id
+            ].temporary_upload_id,
+        )
+        for selection in requested
+    )
+    return await _finish_started_sync_commit(
+        _commit_video_reference_settings,
+        project_dir,
+        episode_number,
+        group_id,
+        expected_revision,
+        _video_reference_group_fingerprint(initial_group),
+        references,
+    )
+
+
+async def _finish_started_sync_commit(
+    function: Callable[..., NarrativeGroup], /, *args: Any
+) -> NarrativeGroup:
+    """Delay cancellation until an already-started atomic commit has settled."""
+    pending = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        try:
+            await pending
+        except Exception:
+            logger.exception(
+                "video reference commit failed after cancellation"
+            )
+        raise
+
+
+def _video_reference_group_fingerprint(group: NarrativeGroup) -> tuple[Any, ...]:
+    return (
+        group.director_revision_id,
+        group.ordinal,
+        group.beat_ids,
+        group.source_span_ids,
+        group.shot_ids,
+        (group.layout.rows, group.layout.columns, group.layout.capacity),
+        tuple((item.cell, item.beat_id) for item in group.cell_to_beat),
+    )
+
+
+def _assert_video_reference_update_allowed(
+    group: NarrativeGroup, expected_revision: int
+) -> None:
+    if group.video_reference_settings.revision != int(expected_revision):
+        raise RuntimeError("narrative group video reference settings revision is stale")
+    video_stage = group.stages.get("video", GroupStageState())
+    if video_stage.status in {"queued", "running"}:
+        raise RuntimeError(
+            f"cannot update video reference settings while video stage is {video_stage.status}"
+        )
+
+
+def _load_video_reference_update_group(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+) -> NarrativeGroup:
+    groups = load_materialized_groups(project_dir, episode_number)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise KeyError(group_id)
+    _assert_video_reference_update_allowed(group, expected_revision)
+    return group
+
+
+def _commit_video_reference_settings(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_revision: int,
+    expected_group_fingerprint: tuple[Any, ...],
+    references: tuple[VideoReferenceItem, ...],
+) -> NarrativeGroup:
+    with _sidecar_guard(project_dir, episode_number):
+        groups = load_materialized_groups(project_dir, episode_number)
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        _assert_video_reference_update_allowed(group, expected_revision)
+        if _video_reference_group_fingerprint(group) != expected_group_fingerprint:
+            raise RuntimeError(
+                "narrative group structure changed while resolving video references"
+            )
+        if references == group.video_reference_settings.references:
+            return group
+        stages = dict(group.stages)
+        video_stage = stages.get("video", GroupStageState())
+        generated_model = video_stage.actual_model or group.video_settings.workflow_id
+        if (
+            generated_model == "runninghub:minimax-h3-ref"
+            and bool(video_stage.video_asset or video_stage.manifest_asset)
+        ):
+            stages["video"] = replace(
+                video_stage,
+                needs_regeneration=True,
+                stale_reason="video_reference_settings_changed",
+            )
+        updated_group = replace(
+            group,
+            video_reference_settings=VideoReferenceSettings(
+                revision=group.video_reference_settings.revision + 1,
+                references=references,
+            ),
+            stages=stages,
+        )
+        save_groups(
+            project_dir,
+            episode_number,
             [updated_group if item.id == group_id else item for item in groups],
         )
         return updated_group
@@ -932,6 +1129,8 @@ def reserve_video_revision(
     *,
     expected_revision: int,
     expected_plan_revision: int | None = None,
+    expected_settings_revision: int | None = None,
+    expected_reference_revision: int | None = None,
 ) -> tuple[NarrativeGroup, VideoRevisionReservation]:
     """Atomically reserve the next video revision while retaining rollback data.
 
@@ -953,6 +1152,18 @@ def reserve_video_revision(
                 and group.video_plan.revision != int(expected_plan_revision)
             ):
                 raise RuntimeError("narrative group video plan revision is stale")
+            if (
+                expected_settings_revision is not None
+                and group.video_settings.revision
+                != int(expected_settings_revision)
+            ):
+                raise RuntimeError("narrative group video settings revision is stale")
+            if (
+                expected_reference_revision is not None
+                and group.video_reference_settings.revision
+                != int(expected_reference_revision)
+            ):
+                raise RuntimeError("narrative group video reference revision is stale")
             current = group.stages.get("video", GroupStageState())
             if current.revision != int(expected_revision):
                 raise RuntimeError("narrative group video revision is stale")
@@ -966,6 +1177,8 @@ def reserve_video_revision(
                 grid_asset="",
                 cell_assets=(),
                 error="",
+                needs_regeneration=False,
+                stale_reason="",
                 actual_provider="",
                 actual_model="",
                 actual_mode="",
@@ -1173,6 +1386,8 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "dialogue_stem_status": state.dialogue_stem_status,
         "ambience_stem_status": state.ambience_stem_status,
         "error": state.error,
+        "needs_regeneration": state.needs_regeneration,
+        "stale_reason": state.stale_reason,
         "actual_provider": state.actual_provider,
         "actual_model": state.actual_model,
         "actual_mode": state.actual_mode,

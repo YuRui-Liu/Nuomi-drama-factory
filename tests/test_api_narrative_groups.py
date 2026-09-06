@@ -1,4 +1,6 @@
 import json
+import os
+from dataclasses import replace
 from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +21,19 @@ from novelvideo.director_plan.models import (
 )
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.media_capabilities.video.workflow_registry import (
+    VideoReferencePolicy,
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
     VideoWorkflowScene,
+)
+from novelvideo.media_capabilities.models import RunningHubWorkflowSettingsKey
+from novelvideo.narrative_groups.models import VideoReferenceItem
+from novelvideo.narrative_groups.video_references import (
+    MAX_VIDEO_REFERENCE_BYTES,
+    ResolvedVideoReference,
+    VideoReferenceCandidate,
+    VideoReferencePreview,
+    opaque_video_reference_id,
 )
 from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterDefinition,
@@ -98,7 +110,11 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
     capability_store = SimpleNamespace(
         get_provider=lambda provider_id: SimpleNamespace(
             id=provider_id, provider_type="grsai", enabled=True
-        )
+        ),
+        get_runninghub_workflows=lambda: SimpleNamespace(
+            video_minimax_h3_ref_max_images=2,
+            video_minimax_h3_ref="2096502793044582401",
+        ),
     )
     credential_resolver = object()
     media_store_dependency = narrative_groups.get_media_capability_store
@@ -120,6 +136,7 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
                     label="RunningHub MiniMax H3",
                     provider="runninghub",
                     adapter_key="minimax-h3",
+                    workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                     supported_modes=("auto", "i2va", "fl2va"),
                     parameters=(
@@ -148,6 +165,56 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
         narrative_groups.get_media_credential_resolver
     ] = lambda: credential_resolver
     return TestClient(app), backend
+
+
+def image_bytes(image_format="PNG", *, size=(8, 8)):
+    output = BytesIO()
+    Image.new("RGB", size, "#4477aa").save(output, format=image_format)
+    return output.getvalue()
+
+
+def install_h3_reference_registry(monkeypatch, *, max_images=2):
+    monkeypatch.setattr(
+        narrative_groups,
+        "build_video_workflow_registry",
+        lambda store, resolver: VideoWorkflowRegistry(
+            (
+                VideoWorkflowDefinition(
+                    id="runninghub:minimax-h3-ref",
+                    label="RunningHub MiniMax H3 Ref",
+                    provider="runninghub",
+                    adapter_key="minimax-h3-ref",
+                    workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
+                    provider_workflow_id="2096502793044582401",
+                    scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+                    supported_modes=("auto", "i2va", "fl2va"),
+                    reference_policy=VideoReferencePolicy(
+                        required=True, min_images=1, max_images=max_images
+                    ),
+                ),
+            )
+        ),
+    )
+
+
+def prepare_render_frames(tmp_path: Path):
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    cells = []
+    for index in range(1, 7):
+        frame = frame_dir / f"beat-{index}.png"
+        frame.write_bytes(image_bytes())
+        cells.append({"beat_id": f"beat-{index}", "path": str(frame)})
+    advance_revision(tmp_path, 1, "ng-01", "render")
+    record_stage_result(
+        tmp_path,
+        1,
+        "ng-01",
+        "render",
+        expected_revision=1,
+        status="completed",
+        cell_assets=cells,
+    )
 
 
 def activate_director_plan(tmp_path: Path) -> None:
@@ -458,6 +525,849 @@ def test_put_video_plan_rejects_non_partition(monkeypatch, tmp_path):
     assert response.status_code == 422
 
 
+def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    identity = (
+        tmp_path
+        / "assets"
+        / "characters"
+        / "RealOwner"
+        / "identities"
+        / "identity-007.png"
+    )
+    identity.parent.mkdir(parents=True)
+    identity.write_bytes(image_bytes())
+    reference_id = opaque_video_reference_id(
+        "character_identity", "identity-007"
+    )
+
+    async def preview(**kwargs):
+        return VideoReferencePreview(
+            revision=3,
+            candidates=(
+                VideoReferenceCandidate(
+                    reference_id=reference_id,
+                    source_kind="character_identity",
+                    label="Age Variant",
+                    subject_description="The real owner identity",
+                    asset_id="identity-007",
+                    character_name="RealOwner",
+                    beat_ids=("beat-1", "beat-2"),
+                ),
+            ),
+            references=(
+                VideoReferenceItem(
+                    reference_id=reference_id,
+                    source_kind="character_identity",
+                    label="Age Variant",
+                    subject_description="The selected identity",
+                    asset_id="identity-007",
+                ),
+            ),
+            warnings=("one warning",),
+            max_images=2,
+        )
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_group_video_reference_preview", preview
+    )
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-preview"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data == {
+        "revision": 3,
+        "max_images": 2,
+        "candidates": [{
+            "reference_id": reference_id,
+            "source_kind": "character_identity",
+            "label": "Age Variant",
+            "subject_description": "The real owner identity",
+            "thumbnail_url": (
+                "/api/v1/projects/demo/media/assets/characters/RealOwner/"
+                "identities/identity-007.png"
+            ),
+            "beat_ids": ["beat-1", "beat-2"],
+        }],
+        "selected": [{
+            "reference_id": reference_id,
+            "subject_description": "The selected identity",
+        }],
+        "warnings": ["one warning"],
+    }
+    serialized = json.dumps(data)
+    assert str(tmp_path) not in serialized
+    assert "asset_id" not in serialized
+    assert "temporary_upload_id" not in serialized
+
+    missing = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/missing/"
+        "video/reference-preview"
+    )
+    assert missing.status_code == 404
+
+
+def test_video_reference_upload_normalizes_png_and_ignores_filename(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("../../outside.jpg", image_bytes("JPEG"), "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    candidate = response.json()["data"]
+    assert set(candidate) == {
+        "reference_id", "source_kind", "label", "subject_description",
+        "thumbnail_url", "beat_ids",
+    }
+    assert candidate["source_kind"] == "temporary_upload"
+    assert candidate["thumbnail_url"].startswith("/api/v1/projects/demo/media/")
+    uploads = list(
+        (tmp_path / "videos" / "ep001" / "narrative_groups" / "references" / "ng-01").glob("*.png")
+    )
+    assert len(uploads) == 1
+    assert Image.open(uploads[0]).format == "PNG"
+    assert not (tmp_path.parent / "outside.jpg").exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        (b"not-an-image", "image/png"),
+        (b"", "image/png"),
+        (b"x" * (MAX_VIDEO_REFERENCE_BYTES + 1), "image/png"),
+        (image_bytes(), "image/gif"),
+    ],
+    ids=("bad-image", "empty", "too-large", "bad-mime"),
+)
+def test_video_reference_upload_rejects_invalid_files_without_partial_output(
+    monkeypatch, tmp_path, content, content_type
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("input.png", content, content_type)},
+    )
+
+    assert response.status_code == 422
+    upload_root = (
+        tmp_path / "videos" / "ep001" / "narrative_groups" / "references" / "ng-01"
+    )
+    assert not upload_root.exists() or list(upload_root.iterdir()) == []
+
+
+def test_video_reference_upload_rejects_images_over_pixel_limit(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(narrative_groups, "MAX_VIDEO_REFERENCE_PIXELS", 63)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("large.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+
+
+def test_video_reference_upload_rejects_normalized_png_over_byte_limit(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    monkeypatch.setattr(narrative_groups, "MAX_VIDEO_REFERENCE_BYTES", 1_000)
+    monkeypatch.setattr(narrative_groups, "MAX_UPLOAD_BYTES", 2_000)
+    monkeypatch.setattr(
+        narrative_groups,
+        "_normalize_video_reference_upload",
+        lambda content, content_type: b"x" * 1_001,
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("small.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    upload_root = (
+        tmp_path / "videos" / "ep001" / "narrative_groups" / "references" / "ng-01"
+    )
+    assert not upload_root.exists() or list(upload_root.iterdir()) == []
+
+
+def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    endpoint = (
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/references"
+    )
+    upload_endpoint = (
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads"
+    )
+    first = client.post(
+        upload_endpoint,
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    ).json()["data"]
+    second = client.post(
+        upload_endpoint,
+        files={"file": ("two.webp", image_bytes("WEBP"), "image/webp")},
+    ).json()["data"]
+    third = client.post(
+        upload_endpoint,
+        files={"file": ("three.png", image_bytes(), "image/png")},
+    ).json()["data"]
+
+    response = client.put(endpoint, json={
+        "expected_revision": 0,
+        "references": [
+            {"reference_id": second["reference_id"], "subject_description": " Second "},
+            {"reference_id": first["reference_id"], "subject_description": "First"},
+        ],
+    })
+    assert response.status_code == 200
+    assert response.json()["data"]["selected"] == [
+        {"reference_id": second["reference_id"], "subject_description": "Second"},
+        {"reference_id": first["reference_id"], "subject_description": "First"},
+    ]
+    assert client.put(endpoint, json={
+        "expected_revision": 0,
+        "references": [{"reference_id": first["reference_id"], "subject_description": "First"}],
+    }).status_code == 409
+    for references in (
+        [],
+        [
+            {"reference_id": item["reference_id"], "subject_description": "Image"}
+            for item in (first, second, third)
+        ],
+        [{"reference_id": "unknown", "subject_description": "Unknown"}],
+        [{"reference_id": first["reference_id"], "subject_description": "  "}],
+        [{"reference_id": first["reference_id"], "subject_description": "two\nlines"}],
+    ):
+        assert client.put(endpoint, json={
+            "expected_revision": 1, "references": references,
+        }).status_code == 422
+    assert client.put(endpoint, json={
+        "expected_revision": 1,
+        "references": [{
+            "reference_id": first["reference_id"],
+            "subject_description": "First",
+            "path": "/tmp/client-controlled.png",
+        }],
+    }).status_code == 422
+
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    assert client.put(endpoint, json={
+        "expected_revision": 1,
+        "references": [{"reference_id": first["reference_id"], "subject_description": "First"}],
+    }).status_code == 409
+
+
+def test_put_video_references_validates_trimmed_description_and_top_level_extra(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prefix = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video"
+    candidate = client.post(
+        f"{prefix}/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    ).json()["data"]
+    reference = {
+        "reference_id": candidate["reference_id"],
+        "subject_description": f"  {'x' * 500}  ",
+    }
+
+    accepted = client.put(
+        f"{prefix}/references",
+        json={"expected_revision": 0, "references": [reference]},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["selected"][0]["subject_description"] == "x" * 500
+
+    too_long = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 1,
+            "references": [{**reference, "subject_description": "x" * 501}],
+        },
+    )
+    top_level_extra = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 1,
+            "references": [reference],
+            "path": "/tmp/client-controlled.png",
+        },
+    )
+    assert too_long.status_code == top_level_extra.status_code == 422
+
+
+@pytest.mark.parametrize("failed_operation", ["write", "rename"])
+@pytest.mark.skipif(os.name == "nt", reason="exercises POSIX writer failures")
+def test_video_reference_upload_surfaces_safe_writer_failure_without_temp_files(
+    monkeypatch, tmp_path, failed_operation
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+
+    if failed_operation == "write":
+        monkeypatch.setattr(
+            os,
+            "write",
+            lambda descriptor, content: (_ for _ in ()).throw(OSError("write failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "rename",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failed")),
+        )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert failed_operation in response.json()["detail"]
+    assert list(group_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure_mode", ["resolver-validation", "candidate-missing"])
+def test_video_reference_upload_cleans_published_file_when_preview_fails(
+    monkeypatch, tmp_path, failure_mode
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+
+    async def failed_preview(**kwargs):
+        if failure_mode == "resolver-validation":
+            raise ValueError("simulated preview validation failure")
+        return VideoReferencePreview(
+            revision=0,
+            candidates=(),
+            references=(),
+            warnings=(),
+            max_images=2,
+        )
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "resolve_group_video_reference_preview",
+        failed_preview,
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert group_root.is_dir()
+    assert list(group_root.iterdir()) == []
+
+
+def test_video_reference_upload_cleans_internal_failure_without_leaking_detail(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client = TestClient(client.app, raise_server_exceptions=False)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    group_root = (
+        tmp_path
+        / "videos"
+        / "ep001"
+        / "narrative_groups"
+        / "references"
+        / "ng-01"
+    )
+    secret = "database-password=do-not-leak"
+    original_store_factory = narrative_groups.make_sqlite_store_for_context
+    store_calls = 0
+
+    async def fail_store(*args, **kwargs):
+        nonlocal store_calls
+        store_calls += 1
+        if store_calls == 2:
+            raise RuntimeError(secret)
+        return await original_store_factory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        narrative_groups, "make_sqlite_store_for_context", fail_store
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
+        "video/reference-uploads",
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 500
+    assert secret not in response.text
+    assert group_root.is_dir()
+    assert list(group_root.iterdir()) == []
+
+
+def test_h3_reference_generate_requires_current_reference_revision_before_reserve(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
+    base = {
+        "model": "runninghub:minimax-h3-ref",
+        "mode": "auto",
+        "revision": 0,
+        "plan_revision": 1,
+    }
+
+    missing = client.post(endpoint, json=base)
+    stale = client.post(endpoint, json={**base, "reference_revision": 1})
+
+    assert missing.status_code == stale.status_code == 409
+    assert backend.calls == []
+    group = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]
+    assert group["stages"]["video"]["revision"] == 0
+
+
+def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
+    request = {
+        "model": "runninghub:minimax-h3-ref",
+        "mode": "auto",
+        "revision": 0,
+        "plan_revision": 1,
+        "reference_revision": 0,
+    }
+    no_references = client.post(endpoint, json=request)
+    assert no_references.status_code == 422
+    assert backend.calls == []
+
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque",
+            source_kind="temporary_upload",
+            label="reference",
+            subject_description="Hero",
+            path=reference_path,
+            content=reference_path.read_bytes(),
+            sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    snapshots = []
+    lifecycle = []
+
+    def persist_snapshot(**kwargs):
+        lifecycle.append("persist")
+        snapshots.append(kwargs)
+        return SimpleNamespace(snapshot_id="1" * 32, digest="a" * 64)
+
+    bound = []
+
+    def bind_snapshot(**kwargs):
+        lifecycle.append("bind")
+        bound.append(kwargs)
+
+    original_enqueue = backend.enqueue_project_task
+
+    async def tracked_enqueue(*args, **kwargs):
+        lifecycle.append("enqueue")
+        return await original_enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "persist_h3_reference_input_snapshot",
+        persist_snapshot,
+    )
+    monkeypatch.setattr(
+        narrative_groups, "bind_h3_reference_snapshot_owner", bind_snapshot
+    )
+    monkeypatch.setattr(backend, "enqueue_project_task", tracked_enqueue)
+    no_frames = client.post(endpoint, json=request)
+    assert no_frames.status_code == 422
+    assert backend.calls == []
+    prepare_render_frames(tmp_path)
+
+    missing_tail = client.post(endpoint, json={**request, "mode": "fl2va"})
+    assert missing_tail.status_code == 422
+    assert backend.calls == []
+    group = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).json()["data"][0]
+    assert group["stages"]["video"]["revision"] == 0
+
+    accepted = client.post(endpoint, json=request)
+    assert accepted.status_code == 202
+    payload = backend.calls[0][1]["payload"]
+    assert payload["reference_revision"] == 0
+    assert payload["reference_contract_version"] == 1
+    assert payload["provider_workflow_id"] == "2096502793044582401"
+    assert payload["reference_limit"] == 2
+    assert payload["reference_snapshot_id"] == "1" * 32
+    assert payload["reference_snapshot_digest"] == "a" * 64
+    assert snapshots[0]["reference_revision"] == 0
+    assert snapshots[0]["reference_limit"] == 2
+    assert snapshots[0]["provider_workflow_id"] == "2096502793044582401"
+    assert tuple(snapshots[0]["references"])[0].reference_id == "opaque"
+    assert snapshots[0]["frames"]
+    assert lifecycle == ["persist", "enqueue", "bind"]
+    assert bound == [{
+        "state_root": str(tmp_path),
+        "snapshot_id": "1" * 32,
+        "snapshot_digest": "a" * 64,
+        "task_id": "task-1",
+    }]
+
+
+def test_h3_reference_reservation_rechecks_reference_revision_atomically(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def race_references(**kwargs):
+        groups = narrative_group_service.load_materialized_groups(tmp_path, 1)
+        group = groups[0]
+        changed = group.video_reference_settings.__class__(
+            revision=group.video_reference_settings.revision + 1,
+            references=group.video_reference_settings.references,
+        )
+        narrative_group_service.save_groups(
+            tmp_path, 1,
+            (replace(group, video_reference_settings=changed),),
+        )
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", race_references
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 409
+    assert backend.calls == []
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == "pending"
+    assert group.stages["video"].revision == 0
+
+
+@pytest.mark.parametrize(
+    ("task_status", "task_metadata", "expected_stage_status", "expected_revision"),
+    [
+        pytest.param(None, None, "pending", 0, id="no-task-state"),
+        pytest.param("lookup-error", None, "queued", 1, id="task-state-read-error"),
+        pytest.param("malformed-task", None, "queued", 1, id="malformed-task"),
+        pytest.param(
+            "malformed-metadata", object(), "queued", 1, id="malformed-metadata"
+        ),
+        pytest.param(
+            "queued",
+            {"reference_snapshot_id": "2" * 32},
+            "queued",
+            1,
+            id="incomplete-ownership-metadata",
+        ),
+        pytest.param(
+            "malformed-status",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "queued",
+            1,
+            id="malformed-status",
+        ),
+        pytest.param(
+            "failed",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "pending",
+            0,
+            id="inline-lane-full-failed",
+        ),
+        pytest.param(
+            "submitting",
+            {
+                "reference_snapshot_id": "2" * 32,
+                "reference_snapshot_digest": "b" * 64,
+            },
+            "queued",
+            1,
+            id="partial-submit-active",
+        ),
+        pytest.param(
+            "queued",
+            {
+                "reference_snapshot_id": "foreign-snapshot",
+                "reference_snapshot_digest": "foreign-digest",
+            },
+            "pending",
+            0,
+            id="unrelated-active-task",
+        ),
+    ],
+)
+def test_h3_reference_enqueue_failure_recovers_reservation_by_task_state(
+    monkeypatch,
+    tmp_path,
+    task_status,
+    task_metadata,
+    expected_stage_status,
+    expected_revision,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    retained = []
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    monkeypatch.setattr(
+        narrative_groups, "persist_h3_reference_input_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            snapshot_id="2" * 32, digest="b" * 64
+        ),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "retain_h3_reference_snapshot",
+        lambda **kwargs: retained.append(kwargs),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "get_task_backend", lambda: FailingBackend()
+    )
+    if task_status is None:
+        task_state = None
+    elif task_status == "malformed-task":
+        task_state = object()
+    else:
+        task_state = SimpleNamespace(
+            status=object() if task_status == "malformed-status" else task_status,
+            metadata=task_metadata,
+        )
+    def get_task_state(*args, **kwargs):
+        if task_status == "lookup-error":
+            raise OSError("sensitive database path")
+        return task_state
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "get_task_manager",
+        lambda: SimpleNamespace(
+            get_task_for_project=get_task_state
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Narrative group video queue is unavailable"
+    }
+    assert retained == [{
+        "state_root": str(tmp_path), "snapshot_id": "2" * 32,
+    }]
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == expected_stage_status
+    assert group.stages["video"].revision == expected_revision
+
+
+def test_h3_reference_snapshot_bind_failure_retains_inputs_for_enqueued_task(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    retained = []
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    monkeypatch.setattr(
+        narrative_groups, "persist_h3_reference_input_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            snapshot_id="3" * 32, digest="c" * 64
+        ),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "bind_h3_reference_snapshot_owner",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("bind failed")),
+    )
+    monkeypatch.setattr(
+        narrative_groups, "retain_h3_reference_snapshot",
+        lambda **kwargs: retained.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 202
+    assert len(backend.calls) == 1
+    assert retained == [{
+        "state_root": str(tmp_path), "snapshot_id": "3" * 32,
+    }]
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == "queued"
+    assert group.stages["video"].revision == 1
+
+
+def test_h3_reference_successfully_enqueues_an_activated_snapshot(
+    monkeypatch, tmp_path
+):
+    import hashlib
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_content = image_bytes()
+    reference_path.write_bytes(reference_content)
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_content,
+            sha256=hashlib.sha256(reference_content).hexdigest(),
+            temporary_upload_id="upload",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 202
+    snapshot_id = backend.calls[0][1]["payload"]["reference_snapshot_id"]
+    lease = json.loads((
+        tmp_path / "h3_reference_input_snapshots" / snapshot_id / "lease.json"
+    ).read_text(encoding="utf-8"))
+    assert lease["state"] == "queued"
+    assert lease["expires_at"] is None
+    assert lease["owner_task_id"] == "task-1"
+
+
+def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3",
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 1,
+            "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 202
+    assert "reference_revision" not in backend.calls[0][1]["payload"]
+
+
 def test_video_generate_rejects_stale_plan_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -511,6 +1421,7 @@ def test_video_generate_accepts_future_registered_model(monkeypatch, tmp_path):
                     label="Future Director V2",
                     provider="future",
                     adapter_key="director-v2",
+                    workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                     supported_modes=("auto",),
                 ),
@@ -545,6 +1456,7 @@ def test_video_generate_rejects_unsupported_registered_mode(monkeypatch, tmp_pat
                     label="RunningHub MiniMax H3",
                     provider="runninghub",
                     adapter_key="minimax-h3",
+                    workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                     supported_modes=("i2va",),
                     default_mode="i2va",
@@ -1320,6 +2232,82 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
     ):
         assert secret not in serialized
     assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
+
+
+def test_get_video_prompts_returns_safe_h3_reference_manifest_contract(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": "runninghub:minimax-h3-ref",
+        "provider_workflow_id": "2096502793044582401",
+        "reference_settings_revision": 7,
+        "reference_limit": 5,
+        "global_references": [{
+            "picture_index": 1,
+            "reference_id": "opaque-hero",
+            "source_kind": "character_identity",
+            "label": "Lead",
+            "subject_description": "Hero in a blue coat",
+            "sha256": "a" * 64,
+            "path": str(tmp_path / "private.png"),
+            "content": "secret-image-bytes",
+            "asset_id": "Alice_Hero",
+        }],
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workflow_id"] == "runninghub:minimax-h3-ref"
+    assert data["provider_workflow_id"] == "2096502793044582401"
+    assert data["reference_settings_revision"] == 7
+    assert data["reference_limit"] == 5
+    assert data["global_references"] == [{
+        "picture_index": 1,
+        "reference_id": "opaque-hero",
+        "source_kind": "character_identity",
+        "label": "Lead",
+        "subject_description": "Hero in a blue coat",
+        "sha256": "a" * 64,
+    }]
+    assert "private.png" not in response.text
+    assert "secret-image-bytes" not in response.text
+    assert "asset_id" not in response.text
+
+
+def test_get_video_prompts_treats_non_list_global_references_as_empty(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "global_references": {"content": "must-not-leak"},
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["global_references"] == []
+    assert "must-not-leak" not in response.text
 
 
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):
