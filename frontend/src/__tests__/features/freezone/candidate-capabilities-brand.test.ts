@@ -20,13 +20,13 @@ const PRODUCTION_STYLE_DESCRIPTOR =
   "cohesive production style with consistent characters, environments, and shot-to-shot continuity";
 
 describe("candidate capability branding", () => {
-  it("shows the NuomiDrama production style while preserving its preset value", () => {
+  it("shows the Nuomi Drama Factory production style while preserving its preset value", () => {
     const styleParam = sceneMasterCandidateCapability.params.find((param) => param.key === "style");
 
     expect(styleParam?.defaultValue).toBe("supertale_production");
     expect(styleParam?.options).toContainEqual({
       value: "supertale_production",
-      label: "NuomiDrama 生产风格",
+      label: "Nuomi Drama Factory 生产风格",
     });
     expect(styleParam?.options).not.toContainEqual(expect.objectContaining({ label: "SuperTale 生产风格" }));
   });

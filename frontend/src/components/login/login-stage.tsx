@@ -9,9 +9,9 @@ import { businessWechatQrUrl } from "./cinematic/media";
 import styles from "./login.module.css";
 
 // 登录页右上角 GitHub 链接目标。如需指向具体仓库/主页，改这里即可。
-const GITHUB_URL = "https://github.com/dramaclaw/dramaclaw";
+const GITHUB_URL = "https://github.com/YuRui-Liu/Nuomi-drama-factory";
 // 从 GITHUB_URL 推导出 owner/repo，用于拉取 star 数。
-const GITHUB_REPO = "dramaclaw/dramaclaw";
+const GITHUB_REPO = "YuRui-Liu/Nuomi-drama-factory";
 
 function formatStars(count: number): string {
   if (count < 1000) return String(count);

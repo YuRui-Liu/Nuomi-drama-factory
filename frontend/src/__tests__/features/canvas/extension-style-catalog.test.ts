@@ -91,7 +91,7 @@ describe("extension style catalog", () => {
       id: "existing.ink-cinema",
       label: "水墨电影感",
       style_prompt: "cinematic ink wash",
-      author: "DramaClaw",
+      author: "Nuomi Drama Factory",
       category: "现有风格",
     };
 

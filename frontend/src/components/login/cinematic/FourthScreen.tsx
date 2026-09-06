@@ -89,7 +89,7 @@ export function FourthScreen({
           })}
         </div>
 
-        <div className={styles.grid} aria-label="NuomiDrama 创作流程">
+        <div className={styles.grid} aria-label="Nuomi Drama Factory 创作流程">
           <article className={`${styles.item} ${activeIndex === 0 ? styles.itemActive : ""}`}>
             <span className={styles.number}>01</span>
             <h3>故事拆解</h3>

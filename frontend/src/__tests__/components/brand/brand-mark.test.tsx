@@ -31,19 +31,19 @@ describe("BrandMark", () => {
   });
 });
 
-describe("NuomiDrama page metadata", () => {
+describe("Nuomi Drama Factory page metadata", () => {
   const html = readFileSync("index.html", "utf8");
   const page = new DOMParser().parseFromString(html, "text/html");
 
-  it("uses the NuomiDrama brand in search and social metadata", () => {
+  it("uses the full Nuomi Drama Factory name in search and social metadata", () => {
     expect(page.documentElement.getAttribute("lang")).toBe("zh-CN");
-    expect(page.title).toContain("NuomiDrama");
-    expect(page.querySelector('meta[name="description"]')?.getAttribute("content")).toContain("NuomiDrama");
-    expect(page.querySelector('meta[property="og:site_name"]')?.getAttribute("content")).toContain("NuomiDrama");
-    expect(page.querySelector('meta[property="og:title"]')?.getAttribute("content")).toContain("NuomiDrama");
-    expect(page.querySelector('meta[property="og:description"]')?.getAttribute("content")).toContain("NuomiDrama");
-    expect(page.querySelector('meta[name="twitter:title"]')?.getAttribute("content")).toContain("NuomiDrama");
-    expect(page.querySelector('meta[name="twitter:description"]')?.getAttribute("content")).toContain("NuomiDrama");
+    expect(page.title).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[name="description"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[property="og:site_name"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[property="og:title"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[property="og:description"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[name="twitter:title"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
+    expect(page.querySelector('meta[name="twitter:description"]')?.getAttribute("content")).toContain("Nuomi Drama Factory");
     expect(page.querySelector('meta[name="twitter:card"]')?.getAttribute("content")).toBe("summary");
     expect(html).not.toMatch(/DramaClaw|SuperTale/);
   });

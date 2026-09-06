@@ -2134,7 +2134,7 @@ function uploadedFileFromPrepared(item: PreparedIngestAttachment): UploadedInges
 function buildUploadedFilesContext(project: string | undefined, files: UploadedIngestFile[]): string {
   const lines = [
     "[DRAMACLAW_UPLOADED_FILES]",
-    "If the user asks what files are currently uploaded, answer directly from this list. These files have already been uploaded to the current NuomiDrama project ingest directory.",
+    "If the user asks what files are currently uploaded, answer directly from this list. These files have already been uploaded to the current Nuomi Drama Factory project ingest directory.",
     project ? `dramaclaw_project_id: ${project}` : null,
   ].filter((line): line is string => line !== null);
 
@@ -2347,7 +2347,7 @@ async function buildAttachmentAnalysisContext(
 ): Promise<string> {
   const lines = [
     "[DRAMACLAW_ATTACHMENT_CONTEXT]",
-    "The user attached file(s). No explicit video-generation instruction was detected, so do not start the NuomiDrama video pipeline unless the user asks for it later. Analyze the attached text when available, and ask a focused follow-up if the intent is ambiguous.",
+    "The user attached file(s). No explicit video-generation instruction was detected, so do not start the Nuomi Drama Factory video pipeline unless the user asks for it later. Analyze the attached text when available, and ask a focused follow-up if the intent is ambiguous.",
   ];
 
   for (const prepared of preparedAttachments) {
@@ -2414,7 +2414,7 @@ function appendIngestAutomationContext(
     result.taskType ? `task_type: ${result.taskType}` : null,
     result.taskKey ? `task_key: ${result.taskKey}` : null,
     result.message ? `message: ${result.message}` : null,
-    "The uploaded novel has already been submitted to the project ingest API. Continue the NuomiDrama video creation workflow from this task instead of asking the user to upload a novel again.",
+    "The uploaded novel has already been submitted to the project ingest API. Continue the Nuomi Drama Factory video creation workflow from this task instead of asking the user to upload a novel again.",
     "[/DRAMACLAW_INGEST_AUTOMATION]",
   ].filter((line): line is string => line !== null).join("\n");
 }
@@ -2475,7 +2475,7 @@ export function SuperChatPanel({
   const taskEventBus = useEventBus();
   const chat = useSuperChat({
     project: params.project,
-    displayName: username || "NuomiDrama",
+    displayName: username || "Nuomi Drama Factory",
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 

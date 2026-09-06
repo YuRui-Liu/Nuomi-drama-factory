@@ -30,7 +30,7 @@ const INSTALLER_EXT: Record<DesktopPlatform, string> = {
  * 页含全部平台资产,慢但可达,按钮永远不会点了没反应。
  */
 export const FALLBACK_DOWNLOAD_URL =
-  "https://github.com/dramaclaw/dramaclaw/releases/latest";
+  "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/latest";
 
 /** 从 electron-updater 清单文本里挑出目标平台的安装包文件名。 */
 export function pickInstallerFromManifest(

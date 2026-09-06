@@ -77,11 +77,11 @@ export function SeventhPipelineScreen({
         <p>PIPELINE 07</p>
         <h2>让短剧生成从抽卡走向流程</h2>
         <span>
-          NuomiDrama 把 AI 视频创作中的不确定性拆解到剧本、资产、镜头和任务流程中
+          Nuomi Drama Factory 把 AI 视频创作中的不确定性拆解到剧本、资产、镜头和任务流程中
         </span>
       </div>
 
-      <div className={styles.pipeline} aria-label="NuomiDrama 制片流程">
+      <div className={styles.pipeline} aria-label="Nuomi Drama Factory 制片流程">
         <div className={styles.track} aria-hidden="true" />
         <div className={styles.trackFill} aria-hidden="true" />
         {steps.map((step, index) => {

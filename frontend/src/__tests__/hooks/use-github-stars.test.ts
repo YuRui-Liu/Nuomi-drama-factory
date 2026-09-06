@@ -5,7 +5,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { useGithubStars } from "@/hooks/use-github-stars";
 
 const STORAGE_KEY = "dramaclaw.login.githubStars";
-const REPO = "dramaclaw/dramaclaw";
+const REPO = "YuRui-Liu/Nuomi-drama-factory";
 
 function mockFetchOk(count: number) {
   return vi.fn().mockResolvedValue({
@@ -33,11 +33,18 @@ describe("useGithubStars", () => {
   });
 
   it("updates the value and persists it to localStorage on a successful fetch", async () => {
-    vi.stubGlobal("fetch", mockFetchOk(1500));
+    const fetchMock = mockFetchOk(1500);
+    vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useGithubStars(REPO));
 
     await waitFor(() => expect(result.current).toBe(1500));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/YuRui-Liu/Nuomi-drama-factory",
+      expect.objectContaining({
+        headers: { Accept: "application/vnd.github+json" },
+      }),
+    );
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("1500");
   });
 

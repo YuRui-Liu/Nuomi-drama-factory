@@ -19,7 +19,7 @@ it("uses provider presets without overwriting a manually edited base URL", async
   fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://custom.example/v1" } });
   await user.click(screen.getByRole("combobox", { name: "供应商" }));
   expect(screen.queryByText("DramaClawAPI")).not.toBeInTheDocument();
-  await user.click(screen.getByText("NuomiDrama API"));
+  await user.click(screen.getByText("Nuomi Drama Factory API"));
   expect(screen.getByLabelText("Base URL")).toHaveValue("https://custom.example/v1");
   expect(screen.getByLabelText("模型")).toHaveValue("DC-scene-builder-LLM");
   fireEvent.click(screen.getByRole("button", { name: "保存普通文本模型" }));

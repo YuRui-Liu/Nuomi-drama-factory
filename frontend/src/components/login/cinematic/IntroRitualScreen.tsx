@@ -24,7 +24,7 @@ export function IntroRitualScreen({
   return (
     <section
       className={styles.layer}
-      aria-label="NuomiDrama 介绍"
+      aria-label="Nuomi Drama Factory 介绍"
       onClick={onComplete}
       onWheel={onComplete}
     >

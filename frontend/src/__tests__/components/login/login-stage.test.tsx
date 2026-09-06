@@ -72,7 +72,7 @@ import { LoginStageContent } from "@/components/login/login-stage";
 import { LoginCinematicPage } from "@/components/login/cinematic/LoginCinematicPage";
 
 describe("LoginStageContent", () => {
-  it("presents NuomiDrama as a professional production workspace", () => {
+  it("presents Nuomi Drama Factory as a professional production workspace", () => {
     render(<LoginStageContent onStart={vi.fn()} />);
 
     expect(screen.getByLabelText("NuomiDrama")).toBeInTheDocument();
@@ -89,7 +89,7 @@ describe("LoginStageContent", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
     expect(onStart).toHaveBeenCalledOnce();
     expect(screen.getByRole("link", { name: "打开产品手册" })).toHaveAttribute("href");
-    expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute("href", "https://github.com/dramaclaw/dramaclaw");
+    expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute("href", "https://github.com/YuRui-Liu/Nuomi-drama-factory");
     expect(screen.getByRole("button", { name: "打开商务联系" })).toBeInTheDocument();
   });
 });

@@ -5,15 +5,15 @@ import { describe, expect, it } from "vitest";
 const readSource = (path: string) =>
   readFileSync(resolve(process.cwd(), path), "utf8");
 
-describe("NuomiDrama runtime brand contract", () => {
-  it("uses NuomiDrama in assistant-facing text and as the chat display-name fallback", () => {
+describe("Nuomi Drama Factory runtime brand contract", () => {
+  it("uses the full product name in assistant-facing text and as the chat display-name fallback", () => {
     const source = readSource("src/features/superchat/superchat-panel.tsx");
 
     expect(source).not.toMatch(/SuperTale(?:_N)?|DramaClaw\/SuperTale/);
-    expect(source).toContain('displayName: username || "NuomiDrama"');
-    expect(source).toContain("current NuomiDrama project ingest directory");
-    expect(source).toContain("NuomiDrama video pipeline");
-    expect(source).toContain("NuomiDrama video creation workflow");
+    expect(source).toContain('displayName: username || "Nuomi Drama Factory"');
+    expect(source).toContain("current Nuomi Drama Factory project ingest directory");
+    expect(source).toContain("Nuomi Drama Factory video pipeline");
+    expect(source).toContain("Nuomi Drama Factory video creation workflow");
   });
 
   it("uses the NuomiDrama brand for the viewer translate gizmo debug layer", () => {

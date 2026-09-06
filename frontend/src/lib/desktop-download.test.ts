@@ -4,8 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   detectDesktopPlatform,
+  FALLBACK_DOWNLOAD_URL,
   pickInstallerFromManifest,
 } from "./desktop-download";
+
+it("falls back to the public Nuomi Drama Factory releases page", () => {
+  expect(FALLBACK_DOWNLOAD_URL).toBe(
+    "https://github.com/YuRui-Liu/Nuomi-drama-factory/releases/latest",
+  );
+});
 
 // 与发布流水线产出的 electron-updater 清单同形状(url 字段带版本号文件名)。
 const WINDOWS_MANIFEST = `version: 1.1.0

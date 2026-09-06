@@ -40,7 +40,7 @@ export function TwelfthFinalScreen({
       </div>
       <div className={styles.content}>
         <h2>把一句设定推进成完整剧集</h2>
-        <p>输入角色冲突或世界观，让 NuomiDrama 拆成可制作、可调整的镜头节点</p>
+        <p>输入角色冲突或世界观，让 Nuomi Drama Factory 拆成可制作、可调整的镜头节点</p>
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onStart}>
             开始创作
