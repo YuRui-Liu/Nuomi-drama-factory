@@ -104,24 +104,24 @@ def _reference_enqueue_may_have_owner(
             episode,
             scope=scope,
         )
+        if task is None:
+            return False
+        metadata = dict(task.metadata or {})
+        if not metadata and isinstance(task.result, dict):
+            metadata = dict(task.result.get("task_metadata") or {})
+        owns_snapshot = (
+            metadata.get("reference_snapshot_id") == snapshot_id
+            and metadata.get("reference_snapshot_digest") == snapshot_digest
+        )
+        if not owns_snapshot:
+            return False
+        return (
+            task.status in ACTIVE_PROJECT_TASK_STATUSES
+            or task.status == "retryable"
+            or metadata.get("retryable") is True
+        )
     except Exception:
-        return True
-    if task is None:
         return False
-    metadata = dict(task.metadata or {})
-    if not metadata and isinstance(task.result, dict):
-        metadata = dict(task.result.get("task_metadata") or {})
-    owns_snapshot = (
-        metadata.get("reference_snapshot_id") == snapshot_id
-        and metadata.get("reference_snapshot_digest") == snapshot_digest
-    )
-    if not owns_snapshot:
-        return False
-    return (
-        task.status in ACTIVE_PROJECT_TASK_STATUSES
-        or task.status == "retryable"
-        or metadata.get("retryable") is True
-    )
 
 
 class NarrativeGroupGenerationRequest(BaseModel):
@@ -1363,13 +1363,6 @@ async def _enqueue_group_video(
         )
     except Exception as exc:
         if reference_snapshot_id is not None:
-            has_owner = _reference_enqueue_may_have_owner(
-                ctx=resolved.ctx,
-                episode=episode,
-                scope=scope,
-                snapshot_id=reference_snapshot_id,
-                snapshot_digest=persisted_snapshot.digest,
-            )
             try:
                 retain_h3_reference_snapshot(
                     state_root=resolved.ctx.state_dir,
@@ -1377,6 +1370,13 @@ async def _enqueue_group_video(
                 )
             except (OSError, ValueError):
                 pass
+            has_owner = _reference_enqueue_may_have_owner(
+                ctx=resolved.ctx,
+                episode=episode,
+                scope=scope,
+                snapshot_id=reference_snapshot_id,
+                snapshot_digest=persisted_snapshot.digest,
+            )
             if not has_owner:
                 restore_video_reservation(
                     resolved.project_dir, episode, reservation

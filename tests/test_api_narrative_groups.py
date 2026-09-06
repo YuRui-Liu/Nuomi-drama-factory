@@ -1093,6 +1093,8 @@ def test_h3_reference_reservation_rechecks_reference_revision_atomically(
     ("task_status", "task_metadata", "expected_stage_status", "expected_revision"),
     [
         pytest.param(None, None, "pending", 0, id="no-task-state"),
+        pytest.param("lookup-error", None, "pending", 0, id="task-state-read-error"),
+        pytest.param("malformed", object(), "pending", 0, id="malformed-task-state"),
         pytest.param(
             "failed",
             {
@@ -1165,16 +1167,20 @@ def test_h3_reference_enqueue_failure_recovers_reservation_by_task_state(
     monkeypatch.setattr(
         narrative_groups, "get_task_backend", lambda: FailingBackend()
     )
-    task_state = (
-        None
-        if task_status is None
-        else SimpleNamespace(status=task_status, metadata=task_metadata)
+    task_state = None if task_status is None else SimpleNamespace(
+        status="queued" if task_status == "malformed" else task_status,
+        metadata=task_metadata,
     )
+    def get_task_state(*args, **kwargs):
+        if task_status == "lookup-error":
+            raise OSError("sensitive database path")
+        return task_state
+
     monkeypatch.setattr(
         narrative_groups,
         "get_task_manager",
         lambda: SimpleNamespace(
-            get_task_for_project=lambda *args, **kwargs: task_state
+            get_task_for_project=get_task_state
         ),
     )
 
