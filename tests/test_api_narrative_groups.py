@@ -1,5 +1,6 @@
 import json
 import os
+from dataclasses import replace
 from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +93,8 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
             id=provider_id, provider_type="grsai", enabled=True
         ),
         get_runninghub_workflows=lambda: SimpleNamespace(
-            video_minimax_h3_ref_max_images=2
+            video_minimax_h3_ref_max_images=2,
+            video_minimax_h3_ref="2096502793044582401",
         ),
     )
     credential_resolver = object()
@@ -164,6 +166,7 @@ def install_h3_reference_registry(monkeypatch, *, max_images=2):
                     provider="runninghub",
                     adapter_key="minimax-h3-ref",
                     workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
+                    provider_workflow_id="2096502793044582401",
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                     supported_modes=("auto", "i2va", "fl2va"),
                     reference_policy=VideoReferencePolicy(
@@ -529,6 +532,7 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
                     subject_description="The real owner identity",
                     asset_id="identity-007",
                     character_name="RealOwner",
+                    beat_ids=("beat-1", "beat-2"),
                 ),
             ),
             references=(
@@ -566,6 +570,7 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
                 "/api/v1/projects/demo/media/assets/characters/RealOwner/"
                 "identities/identity-007.png"
             ),
+            "beat_ids": ["beat-1", "beat-2"],
         }],
         "selected": [{
             "reference_id": reference_id,
@@ -601,7 +606,7 @@ def test_video_reference_upload_normalizes_png_and_ignores_filename(
     candidate = response.json()["data"]
     assert set(candidate) == {
         "reference_id", "source_kind", "label", "subject_description",
-        "thumbnail_url",
+        "thumbnail_url", "beat_ids",
     }
     assert candidate["source_kind"] == "temporary_upload"
     assert candidate["thumbnail_url"].startswith("/api/v1/projects/demo/media/")
@@ -973,6 +978,17 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
     monkeypatch.setattr(
         narrative_groups, "resolve_saved_video_references", resolved_references
     )
+    snapshots = []
+
+    def persist_snapshot(**kwargs):
+        snapshots.append(kwargs)
+        return "1" * 32
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "persist_h3_reference_input_snapshot",
+        persist_snapshot,
+    )
     no_frames = client.post(endpoint, json=request)
     assert no_frames.status_code == 422
     assert backend.calls == []
@@ -988,7 +1004,114 @@ def test_h3_reference_generate_validates_references_and_frames_before_enqueue(
 
     accepted = client.post(endpoint, json=request)
     assert accepted.status_code == 202
-    assert backend.calls[0][1]["payload"]["reference_revision"] == 0
+    payload = backend.calls[0][1]["payload"]
+    assert payload["reference_revision"] == 0
+    assert payload["reference_contract_version"] == 1
+    assert payload["provider_workflow_id"] == "2096502793044582401"
+    assert payload["reference_limit"] == 2
+    assert payload["reference_snapshot_id"] == "1" * 32
+    assert snapshots[0]["reference_revision"] == 0
+    assert snapshots[0]["reference_limit"] == 2
+    assert snapshots[0]["provider_workflow_id"] == "2096502793044582401"
+    assert tuple(snapshots[0]["references"])[0].reference_id == "opaque"
+    assert snapshots[0]["frames"]
+
+
+def test_h3_reference_reservation_rechecks_reference_revision_atomically(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def race_references(**kwargs):
+        groups = narrative_group_service.load_materialized_groups(tmp_path, 1)
+        group = groups[0]
+        changed = group.video_reference_settings.__class__(
+            revision=group.video_reference_settings.revision + 1,
+            references=group.video_reference_settings.references,
+        )
+        narrative_group_service.save_groups(
+            tmp_path, 1,
+            (replace(group, video_reference_settings=changed),),
+        )
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", race_references
+    )
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 409
+    assert backend.calls == []
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == "pending"
+    assert group.stages["video"].revision == 0
+
+
+def test_h3_reference_enqueue_failure_deletes_unclaimed_snapshot(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    install_h3_reference_registry(monkeypatch)
+    prepare_render_frames(tmp_path)
+    reference_path = tmp_path / "reference.png"
+    reference_path.write_bytes(image_bytes())
+
+    async def resolved_references(**kwargs):
+        return (ResolvedVideoReference(
+            reference_id="opaque", source_kind="temporary_upload",
+            label="reference", subject_description="Hero", path=reference_path,
+            content=reference_path.read_bytes(), sha256="a" * 64,
+            temporary_upload_id="upload",
+        ),)
+
+    deleted = []
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolved_references
+    )
+    monkeypatch.setattr(
+        narrative_groups, "persist_h3_reference_input_snapshot",
+        lambda **kwargs: "2" * 32,
+    )
+    monkeypatch.setattr(
+        narrative_groups, "delete_h3_reference_input_snapshot",
+        lambda **kwargs: deleted.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        narrative_groups, "get_task_backend", lambda: FailingBackend()
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3-ref", "mode": "auto",
+            "revision": 0, "plan_revision": 1, "reference_revision": 0,
+        },
+    )
+
+    assert response.status_code == 503
+    assert deleted == [{
+        "state_root": str(tmp_path), "snapshot_id": "2" * 32,
+    }]
+    group = narrative_group_service.load_materialized_groups(tmp_path, 1)[0]
+    assert group.stages["video"].status == "pending"
+    assert group.stages["video"].revision == 0
 
 
 def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):
@@ -1647,6 +1770,58 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
     ):
         assert secret not in serialized
     assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
+
+
+def test_get_video_prompts_returns_safe_h3_reference_manifest_contract(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": "runninghub:minimax-h3-ref",
+        "provider_workflow_id": "2096502793044582401",
+        "reference_settings_revision": 7,
+        "reference_limit": 5,
+        "global_references": [{
+            "picture_index": 1,
+            "reference_id": "opaque-hero",
+            "source_kind": "character_identity",
+            "label": "Lead",
+            "subject_description": "Hero in a blue coat",
+            "sha256": "a" * 64,
+            "path": str(tmp_path / "private.png"),
+            "content": "secret-image-bytes",
+            "asset_id": "Alice_Hero",
+        }],
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workflow_id"] == "runninghub:minimax-h3-ref"
+    assert data["provider_workflow_id"] == "2096502793044582401"
+    assert data["reference_settings_revision"] == 7
+    assert data["reference_limit"] == 5
+    assert data["global_references"] == [{
+        "picture_index": 1,
+        "reference_id": "opaque-hero",
+        "source_kind": "character_identity",
+        "label": "Lead",
+        "subject_description": "Hero in a blue coat",
+        "sha256": "a" * 64,
+    }]
+    assert "private.png" not in response.text
+    assert "secret-image-bytes" not in response.text
+    assert "asset_id" not in response.text
 
 
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):

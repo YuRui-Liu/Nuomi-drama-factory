@@ -246,6 +246,46 @@ def test_preview_discovers_deduplicated_assets_in_stable_source_order(tmp_path):
     )
 
 
+def test_preview_orders_each_type_by_group_first_appearance_then_stable_id(tmp_path):
+    identities = ("Zulu", "Alpha", "Beta", "Gamma", "Delta", "Epsilon")
+    for identity_id in identities:
+        _png(canonical_identity_path(tmp_path, "Alice", identity_id))
+    store = _Store([
+        {
+            "id": "beat-late",
+            "detected_identities": ["Beta", "Alpha", "Zulu"],
+        },
+        {
+            "id": "beat-early",
+            "detected_identities": ["Epsilon", "Delta", "Gamma", "Alpha"],
+        },
+    ])
+    store.character.identities = [
+        SimpleNamespace(
+            identity_id=identity_id,
+            identity_name=identity_id,
+            face_prompt="",
+            appearance_details="",
+            body_type="",
+        )
+        for identity_id in identities
+    ]
+
+    preview = _preview(
+        store,
+        tmp_path,
+        group=_group("beat-early", "beat-late"),
+        max_images=5,
+    )
+
+    assert [item.asset_id for item in preview.candidates[:5]] == [
+        "Alpha", "Delta", "Epsilon", "Gamma", "Beta",
+    ]
+    assert preview.candidates[0].beat_ids == ("beat-early", "beat-late")
+    assert preview.candidates[1].beat_ids == ("beat-early",)
+    assert preview.candidates[4].beat_ids == ("beat-late",)
+
+
 def test_preview_keeps_character_owner_when_identity_id_has_no_name_prefix(tmp_path):
     store = _Store([
         {"id": "beat-1", "detected_identities": ["identity-007"]}

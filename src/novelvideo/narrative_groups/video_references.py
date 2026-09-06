@@ -58,6 +58,7 @@ class VideoReferenceCandidate:
     asset_id: str = ""
     temporary_upload_id: str = ""
     character_name: str = ""
+    beat_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -160,10 +161,26 @@ async def _group_beats(
 ) -> tuple[object, ...]:
     raw = await _call_store(store, "get_beats_as_dicts", episode_number)
     beats = tuple(raw or ())
-    wanted = set(group.source_span_ids or group.beat_ids)
+    wanted = tuple(group.source_span_ids or group.beat_ids)
     if not wanted:
         return ()
-    return tuple(beat for beat in beats if _identifiers_for_beat(beat) & wanted)
+    remaining = list(beats)
+    ordered: list[object] = []
+    for wanted_id in wanted:
+        for index, beat in enumerate(remaining):
+            if wanted_id in _identifiers_for_beat(beat):
+                ordered.append(beat)
+                remaining.pop(index)
+                break
+    return tuple(ordered)
+
+
+def _beat_id(beat: object, fallback: int) -> str:
+    for name in ("id", "beat_id", "source_span_id"):
+        value = str(_value(beat, name, "") or "").strip()
+        if value:
+            return value
+    return f"beat-{fallback}"
 
 
 def _join_description(label: str, *descriptions: object) -> str:
@@ -715,6 +732,7 @@ def _candidate(
     description: str,
     *,
     character_name: str = "",
+    beat_ids: Sequence[str] = (),
 ) -> VideoReferenceCandidate:
     return VideoReferenceCandidate(
         reference_id=opaque_video_reference_id(source_kind, stable_id),
@@ -724,12 +742,20 @@ def _candidate(
         asset_id="" if source_kind == "temporary_upload" else stable_id,
         temporary_upload_id=stable_id if source_kind == "temporary_upload" else "",
         character_name=character_name if source_kind == "character_identity" else "",
+        beat_ids=tuple(beat_ids),
     )
 
 
-def _candidate_sort_key(candidate: VideoReferenceCandidate) -> tuple[int, str]:
+def _candidate_sort_key(
+    candidate: VideoReferenceCandidate,
+    beat_order: Mapping[str, int],
+) -> tuple[int, int, str]:
     stable_id = candidate.asset_id or candidate.temporary_upload_id
-    return (_SOURCE_RANK[candidate.source_kind], stable_id)
+    first_appearance = min(
+        (beat_order[beat_id] for beat_id in candidate.beat_ids),
+        default=len(beat_order),
+    )
+    return (_SOURCE_RANK[candidate.source_kind], first_appearance, stable_id)
 
 
 async def resolve_group_video_reference_preview(
@@ -751,21 +777,27 @@ async def resolve_group_video_reference_preview(
         await _asset_descriptions(store, episode_number)
     )
 
-    identity_ids: set[str] = set()
-    scene_ids: set[str] = set()
-    prop_ids: set[str] = set()
-    for beat in beats:
-        identity_ids.update(
-            real_detected_identities(_value(beat, "detected_identities", ()) or ())
-        )
+    beat_ids = tuple(_beat_id(beat, index) for index, beat in enumerate(beats, 1))
+    beat_order = {beat_id: index for index, beat_id in enumerate(beat_ids)}
+    identity_ids: dict[str, list[str]] = {}
+    scene_ids: dict[str, list[str]] = {}
+    prop_ids: dict[str, list[str]] = {}
+    for beat, beat_id in zip(beats, beat_ids, strict=True):
+        for identity_id in real_detected_identities(
+            _value(beat, "detected_identities", ()) or ()
+        ):
+            identity_ids.setdefault(identity_id, []).append(beat_id)
         scene_id = beat_scene_id(beat)
         if scene_id:
-            scene_ids.add(scene_id)
-        prop_ids.update(real_detected_props(_value(beat, "detected_props", ()) or ()))
+            scene_ids.setdefault(scene_id, []).append(beat_id)
+        for prop_id in real_detected_props(
+            _value(beat, "detected_props", ()) or ()
+        ):
+            prop_ids.setdefault(prop_id, []).append(beat_id)
 
     candidates: list[VideoReferenceCandidate] = []
     warnings: list[str] = []
-    for identity_id in sorted(identity_ids):
+    for identity_id, covered_beats in identity_ids.items():
         character_name, description = identity_metadata.get(
             identity_id,
             (
@@ -804,10 +836,11 @@ async def resolve_group_video_reference_preview(
                 identity_id,
                 description,
                 character_name=character_name,
+                beat_ids=covered_beats,
             )
         )
 
-    for scene_id in sorted(scene_ids):
+    for scene_id, covered_beats in scene_ids.items():
         try:
             scene_id = _safe_path_segment(scene_id, "scene")
             path = _path_within_asset_root(
@@ -832,10 +865,11 @@ async def resolve_group_video_reference_preview(
                 scene_id,
                 scene_id,
                 scene_descriptions.get(scene_id, _join_description(scene_id)),
+                beat_ids=covered_beats,
             )
         )
 
-    for prop_id in sorted(prop_ids):
+    for prop_id, covered_beats in prop_ids.items():
         try:
             prop_id = _safe_path_segment(prop_id, "prop")
             path = _path_within_asset_root(
@@ -860,6 +894,7 @@ async def resolve_group_video_reference_preview(
                 prop_id,
                 prop_id,
                 prop_descriptions.get(prop_id, _join_description(prop_id)),
+                beat_ids=covered_beats,
             )
         )
 
@@ -894,7 +929,12 @@ async def resolve_group_video_reference_preview(
             )
 
     deduplicated = {candidate.reference_id: candidate for candidate in candidates}
-    ordered = tuple(sorted(deduplicated.values(), key=_candidate_sort_key))
+    ordered = tuple(
+        sorted(
+            deduplicated.values(),
+            key=lambda candidate: _candidate_sort_key(candidate, beat_order),
+        )
+    )
     return VideoReferencePreview(
         revision=group.video_reference_settings.revision,
         candidates=ordered,

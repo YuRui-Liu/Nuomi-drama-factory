@@ -34,6 +34,11 @@ from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterError,
     resolve_workflow_parameters,
 )
+from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    delete_h3_reference_input_snapshot,
+    freeze_h3_reference_frames,
+    persist_h3_reference_input_snapshot,
+)
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowScene,
     VideoWorkflowUnavailable,
@@ -314,7 +319,7 @@ def _serialize_video_reference_candidate(
     episode: int,
     group_id: str,
     candidate: VideoReferenceCandidate,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     path = _video_reference_candidate_path(
         project_dir, episode, group_id, candidate
     )
@@ -327,6 +332,7 @@ def _serialize_video_reference_candidate(
         "label": candidate.label,
         "subject_description": candidate.subject_description,
         "thumbnail_url": thumbnail_url,
+        "beat_ids": list(candidate.beat_ids),
     }
 
 
@@ -803,7 +809,65 @@ def _serialize_prompt_review(
         value = manifest.get(name)
         return dict(value) if isinstance(value, Mapping) else {}
 
+    workflow_id = _safe_review_string(manifest.get("workflow_id"))
+    provider_workflow_id = _safe_review_string(
+        manifest.get("provider_workflow_id")
+    )
+    reference_revision = manifest.get("reference_settings_revision")
+    if (
+        isinstance(reference_revision, bool)
+        or not isinstance(reference_revision, int)
+        or reference_revision < 0
+    ):
+        reference_revision = None
+    reference_limit = manifest.get("reference_limit")
+    if (
+        isinstance(reference_limit, bool)
+        or not isinstance(reference_limit, int)
+        or not 1 <= reference_limit <= 10
+    ):
+        reference_limit = None
+    global_references = []
+    for raw_reference in (manifest.get("global_references") or ())[:10]:
+        reference = _manifest_mapping(raw_reference)
+        picture_index = reference.get("picture_index")
+        reference_id = _safe_review_string(reference.get("reference_id"))
+        source_kind = reference.get("source_kind")
+        label = _safe_review_string(reference.get("label"))
+        description = _safe_review_string(
+            reference.get("subject_description"), max_length=500
+        )
+        sha256 = reference.get("sha256")
+        if not (
+            isinstance(picture_index, int)
+            and not isinstance(picture_index, bool)
+            and picture_index >= 1
+            and reference_id
+            and source_kind in {
+                "character_identity", "scene_master", "prop_reference",
+                "temporary_upload",
+            }
+            and label
+            and description
+            and isinstance(sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", sha256)
+        ):
+            continue
+        global_references.append({
+            "picture_index": picture_index,
+            "reference_id": reference_id,
+            "source_kind": source_kind,
+            "label": label,
+            "subject_description": description,
+            "sha256": sha256,
+        })
+
     return {
+        "workflow_id": workflow_id or None,
+        "provider_workflow_id": provider_workflow_id or None,
+        "reference_settings_revision": reference_revision,
+        "reference_limit": reference_limit,
+        "global_references": global_references,
         "workflow_parameters": snapshot("workflow_parameters"),
         "provider_parameters": snapshot("provider_parameters"),
         "actual_output": snapshot("actual_output"),
@@ -1117,8 +1181,20 @@ async def _enqueue_group_video(
                 detail="Narrative group video workflow does not match saved settings",
             )
     reference_revision: int | None = None
+    provider_workflow_id: str | None = None
+    reference_limit: int | None = None
+    reference_snapshot_id: str | None = None
+    resolved_references = ()
+    reference_segments = ()
     if workflow.reference_policy.required:
         reference_revision = source_group.video_reference_settings.revision
+        provider_workflow_id = str(workflow.provider_workflow_id or "").strip()
+        reference_limit = workflow.reference_policy.max_images
+        if not provider_workflow_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Video reference provider workflow is unavailable",
+            )
         if (
             request.reference_revision is None
             or request.reference_revision != reference_revision
@@ -1129,7 +1205,7 @@ async def _enqueue_group_video(
             )
         try:
             store = await make_sqlite_store_for_context(resolved.ctx)
-            await resolve_saved_video_references(
+            resolved_references = await resolve_saved_video_references(
                 store=store,
                 project_dir=resolved.project_dir,
                 episode_number=episode,
@@ -1157,6 +1233,7 @@ async def _enqueue_group_video(
                     str(item.get("id")) for item in source_group.video_segments
                 ]
                 segments = [segments[segment_ids.index(segment_id)]]
+            reference_segments = tuple(segments)
             for segment in segments:
                 frame_paths = [segment.first_frame]
                 if segment.last_frame:
@@ -1190,6 +1267,8 @@ async def _enqueue_group_video(
             resolved.project_dir, episode, group_id,
             expected_revision=request.revision,
             expected_plan_revision=request.plan_revision,
+            expected_settings_revision=settings.revision,
+            expected_reference_revision=reference_revision,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -1206,11 +1285,39 @@ async def _enqueue_group_video(
         "mode": request.mode,
         "aspect_ratio": request.aspect_ratio,
         "workflow_parameters": workflow_parameters,
-        "settings_revision": settings.revision,
+        "settings_revision": group.video_settings.revision,
         "segment_id": segment_id,
     }
     if reference_revision is not None:
-        payload["reference_revision"] = reference_revision
+        try:
+            frozen_frames = freeze_h3_reference_frames(
+                reference_segments,
+                project_root=resolved.project_dir,
+            )
+            reference_snapshot_id = persist_h3_reference_input_snapshot(
+                state_root=resolved.ctx.state_dir,
+                references=resolved_references,
+                frames=frozen_frames,
+                reference_revision=group.video_reference_settings.revision,
+                reference_limit=int(reference_limit),
+                provider_workflow_id=str(provider_workflow_id),
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            raise HTTPException(
+                status_code=422,
+                detail="Video reference input snapshot is invalid",
+            ) from exc
+        except Exception:
+            restore_video_reservation(resolved.project_dir, episode, reservation)
+            raise
+        payload.update({
+            "reference_contract_version": 1,
+            "reference_revision": group.video_reference_settings.revision,
+            "provider_workflow_id": provider_workflow_id,
+            "reference_limit": reference_limit,
+            "reference_snapshot_id": reference_snapshot_id,
+        })
     try:
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",
@@ -1218,6 +1325,14 @@ async def _enqueue_group_video(
         )
     except Exception as exc:
         restore_video_reservation(resolved.project_dir, episode, reservation)
+        if reference_snapshot_id is not None:
+            try:
+                delete_h3_reference_input_snapshot(
+                    state_root=resolved.ctx.state_dir,
+                    snapshot_id=reference_snapshot_id,
+                )
+            except (OSError, ValueError):
+                pass
         raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,

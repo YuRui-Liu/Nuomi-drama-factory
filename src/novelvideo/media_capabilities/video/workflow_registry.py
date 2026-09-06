@@ -66,6 +66,7 @@ class VideoWorkflowDefinition(BaseModel):
     workflow_settings_key: RunningHubWorkflowSettingsKey = (
         RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3
     )
+    provider_workflow_id: str | None = None
     scenes: frozenset[VideoWorkflowScene]
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
@@ -246,6 +247,7 @@ def build_video_workflow_registry(
         provider="runninghub",
         adapter_key="minimax-h3-ref",
         workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
+        provider_workflow_id=workflows.video_minimax_h3_ref,
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         supported_modes=("auto", "i2va", "fl2va"),
         default_mode="auto",

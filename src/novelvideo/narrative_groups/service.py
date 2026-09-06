@@ -1092,6 +1092,8 @@ def reserve_video_revision(
     *,
     expected_revision: int,
     expected_plan_revision: int | None = None,
+    expected_settings_revision: int | None = None,
+    expected_reference_revision: int | None = None,
 ) -> tuple[NarrativeGroup, VideoRevisionReservation]:
     """Atomically reserve the next video revision while retaining rollback data.
 
@@ -1113,6 +1115,18 @@ def reserve_video_revision(
                 and group.video_plan.revision != int(expected_plan_revision)
             ):
                 raise RuntimeError("narrative group video plan revision is stale")
+            if (
+                expected_settings_revision is not None
+                and group.video_settings.revision
+                != int(expected_settings_revision)
+            ):
+                raise RuntimeError("narrative group video settings revision is stale")
+            if (
+                expected_reference_revision is not None
+                and group.video_reference_settings.revision
+                != int(expected_reference_revision)
+            ):
+                raise RuntimeError("narrative group video reference revision is stale")
             current = group.stages.get("video", GroupStageState())
             if current.revision != int(expected_revision):
                 raise RuntimeError("narrative group video revision is stale")
