@@ -4193,6 +4193,7 @@
     "loading": "正在加载参考图…",
     "loadFailed": "参考图加载失败，请刷新后重试。",
     "dirty": "请先保存参考图配置",
+    "staleVideo": "参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。",
     "moveUp": "上移 {{label}}",
     "moveDown": "下移 {{label}}",
     "remove": "移除",

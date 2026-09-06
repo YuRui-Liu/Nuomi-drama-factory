@@ -98,7 +98,8 @@ describe("NarrativeGroupWorkbench references",()=>{
   const user=userEvent.setup();
   m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:1,manifest_asset:"/media/group.manifest.json"}}}];
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
-  expect(m.promptsQuery).not.toHaveBeenCalled();
+  expect(m.promptsQuery).toHaveBeenCalledWith("p",1,"g1",false);
+  expect(m.promptsQuery).not.toHaveBeenCalledWith("p",1,"g1",true);
   await user.click(screen.getByRole("button",{name:"生成提示词"}));
   expect(m.promptsQuery).toHaveBeenCalledWith("p",1,"g1",true);
   expect(screen.getByRole("dialog",{name:"视频生成提示词"})).toBeInTheDocument();
@@ -274,6 +275,30 @@ describe("NarrativeGroupWorkbench references",()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByRole("button",{name:"重试片段 seg1"}));
   await waitFor(()=>expect(m.generateVideoSegment).toHaveBeenCalledWith({groupId:"g1",segmentId:"seg1",model:"runninghub:minimax-h3-ref",mode:"auto",revision:6,planRevision:3,settingsRevision:5,referenceRevision:7,aspectRatio:"16:9"}));
+ });
+ it.each([
+  {name:"matching revision",model:"runninghub:minimax-h3-ref",current:7,generated:7,manifest:true,stale:false},
+  {name:"changed revision",model:"runninghub:minimax-h3-ref",current:8,generated:7,manifest:true,stale:true},
+  {name:"missing manifest",model:"runninghub:minimax-h3-ref",current:8,generated:7,manifest:false,stale:false},
+  {name:"legacy model",model:"runninghub:minimax-h3",current:8,generated:7,manifest:true,stale:false},
+ ])("reports stale reference videos only for $name",({model,current,generated,manifest,stale})=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:model};
+  m.videoModels=[
+   {id:"runninghub:minimax-h3",label:"Legacy",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
+   {id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}},
+  ];
+  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:6,video_asset:"/video.mp4",...(manifest?{manifest_asset:"/manifest.json"}:{})}},video_reference_settings:{revision:current,references:[]}}];
+  m.promptsQuery.mockReturnValue({data:{ok:true,data:{reference_settings_revision:generated,units:[]}},isLoading:false,isFetching:false,isError:false});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.queryByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。")).toBe(stale?screen.getByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。"):null);
+ });
+ it.each([{isLoading:true,isFetching:true,isError:false},{isLoading:false,isFetching:false,isError:true}])("does not report stale references while the manifest query is unavailable",(queryState)=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:6,video_asset:"/video.mp4",manifest_asset:"/manifest.json"}},video_reference_settings:{revision:8,references:[]}}];
+  m.promptsQuery.mockReturnValue({data:{ok:true,data:{reference_settings_revision:7,units:[]}},...queryState});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.queryByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。")).not.toBeInTheDocument();
  });
  it("keeps required-reference generation disabled while invalid or dirty",()=>{
   m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};

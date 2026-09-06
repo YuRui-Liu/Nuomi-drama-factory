@@ -536,9 +536,10 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
         model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution,
       }),
     }).json<TaskResponse>(),
-    onSuccess: () => Promise.all([
+    onSuccess: (_response, input) => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+      qc.invalidateQueries({ queryKey: [...queryKeys.narrativeGroups(project, episode), input.groupId, "video", "prompts"] }),
     ]),
   });
 }
@@ -554,9 +555,10 @@ export function useGenerateNarrativeGroupVideoSegment(project: string, episode: 
       narrativeGroupVideoSegmentPath(project, episode, groupId, segmentId),
       { json: narrativeGroupVideoPayload({model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution}) },
     ).json<TaskResponse>(),
-    onSuccess: () => qc.invalidateQueries({
-      queryKey: queryKeys.narrativeGroups(project, episode),
-    }),
+    onSuccess: (_response, input) => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: [...queryKeys.narrativeGroups(project, episode), input.groupId, "video", "prompts"] }),
+    ]),
   });
 }
 

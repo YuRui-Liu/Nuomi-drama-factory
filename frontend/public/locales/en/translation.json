@@ -4193,6 +4193,7 @@
     "loading": "Loading references…",
     "loadFailed": "Failed to load references. Refresh and try again.",
     "dirty": "Save the reference configuration first",
+    "staleVideo": "Reference settings changed. The existing video is still available; regenerate the group video to apply them.",
     "moveUp": "Move {{label}} up",
     "moveDown": "Move {{label}} down",
     "remove": "Remove",
