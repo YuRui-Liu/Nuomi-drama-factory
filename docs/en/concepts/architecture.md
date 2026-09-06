@@ -3,12 +3,12 @@
 
 # Architecture
 
-DramaClaw Community Edition (CE) is a **single-machine** "novel → finished video" pipeline: one FastAPI service hosts every creative capability, tasks run in-process, data lands locally, and models are reached through an OpenAI-compatible gateway. **No PostgreSQL / Redis required.**
+Nuomi Drama Factory Community Edition (CE) is a **single-machine** "novel → finished video" pipeline: one FastAPI service hosts every creative capability, tasks run in-process, data lands locally, and models are reached through an OpenAI-compatible gateway. **No PostgreSQL / Redis required.**
 
 ## System Architecture
 
 <p align="center">
-  <img src="../../../assets/architecture.png" alt="DramaClaw CE system architecture — browser, FastAPI engine, local storage, model gateway" width="900"/>
+  <img src="../../../assets/architecture.png" alt="Nuomi Drama Factory CE system architecture — browser, FastAPI engine, local storage, model gateway" width="900"/>
 </p>
 
 ## Processing Flow
@@ -42,7 +42,7 @@ Main subpackages of `src/novelvideo/`:
 
 ## Ports and Adapters (one codebase, two distributions)
 
-DramaClaw uses **Ports & Adapters (hexagonal architecture)** to decouple the "engine" from its "runtime environment." `src/novelvideo/ports/` defines a set of Protocol interfaces, each with a **CE default implementation** (single-machine / local); the commercial Enterprise Edition (EE) provides enterprise adapters (multi-tenant / distributed) for the **same set of interfaces**.
+Nuomi Drama Factory uses **Ports & Adapters (hexagonal architecture)** to decouple the "engine" from its "runtime environment." `src/novelvideo/ports/` defines a set of Protocol interfaces, each with a **CE default implementation** (single-machine / local); the commercial Enterprise Edition (EE) provides enterprise adapters (multi-tenant / distributed) for the **same set of interfaces**.
 
 The hard rule: **core code never imports enterprise code**; at runtime the matching implementation is injected based on `ST_EDITION`. The CE default implementations ship with the core and work out of the box.
 

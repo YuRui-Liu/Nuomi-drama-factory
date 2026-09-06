@@ -3,7 +3,7 @@
 
 # 排错
 
-> 自托管 DramaClaw CE 时的常见故障与排查。先看日志:`docker compose logs -f api`,或本地开发时看 `novelvideo api` 的终端输出。
+> 自托管 Nuomi Drama Factory CE 时的常见故障与排查。先看日志:`docker compose logs -f api`,或本地开发时看 `novelvideo api` 的终端输出。
 
 ## 启动类
 
@@ -18,7 +18,7 @@
 
 | 现象 | 排查 |
 |---|---|
-| **模型调用全报错** | 在「设置 → 模型配置」确认当前渠道已配置；官方渠道检查 DC key，本地 NewAPI 检查服务、runtime token 和上游渠道。 |
+| **模型调用全报错** | 在「设置 → 模型配置」确认当前渠道已配置；官方渠道检查 Nuomi Drama Factory key，本地 NewAPI 检查服务、runtime token 和上游渠道。 |
 | **某个环节报"模型不存在"** | 本地 NewAPI 中没有对应逻辑模型映射，或目标渠道未启用。详见[配置模型供应商](../getting-started/configuring-models.md)。 |
 | **文本模型超时** | 调大 `NEWAPI_TEXT_TIMEOUT_SECONDS`(默认 120);内网网关被系统代理拦截时设 `NEWAPI_TEXT_TRUST_ENV=false`。 |
 | **参考图功能不可用** | 需配 `OSS_RELAY_AK/SK`;纯文本→成片流程可不配。 |
@@ -47,8 +47,8 @@
 
 ## 还没解决?
 
-- 用法/想法 → [GitHub Discussions](https://github.com/dramaclaw/dramaclaw/discussions)
-- 确认是 Bug → [提交 Bug](https://github.com/dramaclaw/dramaclaw/issues/new?template=bug_report.yml)(附日志、复现步骤、环境)
+- 用法/想法 → [GitHub Discussions](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions)
+- 确认是 Bug → [提交 Bug](https://github.com/YuRui-Liu/Nuomi-drama-factory/issues/new?template=bug_report.yml)(附日志、复现步骤、环境)
 - 安全问题 → 勿走公开 issue,见 [SECURITY](../../../SECURITY.md)
 
 ## 相关

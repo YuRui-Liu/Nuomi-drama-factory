@@ -1,10 +1,10 @@
-# DramaClaw 技术设计
+# Nuomi Drama Factory 技术设计
 
-> 本文面向首次接手 DramaClaw 的开发者，帮助你理解系统边界、跑起开发环境、定位代码、调试任务并扩展功能。产品说明见[功能总览](concepts/features.md)，部署说明见[自托管手册](guides/self-hosting.md)。
+> 本文面向首次接手 Nuomi Drama Factory 的开发者，帮助你理解系统边界、跑起开发环境、定位代码、调试任务并扩展功能。产品说明见[功能总览](concepts/features.md)，部署说明见[自托管手册](guides/self-hosting.md)。
 
 ## 1. 项目定位与边界
 
-DramaClaw CE 是单机运行的 AI 漫剧生产系统。它把小说导入、内容拆解、角色与场景资产规划、剧本与分镜、图像/音频/视频生成、质量校验和成片导出组织为可恢复的项目工作流。
+Nuomi Drama Factory CE 是单机运行的 AI 漫剧生产系统。它把小说导入、内容拆解、角色与场景资产规划、剧本与分镜、图像/音频/视频生成、质量校验和成片导出组织为可恢复的项目工作流。
 
 社区版的主要约束是：
 
@@ -206,7 +206,7 @@ CE 的任务只在当前应用进程执行。退出应用会终止运行中的�
 在仓库根目录新开 CMD：
 
 ```bat
-cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\dramaclaw
+cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\Nuomi-drama-factory
 set "PYTHONUTF8=1"
 set "ST_EDITION=ce"
 set "ST_COOKIE_SECURE=0"
@@ -239,7 +239,7 @@ curl http://127.0.0.1:8780/api/v1/config
 另开 CMD：
 
 ```bat
-cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\dramaclaw\frontend
+cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\Nuomi-drama-factory\frontend
 pnpm install
 set "VITE_API_URL=http://127.0.0.1:8780"
 pnpm dev
@@ -281,7 +281,7 @@ pnpm desktop:test
           ↓
 desktop-runtime/
           ↓ electron-builder
-DramaClaw Setup <version>.exe
+Nuomi Drama Factory Setup <version>.exe
 ```
 
 `desktop/main.cjs` 启动时检查资源、申请随机 `127.0.0.1` 端口、设置 CE 和数据目录、启动内置 Uvicorn、轮询 `/api/v1/config`，后端就绪后显示窗口。后端日志写入 Electron 用户数据目录的 `logs/backend.log`。
@@ -289,7 +289,7 @@ DramaClaw Setup <version>.exe
 当前未签名的 x64 NSIS 打包命令：
 
 ```bat
-cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\dramaclaw
+cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\Nuomi-drama-factory
 set "PYTHONUTF8=1"
 uv python install 3.11
 uv sync --python 3.11

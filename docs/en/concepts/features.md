@@ -3,7 +3,7 @@
 
 # Feature Overview
 
-What DramaClaw CE can do — a complete pipeline that turns a **novel manuscript** into a **finished video**, running entirely on your own machine, BYO model key, no PostgreSQL / Redis required.
+What Nuomi Drama Factory CE can do — a complete pipeline that turns a **novel manuscript** into a **finished video**, running entirely on your own machine, BYO model key, no PostgreSQL / Redis required.
 
 ## Creative Flow
 

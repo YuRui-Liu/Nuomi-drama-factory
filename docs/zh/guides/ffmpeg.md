@@ -3,7 +3,7 @@
 
 # ffmpeg 指南
 
-> DramaClaw 用 `ffmpeg` / `ffprobe` 做媒体探测、抽取、合成、转码和成片校验。本篇讲怎么装、怎么让程序找到它,以及许可义务。
+> Nuomi Drama Factory 用 `ffmpeg` / `ffprobe` 做媒体探测、抽取、合成、转码和成片校验。本篇讲怎么装、怎么让程序找到它,以及许可义务。
 
 ## 为什么要自己装
 

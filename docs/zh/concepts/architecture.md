@@ -3,12 +3,12 @@
 
 # 架构
 
-DramaClaw 社区版（CE）是一条**单机运行**的「小说 → 成片」流水线：一个 FastAPI 服务承载全部创作能力，任务在进程内执行，数据落本地，模型经一个 OpenAI 兼容网关接入。**无需 PostgreSQL / Redis。**
+Nuomi Drama Factory 社区版（CE）是一条**单机运行**的「小说 → 成片」流水线：一个 FastAPI 服务承载全部创作能力，任务在进程内执行，数据落本地，模型经一个 OpenAI 兼容网关接入。**无需 PostgreSQL / Redis。**
 
 ## 系统架构
 
 <p align="center">
-  <img src="../../../assets/architecture.png" alt="DramaClaw CE 系统架构 —— 浏览器、FastAPI 引擎、本地存储、模型网关" width="900"/>
+  <img src="../../../assets/architecture.png" alt="Nuomi Drama Factory CE 系统架构 —— 浏览器、FastAPI 引擎、本地存储、模型网关" width="900"/>
 </p>
 
 ## 处理流程
@@ -42,7 +42,7 @@ DramaClaw 社区版（CE）是一条**单机运行**的「小说 → 成片」�
 
 ## 端口与适配器（一套代码，两个发行物）
 
-DramaClaw 用 **Ports & Adapters（六边形架构）** 把「引擎」与「运行环境」解耦。`src/novelvideo/ports/` 定义一组 Protocol 接口，每个接口都有 **CE 默认实现**（单机 / 本地）；商业企业版（EE）为**同一组接口**提供企业适配器（多租户 / 分布式）。
+Nuomi Drama Factory 用 **Ports & Adapters（六边形架构）** 把「引擎」与「运行环境」解耦。`src/novelvideo/ports/` 定义一组 Protocol 接口，每个接口都有 **CE 默认实现**（单机 / 本地）；商业企业版（EE）为**同一组接口**提供企业适配器（多租户 / 分布式）。
 
 铁律：**核心代码永不 import 企业代码**；运行时按 `ST_EDITION` 注入对应实现。CE 默认实现自带，开箱即用。
 

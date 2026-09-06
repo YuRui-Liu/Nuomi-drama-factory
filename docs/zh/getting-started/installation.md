@@ -3,9 +3,9 @@
 
 # 安装指南
 
-> 在 macOS / Windows / Linux 上装好 DramaClaw CE 的运行环境。只想最快跑起来,直接看 [快速开始](quickstart.md);本篇覆盖各平台前置与本地开发两种装法。
+> 在 macOS / Windows / Linux 上装好 Nuomi Drama Factory CE 的运行环境。只想最快跑起来,直接看 [快速开始](quickstart.md);本篇覆盖各平台前置与本地开发两种装法。
 
-DramaClaw CE 是单机服务,**无需 PostgreSQL / Redis**。Docker 默认起 `api` + `web`,模型默认走 DramaClaw 官方网关 RelayClaw;本机不跑模型,普通机器即可。想纯本地自建网关可用 `docker-compose.selfhosted.yml`。
+Nuomi Drama Factory CE 是单机服务,**无需 PostgreSQL / Redis**。Docker 默认起 `api` + `web`,模型默认走 Nuomi Drama Factory 官方网关 RelayClaw;本机不跑模型,普通机器即可。想纯本地自建网关可用 `docker-compose.selfhosted.yml`。
 
 ## 两种装法选一
 
@@ -31,13 +31,13 @@ DramaClaw CE 是单机服务,**无需 PostgreSQL / Redis**。Docker 默认起 `a
 装好后:
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 cp .env.example .env        # 至少把 PROMPT_EXPORT_PASSWORD 改成非默认值
 docker compose up -d --build   # 起 api / web 两个服务
 ```
 
-起好后浏览器打开 **`http://localhost:8080`**(应用界面);REST API 在 `http://localhost:8780`。进入设置 → 模型配置 → 官方渠道,粘贴 DC key 保存即用。完整步骤见 [快速开始](quickstart.md),起停/备份见 [自托管手册](../guides/self-hosting.md)。
+起好后浏览器打开 **`http://localhost:8080`**(应用界面);REST API 在 `http://localhost:8780`。进入设置 → 模型配置 → 官方渠道,粘贴 Nuomi Drama Factory key 保存即用。完整步骤见 [快速开始](quickstart.md),起停/备份见 [自托管手册](../guides/self-hosting.md)。
 
 > Windows 用户在 **WSL2 终端**里 clone 与运行(放到 Linux 文件系统下,别放 `/mnt/c/...`),避免卷挂载性能与换行问题。
 
@@ -58,8 +58,8 @@ docker compose up -d --build   # 起 api / web 两个服务
 ### 2. 装依赖并启动
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 uv sync                                  # 按 uv.lock 装依赖到 .venv
 cp .env.example .env && $EDITOR .env     # 填网关与 Key

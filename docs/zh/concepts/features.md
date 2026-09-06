@@ -3,7 +3,7 @@
 
 # 功能总览
 
-DramaClaw CE 能做什么——一条把**小说原稿**变成**成片**的完整流水线，全程本机运行、BYO 模型 key，无需 PostgreSQL / Redis。
+Nuomi Drama Factory CE 能做什么——一条把**小说原稿**变成**成片**的完整流水线，全程本机运行、BYO 模型 key，无需 PostgreSQL / Redis。
 
 ## 创作流程
 

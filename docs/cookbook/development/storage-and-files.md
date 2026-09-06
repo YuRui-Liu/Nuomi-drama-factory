@@ -1,10 +1,10 @@
-# DramaClaw 存储与项目文件
+# Nuomi Drama Factory 存储与项目文件
 
 > **所属**：[开发与验证](../README.md#开发与验证)<br>
 > **相关手册**：[共享系统地图](../system-map.md) · [功能反查](trace-a-feature.md) · [新增 API 与长任务](add-api-and-task.md) · [测试策略](testing-strategy.md)<br>
 > **相关管线**：[小说导入](../pipelines/01-ingest.md) · [生产资产](../pipelines/03-production-assets.md) · [合成与导出](../pipelines/08-compose-export.md)<br>
 > **代码核对基线**：`55504a0`<br>
-> **返回**：[DramaClaw 开发者 Cookbook](../README.md)
+> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
 
 本页说明项目身份如何确定三类目录、SQLite 与媒体文件各自保存什么，以及新增写入或迁移时要守住的边界。具体产物由哪条业务管线生成，继续查对应的[生产管线专题](../README.md#核心生产管线)。
 

@@ -3,7 +3,7 @@
 
 # Telemetry Notes / FAQ
 
-> **In short: DramaClaw CE collects and reports no usage data by default.** No instrumentation SDK, no phone-home, no anonymous statistics. Below we describe the only optional "observability tracing," which is also off by default.
+> **In short: Nuomi Drama Factory CE collects and reports no usage data by default.** No instrumentation SDK, no phone-home, no anonymous statistics. Below we describe the only optional "observability tracing," which is also off by default.
 
 ## What we don't do
 

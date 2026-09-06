@@ -3,14 +3,14 @@
 
 # 配置模型供应商
 
-DramaClaw CE 通过 NewAPI 兼容网关接入文本、图片、视频、音频和 embedding 模型。可以使用官方 RelayClaw，也可以使用 CE 随附的本地 NewAPI。
+Nuomi Drama Factory CE 通过 NewAPI 兼容网关接入文本、图片、视频、音频和 embedding 模型。可以使用官方 RelayClaw，也可以使用 CE 随附的本地 NewAPI。
 
 ## 先选一种接入方式
 
 | 方式 | 适合场景 | 是否需要映射模型 |
 |---|---|---|
 | 官方渠道 / RelayClaw | 想最快跑通，使用官方预置模型 | 不需要 |
-| 本地 NewAPI | 希望在 DramaClaw UI 里配置本机 NewAPI 的上游渠道、模型映射、媒体模型和 embedding | 需要在 UI 里保存映射 |
+| 本地 NewAPI | 希望在 Nuomi Drama Factory UI 里配置本机 NewAPI 的上游渠道、模型映射、媒体模型和 embedding | 需要在 UI 里保存映射 |
 
 ## 配置入口
 
@@ -20,7 +20,7 @@ DramaClaw CE 通过 NewAPI 兼容网关接入文本、图片、视频、音频�
 
 在网页里可以完成：
 
-- 官方渠道：填写 RelayClaw DC key，点击“保存并启用”。官方地址固定。
+- 官方渠道：填写 RelayClaw Nuomi Drama Factory key，点击“保存并启用”。官方地址固定。
 - 本地 NewAPI：初始化本机 NewAPI、创建或复用 runtime token、配置供应商渠道、保存模型映射。
 - 媒体存储：配置 OSS 或 Cloudinary。
 - Embedding：配置模型、维度和批量大小。
@@ -44,17 +44,17 @@ SQLite 路径或管理员用户名。
 1. 浏览器打开 `http://localhost:8080`。
 2. 进入设置 -> 模型配置 -> 官方渠道。
 3. 网关地址默认是 `https://relayclaw.cdnfg.com/v1`。
-4. 粘贴你的 DC key，点击“保存并启用”。
+4. 粘贴你的 Nuomi Drama Factory key，点击“保存并启用”。
 
-RelayClaw 后台已经配置好 DramaClaw 需要的逻辑模型名，所以不需要手动映射 `*_MODEL`。
+RelayClaw 后台已经配置好 Nuomi Drama Factory 需要的逻辑模型名，所以不需要手动映射 `*_MODEL`。
 
-还没有 DC key 时，到 <https://relayclaw.cdnfg.com> 注册 / 购买。
+还没有 Nuomi Drama Factory key 时，到 <https://relayclaw.cdnfg.com> 注册 / 购买。
 
-如果你只是更换 DC key，直接在网页里更新并保存即可。
+如果你只是更换 Nuomi Drama Factory key，直接在网页里更新并保存即可。
 
 ## B. 本地 NewAPI
 
-“本地 NewAPI”适合 CE 单机用户在 DramaClaw 设置页里管理：
+“本地 NewAPI”适合 CE 单机用户在 Nuomi Drama Factory 设置页里管理：
 
 - NewAPI runtime token。
 - 上游供应商渠道和 key。
@@ -72,7 +72,7 @@ docker compose -f docker-compose.selfhosted.yml up -d --build
 该编排会启动 `api`、`web` 和内置 `newapi`。NewAPI 后台默认在 `http://localhost:3000`。
 
 `docker-compose.selfhosted.yml` 会把同一个 `newapi-data` 卷分别挂载到 NewAPI 的
-`/data` 和 DramaClaw API 的 `/newapi-data`。初始化向导会调用 NewAPI `/api/setup`
+`/data` 和 Nuomi Drama Factory API 的 `/newapi-data`。初始化向导会调用 NewAPI `/api/setup`
 创建 root 管理员，再创建或复用 runtime token；用户无需进入 NewAPI 后台复制令牌。
 
 ### 2. 初始化配置
@@ -86,15 +86,15 @@ docker compose -f docker-compose.selfhosted.yml up -d --build
 
 - 如果 NewAPI 没初始化，调用 NewAPI `/api/setup` 创建管理员。
 - 如果 NewAPI 已初始化，会跳过管理员创建；你填的初始化密码不会修改已有管理员密码。
-- 创建或复用名为 `dramaclaw-ce-runtime` 的 runtime token。
-- 把 runtime token 写入 DramaClaw 本地配置数据库。
+- 创建或复用名为 `dramaclaw-ce-runtime` 的 runtime token；这是必须原样保留的内部兼容名称。
+- 把 runtime token 写入 Nuomi Drama Factory 本地配置数据库。
 - 将模型网关模式切换为 `custom`。
 
-管理员密码只用于首次初始化 NewAPI。DramaClaw 不保存这个密码，也不会用它做后续管理操作。初始化完成后请自行保存 NewAPI 管理员账号密码，用于登录 NewAPI 后台。
+管理员密码只用于首次初始化 NewAPI。Nuomi Drama Factory 不保存这个密码，也不会用它做后续管理操作。初始化完成后请自行保存 NewAPI 管理员账号密码，用于登录 NewAPI 后台。
 
-推荐直接使用 DramaClaw 初始化向导：不需要先注册 NewAPI；在设置页填写首次管理员密码并点击“初始化配置”，runtime token 会自动保存到 `settings.db`。
+推荐直接使用 Nuomi Drama Factory 初始化向导：不需要先注册 NewAPI；在设置页填写首次管理员密码并点击“初始化配置”，runtime token 会自动保存到 `settings.db`。
 
-如果 NewAPI 已经初始化过，初始化密码可以留空；点击“初始化配置”只会创建或复用 DramaClaw runtime token，不会重置已有管理员密码。
+如果 NewAPI 已经初始化过，初始化密码可以留空；点击“初始化配置”只会创建或复用 Nuomi Drama Factory runtime token，不会重置已有管理员密码。
 
 ### 3. 配置供应商渠道
 
@@ -102,7 +102,7 @@ docker compose -f docker-compose.selfhosted.yml up -d --build
 
 页面里的按钮含义：
 
-- “保存渠道配置”：只保存到 DramaClaw 本地配置，作为后续模型映射的渠道预设；不会立刻修改 NewAPI 已有渠道。
+- “保存渠道配置”：只保存到 Nuomi Drama Factory 本地配置，作为后续模型映射的渠道预设；不会立刻修改 NewAPI 已有渠道。
 - “更新 NewAPI 渠道”：立刻把当前这一行的 key / Base URL 更新到 NewAPI 对应渠道。
 - “保存模型映射”：根据当前文本、图片、视频、音频、embedding 映射，把需要的渠道和模型写入 NewAPI，并保存本地配置。
 
@@ -110,7 +110,7 @@ docker compose -f docker-compose.selfhosted.yml up -d --build
 
 ### 4. 配置模型映射
 
-DramaClaw 使用一组内部逻辑模型名。你可以把每个逻辑模型映射到某个供应商渠道和真实上游模型。
+Nuomi Drama Factory 使用一组内部逻辑模型名。你可以把每个逻辑模型映射到某个供应商渠道和真实上游模型。
 
 页面里的模型配置分为几类：
 
@@ -121,15 +121,15 @@ DramaClaw 使用一组内部逻辑模型名。你可以把每个逻辑模型映�
 - 视频：`seedance-*`、`happyhorse-1.0` 等。
 - 音频：`index-tts-2`、`LingShan-MU-11` 等。
 
-纯文本模型和多模态模型区块顶部都有批量填充控件。选择渠道、填写上游模型名后点击“应用到全部”，只会把当前区块的模型草稿填到页面里，不会立即写入 NewAPI。你可以继续展开分组，单独调整某一行的渠道或上游模型名；最后点击“保存映射”才会写入 NewAPI 并保存到 DramaClaw 本地配置。
+纯文本模型和多模态模型区块顶部都有批量填充控件。选择渠道、填写上游模型名后点击“应用到全部”，只会把当前区块的模型草稿填到页面里，不会立即写入 NewAPI。你可以继续展开分组，单独调整某一行的渠道或上游模型名；最后点击“保存映射”才会写入 NewAPI 并保存到 Nuomi Drama Factory 本地配置。
 
-如果使用 RelayClaw 官方 DC key，可以跳过映射；官方已配置好默认逻辑模型。
+如果使用 RelayClaw 官方 Nuomi Drama Factory key，可以跳过映射；官方已配置好默认逻辑模型。
 
-如果使用本地 NewAPI，请保持 DramaClaw 内部逻辑模型名不变，只在 NewAPI 渠道里映射到真实上游模型。
+如果使用本地 NewAPI，请保持 Nuomi Drama Factory 内部逻辑模型名不变，只在 NewAPI 渠道里映射到真实上游模型。
 
 ## 媒体能力配置基础层
 
-DramaClaw 正在把图片、视频和 TTS 从具体 backend 名称迁移到稳定的“媒体能力”契约。该基础层与上文的 NewAPI 逻辑模型映射并存，不会自动替换现有生产链路。
+Nuomi Drama Factory 正在把图片、视频和 TTS 从具体 backend 名称迁移到稳定的“媒体能力”契约。该基础层与上文的 NewAPI 逻辑模型映射并存，不会自动替换现有生产链路。
 
 ### 当前实现范围
 
@@ -353,7 +353,7 @@ EMBEDDING_BATCH_SIZE=36
 
 ## 参考媒体 relay
 
-当上游模型需要读取本地参考图、首帧、角色图或身份图时，DramaClaw 需要先把本地文件上传到一个公网可访问的临时地址，再把 URL 传给模型网关。
+当上游模型需要读取本地参考图、首帧、角色图或身份图时，Nuomi Drama Factory 需要先把本地文件上传到一个公网可访问的临时地址，再把 URL 传给模型网关。
 
 纯文本流程、纯文生图流程通常不需要配置参考媒体 relay。图生图、视频首帧、角色参考图、身份图、Freezone 图片参考等场景会用到。
 
@@ -382,7 +382,7 @@ MEDIA_RELAY_TTL_SECONDS=1800
 | AccessKey Secret | `OSS_RELAY_SK` | 对应的 AccessKey Secret。 |
 | 有效期 | `MEDIA_RELAY_TTL_SECONDS` | 生成签名 URL 的有效时间，默认 1800 秒。 |
 
-Bucket 需要允许后端上传对象，并能生成临时签名 URL 供上游模型读取。一般不需要把 Bucket 设为公开读；DramaClaw 会使用签名 URL 暂时授权访问。建议单独建一个 Bucket 或独立前缀，只给 DramaClaw 存放参考图临时文件。
+Bucket 需要允许后端上传对象，并能生成临时签名 URL 供上游模型读取。一般不需要把 Bucket 设为公开读；Nuomi Drama Factory 会使用签名 URL 暂时授权访问。建议单独建一个 Bucket 或独立前缀，只给 Nuomi Drama Factory 存放参考图临时文件。
 
 ### Cloudinary 免费方案
 
@@ -399,7 +399,7 @@ MEDIA_RELAY_TTL_SECONDS=1800
 
 Cloudinary 的 Cloud name、API Key、API Secret 可以在 Cloudinary 控制台的 API Keys 页面查看。进入控制台后，打开 Product environment settings -> API Keys，即可看到 `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>` 格式的提示。
 
-`CLOUDINARY_RELAY_FOLDER` 对应网页里的“API 文件夹（可选）”。这里填的是 Cloudinary 后台里的 folder 名称，不是本地文件夹路径。例如填 `dramaclaw-relay` 后，上传的参考图会放在 Cloudinary 的 `dramaclaw-relay` 文件夹下，便于后台管理；留空时上传到 Cloudinary 根目录。
+`CLOUDINARY_RELAY_FOLDER` 对应网页里的“API 文件夹（可选）”。这里填的是 Cloudinary 后台里的 folder 名称，不是本地文件夹路径。例如填 `dramaclaw-relay` 后，上传的参考图会放在 Cloudinary 的 `dramaclaw-relay` 文件夹下，便于后台管理；该 folder 名是内部兼容示例，必须原样保留。留空时上传到 Cloudinary 根目录。
 
 网页设置中保存媒体存储配置后，本地 SQLite 配置优先生效，后端不会回传完整密钥给前端显示。
 
@@ -407,7 +407,7 @@ Cloudinary 的 Cloud name、API Key、API Secret 可以在 Cloudinary 控制台�
 
 | 现象 | 处理 |
 |---|---|
-| 保存官方渠道后仍调用旧 key | 确认当前生效渠道是否为“官方渠道”；新任务会读取最新本地配置，已在运行中的任务不会强制中途切换。Cognee 已初始化时需要重启 DramaClaw。 |
+| 保存官方渠道后仍调用旧 key | 确认当前生效渠道是否为“官方渠道”；新任务会读取最新本地配置，已在运行中的任务不会强制中途切换。Cognee 已初始化时需要重启 Nuomi Drama Factory。 |
 | 本地 NewAPI 初始化失败 | 确认本地 NewAPI 服务已启动、SQLite 文件目录可写、`NEWAPI_PROVISIONER_ENABLED=true` 是否生效。 |
 | 已初始化 NewAPI 后再次填密码点击初始化 | 不会修改已有管理员密码；密码只在首次初始化时使用。 |
 | NewAPI 报 `No available channel for model ...` | 对应逻辑模型没有写入 NewAPI 渠道，或渠道未启用，或模型映射保存失败。 |

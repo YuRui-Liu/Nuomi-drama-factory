@@ -3,21 +3,21 @@
 
 # Self-Hosting Handbook (Docker)
 
-> Deploy, configure, upgrade, and back up DramaClaw CE with Docker.
+> Deploy, configure, upgrade, and back up Nuomi Drama Factory CE with Docker.
 
-CE ships two containers by default: `api` + `web`, with **no PostgreSQL / no Redis / no Celery** (`ST_EDITION=ce`; tasks run inline within the process). Models go through the official DramaClaw gateway by default. If you want a purely local, self-hosted gateway, use `docker-compose.selfhosted.yml` (which adds a bundled `newapi` container).
+CE ships two containers by default: `api` + `web`, with **no PostgreSQL / no Redis / no Celery** (`ST_EDITION=ce`; tasks run inline within the process). Models go through the official Nuomi Drama Factory gateway by default. If you want a purely local, self-hosted gateway, use `docker-compose.selfhosted.yml` (which adds a bundled `newapi` container).
 
 ## 1. Prerequisites
 
 - Docker + `docker compose`.
 - Resources: ≥ 2 vCPU / 4GB recommended (excluding model inference, which runs through an external gateway).
-- A DC key (the default official gateway is RelayClaw, see <https://relayclaw.cdnfg.com>), or your own OpenAI-compatible gateway.
+- A Nuomi Drama Factory key (the default official gateway is RelayClaw, see <https://relayclaw.cdnfg.com>), or your own OpenAI-compatible gateway.
 
 ## 2. Get the compose files and configuration
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 cp .env.example .env
 ```
 
@@ -40,10 +40,10 @@ Groups (each item is commented inline in `.env.example`): local NewAPI provision
 
 Recommended and alternative options (see [Configuring Model Providers](../getting-started/configuring-models.md) for details):
 
-- **A. DC official key (recommended)**: the default compose already uses the official gateway. After bringing the stack up, open `http://localhost:8080` → Settings → Model Configuration → Official Channel → paste your DC key and save to start using it, **no model mapping required**. Get a key at <https://relayclaw.cdnfg.com>.
+- **A. Nuomi Drama Factory official key (recommended)**: the default compose already uses the official gateway. After bringing the stack up, open `http://localhost:8080` → Settings → Model Configuration → Official Channel → paste your Nuomi Drama Factory key and save to start using it, **no model mapping required**. Get a key at <https://relayclaw.cdnfg.com>.
 - **B. Local NewAPI**: switch to `docker compose -f docker-compose.selfhosted.yml up`, then initialize it and configure upstream channels and model mappings from the Local NewAPI page.
 
-Local NewAPI must map DramaClaw's logical models to real upstream models. The reference-image feature needs `OSS_RELAY_AK/SK` (you can skip it for a text-only workflow).
+Local NewAPI must map Nuomi Drama Factory's logical models to real upstream models. The reference-image feature needs `OSS_RELAY_AK/SK` (you can skip it for a text-only workflow).
 
 ## 4. Start / Stop
 

@@ -3,7 +3,7 @@
 
 # License
 
-DramaClaw Community Edition (CE) is licensed under the [Elastic License 2.0 (ELv2)](../../LICENSES/Elastic-2.0.txt) and is **source available**. This document explains in plain terms what you can and cannot do.
+Nuomi Drama Factory Community Edition (CE) is licensed under the [Elastic License 2.0 (ELv2)](../../LICENSES/Elastic-2.0.txt) and is **source available**. This document explains in plain terms what you can and cannot do.
 
 ## Is this open source? <!-- banned-word-allow -->
 
@@ -13,14 +13,14 @@ It is **source available**, not "open source" as defined by the OSI. The source 
 
 - Run it locally / self-hosted, for personal use or internal company use
 - Modify the source and build on top of it
-- Build your own applications on DramaClaw and deliver work to your clients
+- Build your own applications on Nuomi Drama Factory and deliver work to your clients
 - Integrate it into your own products via the API / CLI
 
 ## What is restricted (requires a commercial license)
 
 ELv2 has just one core restriction:
 
-- **You may not provide DramaClaw to third parties as a hosted / managed service** (i.e., turning CE directly into a SaaS and reselling it externally).
+- **You may not provide Nuomi Drama Factory to third parties as a hosted / managed service** (i.e., turning CE directly into a SaaS and reselling it externally).
 
 In addition, you may not remove the license / copyright notices, and you may not circumvent the license key mechanism (if any).
 
@@ -36,6 +36,6 @@ Contributions are governed by the [Contributor Agreement](../../CONTRIBUTING.md#
 
 ## Commercial licensing / partnerships
 
-Email <business@dramaclaw.ai>.
+Contact the maintainers through the repository's [GitHub Discussions](https://github.com/YuRui-Liu/Nuomi-drama-factory/discussions).
 
 > This document is a plain-language explanation and does not constitute legal advice; the [LICENSE](../../LICENSES/Elastic-2.0.txt) text governs in all cases.

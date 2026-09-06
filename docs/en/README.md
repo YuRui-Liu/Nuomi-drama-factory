@@ -25,7 +25,7 @@
 
 | Doc | Contents |
 |---|---|
-| [Feature Overview](concepts/features.md) | What DramaClaw can do |
+| [Feature Overview](concepts/features.md) | What Nuomi Drama Factory can do |
 | [Architecture](concepts/architecture.md) | How the system works |
 
 ## Reference

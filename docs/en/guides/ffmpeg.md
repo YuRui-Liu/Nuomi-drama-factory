@@ -3,7 +3,7 @@
 
 # ffmpeg Guide
 
-> DramaClaw uses `ffmpeg` / `ffprobe` for media probing, extraction, composition, transcoding, and final-cut validation. This page covers how to install it, how to let the program find it, and your licensing obligations.
+> Nuomi Drama Factory uses `ffmpeg` / `ffprobe` for media probing, extraction, composition, transcoding, and final-cut validation. This page covers how to install it, how to let the program find it, and your licensing obligations.
 
 ## Why you install it yourself
 

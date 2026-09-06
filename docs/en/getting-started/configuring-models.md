@@ -5,17 +5,17 @@
 
 > Configure the official RelayClaw channel or the local NewAPI bundled with CE.
 
-DramaClaw CE connects text, image, video, audio, and embedding models through an OpenAI-compatible NewAPI gateway. Channel selection, gateway address, and runtime token are saved from the web UI to local `settings.db`; CE does not read them from environment variables.
+Nuomi Drama Factory CE connects text, image, video, audio, and embedding models through an OpenAI-compatible NewAPI gateway. Channel selection, gateway address, and runtime token are saved from the web UI to local `settings.db`; CE does not read them from environment variables.
 
-## A. DC official key (recommended, simplest)
+## A. Nuomi Drama Factory official key (recommended, simplest)
 
 The default `docker-compose.yml` already routes models through the "Official Channel". After `docker compose up -d --build` is running:
 
 1. Open **`http://localhost:8080`** in your browser and go to Settings → **Model Configuration → Official Channel**.
-2. The official gateway address is fixed as `https://relayclaw.cdnfg.com/v1`; **paste your DC key** and click "Save and Enable".
-3. It works immediately — RelayClaw has all of DramaClaw's logical models configured on its backend, so **no `*_MODEL` mapping is required**.
+2. The official gateway address is fixed as `https://relayclaw.cdnfg.com/v1`; **paste your Nuomi Drama Factory key** and click "Save and Enable".
+3. It works immediately — RelayClaw has all of Nuomi Drama Factory's logical models configured on its backend, so **no `*_MODEL` mapping is required**.
 
-> Don't have a DC key yet? Sign up / purchase at **<https://relayclaw.cdnfg.com>**.
+> Don't have a Nuomi Drama Factory key yet? Sign up / purchase at **<https://relayclaw.cdnfg.com>**.
 
 ## B. Local NewAPI
 
@@ -36,13 +36,13 @@ On first start, open Settings → Model Configuration → Local NewAPI. The init
 
 Grouped by purpose: text (Hermes/Cognee/the various planners/normalizers, etc.), image (`NEWAPI_IMAGE_MODEL`, `NEWAPI_NANOBANANA2_MODEL` and the various `*_IMAGE_*`), video (`VIDEO_BACKEND`, `NEWAPI_VIDEO_MODELS`…), audio (`INDEXTTS2_NEWAPI_MODEL`).
 
-> When using a DC official key, skip this section — RelayClaw already has everything configured.
+> When using a Nuomi Drama Factory official key, skip this section — RelayClaw already has everything configured.
 
-After changing the key or channel, new clients use the new settings. Hermes rotates its worker automatically. If Cognee has already initialized in the current process, restart DramaClaw before using the novel knowledge base again.
+After changing the key or channel, new clients use the new settings. Hermes rotates its worker automatically. If Cognee has already initialized in the current process, restart Nuomi Drama Factory before using the novel knowledge base again.
 
 ## Media capability configuration foundation
 
-DramaClaw is migrating image, video, and TTS generation from provider-specific backend names to stable media capability contracts. This foundation coexists with the NewAPI logical-model mappings above and does not automatically replace the existing production path.
+Nuomi Drama Factory is migrating image, video, and TTS generation from provider-specific backend names to stable media capability contracts. This foundation coexists with the NewAPI logical-model mappings above and does not automatically replace the existing production path.
 
 ### Current implementation scope
 
@@ -83,7 +83,7 @@ The following production execution is not connected yet:
 - MiniMax H3 prompt compilation, video quality gates, and artifact promotion.
 - The management UI and default cutover from the legacy NewAPI media path.
 
-Saving the following configuration therefore means that the foundation can validate, resolve, and persist it; it **does not mean that DramaClaw can already generate media through GRSAI or RunningHub**.
+Saving the following configuration therefore means that the foundation can validate, resolve, and persist it; it **does not mean that Nuomi Drama Factory can already generate media through GRSAI or RunningHub**.
 
 ### Parameter precedence
 

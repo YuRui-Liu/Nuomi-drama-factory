@@ -1,10 +1,10 @@
-# DramaClaw 共享系统地图
+# Nuomi Drama Factory 共享系统地图
 
 > **所属**：共享架构<br>
 > **相关手册**：[功能反查](development/trace-a-feature.md) · [新增 API 与长任务](development/add-api-and-task.md) · [存储与项目文件](development/storage-and-files.md) · [测试策略](development/testing-strategy.md)<br>
 > **核心生产管线入口**：[Cookbook 首页：核心生产管线](README.md#核心生产管线)<br>
 > **代码核对基线**：`55504a0`<br>
-> **返回**：[DramaClaw 开发者 Cookbook](README.md)
+> **返回**：[Nuomi Drama Factory 开发者 Cookbook](README.md)
 
 本页只说明八条生产管线共用的应用边界、任务生命周期和项目目录约定。某项业务怎样生成角色、分镜、音频或视频，回到对应的[生产管线专题](README.md#核心生产管线)继续追踪；产品介绍与部署步骤不在这里重复。
 

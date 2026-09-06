@@ -1,10 +1,10 @@
-# DramaClaw 功能反查手册
+# Nuomi Drama Factory 功能反查手册
 
 > **所属**：开发手册<br>
-> **相关系统地图**：[DramaClaw 共享系统地图](../system-map.md)<br>
+> **相关系统地图**：[Nuomi Drama Factory 共享系统地图](../system-map.md)<br>
 > **管线首页**：[核心生产管线](../README.md#核心生产管线) · [合成与导出](../pipelines/08-compose-export.md)<br>
 > **代码核对基线**：`55504a0`<br>
-> **返回**：[DramaClaw 开发者 Cookbook](../README.md)
+> **返回**：[Nuomi Drama Factory 开发者 Cookbook](../README.md)
 
 这份手册回答一类具体问题：「我要改某个功能，它从页面到产物是怎么走的？」做法是从手头已有的稳定线索开始搜索，再沿调用者、契约、执行者和数据落点逐层核对。不要只凭相似的目录名判断调用关系；路由、HTTP 路径、`task_type` 和输出文件名通常是更可靠的锚点。
 

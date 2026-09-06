@@ -25,7 +25,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [功能总览](concepts/features.md) | DramaClaw 能做什么 |
+| [功能总览](concepts/features.md) | Nuomi Drama Factory 能做什么 |
 | [架构](concepts/architecture.md) | 系统怎么运作 |
 | [技术设计](technical-design.md) | 面向新开发者的架构、模块、开发、测试与桌面打包说明 |
 

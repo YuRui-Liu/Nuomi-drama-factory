@@ -3,21 +3,21 @@
 
 # Quickstart
 
-> Run DramaClaw locally and produce your first result.
+> Run Nuomi Drama Factory locally and produce your first result.
 
-DramaClaw is the Community Edition (CE): it runs on a single machine with no PostgreSQL / Redis required. By default `docker compose` brings up two services: `api` (the creation backend, :8780) and `web` (the browser UI, :8080). Models are served through the **DramaClaw official gateway (RelayClaw)** — paste in a DC key and you're ready to go.
+Nuomi Drama Factory is the Community Edition (CE): it runs on a single machine with no PostgreSQL / Redis required. By default `docker compose` brings up two services: `api` (the creation backend, :8780) and `web` (the browser UI, :8080). Models are served through the **Nuomi Drama Factory official gateway (RelayClaw)** — paste in a Nuomi Drama Factory key and you're ready to go.
 
 ## Prerequisites
 
 - Docker (Desktop or Engine) with `docker compose` support.
-- A **DC key** — sign up / purchase at <https://relayclaw.cdnfg.com>; alternatively use the local NewAPI bundled with CE.
+- A **Nuomi Drama Factory key** — sign up / purchase at <https://relayclaw.cdnfg.com>; alternatively use the local NewAPI bundled with CE.
 
 ## Steps
 
 ```bash
 # 1. Get the code (the current version builds the image from source; later releases will pull a published image)
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 
 # 2. Prepare configuration
 cp .env.example .env
@@ -31,11 +31,11 @@ docker compose up -d --build
 docker compose ps   # both api and web should be running
 ```
 
-## Enter your DC key (one-time, required)
+## Enter your Nuomi Drama Factory key (one-time, required)
 
-1. Open **`http://localhost:8080`** in your browser — this is the DramaClaw UI.
+1. Open **`http://localhost:8080`** in your browser — this is the Nuomi Drama Factory UI.
 2. Go to Settings → **Model Configuration → Official Channel**. The gateway address is already prefilled as `https://relayclaw.cdnfg.com/v1`.
-3. **Paste your DC key** and click "Save and Enable". It works immediately, with **no model mapping required** (RelayClaw has everything configured on the backend).
+3. **Paste your Nuomi Drama Factory key** and click "Save and Enable". It works immediately, with **no model mapping required** (RelayClaw has everything configured on the backend).
 
 > CE defaults to no-login, single local user (`ST_EDITION=ce`, enforced by compose). The REST API lives at `http://localhost:8780` (the browser only talks to `web`, which reverse-proxies to `api`).
 

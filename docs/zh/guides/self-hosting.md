@@ -3,21 +3,21 @@
 
 # 自托管手册（Docker）
 
-> 用 Docker 部署、配置、升级、备份 DramaClaw CE。
+> 用 Docker 部署、配置、升级、备份 Nuomi Drama Factory CE。
 
-CE 默认两个容器：`api` + `web`，**无 PostgreSQL / 无 Redis / 无 Celery**（`ST_EDITION=ce`，任务在进程内 inline 执行）。模型默认走 DramaClaw 官方网关；想纯本地自建网关,用 `docker-compose.selfhosted.yml`(多一个内置 `newapi` 容器)。
+CE 默认两个容器：`api` + `web`，**无 PostgreSQL / 无 Redis / 无 Celery**（`ST_EDITION=ce`，任务在进程内 inline 执行）。模型默认走 Nuomi Drama Factory 官方网关；想纯本地自建网关,用 `docker-compose.selfhosted.yml`(多一个内置 `newapi` 容器)。
 
 ## 1. 前置
 
 - Docker + `docker compose`。
 - 资源：建议 ≥ 2 vCPU / 4GB（不含模型推理，推理走外部网关）。
-- 一个 DC key（默认官方网关 RelayClaw,见 <https://relayclaw.cdnfg.com>），或自己的 OpenAI 兼容网关。
+- 一个 Nuomi Drama Factory key（默认官方网关 RelayClaw,见 <https://relayclaw.cdnfg.com>），或自己的 OpenAI 兼容网关。
 
 ## 2. 拿到 compose 与配置
 
 ```bash
-git clone https://github.com/dramaclaw/dramaclaw.git
-cd dramaclaw
+git clone https://github.com/YuRui-Liu/Nuomi-drama-factory.git
+cd Nuomi-drama-factory
 cp .env.example .env
 ```
 
@@ -40,10 +40,10 @@ cp .env.example .env
 
 推荐与备选(详见 [配置模型供应商](../getting-started/configuring-models.md)):
 
-- **A. DC 官方 key(推荐)**：默认 compose 已走官方网关。起栈后开 `http://localhost:8080` → 设置 → 模型配置 → 官方渠道 → 粘贴 DC key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 取 key。
+- **A. Nuomi Drama Factory 官方 key(推荐)**：默认 compose 已走官方网关。起栈后开 `http://localhost:8080` → 设置 → 模型配置 → 官方渠道 → 粘贴 Nuomi Drama Factory key 保存即用,**无需映射模型**。到 <https://relayclaw.cdnfg.com> 取 key。
 - **B. 本地 NewAPI**：改用 `docker compose -f docker-compose.selfhosted.yml up`，然后在网页「本地 NewAPI」页初始化并配置上游渠道和模型映射。
 
-本地 NewAPI 需把 DramaClaw 逻辑模型映射到真实上游模型。参考图功能需要 `OSS_RELAY_AK/SK`（纯文本流程可暂不配）。
+本地 NewAPI 需把 Nuomi Drama Factory 逻辑模型映射到真实上游模型。参考图功能需要 `OSS_RELAY_AK/SK`（纯文本流程可暂不配）。
 
 ## 4. 起停
 
