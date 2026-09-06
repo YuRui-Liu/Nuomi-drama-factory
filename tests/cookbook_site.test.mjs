@@ -113,10 +113,28 @@ test('cookbook theme extends the VitePress default theme', () => {
     new URL('../docs/cookbook/.vitepress/theme/index.ts', import.meta.url),
     'utf8',
   );
+  const css = readFileSync(
+    new URL('../docs/cookbook/.vitepress/theme/custom.css', import.meta.url),
+    'utf8',
+  );
 
   assert.match(theme, /from\s+['\"]vitepress\/theme['\"]/);
   assert.match(theme, /import\s+['\"]\.\/custom\.css['\"]/);
   assert.match(theme, /export\s+default\s+DefaultTheme/);
+  assert.match(css, /--vp-font-family-base/);
+  assert.match(css, /--vp-layout-max-width/);
+  assert.match(css, /\.vp-doc h2/);
+  assert.match(css, /\.vp-doc h3/);
+  assert.match(css, /\.vp-doc :not\(pre\) > code/);
+  assert.match(css, /\.vp-doc table/);
+  assert.match(css, /overflow-x:\s*auto/);
+  assert.match(css, /\.vp-doc details/);
+  assert.match(css, /\.vp-doc \.mermaid/);
+  assert.match(
+    css,
+    /@media \(max-width: 768px\)[\s\S]*?\.VPDoc \.content-container[\s\S]*?max-width:\s*688px !important/,
+  );
+  assert.doesNotMatch(css, /--vp-c-brand-/);
 });
 
 test('cookbook home documents the HTML reading commands', () => {
@@ -130,4 +148,5 @@ test('cookbook home documents the HTML reading commands', () => {
   }
   assert.match(home, /HTML 阅读入口/);
   assert.match(home, /仓库根目录/);
+  assert.match(home, /Markdown 仍是唯一内容源/);
 });
