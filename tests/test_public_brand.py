@@ -46,6 +46,24 @@ def test_scan_text_allows_compatibility_identifiers_and_asset_urls() -> None:
     assert scanner.scan_text(Path("frontend/src/example.ts"), text) == []
 
 
+def test_scan_text_rejects_negated_compatibility_explanation() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("docs/compatibility.md"),
+        "DramaClaw is not retained as an internal compatibility name.",
+    ) == ["docs/compatibility.md:1"]
+
+
+def test_scan_text_only_allows_the_occurrence_named_by_compatibility_explanation() -> None:
+    scanner = _load_scanner()
+
+    assert scanner.scan_text(
+        Path("docs/compatibility.md"),
+        "DramaClaw is retained as an internal compatibility name; use DramaClaw publicly.",
+    ) == ["docs/compatibility.md:1"]
+
+
 def test_scan_text_rejects_identifiers_without_exact_case_and_boundaries() -> None:
     scanner = _load_scanner()
     text = "\n".join(
@@ -81,6 +99,7 @@ def test_public_paths_include_docs_and_frontend_but_exclude_internal_content() -
     assert scanner.is_public_path(Path("docs/cookbook/example.md"))
     assert scanner.is_public_path(Path("docs/releasing.md"))
     assert scanner.is_public_path(Path("docs/operations/runbook.md"))
+    assert scanner.is_public_path(Path("readme/another-language.md"))
     assert scanner.is_public_path(Path(".github/ISSUE_TEMPLATE/bug.yml"))
     assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE.md"))
     assert scanner.is_public_path(Path(".github/PULL_REQUEST_TEMPLATE/release.md"))
@@ -90,4 +109,91 @@ def test_public_paths_include_docs_and_frontend_but_exclude_internal_content() -
     assert not scanner.is_public_path(Path(".github/workflows/ci.yml"))
     assert not scanner.is_public_path(Path("package-lock.json"))
     assert not scanner.is_public_path(Path("LICENSES/vendor.txt"))
+    assert not scanner.is_public_path(Path("docs/third-party/vendor.md"))
+    assert not scanner.is_public_path(Path("docs/third_party/vendor.md"))
+    assert not scanner.is_public_path(Path("docs/THIRD-PARTY-LICENSES.txt"))
+    assert not scanner.is_public_path(Path("docs/hermes-plugin.md"))
+    assert not scanner.is_public_path(Path("docs/HermesPlugin/README.md"))
     assert not scanner.is_public_path(Path("src/novelvideo/hermes/dramaclaw.py"))
+
+
+def test_repository_scan_and_cli_report_only_public_findings(
+    tmp_path: Path, capsys
+) -> None:
+    scanner = _load_scanner()
+    files = {
+        "README.md": "DramaClaw heading\n",
+        "readme/README_fr.md": "About DramaClaw\n",
+        "docs/operations/runbook.md": "Run DramaClaw\n",
+        "frontend/src/header.tsx": 'const title = "DramaClaw";\n',
+        ".github/ISSUE_TEMPLATE/bug.yml": "description: DramaClaw bug\n",
+        ".github/PULL_REQUEST_TEMPLATE.md": "DramaClaw checklist\n",
+        "docs/plans/rename.md": "DramaClaw ignored\n",
+        "docs/third_party/LICENSE.md": "DramaClaw ignored\n",
+        "docs/hermes-plugin.md": "DramaClaw ignored\n",
+        ".github/workflows/ci.yml": "name: DramaClaw ignored\n",
+        "src/internal.py": "DramaClaw ignored\n",
+    }
+    for relative, content in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    findings, errors = scanner.scan_repository(tmp_path)
+
+    assert errors == []
+    assert findings == [
+        ".github/ISSUE_TEMPLATE/bug.yml:1",
+        ".github/PULL_REQUEST_TEMPLATE.md:1",
+        "README.md:1",
+        "docs/operations/runbook.md:1",
+        "frontend/src/header.tsx:1",
+        "readme/README_fr.md:1",
+    ]
+    assert scanner.main(tmp_path) == 1
+    captured = capsys.readouterr()
+    assert "Legacy DramaClaw public branding found:" in captured.err
+    assert "docs/operations/runbook.md:1" in captured.err
+    assert "docs/plans/rename.md" not in captured.err
+
+
+def test_cli_returns_zero_for_clean_public_tree(tmp_path: Path, capsys) -> None:
+    scanner = _load_scanner()
+    readme = tmp_path / "README.md"
+    readme.write_text("# Nuomi\n", encoding="utf-8")
+
+    assert scanner.main(tmp_path) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_reports_non_utf8_public_files(tmp_path: Path, capsys) -> None:
+    scanner = _load_scanner()
+    document = tmp_path / "docs" / "broken.md"
+    document.parent.mkdir(parents=True)
+    document.write_bytes(b"\xff\xfe")
+
+    assert scanner.main(tmp_path) == 1
+    captured = capsys.readouterr()
+    assert "docs/broken.md: unable to read as UTF-8" in captured.err
+
+
+def test_repository_scan_reports_a_public_file_that_disappears(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scanner = _load_scanner()
+    readme = tmp_path / "README.md"
+    readme.write_text("DramaClaw\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def disappearing_read(path: Path, *args, **kwargs):
+        if path == readme:
+            raise FileNotFoundError("removed during scan")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", disappearing_read)
+
+    findings, errors = scanner.scan_repository(tmp_path)
+
+    assert findings == []
+    assert len(errors) == 1
+    assert errors[0].startswith("README.md: unable to read:")

@@ -24,6 +24,7 @@ _PUBLIC_FILES = {
 }
 _PUBLIC_TREES = (
     "docs/",
+    "readme/",
     ".github/ISSUE_TEMPLATE/",
     ".github/PULL_REQUEST_TEMPLATE/",
     "frontend/src/",
@@ -45,6 +46,17 @@ _TEXT_SUFFIXES = {
 }
 _LOCK_NAMES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
 _BRAND = re.compile(r"dramaclaw", re.IGNORECASE)
+_COMPATIBILITY_EXPLANATIONS = (
+    re.compile(
+        r"(?P<brand>dramaclaw)\s+is\s+(?:retained|kept)\s+as\s+an\s+"
+        r"internal compatibility name",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<brand>dramaclaw)\s*(?:仅|仍)?作为内部兼容名称保留",
+        re.IGNORECASE,
+    ),
+)
 _ALLOWED_OCCURRENCES = re.compile(
     r"(?<![A-Za-z0-9_])DRAMACLAW_[A-Z0-9_]+(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_])dramaclaw_[a-z0-9_]+(?![A-Za-z0-9_])"
@@ -52,18 +64,26 @@ _ALLOWED_OCCURRENCES = re.compile(
 )
 
 
+def _is_excluded_path(path: Path) -> bool:
+    for part in path.parts:
+        lowered = part.lower()
+        normalized = re.sub(r"[^a-z0-9]", "", lowered)
+        if lowered in {"plans", "superpowers", "licenses"}:
+            return True
+        if normalized == "thirdparty" or normalized.startswith("thirdpartylicenses"):
+            return True
+        if normalized.startswith("hermes"):
+            return True
+    return False
+
+
 def is_public_path(path: Path) -> bool:
     """Return whether a repository-relative path belongs to the public surface."""
     normalized = path.as_posix().removeprefix("./")
-    lowered_parts = {part.lower() for part in Path(normalized).parts}
 
-    if normalized.startswith(("docs/plans/", "docs/superpowers/")):
+    if _is_excluded_path(Path(normalized)):
         return False
     if Path(normalized).name in _LOCK_NAMES or normalized.endswith(".lock"):
-        return False
-    if "licenses" in lowered_parts or "third_party" in lowered_parts:
-        return False
-    if "hermes" in lowered_parts or "hermes-plugin" in normalized.lower():
         return False
 
     in_scope = normalized in _PUBLIC_FILES or normalized.startswith(_PUBLIC_TREES)
@@ -72,9 +92,12 @@ def is_public_path(path: Path) -> bool:
     return normalized == "NOTICE" or Path(normalized).suffix.lower() in _TEXT_SUFFIXES
 
 
-def _is_compatibility_explanation(line: str) -> bool:
-    lowered = line.lower()
-    return "internal compatibility name" in lowered or "内部兼容名称" in line
+def _compatibility_spans(line: str) -> list[tuple[int, int]]:
+    return [
+        match.span("brand")
+        for pattern in _COMPATIBILITY_EXPLANATIONS
+        for match in pattern.finditer(line)
+    ]
 
 
 def scan_text(path: Path, text: str) -> list[str]:
@@ -82,10 +105,11 @@ def scan_text(path: Path, text: str) -> list[str]:
     findings: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         matches = list(_BRAND.finditer(line))
-        if not matches or _is_compatibility_explanation(line):
+        if not matches:
             continue
 
         allowed_spans = [match.span() for match in _ALLOWED_OCCURRENCES.finditer(line)]
+        allowed_spans.extend(_compatibility_spans(line))
         if any(
             not any(start <= match.start() and match.end() <= end for start, end in allowed_spans)
             for match in matches
@@ -94,25 +118,49 @@ def scan_text(path: Path, text: str) -> list[str]:
     return findings
 
 
-def _public_files(root: Path):
-    for path in root.rglob("*"):
-        if path.is_file() and is_public_path(path.relative_to(root)):
-            yield path
+def _public_files(root: Path) -> list[Path]:
+    candidates = {root / relative for relative in _PUBLIC_FILES}
+    for relative_tree in _PUBLIC_TREES:
+        tree = root / relative_tree
+        if tree.is_dir():
+            candidates.update(path for path in tree.rglob("*") if path.is_file())
+    return sorted(
+        (
+            path
+            for path in candidates
+            if path.is_file() and is_public_path(path.relative_to(root))
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
 
 
-def main() -> int:
+def scan_repository(root: Path) -> tuple[list[str], list[str]]:
     findings: list[str] = []
-    for path in _public_files(REPO_ROOT):
-        relative_path = path.relative_to(REPO_ROOT)
+    errors: list[str] = []
+    for path in _public_files(root):
+        relative_path = path.relative_to(root)
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            errors.append(f"{relative_path.as_posix()}: unable to read as UTF-8")
+            continue
+        except OSError as exc:
+            errors.append(f"{relative_path.as_posix()}: unable to read: {exc}")
             continue
         findings.extend(scan_text(relative_path, text))
+    return sorted(findings), sorted(errors)
+
+
+def main(root: Path = REPO_ROOT) -> int:
+    findings, errors = scan_repository(root)
 
     if findings:
         print("Legacy DramaClaw public branding found:", file=sys.stderr)
-        print("\n".join(sorted(findings)), file=sys.stderr)
+        print("\n".join(findings), file=sys.stderr)
+    if errors:
+        print("Public branding scan errors:", file=sys.stderr)
+        print("\n".join(errors), file=sys.stderr)
+    if findings or errors:
         return 1
     return 0
 
