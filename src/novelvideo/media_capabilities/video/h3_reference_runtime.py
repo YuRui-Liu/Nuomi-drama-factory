@@ -580,6 +580,8 @@ def renew_h3_reference_input_snapshot_lease(
     """Extend a queued/running snapshot lease through a no-follow directory chain."""
     if _SNAPSHOT_ID_PATTERN.fullmatch(str(snapshot_id)) is None:
         raise ValueError("invalid H3 reference snapshot ID")
+    if isinstance(ttl_seconds, bool) or int(ttl_seconds) < 0:
+        raise ValueError("snapshot TTL must be a non-negative integer")
     if os.name == "nt":
         state = Path(state_root)
         storage = state / "h3_reference_input_snapshots"
@@ -627,6 +629,18 @@ def renew_h3_reference_input_snapshot_lease(
         ))
         descriptors.append(os.open(snapshot_id, flags, dir_fd=descriptors[-1]))
         fcntl.flock(descriptors[-1], fcntl.LOCK_EX)
+        try:
+            temporary_metadata = os.stat(
+                ".lease.json.tmp",
+                dir_fd=descriptors[-1],
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(temporary_metadata.st_mode):
+                raise ValueError("unexpected H3 snapshot lease entry")
+            os.unlink(".lease.json.tmp", dir_fd=descriptors[-1])
         lease = json.dumps(
             {"expires_at": time.time() + int(ttl_seconds)},
             sort_keys=True, separators=(",", ":"),
