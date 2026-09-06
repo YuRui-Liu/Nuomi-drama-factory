@@ -28,6 +28,8 @@ def display_metadata_for_task(task_type: str, payload: dict[str, Any] | None) ->
         "canvas_id",
         "node_id",
         "skill_id",
+        "reference_snapshot_id",
+        "reference_snapshot_digest",
     ):
         value = str(payload.get(key) or "").strip()
         if value:

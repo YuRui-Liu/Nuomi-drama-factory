@@ -72,6 +72,7 @@ from novelvideo.narrative_groups.service import (
 )
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.registry import register_project_task_runner
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
@@ -178,6 +179,32 @@ def _retain_reference_snapshot(
         )
     except (OSError, ValueError):
         pass
+
+
+def _reference_snapshot_owner_resolver(ctx: ProjectContext):
+    def owner_resolver(
+        *, snapshot_id: str, snapshot_digest: str, owner_task_id: str
+    ) -> bool:
+        for task in get_task_manager().list_tasks_for_project(ctx):
+            metadata = dict(task.metadata or {})
+            if not metadata and isinstance(task.result, dict):
+                metadata = dict(task.result.get("task_metadata") or {})
+            if metadata.get("reference_snapshot_id") != snapshot_id:
+                continue
+            if snapshot_digest and metadata.get(
+                "reference_snapshot_digest"
+            ) != snapshot_digest:
+                continue
+            if owner_task_id and str(task.task_id) != owner_task_id:
+                continue
+            return (
+                task.status in ACTIVE_PROJECT_TASK_STATUSES
+                or task.status == "retryable"
+                or metadata.get("retryable") is True
+            )
+        return False
+
+    return owner_resolver
 
 
 async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[str, Any]]:
@@ -1387,6 +1414,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             garbage_collect_h3_reference_input_snapshots(
                 state_root=state_root,
                 protected_ids=(snapshot_id,),
+                owner_resolver=_reference_snapshot_owner_resolver(ctx),
             )
         except (OSError, ValueError):
             pass

@@ -304,6 +304,44 @@ def test_runner_rejects_stale_reference_revision_before_running_or_transport(
     assert cleanup_calls == []
 
 
+def test_reference_snapshot_owner_resolver_only_protects_active_or_retryable(
+    monkeypatch,
+) -> None:
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    metadata = {
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }
+    tasks = [SimpleNamespace(
+        task_id="task-owner",
+        status="queued",
+        metadata=metadata,
+        result=None,
+    )]
+    monkeypatch.setattr(
+        narrative_group_video,
+        "get_task_manager",
+        lambda: SimpleNamespace(list_tasks_for_project=lambda _ctx: tasks),
+    )
+    resolver = narrative_group_video._reference_snapshot_owner_resolver(
+        SimpleNamespace()
+    )
+    ownership = {
+        "snapshot_id": "a" * 32,
+        "snapshot_digest": "b" * 64,
+        "owner_task_id": "task-owner",
+    }
+
+    assert resolver(**ownership) is True
+    tasks[0].status = "failed"
+    assert resolver(**ownership) is False
+    tasks[0].status = "cancelled"
+    assert resolver(**ownership) is False
+    tasks[0].status = "retryable"
+    assert resolver(**ownership) is True
+
+
 @pytest.mark.asyncio
 async def test_reference_execution_contract_uses_queued_values_after_runtime_drift(
 ) -> None:

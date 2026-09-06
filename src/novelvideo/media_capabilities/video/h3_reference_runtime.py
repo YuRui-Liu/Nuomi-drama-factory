@@ -62,6 +62,7 @@ H3_GROUP_FRAME_SNAPSHOT_MAX_BYTES = 5 * H3_FRAME_MAX_BYTES
 H3_REFERENCE_INPUT_SNAPSHOT_VERSION = 1
 H3_REFERENCE_INPUT_PENDING_TTL_SECONDS = 60 * 60
 H3_REFERENCE_INPUT_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
+H3_REFERENCE_INPUT_DELETING_GRACE_SECONDS = 5 * 60
 _SNAPSHOT_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -568,6 +569,8 @@ def persist_h3_reference_input_snapshot(
         {
             "state": "pending",
             "expires_at": time.time() + H3_REFERENCE_INPUT_PENDING_TTL_SECONDS,
+            "snapshot_digest": digest,
+            "owner_task_id": None,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -720,6 +723,8 @@ def _transition_h3_reference_snapshot_lease(
     target_state: str,
     allowed_states: frozenset[str],
     ttl_seconds: int | None,
+    lease_updates: dict[str, object] | None = None,
+    preserve_states: frozenset[str] = frozenset(),
     win32_adapter: object | None = None,
     platform_name: str | None = None,
 ) -> None:
@@ -735,9 +740,7 @@ def _transition_h3_reference_snapshot_lease(
             None if ttl_seconds is None else time.time() + int(ttl_seconds)
         ),
     }
-    lease_content = json.dumps(
-        lease_payload, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    lease_payload.update(lease_updates or {})
     if (platform_name or os.name) == "nt":
         state = Path(state_root)
         storage = state / "h3_reference_input_snapshots"
@@ -759,8 +762,22 @@ def _transition_h3_reference_snapshot_lease(
                 ):
                     raise ValueError("H3 snapshot lease handle path changed")
                 current = json.loads(win32.read_file(current_handle, 4096))
-                if str(current.get("state") or "pending") not in allowed_states:
+                current_state = str(current.get("state") or "pending")
+                if current_state not in allowed_states:
                     raise ValueError("invalid H3 snapshot lease transition")
+                if current_state in preserve_states:
+                    lease_payload["state"] = current_state
+                    lease_payload["expires_at"] = current.get("expires_at")
+                for key in ("snapshot_digest", "owner_task_id"):
+                    existing = str(current.get(key) or "")
+                    requested = str(lease_payload.get(key) or "")
+                    if existing and requested and existing != requested:
+                        raise ValueError("H3 snapshot lease ownership does not match")
+                    if existing and not requested:
+                        lease_payload[key] = existing
+                lease_content = json.dumps(
+                    lease_payload, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
                 win32.rewrite_file(current_handle, lease_content)
             finally:
                 win32.close(current_handle)
@@ -786,8 +803,22 @@ def _transition_h3_reference_snapshot_lease(
             current = json.loads(os.read(lease_fd, 4096))
         finally:
             os.close(lease_fd)
-        if str(current.get("state") or "pending") not in allowed_states:
+        current_state = str(current.get("state") or "pending")
+        if current_state not in allowed_states:
             raise ValueError("invalid H3 snapshot lease transition")
+        if current_state in preserve_states:
+            lease_payload["state"] = current_state
+            lease_payload["expires_at"] = current.get("expires_at")
+        for key in ("snapshot_digest", "owner_task_id"):
+            existing = str(current.get(key) or "")
+            requested = str(lease_payload.get(key) or "")
+            if existing and requested and existing != requested:
+                raise ValueError("H3 snapshot lease ownership does not match")
+            if existing and not requested:
+                lease_payload[key] = existing
+        lease_content = json.dumps(
+            lease_payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
         try:
             temporary_metadata = os.stat(
                 ".lease.json.tmp",
@@ -813,16 +844,29 @@ def _transition_h3_reference_snapshot_lease(
             os.close(descriptor)
 
 
-def activate_h3_reference_snapshot(
-    *, state_root: str | Path, snapshot_id: str
+def bind_h3_reference_snapshot_owner(
+    *,
+    state_root: str | Path,
+    snapshot_id: str,
+    snapshot_digest: str,
+    task_id: str,
 ) -> None:
-    """Mark a persisted snapshot as durably queued; repeated activation is safe."""
+    """Bind a snapshot to the durable task reservation that owns it."""
+    if re.fullmatch(r"[0-9a-f]{64}", str(snapshot_digest)) is None:
+        raise ValueError("invalid H3 reference snapshot digest")
+    if not str(task_id).strip():
+        raise ValueError("task_id is required")
     _transition_h3_reference_snapshot_lease(
         state_root=state_root,
         snapshot_id=snapshot_id,
         target_state="queued",
-        allowed_states=frozenset({"pending", "queued"}),
+        allowed_states=frozenset({"pending", "queued", "running", "retained"}),
         ttl_seconds=None,
+        lease_updates={
+            "snapshot_digest": str(snapshot_digest),
+            "owner_task_id": str(task_id),
+        },
+        preserve_states=frozenset({"running", "retained"}),
     )
 
 
@@ -834,7 +878,7 @@ def mark_h3_reference_snapshot_running(
         state_root=state_root,
         snapshot_id=snapshot_id,
         target_state="running",
-        allowed_states=frozenset({"queued", "retained", "running"}),
+        allowed_states=frozenset({"pending", "queued", "retained", "running"}),
         ttl_seconds=None,
     )
 
@@ -850,7 +894,7 @@ def retain_h3_reference_snapshot(
         state_root=state_root,
         snapshot_id=snapshot_id,
         target_state="retained",
-        allowed_states=frozenset({"queued", "running", "retained"}),
+        allowed_states=frozenset({"pending", "queued", "running", "retained"}),
         ttl_seconds=ttl_seconds,
     )
 
@@ -867,6 +911,90 @@ def renew_h3_reference_input_snapshot_lease(
     )
 
 
+def _snapshot_owner_is_recoverable(owner_resolver, snapshot_id: str, lease) -> bool:
+    if owner_resolver is None:
+        return False
+    try:
+        return bool(owner_resolver(
+            snapshot_id=snapshot_id,
+            snapshot_digest=str((lease or {}).get("snapshot_digest") or ""),
+            owner_task_id=str((lease or {}).get("owner_task_id") or ""),
+        ))
+    except Exception:
+        # Ownership lookup is a safety boundary: an unavailable task DB protects data.
+        return True
+
+
+def _garbage_collect_windows_snapshot(
+    *, state: Path, snapshot_id: str, win32, current_time: float,
+    ttl_seconds: int, owner_resolver,
+) -> bool:
+    item = state / "h3_reference_input_snapshots" / snapshot_id
+    item_handle = _open_validated_windows_directory(win32, item, state)
+    lease_handle = None
+    lease = {}
+    try:
+        lease_path = item / "lease.json"
+        try:
+            lease_handle = win32.open_exclusive_file(lease_path)
+        except FileNotFoundError:
+            should_delete = (
+                win32.modified_time(item_handle) + int(ttl_seconds) <= current_time
+            )
+        else:
+            if int(win32.attributes(lease_handle)) & int(win32.REPARSE_POINT):
+                return False
+            final_path = Path(win32.final_path_for_handle(lease_handle))
+            if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(
+                os.path.abspath(lease_path)
+            ):
+                return False
+            lease = json.loads(win32.read_file(lease_handle, 4096))
+            lease_state = str(lease.get("state") or "pending")
+            should_delete = (
+                lease_state in {"pending", "retained"}
+                and float(lease.get("expires_at") or 0) <= current_time
+            )
+            if lease_state == "deleting":
+                should_delete = (
+                    float(lease.get("deleting_since") or 0)
+                    + H3_REFERENCE_INPUT_DELETING_GRACE_SECONDS
+                    <= current_time
+                )
+        if not should_delete or _snapshot_owner_is_recoverable(
+            owner_resolver, snapshot_id, lease
+        ):
+            return False
+        if lease_handle is not None:
+            deleting_lease = {
+                **lease,
+                "state": "deleting",
+                "expires_at": None,
+                "deleting_since": current_time,
+            }
+            win32.rewrite_file(
+                lease_handle,
+                json.dumps(
+                    deleting_lease, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+            )
+        win32.close(item_handle)
+        item_handle = None
+        owned_lease_handle = lease_handle
+        lease_handle = None
+        return _delete_windows_snapshot(
+            state,
+            snapshot_id,
+            adapter=win32,
+            locked_lease_handle=owned_lease_handle,
+        )
+    finally:
+        if lease_handle is not None:
+            win32.close(lease_handle)
+        if item_handle is not None:
+            win32.close(item_handle)
+
+
 def garbage_collect_h3_reference_input_snapshots(
     *,
     state_root: str | Path,
@@ -875,6 +1003,7 @@ def garbage_collect_h3_reference_input_snapshots(
     now: float | None = None,
     win32_adapter: object | None = None,
     platform_name: str | None = None,
+    owner_resolver: Callable[..., bool] | None = None,
 ) -> int:
     """Delete expired orphan snapshots while retaining active task inputs."""
     if isinstance(ttl_seconds, bool) or int(ttl_seconds) < 0:
@@ -896,62 +1025,23 @@ def garbage_collect_h3_reference_input_snapshots(
                 return 0
             deleted = 0
             for item_name in win32.list_names(storage):
-                item = storage / item_name
                 if (
-                    _SNAPSHOT_ID_PATTERN.fullmatch(item.name) is None
-                    or item.name in protected
+                    _SNAPSHOT_ID_PATTERN.fullmatch(item_name) is None
+                    or item_name in protected
                 ):
                     continue
-                item_handle = _open_validated_windows_directory(win32, item, state)
-                lease_handle = None
                 try:
-                    lease_path = item / "lease.json"
-                    try:
-                        lease_handle = win32.open_exclusive_file(lease_path)
-                    except FileNotFoundError:
-                        should_delete = (
-                            win32.modified_time(item_handle) + int(ttl_seconds)
-                            <= current_time
-                        )
-                    else:
-                        if int(win32.attributes(lease_handle)) & int(
-                            win32.REPARSE_POINT
-                        ):
-                            continue
-                        final_path = Path(win32.final_path_for_handle(lease_handle))
-                        if os.path.normcase(
-                            os.path.abspath(final_path)
-                        ) != os.path.normcase(os.path.abspath(lease_path)):
-                            continue
-                        lease = json.loads(win32.read_file(lease_handle, 4096))
-                        lease_state = str(lease.get("state") or "pending")
-                        should_delete = (
-                            lease_state in {"pending", "retained"}
-                            and float(lease.get("expires_at") or 0)
-                            <= current_time
-                        )
-                        if should_delete:
-                            win32.rewrite_file(
-                                lease_handle,
-                                b'{"state":"deleting","expires_at":null}',
-                            )
-                    if should_delete:
-                        win32.close(item_handle)
-                        item_handle = None
-                        owned_lease_handle = lease_handle
-                        lease_handle = None
-                        if _delete_windows_snapshot(
-                            state,
-                            item.name,
-                            adapter=win32,
-                            locked_lease_handle=owned_lease_handle,
-                        ):
-                            deleted += 1
-                finally:
-                    if lease_handle is not None:
-                        win32.close(lease_handle)
-                    if item_handle is not None:
-                        win32.close(item_handle)
+                    if _garbage_collect_windows_snapshot(
+                        state=state,
+                        snapshot_id=item_name,
+                        win32=win32,
+                        current_time=current_time,
+                        ttl_seconds=int(ttl_seconds),
+                        owner_resolver=owner_resolver,
+                    ):
+                        deleted += 1
+                except Exception:
+                    continue
             return deleted
         finally:
             for handle in reversed(handles):
@@ -973,6 +1063,7 @@ def garbage_collect_h3_reference_input_snapshots(
             for name in os.listdir(descriptors[-1]):
                 if _SNAPSHOT_ID_PATTERN.fullmatch(name) is None or name in protected:
                     continue
+                lease = {}
                 snapshot_fd = os.open(name, flags, dir_fd=descriptors[-1])
                 try:
                     try:
@@ -999,6 +1090,16 @@ def garbage_collect_h3_reference_input_snapshots(
                             lease_state in {"pending", "retained"}
                             and float(lease.get("expires_at") or 0) <= current_time
                         )
+                        if lease_state == "deleting":
+                            expired = (
+                                float(lease.get("deleting_since") or 0)
+                                + H3_REFERENCE_INPUT_DELETING_GRACE_SECONDS
+                                <= current_time
+                            )
+                    if expired and _snapshot_owner_is_recoverable(
+                        owner_resolver, name, lease
+                    ):
+                        expired = False
                     if expired:
                         if _delete_posix_snapshot_at(descriptors[-1], name):
                             deleted += 1
@@ -1433,7 +1534,7 @@ __all__ = [
     "H3FrozenFrame",
     "H3PersistedReferenceInputSnapshot",
     "H3ReferenceInputSnapshot",
-    "activate_h3_reference_snapshot",
+    "bind_h3_reference_snapshot_owner",
     "delete_h3_reference_input_snapshot",
     "freeze_h3_reference_frames",
     "garbage_collect_h3_reference_input_snapshots",

@@ -33,6 +33,23 @@ def _png_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def test_task_display_metadata_persists_reference_snapshot_ownership() -> None:
+    from novelvideo.ports.tasks import display_metadata_for_task
+
+    metadata = display_metadata_for_task(
+        "narrative_group_video",
+        {
+            "reference_snapshot_id": "a" * 32,
+            "reference_snapshot_digest": "b" * 64,
+        },
+    )
+
+    assert metadata == {
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }
+
+
 def test_reference_idempotency_snapshot_changes_with_order_content_and_description(
     tmp_path: Path,
 ) -> None:
@@ -400,8 +417,11 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
         reference_limit=5,
         provider_workflow_id="2096502793044582401",
     )
-    runtime.activate_h3_reference_snapshot(
-        state_root=state, snapshot_id=queued.snapshot_id
+    runtime.bind_h3_reference_snapshot_owner(
+        state_root=state,
+        snapshot_id=queued.snapshot_id,
+        snapshot_digest=queued.digest,
+        task_id="queued-owner",
     )
     os.utime(storage / queued.snapshot_id, (1, 1))
     assert runtime.garbage_collect_h3_reference_input_snapshots(
@@ -499,9 +519,11 @@ def test_snapshot_lease_states_protect_queued_and_expire_retained(
         provider_workflow_id="2096502793044582401",
     )
     monkeypatch.setattr(runtime.time, "time", lambda: 200.0)
-    runtime.activate_h3_reference_snapshot(
+    runtime.bind_h3_reference_snapshot_owner(
         state_root=state,
         snapshot_id=persisted.snapshot_id,
+        snapshot_digest=persisted.digest,
+        task_id="task-queued",
     )
     assert runtime.garbage_collect_h3_reference_input_snapshots(
         state_root=state, now=10**12, ttl_seconds=10
@@ -515,12 +537,31 @@ def test_snapshot_lease_states_protect_queued_and_expire_retained(
         snapshot_id=persisted.snapshot_id,
         ttl_seconds=10,
     )
+    runtime.bind_h3_reference_snapshot_owner(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+        snapshot_digest=persisted.digest,
+        task_id="task-queued",
+    )
+    lease = json.loads(
+        (
+            state
+            / "h3_reference_input_snapshots"
+            / persisted.snapshot_id
+            / "lease.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert lease["state"] == "retained"
+    assert lease["owner_task_id"] == "task-queued"
 
     assert runtime.garbage_collect_h3_reference_input_snapshots(
         state_root=state, now=205, ttl_seconds=10
     ) == 0
     assert runtime.garbage_collect_h3_reference_input_snapshots(
-        state_root=state, now=211, ttl_seconds=10
+        state_root=state,
+        now=211,
+        ttl_seconds=10,
+        owner_resolver=lambda **_kwargs: False,
     ) == 1
 
 
@@ -553,7 +594,16 @@ def test_pending_snapshot_gc_honors_zero_now(tmp_path: Path) -> None:
     lease.write_text('{"state":"pending","expires_at":0}', encoding="utf-8")
 
     assert runtime.garbage_collect_h3_reference_input_snapshots(
-        state_root=state, now=0, ttl_seconds=10
+        state_root=state,
+        now=0,
+        ttl_seconds=10,
+        owner_resolver=lambda **_kwargs: True,
+    ) == 0
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        now=0,
+        ttl_seconds=10,
+        owner_resolver=lambda **_kwargs: False,
     ) == 1
 
 
@@ -576,6 +626,8 @@ def test_windows_gc_and_renewal_are_serialized_by_exclusive_lease_handle(
             self.rewrites = []
 
         def open_write_directory(self, path):
+            if Path(path).name == "b" * 32:
+                raise ValueError("corrupt snapshot")
             return ("directory", Path(path))
 
         def attributes(self, handle):
@@ -592,7 +644,7 @@ def test_windows_gc_and_renewal_are_serialized_by_exclusive_lease_handle(
                 if self.renew_wins_before_lock:
                     self.lease = {"state": "running", "expires_at": None}
                     self.renew_wins_before_lock = False
-                return (snapshot_id,)
+                return ("b" * 32, snapshot_id)
             return ()
 
         def open_exclusive_file(self, path):
@@ -610,10 +662,19 @@ def test_windows_gc_and_renewal_are_serialized_by_exclusive_lease_handle(
 
     win32 = Win32()
     deleted = []
+    fail_delete = [True]
+
+    def delete_snapshot(_state, item, **_kwargs):
+        if fail_delete[0]:
+            fail_delete[0] = False
+            raise OSError("interrupted delete")
+        deleted.append(item)
+        return True
+
     monkeypatch.setattr(
         runtime,
         "_delete_windows_snapshot",
-        lambda _state, item, **_kwargs: deleted.append(item) or True,
+        delete_snapshot,
     )
 
     assert runtime.garbage_collect_h3_reference_input_snapshots(
@@ -632,8 +693,23 @@ def test_windows_gc_and_renewal_are_serialized_by_exclusive_lease_handle(
         ttl_seconds=10,
         win32_adapter=win32,
         platform_name="nt",
-    ) == 1
+    ) == 0
     assert win32.rewrites == ["deleting"]
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        now=100 + runtime.H3_REFERENCE_INPUT_DELETING_GRACE_SECONDS - 1,
+        ttl_seconds=10,
+        win32_adapter=win32,
+        platform_name="nt",
+    ) == 0
+    assert runtime.garbage_collect_h3_reference_input_snapshots(
+        state_root=state,
+        now=100 + runtime.H3_REFERENCE_INPUT_DELETING_GRACE_SECONDS,
+        ttl_seconds=10,
+        win32_adapter=win32,
+        platform_name="nt",
+    ) == 1
+    assert deleted == [snapshot_id]
     with pytest.raises(ValueError, match="transition"):
         runtime._transition_h3_reference_snapshot_lease(
             state_root=state,
