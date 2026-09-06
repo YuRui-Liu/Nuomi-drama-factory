@@ -109,6 +109,8 @@ export interface NarrativeStageState {
   dialogue_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
   ambience_stem_status?: "not_requested" | "succeeded" | "unavailable" | null;
   error?: string | null;
+  needs_regeneration?: boolean;
+  stale_reason?: string | null;
   video_spans?: Array<{
     beat_numbers: number[];
     start_seconds: number;

@@ -285,16 +285,22 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   );
   const generatedReferenceRevision = generatedVideoPromptQuery.data?.ok
     ? generatedVideoPromptQuery.data.data.reference_settings_revision : null;
-  const referenceNeedsVideoRegeneration = Boolean(
+  const backendReportsStaleReferences = Boolean(
     referencePolicy
-    && group.stages.video.manifest_asset
-    && !generatedVideoPromptQuery.isLoading
-    && !generatedVideoPromptQuery.isFetching
-    && !generatedVideoPromptQuery.isError
-    && generatedVideoPromptQuery.data?.ok === true
-    && typeof generatedReferenceRevision === "number"
-    && group.video_reference_settings
-    && generatedReferenceRevision !== group.video_reference_settings.revision
+    && group.stages.video.needs_regeneration
+    && group.stages.video.stale_reason === "video_reference_settings_changed"
+  );
+  const referenceNeedsVideoRegeneration = Boolean(
+    backendReportsStaleReferences
+    || (referencePolicy
+      && group.stages.video.manifest_asset
+      && !generatedVideoPromptQuery.isLoading
+      && !generatedVideoPromptQuery.isFetching
+      && !generatedVideoPromptQuery.isError
+      && generatedVideoPromptQuery.data?.ok === true
+      && typeof generatedReferenceRevision === "number"
+      && group.video_reference_settings
+      && generatedReferenceRevision !== group.video_reference_settings.revision)
   );
   const saveVideoOverride = async (key: string, value: string) => {
     setVideoSettingsSaving(true);

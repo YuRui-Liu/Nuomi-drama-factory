@@ -280,14 +280,14 @@ describe("NarrativeGroupWorkbench references",()=>{
   {name:"matching revision",model:"runninghub:minimax-h3-ref",current:7,generated:7,manifest:true,stale:false},
   {name:"changed revision",model:"runninghub:minimax-h3-ref",current:8,generated:7,manifest:true,stale:true},
   {name:"missing manifest",model:"runninghub:minimax-h3-ref",current:8,generated:7,manifest:false,stale:false},
-  {name:"legacy model",model:"runninghub:minimax-h3",current:8,generated:7,manifest:true,stale:false},
- ])("reports stale reference videos only for $name",({model,current,generated,manifest,stale})=>{
+  {name:"legacy model",model:"runninghub:minimax-h3",current:8,generated:7,manifest:true,stale:false,backend:true},
+ ])("reports stale reference videos only for $name",({model,current,generated,manifest,stale,backend})=>{
   m.mediaDefaults={...m.mediaDefaults,video_model:model};
   m.videoModels=[
    {id:"runninghub:minimax-h3",label:"Legacy",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
    {id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}},
   ];
-  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:6,video_asset:"/video.mp4",...(manifest?{manifest_asset:"/manifest.json"}:{})}},video_reference_settings:{revision:current,references:[]}}];
+  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:6,video_asset:"/video.mp4",...(manifest?{manifest_asset:"/manifest.json"}:{}),...(backend?{needs_regeneration:true,stale_reason:"video_reference_settings_changed"}:{})}},video_reference_settings:{revision:current,references:[]}}];
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{reference_settings_revision:generated,units:[]}},isLoading:false,isFetching:false,isError:false});
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   expect(screen.queryByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。")).toBe(stale?screen.getByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。"):null);
@@ -299,6 +299,15 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.promptsQuery.mockReturnValue({data:{ok:true,data:{reference_settings_revision:7,units:[]}},...queryState});
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   expect(screen.queryByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。")).not.toBeInTheDocument();
+ });
+ it.each([{isLoading:true,isFetching:true,isError:false},{isLoading:false,isFetching:false,isError:true}])("honors the backend reference-stale stage while prompts are unavailable",(queryState)=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:6,video_asset:"/video.mp4",manifest_asset:"/manifest.json",needs_regeneration:true,stale_reason:"video_reference_settings_changed"}},video_reference_settings:{revision:8,references:[]}}];
+  m.promptsQuery.mockReturnValue({data:{ok:false,error:"damaged manifest"},...queryState});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  expect(screen.getByText("参考图设置已变化，当前旧视频仍可预览；请重新生成组合视频。")).toBeInTheDocument();
+  expect(document.querySelector("video")).toHaveAttribute("src","/video.mp4");
  });
  it("keeps required-reference generation disabled while invalid or dirty",()=>{
   m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
