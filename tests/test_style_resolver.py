@@ -77,6 +77,27 @@ def test_resolver_builds_stable_purpose_specific_snapshot() -> None:
     )
 
 
+def test_jinshi_style_projects_full_image_and_h3_safe_video_contract() -> None:
+    from novelvideo.services.style_service import StyleService
+
+    first = StyleService.resolve_style_snapshot(
+        "drama_ext.jinshi_ink_suspense"
+    )
+    second = StyleService.resolve_style_snapshot(
+        "drama_ext.jinshi_ink_suspense"
+    )
+
+    assert "semi-realistic 2.5D Chinese ink-line animation" in first.projections.image
+    assert "stable facial planes" in first.projections.video
+    assert "stone-cyan, charcoal, and ash-white palette" in first.projections.video
+    assert "restrained lens distortion" in first.projections.image
+    assert "restrained lens distortion" not in first.projections.video
+    assert "no non-diegetic typography" in first.projections.image
+    assert "no non-diegetic typography" not in first.projections.video
+    assert first.style_hash == second.style_hash
+    assert first.projections == second.projections
+
+
 def test_override_selects_a_different_style_and_hash() -> None:
     base = extension_style()
     override = ExtensionStyle.from_dict(

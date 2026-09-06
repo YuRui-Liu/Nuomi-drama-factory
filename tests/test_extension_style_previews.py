@@ -14,7 +14,7 @@ PUBLIC = ROOT / "frontend" / "public"
 def test_every_extension_style_has_valid_preview_asset() -> None:
     styles = json.loads(CATALOG.read_text(encoding="utf-8"))
 
-    assert len(styles) == 18
+    assert len(styles) == 19
     for style in styles:
         path = PUBLIC / style["preview_asset"].lstrip("/")
         assert path.is_file(), style["id"]

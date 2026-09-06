@@ -124,5 +124,12 @@
     "prompt_fragment": {"medium": ["photorealistic analog film capture"], "rendering": ["fine organic grain, subtle emulsion texture"], "lighting": ["soft highlight halation, natural exposure rolloff"], "color": ["vintage film color response, gently faded blacks"], "camera": ["classic cinema-lens character, subtle optical softness"], "constraints": ["authentic film fidelity, preserve identity and wardrobe/props/action/setting from base prompt"]},
     "use_cases": ["回忆与往事段落", "温暖怀旧叙事"], "preview_asset": "/images/extension-styles/vintage-film-realism.webp",
     "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["realistic-photography"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
+  },
+  {
+    "id": "drama_ext.jinshi_ink_suspense", "name": "金石证痕", "category": "chinese",
+    "summary": "半写实金石墨线与矿物色薄染结合，以克制朱砂和冷暖侧光强化悬疑氛围、材质层次与焦点辨识度。",
+    "prompt_fragment": {"medium": ["semi-realistic 2.5D Chinese ink-line animation", "stone-rubbing texture with restrained mineral-pigment wash"], "rendering": ["precise engraved contours, stable facial planes, crisp material edges", "controlled layered brush texture with clean silhouettes"], "lighting": ["low-key directional side light", "warm practical light against cool ambient shadow"], "color": ["stone-cyan, charcoal, and ash-white palette", "sparse cinnabar focal accents with restrained saturation"], "camera": ["clean focal hierarchy, stable layered depth", "restrained lens distortion, readable close-detail framing"], "constraints": ["production-ready clarity, preserve identity and wardrobe/props/action/setting from base prompt", "no non-diegetic typography or watermark, no glossy plastic finish, no excessive fantasy glow"]},
+    "use_cases": ["古风悬疑漫剧", "证物与推理特写", "雨夜低照度场景"], "preview_asset": "/images/extension-styles/jinshi-ink-suspense.webp",
+    "source": {"repository": "freestylefly/awesome-gpt-image-2", "source_ids": ["illustration-art-style", "ink-double-exposure-poster", "character-design-sheet", "scene-storytelling", "history-classical-themes"], "license_review": "approved", "imported_revision": "3a9c63baa03e6bbe2f28c89a2654cf9845466646"}, "version": "1"
   }
 ]

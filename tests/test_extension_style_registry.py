@@ -31,14 +31,14 @@ def registry(catalog_path: Path):
     return ExtensionStyleRegistry(catalog_path)
 
 
-def test_initial_snapshot_loads_eighteen_styles(registry) -> None:
+def test_initial_snapshot_loads_nineteen_styles(registry) -> None:
     snapshot = registry.snapshot()
 
-    assert len(snapshot.styles) == 18
+    assert len(snapshot.styles) == 19
     assert snapshot.generation == 1
     assert snapshot.catalog_hash
-    assert snapshot.diagnostics.discovered == 18
-    assert snapshot.diagnostics.loaded == 18
+    assert snapshot.diagnostics.discovered == 19
+    assert snapshot.diagnostics.loaded == 19
     assert snapshot.diagnostics.failed == 0
     assert snapshot.diagnostics.degraded is False
 
@@ -169,7 +169,7 @@ def test_schema_failure_reports_discovered_entry_count(catalog_path: Path) -> No
 
     snapshot = ExtensionStyleRegistry(catalog_path).snapshot()
 
-    assert snapshot.diagnostics.discovered == 18
+    assert snapshot.diagnostics.discovered == 19
     assert snapshot.diagnostics.loaded == 0
     assert snapshot.diagnostics.failed == 1
 

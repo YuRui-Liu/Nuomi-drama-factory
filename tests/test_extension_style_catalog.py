@@ -480,6 +480,18 @@ EXPECTED_CATALOG = {
         ("realistic-photography",),
         "/images/extension-styles/vintage-film-realism.webp",
     ),
+    "drama_ext.jinshi_ink_suspense": (
+        "金石证痕",
+        "chinese",
+        (
+            "illustration-art-style",
+            "ink-double-exposure-poster",
+            "character-design-sheet",
+            "scene-storytelling",
+            "history-classical-themes",
+        ),
+        "/images/extension-styles/jinshi-ink-suspense.webp",
+    ),
 }
 CURATED_REVISION = "3a9c63baa03e6bbe2f28c89a2654cf9845466646"
 BUILTIN_PRESET_CANONICAL_SHA256 = {
@@ -531,7 +543,7 @@ def source_audit_path(curated_catalog_path):
 def test_curated_catalog_has_exactly_the_required_styles(curated_catalog_path):
     catalog = load_catalog(curated_catalog_path)
 
-    assert len(catalog) == 18
+    assert len(catalog) == 19
     actual = {
         style.id: (
             style.name,

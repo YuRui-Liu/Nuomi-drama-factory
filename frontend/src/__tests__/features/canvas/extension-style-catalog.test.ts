@@ -30,8 +30,8 @@ function extensionStyleModuleSources(
 }
 
 describe("extension style catalog", () => {
-  it("exposes exactly 18 namespaced styles in the backend fragment order", () => {
-    expect(EXTENSION_STYLES).toHaveLength(18);
+  it("exposes exactly 19 namespaced styles in the backend fragment order", () => {
+    expect(EXTENSION_STYLES).toHaveLength(19);
     expect(FRAGMENT_KEYS).toEqual([
       "medium",
       "rendering",
@@ -41,7 +41,7 @@ describe("extension style catalog", () => {
       "constraints",
     ]);
     expect(EXTENSION_STYLES.every(({ id }) => id.startsWith("drama_ext."))).toBe(true);
-    expect(new Set(EXTENSION_STYLES.map(({ id }) => id)).size).toBe(18);
+    expect(new Set(EXTENSION_STYLES.map(({ id }) => id)).size).toBe(19);
   });
 
   it("preserves category, source, and local preview metadata", () => {
@@ -57,6 +57,12 @@ describe("extension style catalog", () => {
     const id = "drama_ext.japanese_cel_animation";
     expect(getExtensionStyle(id)).toBe(EXTENSION_STYLES_BY_ID[id]);
     expect(getExtensionStyle(id)?.name).toBe("日系赛璐璐");
+    const jinshi = getExtensionStyle("drama_ext.jinshi_ink_suspense");
+    expect(jinshi?.name).toBe("金石证痕");
+    expect(jinshi?.category).toBe("chinese");
+    expect(jinshi?.preview_asset).toBe(
+      "/images/extension-styles/jinshi-ink-suspense.webp",
+    );
     expect(getExtensionStyle("drama_ext.missing")).toBeUndefined();
   });
 
