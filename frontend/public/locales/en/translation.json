@@ -624,6 +624,13 @@
       "issueSeparator": "; ",
       "adopt": "Adopt this version",
       "adoptReason": "Manually adopted from the character identity sheet",
+      "qcUnavailableAdoptReason": "QC unavailable; manually adopted after reviewing all three panels",
+      "qcUnavailableConfirm": {
+        "title": "QC unavailable. Adopt anyway?",
+        "description": "Verify an unobstructed portrait, a complete front body, and a complete back body. Confirming will bypass this QC service failure.",
+        "cancel": "Cancel",
+        "confirm": "Verified, adopt version"
+      },
       "adoptSuccess": "Character state version adopted",
       "adoptFailed": "Adoption failed. Check the task log.",
       "status": {

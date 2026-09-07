@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   useAdoptProductionAssetVersion,
   useProductionAssetSlot,
@@ -69,6 +80,16 @@ function qcIssues(version: ProductionAssetVersion): string[] {
   ])];
 }
 
+function isQcUnavailableOnly(version: ProductionAssetVersion): boolean {
+  const softIssues = new Set(version.soft_issues);
+  return (
+    !version.qc_passed &&
+    !version.technical_error &&
+    softIssues.size === 1 &&
+    softIssues.has("qc_unavailable")
+  );
+}
+
 export function CharacterStateVersions({
   project,
   characterName,
@@ -84,6 +105,7 @@ export function CharacterStateVersions({
     legacyAssetPath ?? undefined,
   );
   const adoptVersion = useAdoptProductionAssetVersion(project, slotId);
+  const [qcUnavailableVersionId, setQcUnavailableVersionId] = useState<string | null>(null);
   const payload = slotQuery.data?.ok ? slotQuery.data.data : undefined;
 
   if (slotQuery.isLoading) {
@@ -119,6 +141,22 @@ export function CharacterStateVersions({
     }
   };
 
+  const adoptQcUnavailable = async () => {
+    const versionId = qcUnavailableVersionId;
+    setQcUnavailableVersionId(null);
+    if (!versionId) return;
+    try {
+      await adoptVersion.mutateAsync({
+        versionId,
+        reason: t("characters.stateVersions.qcUnavailableAdoptReason"),
+        confirmQcUnavailable: true,
+      });
+      toast.success(t("characters.stateVersions.adoptSuccess"));
+    } catch {
+      toast.error(t("characters.stateVersions.adoptFailed"));
+    }
+  };
+
   return (
     <section className="border-t border-white/[0.06] pt-4" aria-label={t("characters.stateVersions.ariaLabel")}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -142,10 +180,11 @@ export function CharacterStateVersions({
       <div className="grid gap-3 lg:grid-cols-2">
         {versions.map((version) => {
           const isCurrent = version.version_id === payload.slot.current_version_id;
+          const qcUnavailableOnly = isQcUnavailableOnly(version);
           const canAdopt =
             !isCurrent &&
             version.adoption_status === "candidate" &&
-            version.qc_passed &&
+            (version.qc_passed || qcUnavailableOnly) &&
             !payload.read_only;
           const issues = qcIssues(version);
 
@@ -210,7 +249,13 @@ export function CharacterStateVersions({
                     variant="outline"
                     className="h-7 w-full text-xs"
                     disabled={!canAdopt || adoptVersion.isPending}
-                    onClick={() => void adopt(version.version_id)}
+                    onClick={() => {
+                      if (qcUnavailableOnly) {
+                        setQcUnavailableVersionId(version.version_id);
+                        return;
+                      }
+                      void adopt(version.version_id);
+                    }}
                   >
                     {adoptVersion.isPending ? (
                       <Loader2 className="size-3 animate-spin" />
@@ -223,6 +268,35 @@ export function CharacterStateVersions({
           );
         })}
       </div>
+
+      <AlertDialog
+        open={qcUnavailableVersionId !== null}
+        onOpenChange={(open) => {
+          if (!open) setQcUnavailableVersionId(null);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("characters.stateVersions.qcUnavailableConfirm.title")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("characters.stateVersions.qcUnavailableConfirm.description")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              {t("characters.stateVersions.qcUnavailableConfirm.cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={adoptVersion.isPending}
+              onClick={() => void adoptQcUnavailable()}
+            >
+              {t("characters.stateVersions.qcUnavailableConfirm.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {payload.read_only && payload.read_only_reason ? (
         <p className="mt-2 text-[10px] text-amber-300">{payload.read_only_reason}</p>

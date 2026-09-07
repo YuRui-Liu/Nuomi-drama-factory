@@ -9,7 +9,10 @@ import enTranslation from "../../../../public/locales/en/translation.json";
 import zhTranslation from "../../../../public/locales/zh/translation.json";
 
 const adoptMock = vi.hoisted(() => vi.fn());
-const fixtureState = vi.hoisted(() => ({ currentVersionId: "state-v1" }));
+const fixtureState = vi.hoisted(() => ({
+  currentVersionId: "state-v1",
+  includeQcUnavailable: false,
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -43,6 +46,11 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.qcIssues.qc_unavailable": "QC 暂不可用",
         "characters.stateVersions.adopt": "采用此版本",
         "characters.stateVersions.adoptReason": "人物身份卡手动采用",
+        "characters.stateVersions.qcUnavailableAdoptReason": "QC 暂不可用，用户核验三栏后人工确认采用",
+        "characters.stateVersions.qcUnavailableConfirm.title": "QC 暂不可用，确认采用？",
+        "characters.stateVersions.qcUnavailableConfirm.description": "请人工核验头像无遮挡、正身完整、背身完整。",
+        "characters.stateVersions.qcUnavailableConfirm.cancel": "取消",
+        "characters.stateVersions.qcUnavailableConfirm.confirm": "已核验，继续采用",
       };
       if (key === "characters.stateVersions.versionCount") return `${options?.count ?? 0} 个版本`;
       return translations[key] ?? options?.defaultValue ?? key;
@@ -116,6 +124,47 @@ vi.mock("@/lib/queries/production-assets", () => ({
               },
             },
           },
+          ...(fixtureState.includeQcUnavailable ? [{
+            version_id: "state-v4",
+            asset_path: "assets/characters/林默/identities/versions/state-v4.png",
+            adoption_status: "candidate",
+            qc_passed: false,
+            soft_issues: ["qc_unavailable"],
+            technical_error: null,
+            generation_metadata: null,
+          }, {
+            version_id: "state-v5",
+            asset_path: "assets/characters/林默/identities/versions/state-v5.png",
+            adoption_status: "candidate",
+            qc_passed: false,
+            soft_issues: ["qc_unavailable"],
+            technical_error: "vision provider timeout",
+            generation_metadata: {
+              layout_version: "identity_sheet_v2",
+              quality_report: {
+                passed: false,
+                checks: {},
+                issues: ["qc_unavailable"],
+                style_family: "2.5d",
+              },
+            },
+          }, {
+            version_id: "state-v6",
+            asset_path: "assets/characters/林默/identities/versions/state-v6.png",
+            adoption_status: "candidate",
+            qc_passed: false,
+            soft_issues: [],
+            technical_error: null,
+            generation_metadata: {
+              layout_version: "identity_sheet_v2",
+              quality_report: {
+                passed: false,
+                checks: {},
+                issues: ["qc_unavailable"],
+                style_family: "2.5d",
+              },
+            },
+          }] : []),
         ],
         read_only: false,
         read_only_reason: null,
@@ -132,6 +181,7 @@ describe("CharacterStateVersions", () => {
   beforeEach(() => {
     adoptMock.mockReset();
     fixtureState.currentVersionId = "state-v1";
+    fixtureState.includeQcUnavailable = false;
   });
 
   it("describes the complete faceless front body in both locales", () => {
@@ -139,6 +189,8 @@ describe("CharacterStateVersions", () => {
     expect(zhTranslation.characters.stateVersions.isolationHint).toContain("保留完整头部轮廓");
     expect(enTranslation.characters.stateVersions.panels.headlessFront).toBe("Faceless front full body");
     expect(enTranslation.characters.stateVersions.isolationHint).toContain("complete head outline");
+    expect(zhTranslation.characters.stateVersions.qcUnavailableConfirm.description).toContain("头像无遮挡");
+    expect(enTranslation.characters.stateVersions.qcUnavailableConfirm.description).toContain("unobstructed portrait");
   });
 
   it("shows front-side-back candidates and only allows QC-passed adoption", async () => {
@@ -167,6 +219,36 @@ describe("CharacterStateVersions", () => {
     expect(adoptMock).toHaveBeenCalledWith({
       versionId: "state-v2",
       reason: "人物身份卡手动采用",
+    });
+  });
+
+  it("requires explicit confirmation before adopting a pure QC-unavailable candidate", async () => {
+    const user = userEvent.setup();
+    fixtureState.includeQcUnavailable = true;
+    render(
+      <CharacterStateVersions
+        project="demo"
+        characterName="林默"
+        identityId="linmo-duty"
+      />,
+    );
+
+    const adoptButtons = screen.getAllByRole("button", { name: "采用此版本" });
+    expect(adoptButtons).toHaveLength(5);
+    expect(adoptButtons[2]).toBeEnabled();
+    expect(adoptButtons[3]).toBeDisabled();
+    expect(adoptButtons[4]).toBeDisabled();
+    await user.click(adoptButtons[2]);
+
+    expect(adoptMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText("请人工核验头像无遮挡、正身完整、背身完整。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "已核验，继续采用" }));
+    expect(adoptMock).toHaveBeenCalledWith({
+      versionId: "state-v4",
+      reason: "QC 暂不可用，用户核验三栏后人工确认采用",
+      confirmQcUnavailable: true,
     });
   });
 

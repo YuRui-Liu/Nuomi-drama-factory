@@ -82,6 +82,7 @@ export interface AdoptProductionAssetVersionData {
 export interface AdoptProductionAssetVersionInput {
   versionId: string;
   reason: string;
+  confirmQcUnavailable?: boolean;
 }
 
 export function useProductionAssetSlot(
@@ -118,11 +119,22 @@ export function useAdoptProductionAssetVersion(
 ) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ versionId, reason }: AdoptProductionAssetVersionInput) =>
+    mutationFn: ({
+      versionId,
+      reason,
+      confirmQcUnavailable,
+    }: AdoptProductionAssetVersionInput) =>
       api
         .post(
           p`api/v1/projects/${project}/production-assets/slots/${slotId}/versions/${versionId}/adopt`,
-          { json: { reason } },
+          {
+            json: {
+              reason,
+              ...(confirmQcUnavailable !== undefined
+                ? { confirm_qc_unavailable: confirmQcUnavailable }
+                : {}),
+            },
+          },
         )
         .json<OkResponse<AdoptProductionAssetVersionData>>(),
     onSuccess: () =>

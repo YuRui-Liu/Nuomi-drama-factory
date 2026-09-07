@@ -624,6 +624,13 @@
       "issueSeparator": "；",
       "adopt": "采用此版本",
       "adoptReason": "人物身份卡手动采用",
+      "qcUnavailableAdoptReason": "QC 暂不可用，用户核验三栏后人工确认采用",
+      "qcUnavailableConfirm": {
+        "title": "QC 暂不可用，确认采用？",
+        "description": "请人工核验头像无遮挡、正身完整、背身完整。确认后将绕过本次 QC 技术故障。",
+        "cancel": "取消",
+        "confirm": "已核验，继续采用"
+      },
       "adoptSuccess": "已采用人物状态版本",
       "adoptFailed": "采用失败，请检查任务日志",
       "status": {

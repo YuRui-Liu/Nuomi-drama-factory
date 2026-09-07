@@ -203,12 +203,16 @@ describe("production asset query hooks", () => {
     const response = await result.current.mutateAsync({
       versionId: "candidate-2",
       reason: "三视图一致性更好",
+      confirmQcUnavailable: true,
     });
 
     expect(requestedPath).toBe(
       "/api/v1/projects/demo/production-assets/slots/character%3Alin%3Astate%3Aduty/versions/candidate-2/adopt",
     );
-    expect(requestedBody).toEqual({ reason: "三视图一致性更好" });
+    expect(requestedBody).toEqual({
+      reason: "三视图一致性更好",
+      confirm_qc_unavailable: true,
+    });
     expect(response.data.event.to_status).toBe("adopted");
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: queryKeys.productionAssetSlot(
