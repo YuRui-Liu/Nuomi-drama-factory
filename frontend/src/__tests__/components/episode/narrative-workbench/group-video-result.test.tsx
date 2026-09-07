@@ -13,6 +13,9 @@ vi.mock("@/lib/queries/narrative-groups", async (importOriginal) => {
     })),
   };
 });
+vi.mock("@/lib/queries/shot-continuity", () => ({
+  useRecordObservedBoundary: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}));
 
 describe("GroupVideoResult", () => {
   it("identifies only a completed nonvisual result without a video as skipped", () => {
@@ -27,7 +30,8 @@ describe("GroupVideoResult", () => {
     })).toBe(false);
   });
 
-  it("explains that a legacy nonvisual skip can now be retried", () => {
+  it("explains that a legacy nonvisual skip can be retried and audited when a manifest exists", async () => {
+    const user = userEvent.setup();
     render(<GroupVideoResult stage={{
       status: "completed",
       revision: 6,
@@ -41,7 +45,8 @@ describe("GroupVideoResult", () => {
     expect(screen.queryByText("组合视频")).not.toBeInTheDocument();
     expect(screen.queryByText(/对白音轨/)).not.toBeInTheDocument();
     expect(screen.queryByText(/环境音轨/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "生成提示词" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "生成提示词" }));
+    expect(screen.getByRole("dialog", { name: "视频生成提示词" })).toBeInTheDocument();
     expect(screen.queryByText(/镜头切分/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /改用/ })).not.toBeInTheDocument();
     expect(document.querySelector("video")).not.toBeInTheDocument();
@@ -87,4 +92,32 @@ describe("GroupVideoResult", () => {
     await user.click(screen.getByRole("button", { name: "生成提示词" }));
     expect(screen.getByRole("dialog", { name: "视频生成提示词" })).toBeInTheDocument();
   });
+
+  it.each(["review", "completed", "partial_failure", "failed"] as const)(
+    "keeps manifest-only %s results available for continuity review",
+    (status) => {
+      render(<GroupVideoResult
+        project="project-1"
+        episode={1}
+        groupId="group-1"
+        stage={{ status, revision: 6, manifest_asset: "/media/group.manifest.json" }}
+      />);
+      expect(screen.getByText("组合视频")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "生成提示词" })).toBeInTheDocument();
+      expect(document.querySelector("video")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["pending", "queued", "running"] as const)(
+    "does not expose a manifest-only %s stage as reviewable",
+    (status) => {
+      render(<GroupVideoResult
+        project="project-1"
+        episode={1}
+        groupId="group-1"
+        stage={{ status, revision: 6, manifest_asset: "/media/group.manifest.json" }}
+      />);
+      expect(screen.queryByRole("button", { name: "生成提示词" })).not.toBeInTheDocument();
+    },
+  );
 });

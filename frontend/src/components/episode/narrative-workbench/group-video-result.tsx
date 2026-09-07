@@ -13,6 +13,10 @@ export const isNonvisualVideoSkip = (stage: NarrativeStageState) =>
   && stage.actual_mode === "skipped_nonvisual"
   && !stage.video_asset;
 
+const reviewableVideoStatuses: ReadonlySet<NarrativeStageState["status"]> = new Set([
+  "review", "completed", "partial_failure", "failed",
+]);
+
 /** Logical shot view of one physical H3 director output. Changing a source is recomposition-only. */
 export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "", onDialogueSourceChange }: {
   stage: NarrativeStageState;
@@ -22,16 +26,21 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
   onDialogueSourceChange?: (request: { spanIndex: number; dialogueSource: "external_tts" | "h3_native" }) => void;
 }) {
   const [promptsOpen, setPromptsOpen] = useState(false);
+  const canRecordPostflight = !!stage.manifest_asset && reviewableVideoStatuses.has(stage.status);
   if (isNonvisualVideoSkip(stage)) {
     return <section className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-4" data-group-video-result data-group-video-skip>
-      <div className="flex items-center gap-2 text-amber-300"><CircleSlash2 className="size-4" /><h3 className="text-sm font-semibold">已跳过</h3></div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-amber-300"><CircleSlash2 className="size-4" /><h3 className="text-sm font-semibold">已跳过</h3></div>
+        {canRecordPostflight ? <Button type="button" variant="outline" size="sm" onClick={() => setPromptsOpen(true)}><FileText className="mr-1 size-3" />生成提示词</Button> : null}
+      </div>
       <p className="mt-2 text-sm">上次任务按旧策略跳过，未生成视频</p>
       <p className="mt-1 text-xs text-muted-foreground">已有渲染首帧时，可直接点击上方“生成组合视频”重试</p>
+      {promptsOpen ? <GroupVideoPromptDrawer open onOpenChange={setPromptsOpen} project={project} episode={episode} groupId={groupId} canRecordPostflight={canRecordPostflight} /> : null}
     </section>;
   }
-  if (stage.status !== "completed" && !stage.video_asset) return null;
+  if (stage.status !== "completed" && !canRecordPostflight && !stage.video_asset) return null;
   return <section className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-4" data-group-video-result>
-    <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Video className="size-4 text-primary" /><h3 className="text-sm font-semibold">组合视频</h3></div>{stage.status === "completed" || stage.manifest_asset ? <Button type="button" variant="outline" size="sm" onClick={() => setPromptsOpen(true)}><FileText className="mr-1 size-3" />生成提示词</Button> : null}</div>
+    <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Video className="size-4 text-primary" /><h3 className="text-sm font-semibold">组合视频</h3></div>{canRecordPostflight ? <Button type="button" variant="outline" size="sm" onClick={() => setPromptsOpen(true)}><FileText className="mr-1 size-3" />生成提示词</Button> : null}</div>
     {stage.video_asset ? <video className="mt-3 max-h-72 w-full rounded-md bg-black" controls src={stage.video_asset} /> : null}
     <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground"><span><Music2 className="mr-1 inline size-3" />{stemLabel(stage.dialogue_stem_status, "对白音轨")}</span><span>{stemLabel(stage.ambience_stem_status, "环境音轨")}</span></div>
     {stage.video_spans?.length ? <div className="mt-3 space-y-2">{stage.video_spans.map((span, index) => {
@@ -47,7 +56,7 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
       project={project}
       episode={episode}
       groupId={groupId}
-      canRecordPostflight={stage.status === "completed" && !!stage.manifest_asset}
+      canRecordPostflight={canRecordPostflight}
     /> : null}
   </section>;
 }

@@ -112,6 +112,7 @@ export interface ShotContinuityPromptManifest {
   provider_parameters?: Record<string, unknown>;
   actual_output?: Record<string, number>;
   units: ShotContinuityManifestUnit[];
+  stale_dependent_shot_ids?: string[];
 }
 
 export function useRecordObservedBoundary(project: string, episode: number, groupId: string) {

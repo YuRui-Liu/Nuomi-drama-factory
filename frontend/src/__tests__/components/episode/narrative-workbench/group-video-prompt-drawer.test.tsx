@@ -202,6 +202,69 @@ describe("GroupVideoPromptDrawer", () => {
       deviationReason: "成片动作幅度不足，接受后续承接",
       lockViolations: ["identity", "camera"],
     });
+
+    await user.clear(screen.getByLabelText("记录实际末态"));
+    await user.type(screen.getByLabelText("记录实际末态"), "第二镜计划末态");
+    expect(screen.queryByRole("checkbox", { name: "接受该偏差" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("偏差原因")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "保存实际末态" }));
+    expect(mutateAsync).toHaveBeenLastCalledWith({
+      segmentId: "segment-8",
+      contractRevision: 1,
+      observedCarryOut: "第二镜计划末态",
+      acceptDeviation: false,
+      deviationReason: "",
+      lockViolations: ["identity", "camera"],
+    });
+  });
+
+  it("warns when saved evidence makes direct successors stale", async () => {
+    const user = userEvent.setup();
+    mutateAsync.mockResolvedValue({
+      ok: true,
+      data: { units: [], stale_dependent_shot_ids: ["shot-next", "shot-last"] },
+    });
+    mockedQuery.mockReturnValue({
+      data: { ok: true, data: { units: [{
+        segment_id: "segment-8", beat_ids: ["8"], mode: "i2va", duration_seconds: 5,
+        final_prompt: "prompt", continuity_contracts: [{ revision: 3, shot_id: "shot-8", boundary: {
+          carry_in: "坐下", planned_carry_out: "站起",
+        } }],
+      }] } }, isLoading: false, isError: false,
+    } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
+    render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+
+    await user.type(screen.getByLabelText("记录实际末态"), "站起");
+    await user.click(screen.getByRole("button", { name: "保存实际末态" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("以下直接后继需重新确认：shot-next、shot-last");
+  });
+
+  it("resets an unsaved draft when the segment and terminal revision change", async () => {
+    const user = userEvent.setup();
+    mockedQuery.mockReturnValue({
+      data: { ok: true, data: { units: [{
+        segment_id: "segment-old", beat_ids: ["8"], mode: "i2va", duration_seconds: 5,
+        final_prompt: "prompt", continuity_contracts: [{ revision: 3, shot_id: "shot-old", boundary: {
+          carry_in: "坐下", planned_carry_out: "站起",
+        } }],
+      }] } }, isLoading: false, isError: false,
+    } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
+    const { rerender } = render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+    await user.type(screen.getByLabelText("记录实际末态"), "旧草稿");
+
+    mockedQuery.mockReturnValue({
+      data: { ok: true, data: { units: [{
+        segment_id: "segment-new", beat_ids: ["8"], mode: "i2va", duration_seconds: 5,
+        final_prompt: "prompt", continuity_contracts: [{ revision: 4, shot_id: "shot-new", boundary: {
+          carry_in: "站起", planned_carry_out: "走出画面",
+        } }],
+      }] } }, isLoading: false, isError: false,
+    } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
+    rerender(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" />);
+
+    expect(screen.getByLabelText("记录实际末态")).toHaveValue("");
+    expect(screen.getByLabelText("记录实际末态")).toHaveAttribute("placeholder", "走出画面");
   });
 
   it("disables postflight controls while a save is pending", () => {

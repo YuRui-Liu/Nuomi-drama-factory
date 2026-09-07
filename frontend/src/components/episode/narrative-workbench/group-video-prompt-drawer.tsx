@@ -72,6 +72,7 @@ export function GroupVideoPromptDrawer({ open, onOpenChange, project, episode, g
           <section className="mt-3"><div className="flex items-center justify-between gap-2"><h4 className="text-xs font-medium text-muted-foreground">最终提交提示词</h4><Button type="button" variant="outline" size="sm" onClick={() => void copyPrompt(unit.final_prompt)}><Copy className="mr-1 size-3" />复制最终提示词</Button></div><pre className="mt-1 whitespace-pre-wrap rounded bg-background p-3 text-xs text-foreground">{unit.final_prompt}</pre></section>
           <PromptSection title="质量报告" value={unit.quality_report} empty="无质量报告" />
           <ContinuityEvidencePanel
+            key={`${groupId}::${unit.segment_id ?? index}`}
             unit={unit}
             canRecord={canRecordPostflight}
             project={project}
@@ -117,27 +118,43 @@ function ContinuityEvidencePanel({ unit, canRecord, project, episode, groupId }:
   episode: number;
   groupId: string;
 }) {
+  const [staleDependentShotIds, setStaleDependentShotIds] = useState<string[]>([]);
   const hasEvidence = (unit.continuity_contracts?.length ?? 0) > 0
     || !!unit.risk_report || !!unit.mode_decision || !!unit.compiled_bundle
     || !!unit.planned_carry_out || !!unit.observed_carry_out;
   if (!hasEvidence) {
     return <p className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-foreground">该历史任务未记录连续性证据</p>;
   }
-  return <ContinuityEvidenceDetails
-    unit={unit}
-    canRecord={canRecord}
-    project={project}
-    episode={episode}
-    groupId={groupId}
-  />;
+  const terminalContract = unit.continuity_contracts?.[unit.continuity_contracts.length - 1];
+  const editorKey = [
+    groupId,
+    unit.segment_id ?? "",
+    terminalContract?.revision ?? "",
+    unit.observed_carry_out?.result_contract_revision ?? "",
+  ].join("::");
+  return <>
+    <ContinuityEvidenceDetails
+      key={editorKey}
+      unit={unit}
+      canRecord={canRecord}
+      project={project}
+      episode={episode}
+      groupId={groupId}
+      onStaleDependents={setStaleDependentShotIds}
+    />
+    {staleDependentShotIds.length ? <p role="alert" className="mt-3 rounded-md border border-amber-500/50 bg-amber-500/15 px-3 py-2 text-sm text-amber-700 dark:text-amber-200">
+      以下直接后继需重新确认：{staleDependentShotIds.join("、")}
+    </p> : null}
+  </>;
 }
 
-function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId }: {
+function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId, onStaleDependents }: {
   unit: ShotContinuityManifestUnit;
   canRecord: boolean;
   project: string;
   episode: number;
   groupId: string;
+  onStaleDependents: (shotIds: string[]) => void;
 }) {
   const recordObservedBoundary = useRecordObservedBoundary(project, episode, groupId);
   const pending = recordObservedBoundary.isPending;
@@ -149,12 +166,12 @@ function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId 
   const [deviationReason, setDeviationReason] = useState(observed?.deviation_reason ?? "");
   const [lockViolations, setLockViolations] = useState<ContinuityLockViolation[]>(observed?.lock_violations ?? []);
   const planned = terminalContract?.boundary.planned_carry_out ?? unit.planned_carry_out ?? "未记录";
-  const differsFromPlanned = !!observedCarryOut.trim() && observedCarryOut.trim() !== planned.trim();
+  const hasDeviation = observedCarryOut.trim() !== planned.trim();
   const saveDisabled = pending
     || !unit.segment_id
     || !terminalContract
     || !observedCarryOut.trim()
-    || (differsFromPlanned && (!acceptDeviation || !deviationReason.trim()));
+    || (hasDeviation && (!acceptDeviation || !deviationReason.trim()));
 
   const toggleViolation = (violation: ContinuityLockViolation, checked: boolean) => {
     setLockViolations((current) => checked
@@ -200,11 +217,11 @@ function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId 
         <span>记录实际末态</span>
         <Textarea aria-label="记录实际末态" disabled={pending} value={observedCarryOut} onChange={(event) => setObservedCarryOut(event.target.value)} placeholder={planned} />
       </label>
-      <label className="flex items-center gap-2 text-sm">
+      {hasDeviation ? <label className="flex items-center gap-2 text-sm">
         <Checkbox disabled={pending} checked={acceptDeviation} onCheckedChange={(checked) => setAcceptDeviation(checked === true)} />
         接受该偏差
-      </label>
-      {differsFromPlanned ? <label className="block space-y-1 text-sm font-medium">
+      </label> : null}
+      {hasDeviation ? <label className="block space-y-1 text-sm font-medium">
         <span>偏差原因</span>
         <Textarea aria-label="偏差原因" required disabled={pending} value={deviationReason} onChange={(event) => setDeviationReason(event.target.value)} />
       </label> : null}
@@ -224,10 +241,15 @@ function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId 
           segmentId: unit.segment_id as string,
           contractRevision: terminalContract.revision,
           observedCarryOut: observedCarryOut.trim(),
-          acceptDeviation,
-          deviationReason: differsFromPlanned ? deviationReason.trim() : "",
+          acceptDeviation: hasDeviation && acceptDeviation,
+          deviationReason: hasDeviation && acceptDeviation ? deviationReason.trim() : "",
           lockViolations,
-        }).then(() => toast.success("实际末态已保存"))
+        }).then((response) => {
+          const staleIds = response.ok ? response.data.stale_dependent_shot_ids ?? [] : [];
+          onStaleDependents(staleIds);
+          if (staleIds.length) toast.warning("部分直接后继需重新确认");
+          else toast.success("实际末态已保存");
+        })
           .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "实际末态保存失败"))
       }>{pending ? "保存中…" : "保存实际末态"}</Button>
     </div> : null}
