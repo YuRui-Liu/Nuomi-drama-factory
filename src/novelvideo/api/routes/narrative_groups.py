@@ -387,6 +387,13 @@ _MAX_REVIEW_TEXT_LENGTH = 16 * 1024
 _MAX_REVIEW_PROMPT_LENGTH = 256 * 1024
 _MAX_REVIEW_BEAT_IDS = 32
 _URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_SENSITIVE_SNAPSHOT_KEY_PARTS = (
+    "authorization", "apikey", "token", "secret", "password", "cookie",
+    "credential", "accesskey", "privatekey",
+)
+_EMBEDDED_PATH_OR_URI_RE = re.compile(
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|\s)/\S+|[A-Za-z]:[\\/]\S+|\\\\\S+)"
+)
 _CAMERA_PLAN_SCHEMA = {
     "type": _SAFE_TEXT,
     "direction": _SAFE_TEXT,
@@ -565,6 +572,44 @@ def _project_review_value(value: Any, schema: Any) -> Any:
             if (child := _project_review_value(item, schema[0]))
             is not _REJECTED_REVIEW_VALUE
         ]
+    return _REJECTED_REVIEW_VALUE
+
+
+def _sanitize_manifest_snapshot(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for raw_key, raw_child in value.items():
+            if not isinstance(raw_key, str):
+                continue
+            normalized_key = "".join(
+                character for character in raw_key.casefold() if character.isalnum()
+            )
+            if any(
+                sensitive in normalized_key
+                for sensitive in _SENSITIVE_SNAPSHOT_KEY_PARTS
+            ) or normalized_key in {"auth", "session"}:
+                continue
+            child = _sanitize_manifest_snapshot(raw_child)
+            if child is not _REJECTED_REVIEW_VALUE:
+                result[raw_key] = child
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            child
+            for item in value
+            if (child := _sanitize_manifest_snapshot(item))
+            is not _REJECTED_REVIEW_VALUE
+        ]
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _REJECTED_REVIEW_VALUE
+    if isinstance(value, str):
+        if _EMBEDDED_PATH_OR_URI_RE.search(value):
+            return _REJECTED_REVIEW_VALUE
+        return _project_review_value(value, _SAFE_TEXT)
     return _REJECTED_REVIEW_VALUE
 
 
@@ -774,7 +819,8 @@ def _serialize_prompt_review(
         })
     def snapshot(name: str) -> dict[str, Any]:
         value = manifest.get(name)
-        return dict(value) if isinstance(value, Mapping) else {}
+        sanitized = _sanitize_manifest_snapshot(value)
+        return sanitized if isinstance(sanitized, dict) else {}
 
     return {
         "format_version": (
@@ -1003,9 +1049,32 @@ def _put_group_video_segment_continuity_locked(
             raise HTTPException(status_code=409, detail="Continuity contract revision is stale") from exc
     elif (
         active is not None
+        and active.revision == request.contract_revision + 1
         and active.model_copy(update={"revision": 0}) == candidate_semantics
     ):
-        saved = active
+        replay_observed = H3ObservedBoundary(
+            value=request.observed_carry_out,
+            source_contract_revision=request.contract_revision,
+            result_contract_revision=active.revision,
+            accepted=request.accept_deviation,
+            deviation_reason=reason,
+            lock_violations=request.lock_violations,
+        )
+        if (
+            entry.observed_carry_out is not None
+            and entry.observed_carry_out != replay_observed
+        ):
+            raise HTTPException(
+                status_code=409, detail="Observed boundary replay does not match manifest"
+            )
+        try:
+            saved = continuity_store.put(
+                episode, candidate, expected_revision=request.contract_revision + 1
+            )
+        except ContinuityRevisionConflict as exc:
+            raise HTTPException(
+                status_code=409, detail="Continuity contract revision is stale"
+            ) from exc
     else:
         raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
 
@@ -1019,16 +1088,19 @@ def _put_group_video_segment_continuity_locked(
     )
     entries = list(manifest.entries)
     entries[entry_index] = entry.model_copy(update={"observed_carry_out": observed})
-    updated_manifest = H3DirectorOutputManifest(
-        **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
-    )
-    try:
-        save_h3_director_manifest(manifest_path, updated_manifest)
-    except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Continuity revision was saved but the video manifest update failed; retry is safe",
-        ) from exc
+    if entry.observed_carry_out == observed:
+        updated_manifest = manifest
+    else:
+        updated_manifest = H3DirectorOutputManifest(
+            **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
+        )
+        try:
+            save_h3_director_manifest(manifest_path, updated_manifest)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Continuity revision was saved but the video manifest update failed; retry is safe",
+            ) from exc
 
     data = _serialize_prompt_review(
         project,

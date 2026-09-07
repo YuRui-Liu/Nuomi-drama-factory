@@ -1070,6 +1070,14 @@ def _seed_continuity_review(
         format_version=manifest_format_version,
         total_frames=entry.frame_count * len(entries),
         status=manifest_status,
+        workflow_parameters={
+            "resolution": "720p",
+            "api_key": "put-manifest-secret",
+        },
+        provider_parameters={
+            "safe": "visible",
+            "nested": {"Authorization": "Bearer put-nested-secret"},
+        },
     )
     manifest_path = tmp_path / "videos" / "continuity.manifest.json"
     save_h3_director_manifest(manifest_path, manifest)
@@ -1129,6 +1137,10 @@ def test_put_segment_continuity_accepts_explained_deviation(monkeypatch, tmp_pat
         ]
         == "right hand holds the lantern"
     )
+    assert data["workflow_parameters"] == {"resolution": "720p"}
+    assert data["provider_parameters"] == {"safe": "visible", "nested": {}}
+    assert "put-manifest-secret" not in response.text
+    assert "put-nested-secret" not in response.text
 
 
 @pytest.mark.parametrize(
@@ -1434,6 +1446,132 @@ def test_put_segment_continuity_retry_is_idempotent(monkeypatch, tmp_path):
     )
 
 
+def test_put_segment_continuity_matching_manifest_replay_does_not_save(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+
+    def fail_save(*_args):
+        raise AssertionError("matching replay must not save the manifest")
+
+    monkeypatch.setattr(narrative_groups, "save_h3_director_manifest", fail_save)
+    replay = client.put(_continuity_endpoint(), json=payload)
+
+    assert replay.status_code == 200
+    assert replay.json()["data"]["units"][0]["observed_carry_out"][
+        "result_contract_revision"
+    ] == 3
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+
+
+def test_put_segment_continuity_replay_rejects_changed_lock_violations(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+        "lock_violations": ["prop"],
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+
+    changed = client.put(
+        _continuity_endpoint(),
+        json={**payload, "lock_violations": ["identity"]},
+    )
+
+    assert changed.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+    observed = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "entries"
+    ][0]["observed_carry_out"]
+    assert observed["lock_violations"] == ["prop"]
+
+
+def test_put_segment_continuity_replay_uses_atomic_store_cas(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+    real_load_active = ShotContinuityStore.load_active
+    raced = False
+
+    def load_then_advance(self, episode, shot_id):
+        nonlocal raced
+        active = real_load_active(self, episode, shot_id)
+        if not raced and active is not None and active.revision == 3:
+            raced = True
+            changed = active.model_copy(update={
+                "scene": SceneLock(scene_state="concurrent replacement"),
+            })
+            self.put(episode, changed, expected_revision=3)
+        return active
+
+    monkeypatch.setattr(ShotContinuityStore, "load_active", load_then_advance)
+    replay = client.put(_continuity_endpoint(), json=payload)
+
+    assert replay.status_code == 409
+    assert store.list_revisions(1, "shot-1")[-1].revision == 4
+
+
+def test_put_segment_continuity_rejects_aba_replay_from_old_source(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    source = store.load_active(1, "shot-1")
+    boundary_a = source.boundary.model_copy(update={
+        "observed_carry_out": "left hand holds the lantern",
+        "deviation_accepted": True,
+        "deviation_reason": "Accepted on review",
+    })
+    revision_a3 = store.put(
+        1, source.model_copy(update={"boundary": boundary_a}), expected_revision=2
+    )
+    boundary_b = boundary_a.model_copy(update={
+        "observed_carry_out": "right hand holds the lantern",
+        "deviation_accepted": False,
+        "deviation_reason": "",
+    })
+    revision_b4 = store.put(
+        1, revision_a3.model_copy(update={"boundary": boundary_b}), expected_revision=3
+    )
+    store.put(
+        1, revision_b4.model_copy(update={"boundary": boundary_a}), expected_revision=4
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "left hand holds the lantern",
+            "accept_deviation": True,
+            "deviation_reason": "Accepted on review",
+        },
+    )
+
+    assert response.status_code == 409
+    assert store.load_active(1, "shot-1").revision == 5
+
+
 def test_put_segment_continuity_repairs_manifest_after_save_failure(
     monkeypatch, tmp_path
 ):
@@ -1719,6 +1857,58 @@ def test_get_video_prompts_whitelists_continuity_review_evidence(monkeypatch, tm
     ):
         assert forbidden not in serialized
 
+
+
+def test_get_video_prompts_recursively_redacts_top_level_snapshots(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{"segment": {
+            "segment_id": "beat-1", "beat_number": 1,
+            "prompt": "safe", "duration_seconds": 5,
+        }}],
+        "workflow_parameters": {
+            "resolution": "720p",
+            "nested": {
+                "Authorization": "Bearer workflow-secret",
+                "apiKey": "api-secret",
+                "credential_ref": "credential-secret",
+                "safe": ["visible", {"ToKeN": "nested-token"}],
+            },
+        },
+        "provider_parameters": {
+            "width": 720,
+            "PASSWORD": "provider-password",
+            "output_path": str(tmp_path / "private.mp4"),
+            "message": f"saved at {tmp_path}/leaked.mp4",
+        },
+        "actual_output": {
+            "width": 720,
+            "Cookie": "session-cookie",
+            "nested": {"secret_value": "actual-secret", "height": 1280},
+        },
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workflow_parameters"] == {
+        "resolution": "720p", "nested": {"safe": ["visible", {}]},
+    }
+    assert data["provider_parameters"] == {"width": 720}
+    assert data["actual_output"] == {"width": 720, "nested": {"height": 1280}}
+    serialized = response.text.lower()
+    for forbidden in (
+        "authorization", "apikey", "token", "password", "cookie", "secret",
+        "credential", "saved at",
+        str(tmp_path).lower(),
+    ):
+        assert forbidden not in serialized
 
 
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):
