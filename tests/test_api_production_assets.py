@@ -97,6 +97,44 @@ def test_materialize_register_and_adopt_candidate_without_overwriting_current(tm
     assert (state_dir / "production_workflow.json").exists()
 
 
+def test_qc_unavailable_candidate_requires_explicit_confirmation_to_adopt(
+    tmp_path, monkeypatch
+):
+    client, project_dir, _state_dir = _client(tmp_path, monkeypatch)
+    candidate_path = "assets/characters/lin/candidate-qc-unavailable.png"
+    target = project_dir / candidate_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"image")
+
+    registered = client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:portrait/versions",
+        json={
+            "asset_kind": "character_portrait",
+            "version_id": "candidate-qc-unavailable",
+            "asset_path": candidate_path,
+            "qc_passed": False,
+            "soft_issues": ["qc_unavailable"],
+        },
+    )
+    assert registered.status_code == 200
+
+    unconfirmed = client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:portrait/versions/candidate-qc-unavailable/adopt",
+        json={"reason": "人工检查画面后采用"},
+    )
+    assert unconfirmed.status_code == 409
+
+    adopted = client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:portrait/versions/candidate-qc-unavailable/adopt",
+        json={
+            "reason": "人工检查画面后采用",
+            "confirm_qc_unavailable": True,
+        },
+    )
+    assert adopted.status_code == 200
+    assert adopted.json()["data"]["slot"]["current_version_id"] == "candidate-qc-unavailable"
+
+
 def test_asset_paths_cannot_escape_project_root(tmp_path, monkeypatch):
     client, _project_dir, _state_dir = _client(tmp_path, monkeypatch)
     response = client.post(

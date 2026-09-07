@@ -42,6 +42,7 @@ class AdoptVersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = ""
+    confirm_qc_unavailable: bool = False
 
 
 def _store(resolved) -> ProductionWorkflowStore:
@@ -308,6 +309,7 @@ async def adopt_production_asset_version(
                 actor=str(user.get("username") or user.get("id") or "system"),
                 reason=body.reason,
                 at=datetime.now(timezone.utc),
+                confirm_qc_unavailable=body.confirm_qc_unavailable,
             )
             if staged_canonical is not None:
                 os.replace(staged_canonical[0], staged_canonical[1])

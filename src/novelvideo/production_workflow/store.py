@@ -236,6 +236,7 @@ class ProductionWorkflowStore:
         actor: str,
         reason: str,
         at: datetime,
+        confirm_qc_unavailable: bool = False,
     ) -> tuple[AssetSlot, dict[str, AssetVersion], AdoptionEvent]:
         if self.read_only_reason:
             raise RuntimeError(self.read_only_reason)
@@ -247,6 +248,7 @@ class ProductionWorkflowStore:
             actor=actor,
             reason=reason,
             at=at,
+            confirm_qc_unavailable=confirm_qc_unavailable,
         )
         self._slots[slot_id] = updated_slot
         self._versions.update(updated_versions)

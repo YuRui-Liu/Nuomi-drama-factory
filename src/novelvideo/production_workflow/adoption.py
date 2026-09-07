@@ -57,6 +57,7 @@ def adopt_version(
     actor: str,
     reason: str,
     at: datetime,
+    confirm_qc_unavailable: bool = False,
 ) -> tuple[AssetSlot, dict[str, AssetVersion], AdoptionEvent]:
     if version_id not in versions:
         raise ValueError("asset version not found")
@@ -65,9 +66,15 @@ def adopt_version(
         raise ValueError("asset version belongs to a different slot")
     if selected.technical_error:
         raise ValueError("technical-error output cannot be adopted")
-    if not selected.qc_passed:
-        raise ValueError("QC-failed output cannot be adopted")
     clean_reason = reason.strip()
+    qc_unavailable_override = (
+        not selected.qc_passed
+        and set(selected.soft_issues) == {"qc_unavailable"}
+        and confirm_qc_unavailable
+        and bool(clean_reason)
+    )
+    if not selected.qc_passed and not qc_unavailable_override:
+        raise ValueError("QC-failed output cannot be adopted")
     if selected.soft_issues and not clean_reason:
         raise ValueError("a reason is required to adopt a candidate with soft issues")
 

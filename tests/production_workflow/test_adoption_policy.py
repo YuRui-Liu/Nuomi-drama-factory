@@ -16,11 +16,12 @@ NOW = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 
 def _version(version_id: str, **kwargs) -> AssetVersion:
+    qc_passed = kwargs.pop("qc_passed", True)
     return AssetVersion(
         version_id=version_id,
         slot_id="character:lin-mo:portrait",
         asset_path=f"{version_id}.png",
-        qc_passed=True,
+        qc_passed=qc_passed,
         **kwargs,
     )
 
@@ -68,6 +69,62 @@ def test_soft_issue_requires_reason_and_technical_error_cannot_be_adopted():
     hard = _version("hard", technical_error="provider output unreadable")
     with pytest.raises(ValueError, match="technical"):
         adopt_version(slot, {"hard": hard}, version_id="hard", actor="frank", reason="force", at=NOW)
+
+
+def test_qc_unavailable_candidate_can_be_explicitly_adopted_with_reason():
+    slot = AssetSlot(slot_id="character:lin-mo:portrait", asset_kind="character_portrait")
+    unavailable = _version(
+        "unavailable",
+        qc_passed=False,
+        soft_issues=["qc_unavailable", "qc_unavailable"],
+    )
+
+    slot, versions, event = adopt_version(
+        slot,
+        {"unavailable": unavailable},
+        version_id="unavailable",
+        actor="frank",
+        reason="人工检查画面后采用",
+        at=NOW,
+        confirm_qc_unavailable=True,
+    )
+
+    assert slot.current_version_id == "unavailable"
+    assert versions["unavailable"].adoption_status == AdoptionStatus.ADOPTED
+    assert event.reason == "人工检查画面后采用"
+
+
+@pytest.mark.parametrize(
+    ("soft_issues", "technical_error", "confirm", "reason"),
+    [
+        (["qc_unavailable"], None, False, "人工检查画面后采用"),
+        (["qc_unavailable"], None, True, "  "),
+        (["qc_unavailable", "face_occluded"], None, True, "人工检查画面后采用"),
+        (["body_cropped"], None, True, "人工检查画面后采用"),
+        (["qc_unavailable"], "vision provider unavailable", True, "人工检查画面后采用"),
+    ],
+)
+def test_qc_unavailable_override_rejects_unsafe_candidates(
+    soft_issues, technical_error, confirm, reason
+):
+    slot = AssetSlot(slot_id="character:lin-mo:portrait", asset_kind="character_portrait")
+    candidate = _version(
+        "candidate",
+        qc_passed=False,
+        soft_issues=soft_issues,
+        technical_error=technical_error,
+    )
+
+    with pytest.raises(ValueError):
+        adopt_version(
+            slot,
+            {"candidate": candidate},
+            version_id="candidate",
+            actor="frank",
+            reason=reason,
+            at=NOW,
+            confirm_qc_unavailable=confirm,
+        )
 
 
 def test_strict_delivery_requires_manually_adopted_critical_slots():
