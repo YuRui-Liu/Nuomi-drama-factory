@@ -57,6 +57,7 @@ class IdentitySheetQualityReport(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
     style_family: IdentitySheetStyleFamily
+    technical_error: str | None = None
 
 
 def classify_identity_sheet_style(

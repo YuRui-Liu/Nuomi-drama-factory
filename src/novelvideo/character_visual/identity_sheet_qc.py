@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from novelvideo.freezone.vision_gateway import (
     VisionInput,
@@ -27,7 +28,13 @@ _ISSUE_CODES = (
     "dead_eyes",
     "unnatural_skin_texture",
     "plastic_material",
+    "portrait_face_occluded",
+    "panel_boundary_intrusion",
+    "body_cropped",
 )
+
+_SAFE_DIAGNOSTIC_VALUE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_TECHNICAL_ERROR_LIMIT = 240
 
 
 def _material_policy(style_family: IdentitySheetStyleFamily) -> str:
@@ -59,13 +66,23 @@ Project style: {style}
 Style family: {style_family.value}
 {_material_policy(style_family)}
 
-The large three-quarter portrait must be the unique visible face source. The front
+The large three-quarter portrait must be the unique visible face source.
+portrait_face_occluded is a defect when hands, arms, weapons, tools, clothing, hair, or props
+cover any eyes, nose, mouth, jawline, or the recognizable facial contour in the LEFT 50% panel.
+Limited unobstructed shoulder and neck visibility is valid.
+
+panel_boundary_intrusion is a defect when a person or any body part crosses the neutral
+gutter or either panel boundary at 50% and 75% of image width. Each view must remain fully contained
+inside its own panel. body_cropped is a defect when the front or back full-body view is cut
+by its panel boundary or the outer image edge, including any missing top of the head, hair,
+limb, hand, body edge, leg, foot, or sole.
+
+The front
 full-body panel must preserve the complete head, hair outline, ears, neck, body, and
 feet without cropping. A complete head is required and is not itself a defect.
 front_face_detected is a defect only when identifiable facial features appear there,
 including eyes, eyebrows, nose, lips, beard, face-like markings, or another recognizable
-face. A smooth neutral featureless facial plane is valid. If the top of the head or the
-feet are cropped, report state_inconsistent. The back full-body panel must face fully
+face. A smooth neutral featureless facial plane is valid. The back full-body panel must face fully
 away: back_face_visible is a defect when it contains any turned face, profile,
 reflected face, mirror face, or other visible facial detail.
 Reject text, labels, watermark, poster markings, and extra faces anywhere on the sheet;
@@ -78,7 +95,7 @@ or dramatic scene. Reject mismatch with the stated style, dead eyes, unnatural s
 texture, and plastic material according to the style policy above.
 所有风格都必须拒绝死眼和不符合该风格的错误塑料感。
 
-Return exactly one JSON object containing all nine boolean keys: {fields}.
+Return exactly one JSON object containing all twelve boolean keys: {fields}.
 Every key is a defect flag: true means the named defect is present and false means it
 is absent. Do not add prose or markdown.
 """
@@ -105,14 +122,28 @@ def _extract_checks(text: str) -> dict[str, bool]:
     raise ValueError("vision response does not contain a complete QC object")
 
 
+def _safe_technical_error(error: Exception) -> str:
+    """Return only an allowlisted exception type; never inspect the instance."""
+
+    raw_error_type = type(error).__name__
+    error_type = (
+        raw_error_type
+        if _SAFE_DIAGNOSTIC_VALUE.fullmatch(raw_error_type)
+        else "Exception"
+    )
+    return error_type[:_TECHNICAL_ERROR_LIMIT]
+
+
 def _unavailable_report(
     style_family: IdentitySheetStyleFamily,
+    error: Exception,
 ) -> IdentitySheetQualityReport:
     return IdentitySheetQualityReport(
         passed=False,
         checks={"qc_unavailable": False},
         issues=["qc_unavailable"],
         style_family=style_family,
+        technical_error=_safe_technical_error(error),
     )
 
 
@@ -143,8 +174,8 @@ async def assess_identity_sheet_quality(
             timeout_seconds=timeout_seconds,
         )
         checks = _extract_checks(response)
-    except Exception:
-        return _unavailable_report(style_family)
+    except Exception as error:
+        return _unavailable_report(style_family, error)
 
     issues = [code for code in _ISSUE_CODES if checks[code]]
     return IdentitySheetQualityReport(

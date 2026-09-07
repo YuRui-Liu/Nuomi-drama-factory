@@ -26,7 +26,10 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
           "style_mismatch": false,
           "dead_eyes": false,
           "unnatural_skin_texture": false,
-          "plastic_material": false
+          "plastic_material": false,
+          "portrait_face_occluded": false,
+          "panel_boundary_intrusion": false,
+          "body_cropped": false
         }
         ```"""
 
@@ -60,6 +63,14 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
     assert "reflected face" in qc_prompt
     assert "text, labels, watermark" in qc_prompt
     assert "extra faces" in qc_prompt
+    assert "portrait_face_occluded" in qc_prompt
+    assert "hands, arms, weapons, tools, clothing, hair, or props" in qc_prompt
+    assert "panel_boundary_intrusion" in qc_prompt
+    assert "50% and 75%" in qc_prompt
+    assert "body_cropped" in qc_prompt
+    assert "top of the head" in qc_prompt
+    assert report.technical_error is None
+    assert "technical_error" not in report.model_dump(exclude_none=True)
 
 
 @pytest.mark.asyncio
@@ -75,6 +86,9 @@ async def test_qc_returns_stable_issue_codes_from_model_checks(monkeypatch):
         "dead_eyes": True,
         "unnatural_skin_texture": True,
         "plastic_material": True,
+        "portrait_face_occluded": True,
+        "panel_boundary_intrusion": True,
+        "body_cropped": True,
     }
 
     async def fake_call(**_kwargs):
@@ -98,6 +112,9 @@ async def test_qc_returns_stable_issue_codes_from_model_checks(monkeypatch):
         "dead_eyes",
         "unnatural_skin_texture",
         "plastic_material",
+        "portrait_face_occluded",
+        "panel_boundary_intrusion",
+        "body_cropped",
     ]
     assert report.checks["front_face_detected"] is True
     assert report.checks["portrait_too_small"] is True
@@ -116,6 +133,9 @@ async def test_qc_ignores_provider_metadata_outside_stable_check_codes(monkeypat
         "dead_eyes": False,
         "unnatural_skin_texture": False,
         "plastic_material": False,
+        "portrait_face_occluded": False,
+        "panel_boundary_intrusion": False,
+        "body_cropped": False,
         "summary": "looks acceptable",
     }
 
@@ -159,6 +179,7 @@ async def test_qc_malformed_or_incomplete_response_is_unavailable(
     assert report.issues == ["qc_unavailable"]
     assert report.checks == {"qc_unavailable": False}
     assert report.style_family.value == "2.5d"
+    assert report.technical_error == "ValueError"
 
 
 @pytest.mark.asyncio
@@ -177,6 +198,104 @@ async def test_qc_gateway_failure_is_unavailable(monkeypatch):
     assert report.passed is False
     assert report.issues == ["qc_unavailable"]
     assert report.style_family.value == "3d_stylized"
+    assert report.technical_error == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_qc_gateway_failure_diagnostic_does_not_access_status_or_code(
+    monkeypatch,
+):
+    qc = _qc_module()
+    secret = "sk-live-super-secret"
+    accessed = []
+
+    class GatewayError(RuntimeError):
+        @property
+        def status_code(self):
+            accessed.append("status_code")
+            raise AssertionError("status descriptor must not be accessed")
+
+        @property
+        def code(self):
+            accessed.append("code")
+            return "private_ascii_code"
+
+    async def fake_call(**_kwargs):
+        raise GatewayError(
+            "request failed\n"
+            f"Authorization='Bearer {secret}'\n"
+            f"API key {secret}\n"
+            f"headers {{'Authorization': 'Bearer {secret}'}}\n"
+            f"response payload {'x' * 1000}"
+        )
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+
+    report = await qc.assess_identity_sheet_quality(
+        image_data=b"sheet", style="pixar_like_3d"
+    )
+
+    assert report.issues == ["qc_unavailable"]
+    assert report.technical_error == "GatewayError"
+    assert accessed == []
+    assert secret not in report.technical_error
+    assert "Authorization" not in report.technical_error
+    assert "payload" not in report.technical_error
+    assert "private_ascii_code" not in report.technical_error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Authorization='Bearer top-secret'",
+        "API key top-secret",
+        "headers {'Authorization': 'Bearer top-secret'}",
+        "response payload=" + "private-body" * 100,
+    ],
+)
+async def test_qc_gateway_failure_never_copies_arbitrary_exception_message(
+    monkeypatch, message
+):
+    qc = _qc_module()
+
+    async def fake_call(**_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+
+    report = await qc.assess_identity_sheet_quality(
+        image_data=b"sheet", style="pixar_like_3d"
+    )
+
+    assert report.technical_error == "RuntimeError"
+    assert "top-secret" not in report.technical_error
+    assert "private-body" not in report.technical_error
+
+
+@pytest.mark.asyncio
+async def test_qc_gateway_failure_rejects_unsafe_type_name_and_overlong_integer(
+    monkeypatch,
+):
+    qc = _qc_module()
+    unsafe_type = type("Bad\nAuthorization", (Exception,), {})
+    error = unsafe_type("top-secret")
+    error.status_code = int("9" * 500)
+    error.code = int("8" * 500)
+
+    async def fake_call(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+
+    report = await qc.assess_identity_sheet_quality(
+        image_data=b"sheet", style="pixar_like_3d"
+    )
+
+    assert report.technical_error == "Exception"
+    assert "\n" not in report.technical_error
+    assert "Authorization" not in report.technical_error
+    assert len(report.technical_error) <= 240
 
 
 @pytest.mark.asyncio
@@ -211,6 +330,9 @@ async def test_qc_resolves_preset_and_custom_style_with_project_dir(
                 "dead_eyes": False,
                 "unnatural_skin_texture": False,
                 "plastic_material": False,
+                "portrait_face_occluded": False,
+                "panel_boundary_intrusion": False,
+                "body_cropped": False,
             }
         )
 
@@ -256,6 +378,9 @@ async def test_qc_prompt_applies_style_specific_material_policy(
                 "dead_eyes": False,
                 "unnatural_skin_texture": False,
                 "plastic_material": False,
+                "portrait_face_occluded": False,
+                "panel_boundary_intrusion": False,
+                "body_cropped": False,
             }
         )
 

@@ -525,7 +525,9 @@ def _register_character_state_candidate(
     raw_candidate_path = (
         generation.raw_candidate_path.resolve().relative_to(root).as_posix()
     )
-    quality_report = generation.quality_report.model_dump(mode="json")
+    quality_report = generation.quality_report.model_dump(
+        mode="json", exclude_none=True
+    )
     slot_id = f"character:{character_name}:state:{generation.state_id}"
     version_id = generation.output_path.stem
     staged_canonical: Path | None = None

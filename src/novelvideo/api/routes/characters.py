@@ -2219,7 +2219,7 @@ async def generate_identity_image(
                 body.style or proj_config.get("visual_style") or ""
             ),
         )
-    report_data = quality_report.model_dump(mode="json")
+    report_data = quality_report.model_dump(mode="json", exclude_none=True)
     raw_candidate_path = output_path.with_name(f"{output_path.stem}_body_temp.png")
     from novelvideo.production_workflow import (
         ProductionWorkflowStore,
