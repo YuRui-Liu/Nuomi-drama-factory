@@ -2385,11 +2385,11 @@ def test_character_preset_keeps_portrait_as_identity_workflow_source() -> None:
     assert ("ref_character_portrait_1", "ref_character_identity_1") in edges
     assert not any(node_id.startswith("flow_identity_") for node_id in nodes)
     identity_prompt = nodes["ref_character_identity_1"]["data"]["prompt"]
-    assert "Identity Sheet v2" in identity_prompt
+    assert "Identity Sheet v3" in identity_prompt
     assert "黑色作战服，身形挺拔" in identity_prompt
-    assert "LEFT 50%: LARGE THREE-QUARTER PORTRAIT" in identity_prompt
-    assert "CENTER 25%: HEADLESS FRONT FULL BODY" in identity_prompt
-    assert "RIGHT 25%: BACK FULL BODY" in identity_prompt
+    assert "LEFT 40%: HEADLESS FRONT FULL BODY" in identity_prompt
+    assert "CENTER 30%: BACK FULL BODY" in identity_prompt
+    assert "RIGHT 30%: LARGE THREE-QUARTER PORTRAIT" in identity_prompt
     assert nodes["ref_character_identity_1"]["data"]["aspectRatio"] == "3:2"
     assert (
         node_positions["prompt_character_portrait"]["x"]
@@ -2679,7 +2679,7 @@ async def test_character_asset_preset_emits_missing_identity_slot_placeholders(
     assert nodes["ref_identity_costume_1"]["data"]["autoCommitOnGenerate"] is True
     identity_prompt = nodes["ref_character_identity_1"]["data"]["prompt"]
     costume_prompt = nodes["ref_identity_costume_1"]["data"]["prompt"]
-    assert "Identity Sheet v2" in identity_prompt
+    assert "Identity Sheet v3" in identity_prompt
     assert "黑色作战服，身形挺拔" in identity_prompt
     assert "Portrait is the sole facial identity authority" in identity_prompt
     assert "two body panels supply body, outfit, and rear-silhouette information only" in identity_prompt

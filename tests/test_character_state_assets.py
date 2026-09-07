@@ -9,10 +9,10 @@ import pytest
 from PIL import Image
 
 
-def test_character_state_prompt_uses_identity_sheet_v2_contract() -> None:
-    from novelvideo.character_visual.identity_sheet import build_identity_sheet_v2_prompt
+def test_character_state_prompt_uses_identity_sheet_v3_contract() -> None:
+    from novelvideo.character_visual.identity_sheet import build_identity_sheet_v3_prompt
 
-    prompt = build_identity_sheet_v2_prompt(
+    prompt = build_identity_sheet_v3_prompt(
         character_name="林默",
         character_tag="[LinM]",
         appearance="黑色防水夹克，灰色连帽衫，深色长裤",
@@ -24,10 +24,10 @@ def test_character_state_prompt_uses_identity_sheet_v2_contract() -> None:
     )
 
     assert "3-panel" in prompt
-    assert "LEFT 50%" in prompt
-    assert "FACELESS FRONT FULL BODY" in prompt
-    assert "complete head, hairstyle and hair outline" in prompt
-    assert "no identifiable facial features" in prompt
+    assert "LEFT 40%" in prompt
+    assert "HEADLESS FRONT FULL BODY" in prompt
+    assert "no head, hair, ears, or face" in prompt
+    assert "RIGHT 30%: LARGE THREE-QUARTER PORTRAIT" in prompt
     assert "BACK FULL BODY" in prompt
     assert "Portrait is the sole facial identity authority" in prompt
 
@@ -186,8 +186,8 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
         "character_name": "林默",
         "identity_id": "linmo-duty",
         "state_id": "linmo-duty",
-            "layout_version": "identity_sheet_v2",
-            "panel_layout": ["portrait_3q", "front_headless", "back_fullbody"],
+            "layout_version": "identity_sheet_v3",
+            "panel_layout": ["front_headless", "back_fullbody", "portrait_3q"],
             "composition_mode": "provider_canvas",
             "face_source_usage": "reference_only",
             "face_source": portrait.relative_to(tmp_path).as_posix(),
@@ -203,9 +203,9 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
         "reference_sources": [portrait.relative_to(tmp_path).as_posix()],
         "canonical_path": canonical.relative_to(tmp_path).as_posix(),
     }
-    assert all("Identity Sheet v2" in prompt for prompt in generated_prompts)
+    assert all("Identity Sheet v3" in prompt for prompt in generated_prompts)
     assert generated_aspect_ratios == ["3:2", "3:2"]
-    assert first["layout_version"] == "identity_sheet_v2"
+    assert first["layout_version"] == "identity_sheet_v3"
     assert first["qc_passed"] is True
     assert json.loads((ctx.state_dir / "production_workflow.json").read_text("utf-8"))
 
@@ -350,7 +350,7 @@ async def test_qc_unavailable_registers_visible_candidate_and_preserves_canonica
     assert result["qc_passed"] is False
     assert version.soft_issues == ["qc_unavailable"]
     assert version.generation_metadata["quality_report"]["issues"] == ["qc_unavailable"]
-    assert version.generation_metadata["layout_version"] == "identity_sheet_v2"
+    assert version.generation_metadata["layout_version"] == "identity_sheet_v3"
     assert Path(tmp_path / version.asset_path).is_file()
 
 

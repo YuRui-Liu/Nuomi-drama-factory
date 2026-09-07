@@ -34,6 +34,7 @@ interface CharacterStateVersionsProps {
 
 const V1_PANELS = ["front", "side", "back"];
 const V2_PANELS = ["portrait", "headlessFront", "fullBack"];
+const V3_PANELS = ["headlessFrontV3", "fullBack", "portrait"];
 
 function assetMediaUrl(project: string, assetPath: string): string {
   const encodedPath = assetPath
@@ -48,11 +49,17 @@ function assetMediaUrl(project: string, assetPath: string): string {
 }
 
 function panelLayout(version: ProductionAssetVersion): string[] {
+  if (isV3(version)) return V3_PANELS;
   if (isV2(version)) return V2_PANELS;
   const panels = version.generation_metadata?.panel_layout;
   return Array.isArray(panels) && panels.length > 0
     ? panels.filter((panel): panel is string => typeof panel === "string")
     : V1_PANELS;
+}
+
+function isV3(version: ProductionAssetVersion): boolean {
+  const layoutVersion = version.generation_metadata?.layout_version;
+  return layoutVersion === "identity_sheet_v3" || layoutVersion === "v3";
 }
 
 function isV2(version: ProductionAssetVersion): boolean {
@@ -130,7 +137,13 @@ export function CharacterStateVersions({
   const currentVersion = versions.find(
     (version) => version.version_id === payload.slot.current_version_id,
   );
-  const currentLayoutIsV2 = currentVersion ? isV2(currentVersion) : false;
+  const currentLayout = currentVersion
+    ? isV3(currentVersion)
+      ? "v3"
+      : isV2(currentVersion)
+        ? "v2"
+        : "v1"
+    : "v1";
 
   const adopt = async (versionId: string) => {
     try {
@@ -177,14 +190,18 @@ export function CharacterStateVersions({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h4 className="text-xs font-medium text-foreground">
-            {t(currentLayoutIsV2
-              ? "characters.stateVersions.v2Title"
-              : "characters.stateVersions.title")}
+            {t(currentLayout === "v3"
+              ? "characters.stateVersions.v3Title"
+              : currentLayout === "v2"
+                ? "characters.stateVersions.v2Title"
+                : "characters.stateVersions.title")}
           </h4>
           <p className="mt-1 text-[11px] text-muted-foreground">
-            {t(currentLayoutIsV2
-              ? "characters.stateVersions.v2Description"
-              : "characters.stateVersions.description")}
+            {t(currentLayout === "v3"
+              ? "characters.stateVersions.v3Description"
+              : currentLayout === "v2"
+                ? "characters.stateVersions.v2Description"
+                : "characters.stateVersions.description")}
           </p>
         </div>
         <span className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground">
@@ -260,7 +277,11 @@ export function CharacterStateVersions({
                   ))}
                 </div>
 
-                {isV2(version) ? (
+                {isV3(version) ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    {t("characters.stateVersions.v3IsolationHint")}
+                  </p>
+                ) : isV2(version) ? (
                   <p className="text-[10px] text-muted-foreground">
                     {t("characters.stateVersions.isolationHint")}
                   </p>
@@ -269,7 +290,7 @@ export function CharacterStateVersions({
                 {issues.length > 0 && (
                   <div className="rounded bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
                     {issues.map((issue) =>
-                      t(`characters.stateVersions.qcIssues.${issue}`, { defaultValue: issue }),
+                      t(`characters.stateVersions.qcIssues.${issue}${isV3(version) && issue === "front_face_detected" ? "V3" : ""}`, { defaultValue: issue }),
                     ).join(t("characters.stateVersions.issueSeparator"))}
                   </div>
                 )}

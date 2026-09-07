@@ -23,7 +23,10 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.description": "正面、侧面、背面保持同一人物与服装；生成后先作为候选，可手动采用。",
         "characters.stateVersions.v2Title": "人物 Identity Sheet v2",
         "characters.stateVersions.v2Description": "3/4 脸部母版锁定身份；无面部正面全身保留完整头身并表达体型与服装正面；背面全身表达背部轮廓与服装结构。",
+        "characters.stateVersions.v3Title": "人物 Identity Sheet v3",
+        "characters.stateVersions.v3Description": "无头正面身体锁定体型与服装正面；背面全身保留后脑与背部轮廓；3/4 脸部母版是唯一可见脸。",
         "characters.stateVersions.isolationHint": "正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。",
+        "characters.stateVersions.v3IsolationHint": "正面身体按造型规范直接不含头部；伤痕、血污和服装破损完全由当前角色状态决定。",
         "characters.stateVersions.issueSeparator": "；",
         "characters.stateVersions.status.current": "当前采用",
         "characters.stateVersions.status.qcFailed": "QC 未通过",
@@ -34,9 +37,11 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.panels.back": "背面",
         "characters.stateVersions.panels.portrait": "3/4脸部母版",
         "characters.stateVersions.panels.headlessFront": "无面部正面全身",
+        "characters.stateVersions.panels.headlessFrontV3": "无头正面身体",
         "characters.stateVersions.panels.fullBack": "背面全身",
         "characters.stateVersions.qcIssues.portrait_too_small": "肖像区域过小",
         "characters.stateVersions.qcIssues.front_face_detected": "正面身体仍检测到脸部",
+        "characters.stateVersions.qcIssues.front_face_detectedV3": "无头正面身体仍检测到头部或脸部",
         "characters.stateVersions.qcIssues.back_face_visible": "背面人物发生回头",
         "characters.stateVersions.qcIssues.state_inconsistent": "正背面角色状态不一致",
         "characters.stateVersions.qcIssues.non_neutral_presentation": "背景或光线不是中性展示",
@@ -113,7 +118,7 @@ vi.mock("@/lib/queries/production-assets", () => ({
             soft_issues: ["portrait_too_small", "front_face_detected"],
             technical_error: null,
             generation_metadata: {
-              layout_version: "identity_sheet_v2",
+              layout_version: "identity_sheet_v3",
               quality_report: {
                 passed: false,
                 checks: {},
@@ -223,6 +228,13 @@ describe("CharacterStateVersions", () => {
     expect(enTranslation.characters.stateVersions.qcUnavailableConfirm.description).toContain("unobstructed portrait");
   });
 
+  it("describes the directly headless v3 front body in both locales", () => {
+    expect(zhTranslation.characters.stateVersions.panels.headlessFrontV3).toBe("无头正面身体");
+    expect(zhTranslation.characters.stateVersions.v3IsolationHint).toContain("完全由当前角色状态决定");
+    expect(enTranslation.characters.stateVersions.panels.headlessFrontV3).toBe("Headless front body");
+    expect(enTranslation.characters.stateVersions.v3IsolationHint).toContain("entirely determined by the current character state");
+  });
+
   it("shows front-side-back candidates and only allows QC-passed adoption", async () => {
     const user = userEvent.setup();
     render(
@@ -282,7 +294,7 @@ describe("CharacterStateVersions", () => {
     });
   });
 
-  it("shows the v2 identity-isolation layout and translated QC reasons", () => {
+  it("shows the v3 headless layout and translated QC reasons", () => {
     fixtureState.currentVersionId = "state-v3";
     render(
       <CharacterStateVersions
@@ -293,19 +305,19 @@ describe("CharacterStateVersions", () => {
     );
 
     expect(screen.getByText("3/4脸部母版")).toBeInTheDocument();
-    expect(screen.getByText("人物 Identity Sheet v2")).toBeInTheDocument();
+    expect(screen.getByText("人物 Identity Sheet v3")).toBeInTheDocument();
     expect(
-      screen.getByText("3/4 脸部母版锁定身份；无面部正面全身保留完整头身并表达体型与服装正面；背面全身表达背部轮廓与服装结构。"),
+      screen.getByText("无头正面身体锁定体型与服装正面；背面全身保留后脑与背部轮廓；3/4 脸部母版是唯一可见脸。"),
     ).toBeInTheDocument();
-    expect(screen.getByText("无面部正面全身")).toBeInTheDocument();
+    expect(screen.getByText("无头正面身体")).toBeInTheDocument();
     expect(screen.getByText("背面全身")).toBeInTheDocument();
     expect(
-      screen.getByText("正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。"),
+      screen.getByText("正面身体按造型规范直接不含头部；伤痕、血污和服装破损完全由当前角色状态决定。"),
     ).toBeInTheDocument();
 
     for (const issue of [
       "肖像区域过小",
-      "正面身体仍检测到脸部",
+      "无头正面身体仍检测到头部或脸部",
       "背面人物发生回头",
       "正背面角色状态不一致",
       "背景或光线不是中性展示",
@@ -317,5 +329,23 @@ describe("CharacterStateVersions", () => {
     ]) {
       expect(screen.getByText(new RegExp(issue))).toBeInTheDocument();
     }
+  });
+
+  it("keeps v2 historical assets on the complete faceless-head wording", () => {
+    fixtureState.includeQcUnavailable = true;
+    fixtureState.currentVersionId = "state-v5";
+    render(
+      <CharacterStateVersions
+        project="demo"
+        characterName="林默"
+        identityId="linmo-duty"
+      />,
+    );
+
+    expect(screen.getByText("人物 Identity Sheet v2")).toBeInTheDocument();
+    expect(screen.getAllByText("无面部正面全身").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("正面全身保留完整头部轮廓，仅隔离可识别五官，并非裁切或图片缺损。").length,
+    ).toBeGreaterThan(0);
   });
 });
