@@ -1270,6 +1270,30 @@ def test_put_segment_continuity_rejects_generated_evidence(
     assert response.status_code == 409
 
 
+def test_put_segment_continuity_accepts_failed_stage_quality_rejected_manifest(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(
+        client,
+        tmp_path,
+        stage_status="failed",
+        manifest_status="quality_rejected",
+        entry_status="quality_rejected",
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 200
+    assert store.load_active(1, "shot-1").revision == 3
+
+
 def test_put_segment_continuity_rejects_advance_before_lock(
     monkeypatch, tmp_path,
 ):

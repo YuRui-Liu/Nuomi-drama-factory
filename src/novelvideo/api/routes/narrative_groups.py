@@ -845,7 +845,7 @@ async def put_group_video_segment_continuity(
     root = Path(resolved.project_dir).resolve()
     with narrative_group_sidecar_guard(root, episode):
         expected_stage = _load_current_video_stage(root, episode, group_id)
-        if expected_stage.status not in _POSTFLIGHT_TERMINAL_STATUSES:
+        if expected_stage.status not in _POSTFLIGHT_STAGE_STATUSES:
             raise HTTPException(
                 status_code=409, detail="Video stage is not ready for review"
             )
@@ -860,7 +860,13 @@ async def put_group_video_segment_continuity(
         )
 
 
-_POSTFLIGHT_TERMINAL_STATUSES = {
+_POSTFLIGHT_STAGE_STATUSES = {
+    "review",
+    "completed",
+    "partial_failure",
+    "failed",
+}
+_POSTFLIGHT_MANIFEST_STATUSES = {
     "completed",
     "partial_failure",
     "quality_rejected",
@@ -924,7 +930,7 @@ def _put_group_video_segment_continuity_locked(
     request: NarrativeGroupContinuityRequest,
     stage: Any,
 ):
-    if stage.status not in _POSTFLIGHT_TERMINAL_STATUSES:
+    if stage.status not in _POSTFLIGHT_STAGE_STATUSES:
         raise HTTPException(status_code=409, detail="Video stage is not ready for review")
 
     manifest_path = _postflight_manifest_path(root, stage)
@@ -934,7 +940,7 @@ def _put_group_video_segment_continuity_locked(
         raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
     if (
         manifest.format_version < 2
-        or manifest.status not in _POSTFLIGHT_TERMINAL_STATUSES
+        or manifest.status not in _POSTFLIGHT_MANIFEST_STATUSES
     ):
         raise HTTPException(
             status_code=409, detail="Video manifest is not terminal review evidence"
@@ -950,7 +956,7 @@ def _put_group_video_segment_continuity_locked(
     if len(matches) != 1:
         raise HTTPException(status_code=409, detail="Video segment evidence is ambiguous")
     entry_index, entry = matches[0]
-    if entry.status not in _POSTFLIGHT_TERMINAL_STATUSES:
+    if entry.status not in _POSTFLIGHT_MANIFEST_STATUSES:
         raise HTTPException(
             status_code=409, detail="Video segment is not terminal review evidence"
         )
