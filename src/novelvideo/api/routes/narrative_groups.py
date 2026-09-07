@@ -393,7 +393,7 @@ _SENSITIVE_SNAPSHOT_KEY_PARTS = (
 )
 _PATH_SNAPSHOT_KEY_PARTS = ("path", "file", "dir", "folder", "uri", "url")
 _EMBEDDED_PATH_OR_URI_RE = re.compile(
-    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|[\s=([{,:;])/\S+|"
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|[\s=([{,:;'\"<`])/\S+|"
     r"[A-Za-z]:[\\/]\S+|\\\\\S+)"
 )
 _CAMERA_PLAN_SCHEMA = {
@@ -577,6 +577,14 @@ def _project_review_value(value: Any, schema: Any) -> Any:
     return _REJECTED_REVIEW_VALUE
 
 
+def _is_path_snapshot_key(key: str) -> bool:
+    folded = key.casefold()
+    tokens = {token for token in re.split(r"[^a-z0-9]+", folded) if token}
+    return bool(tokens.intersection(_PATH_SNAPSHOT_KEY_PARTS)) or folded.endswith(
+        ("_path", "_file", "_dir")
+    )
+
+
 def _sanitize_manifest_snapshot(value: Any, *, path_context: bool = False) -> Any:
     if isinstance(value, Mapping):
         result = {}
@@ -593,9 +601,7 @@ def _sanitize_manifest_snapshot(value: Any, *, path_context: bool = False) -> An
                 continue
             child = _sanitize_manifest_snapshot(
                 raw_child,
-                path_context=path_context or any(
-                    part in normalized_key for part in _PATH_SNAPSHOT_KEY_PARTS
-                ),
+                path_context=path_context or _is_path_snapshot_key(raw_key),
             )
             if child is not _REJECTED_REVIEW_VALUE:
                 result[raw_key] = child
@@ -614,11 +620,7 @@ def _sanitize_manifest_snapshot(value: Any, *, path_context: bool = False) -> An
     if isinstance(value, float):
         return value if math.isfinite(value) else _REJECTED_REVIEW_VALUE
     if isinstance(value, str):
-        if path_context and (
-            _is_path_or_uri(value)
-            or "/" in value
-            or "\\" in value
-        ):
+        if path_context and value.strip():
             return "[redacted]"
         if _EMBEDDED_PATH_OR_URI_RE.search(value):
             return _REJECTED_REVIEW_VALUE

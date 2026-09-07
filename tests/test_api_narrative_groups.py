@@ -1892,10 +1892,16 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
         },
         "provider_parameters": {
             "width": 720,
+            "profile": "cinematic/v2",
+            "direction": "left/right",
             "PASSWORD": "provider-password",
             "output_path": "private/a.mov",
+            "output_file": "private.mov",
             "message": "path=/srv/app/private.json",
             "windows_message": r"saved=C:\private\render.mov",
+            "quoted_posix": "failed opening '/srv/a'",
+            "double_quoted_posix": 'failed opening "/Users/a"',
+            "angled_windows": r"failed opening <C:\x>",
         },
         "actual_output": {
             "width": 720,
@@ -1931,7 +1937,11 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
         },
     }
     assert data["provider_parameters"] == {
-        "width": 720, "output_path": "[redacted]",
+        "width": 720,
+        "profile": "cinematic/v2",
+        "direction": "left/right",
+        "output_path": "[redacted]",
+        "output_file": "[redacted]",
     }
     assert data["actual_output"] == {
         "width": 720,
@@ -1945,7 +1955,8 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
     for forbidden in (
         "authorization", "apikey", "token", "password", "cookie", "secret",
         "credential", "path=/srv", "saved=(/users", r"c:\private",
-        "private/a.mov", "private/frame.png",
+        "private/a.mov", "private.mov", "private/frame.png",
+        "failed opening",
     ):
         assert forbidden not in serialized
 
