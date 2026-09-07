@@ -233,6 +233,154 @@ def test_character_state_adoption_replace_failure_rolls_back_workflow_and_canoni
     assert (state_dir / "production_workflow.json").read_bytes() == before
 
 
+def test_delete_current_character_state_adopts_latest_and_removes_version_file(
+    tmp_path, monkeypatch
+):
+    client, project_dir, _state_dir = _client(tmp_path, monkeypatch)
+    canonical_path = "assets/characters/lin/identities/duty.png"
+    old_path = "assets/characters/lin/identities/duty/versions/state-old.png"
+    newest_path = "assets/characters/lin/identities/duty/versions/state-newest.png"
+    canonical = project_dir / canonical_path
+    old = project_dir / old_path
+    newest = project_dir / newest_path
+    for path, content in ((canonical, b"canonical"), (old, b"old"), (newest, b"newest")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/legacy-import",
+        json={"asset_kind": "character_state", "asset_path": canonical_path},
+    )
+    for version_id, asset_path in (("state-old", old_path), ("state-newest", newest_path)):
+        response = client.post(
+            "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions",
+            json={
+                "asset_kind": "character_state",
+                "version_id": version_id,
+                "asset_path": asset_path,
+                "qc_passed": True,
+                "generation_metadata": {"canonical_path": canonical_path},
+            },
+        )
+        assert response.status_code == 200
+
+    current_id = client.get(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty",
+        params={"asset_kind": "character_state"},
+    ).json()["data"]["slot"]["current_version_id"]
+    response = client.delete(
+        f"/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions/{current_id}"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["slot"]["current_version_id"] == "state-newest"
+    assert data["current_version"]["version_id"] == "state-newest"
+    assert canonical.read_bytes() == b"newest"
+    assert newest.exists()
+
+
+def test_delete_non_current_character_state_removes_its_file(tmp_path, monkeypatch):
+    client, project_dir, _state_dir = _client(tmp_path, monkeypatch)
+    canonical_path = "assets/characters/lin/identities/duty.png"
+    candidate_path = "assets/characters/lin/identities/duty/versions/state-delete.png"
+    canonical = project_dir / canonical_path
+    candidate = project_dir / candidate_path
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical")
+    candidate.write_bytes(b"candidate")
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/legacy-import",
+        json={"asset_kind": "character_state", "asset_path": canonical_path},
+    )
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions",
+        json={
+            "asset_kind": "character_state",
+            "version_id": "state-delete",
+            "asset_path": candidate_path,
+            "qc_passed": True,
+            "generation_metadata": {"canonical_path": canonical_path},
+        },
+    )
+
+    response = client.delete(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions/state-delete"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["slot"]["current_version_id"] is not None
+    assert canonical.read_bytes() == b"canonical"
+    assert not candidate.exists()
+
+
+def test_delete_missing_production_asset_version_returns_404(tmp_path, monkeypatch):
+    client, project_dir, _state_dir = _client(tmp_path, monkeypatch)
+    canonical_path = "assets/characters/lin/identities/duty.png"
+    canonical = project_dir / canonical_path
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical")
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/legacy-import",
+        json={"asset_kind": "character_state", "asset_path": canonical_path},
+    )
+
+    response = client.delete(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions/missing"
+    )
+
+    assert response.status_code == 404
+
+
+def test_delete_current_version_replace_failure_rolls_back_files_and_workflow(
+    tmp_path, monkeypatch
+):
+    from novelvideo.api.routes import production_assets
+
+    client, project_dir, state_dir = _client(tmp_path, monkeypatch)
+    canonical_path = "assets/characters/lin/identities/duty.png"
+    candidate_path = "assets/characters/lin/identities/duty/versions/state-new.png"
+    canonical = project_dir / canonical_path
+    candidate = project_dir / candidate_path
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical")
+    candidate.write_bytes(b"candidate")
+    imported = client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/legacy-import",
+        json={"asset_kind": "character_state", "asset_path": canonical_path},
+    )
+    current_id = imported.json()["data"]["current_version"]["version_id"]
+    client.post(
+        "/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions",
+        json={
+            "asset_kind": "character_state",
+            "version_id": "state-new",
+            "asset_path": candidate_path,
+            "qc_passed": True,
+            "generation_metadata": {"canonical_path": canonical_path},
+        },
+    )
+    workflow_before = (state_dir / "production_workflow.json").read_bytes()
+    real_replace = production_assets.os.replace
+
+    def fail_fallback_replace(source, target):
+        if Path(target) == canonical:
+            raise OSError("fallback replace failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(production_assets.os, "replace", fail_fallback_replace)
+    with pytest.raises(OSError, match="fallback replace failed"):
+        client.delete(
+            f"/api/v1/projects/project-1/production-assets/slots/character:lin:state:duty/versions/{current_id}"
+        )
+
+    assert canonical.read_bytes() == b"canonical"
+    assert candidate.read_bytes() == b"candidate"
+    assert (state_dir / "production_workflow.json").read_bytes() == workflow_before
+
+
 def test_adopting_scene_candidate_clears_matching_stale_reference(
     tmp_path, monkeypatch
 ):

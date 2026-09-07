@@ -336,3 +336,101 @@ async def adopt_production_asset_version(
             "event": event.model_dump(mode="json"),
         },
     }
+
+
+@router.delete(
+    "/projects/{project}/production-assets/slots/{slot_id}/versions/{version_id}"
+)
+async def delete_production_asset_version(
+    project: str,
+    slot_id: str,
+    version_id: str,
+    user: dict = Depends(get_api_user),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    with production_workflow_project_lock(resolved.state_dir):
+        store = _store(resolved)
+        workflow_snapshot = store.capture_file_snapshot()
+        file_snapshots: dict[Path, bytes | None] = {}
+
+        def capture(path: Path) -> None:
+            if path not in file_snapshots:
+                file_snapshots[path] = path.read_bytes() if path.is_file() else None
+
+        def rollback() -> None:
+            store.restore_file_snapshot(workflow_snapshot)
+            for path, snapshot in file_snapshots.items():
+                if snapshot is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(snapshot)
+
+        try:
+            slot_before, versions_before = store.get_slot(slot_id)
+            deleted_before = versions_before.get(version_id)
+            if deleted_before is None:
+                raise KeyError(version_id)
+            deleted_relative = _safe_project_asset(
+                resolved.project_dir, deleted_before.asset_path
+            )
+            deleted_path = resolved.project_dir / deleted_relative
+            capture(deleted_path)
+
+            was_current = slot_before.current_version_id == version_id
+            canonical_path: Path | None = None
+            if was_current:
+                metadata = deleted_before.generation_metadata or {}
+                canonical_relative = metadata.get("canonical_path")
+                if not isinstance(canonical_relative, str) or not canonical_relative.strip():
+                    canonical_relative = deleted_before.asset_path
+                canonical_path = _safe_project_target(
+                    resolved.project_dir, canonical_relative
+                )
+                capture(canonical_path)
+
+            slot, versions, deleted, fallback = store.delete_version(
+                slot_id=slot_id,
+                version_id=version_id,
+            )
+
+            if canonical_path is not None:
+                if fallback is None:
+                    canonical_path.unlink(missing_ok=True)
+                else:
+                    fallback_relative = _safe_project_asset(
+                        resolved.project_dir, fallback.asset_path
+                    )
+                    fallback_path = resolved.project_dir / fallback_relative
+                    canonical_path.parent.mkdir(parents=True, exist_ok=True)
+                    staged = canonical_path.with_name(
+                        f".{canonical_path.name}.delete-fallback-{uuid.uuid4().hex}.tmp"
+                    )
+                    try:
+                        shutil.copy2(fallback_path, staged)
+                        os.replace(staged, canonical_path)
+                    finally:
+                        staged.unlink(missing_ok=True)
+
+            still_referenced = any(
+                item.asset_path == deleted.asset_path for item in versions.values()
+            )
+            if not still_referenced and deleted_path != canonical_path:
+                deleted_path.unlink()
+        except KeyError as exc:
+            rollback()
+            raise HTTPException(status_code=404, detail="asset version not found") from exc
+        except (RuntimeError, ValueError) as exc:
+            rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception:
+            rollback()
+            raise
+
+    return {
+        "ok": True,
+        "data": {
+            **_slot_payload(slot, versions, store=store),
+            "deleted_version": deleted.model_dump(mode="json"),
+        },
+    }
