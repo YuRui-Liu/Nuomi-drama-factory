@@ -30,11 +30,7 @@ from novelvideo.narrative_groups.references import (
     GroupStyleReference,
 )
 from novelvideo.narrative_groups import service as narrative_group_service
-from novelvideo.narrative_groups.service import (
-    advance_revision,
-    record_stage_result,
-    sidecar_path,
-)
+from novelvideo.narrative_groups.service import advance_revision, record_stage_result, sidecar_path
 from novelvideo.shot_continuity import (
     BoundaryState,
     CameraLock,
@@ -75,9 +71,7 @@ class FailingBackend(FakeBackend):
 
 
 def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
-    ctx = SimpleNamespace(
-        project_id="demo", output_dir=str(tmp_path), state_dir=str(tmp_path)
-    )
+    ctx = SimpleNamespace(project_id="demo", output_dir=str(tmp_path), state_dir=str(tmp_path))
     resolved = SimpleNamespace(ctx=ctx, project_dir=tmp_path, output_dir=str(tmp_path))
 
     async def resolve(*args, **kwargs):
@@ -120,12 +114,8 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
                             label="清晰度",
                             default="720p",
                             options=(
-                                VideoWorkflowParameterOption(
-                                    value="720p", label="720p"
-                                ),
-                                VideoWorkflowParameterOption(
-                                    value="1080p", label="1080p", relative_cost="higher"
-                                ),
+                                VideoWorkflowParameterOption(value="720p", label="720p"),
+                                VideoWorkflowParameterOption(value="1080p", label="1080p", relative_cost="higher"),
                             ),
                         ),
                     ),
@@ -140,9 +130,9 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
         "username": "tester",
     }
     app.dependency_overrides[media_store_dependency] = lambda: capability_store
-    app.dependency_overrides[narrative_groups.get_media_credential_resolver] = lambda: (
-        credential_resolver
-    )
+    app.dependency_overrides[
+        narrative_groups.get_media_credential_resolver
+    ] = lambda: credential_resolver
     return TestClient(app), backend
 
 
@@ -196,24 +186,13 @@ def make_reference_preview(tmp_path: Path):
         style=GroupStyleReference(id="style-opaque", name="cinematic", prompt="moody"),
         image_references=(
             GroupImageReference(
-                id="char-opaque",
-                kind="character",
-                source_kind="identity",
-                label="Hero",
-                path=str(character),
-                beat_numbers=(1,),
-                first_appearance=1,
-                character_name="Hero",
-                identity_id="hero_casual",
+                id="char-opaque", kind="character", source_kind="identity",
+                label="Hero", path=str(character), beat_numbers=(1,), first_appearance=1,
+                character_name="Hero", identity_id="hero_casual",
             ),
             GroupImageReference(
-                id="scene-opaque",
-                kind="scene",
-                source_kind="scene_master",
-                label="Room",
-                path=str(scene),
-                beat_numbers=(2,),
-                first_appearance=2,
+                id="scene-opaque", kind="scene", source_kind="scene_master",
+                label="Room", path=str(scene), beat_numbers=(2,), first_appearance=2,
                 scene_id="scene_room",
             ),
         ),
@@ -263,7 +242,9 @@ def test_rebuild_rejects_when_director_plan_is_active(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     activate_director_plan(tmp_path)
 
-    response = client.post("/api/v1/projects/demo/episodes/1/narrative-groups/rebuild")
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/rebuild"
+    )
 
     assert response.status_code == 409
     assert response.json() == {
@@ -295,18 +276,13 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     from novelvideo.task_backend.runners import narrative_group  # noqa: F401
 
     queued_task_type = backend.calls[0][1]["task_type"]
-    assert (
-        get_project_task_runner(queued_task_type)
-        is narrative_group.run_narrative_group_grid
-    )
+    assert get_project_task_runner(queued_task_type) is narrative_group.run_narrative_group_grid
     assert backend.calls[0][1]["payload"]["beats"][0]["id"] == "beat-1"
     assert backend.calls[0][1]["payload"]["provider_id"] == "grsai-main"
     assert backend.calls[0][1]["payload"]["model"] == "nano-banana-2"
 
 
-def test_render_requires_completed_sketch_unless_explicitly_unconstrained(
-    monkeypatch, tmp_path
-):
+def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
@@ -327,9 +303,7 @@ def test_render_requires_completed_sketch_unless_explicitly_unconstrained(
     assert payload["image_size"] == "1K"
 
 
-def test_render_freezes_completed_sketch_revision_and_temporary_model(
-    monkeypatch, tmp_path
-):
+def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     advance_revision(tmp_path, 1, "ng-01", "sketch")
@@ -337,13 +311,8 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(
     sketch.parent.mkdir(parents=True)
     sketch.write_bytes(b"sketch")
     record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "sketch",
-        expected_revision=1,
-        status="completed",
-        grid_asset=str(sketch),
+        tmp_path, 1, "ng-01", "sketch", expected_revision=1,
+        status="completed", grid_asset=str(sketch),
     )
 
     response = client.post(
@@ -383,9 +352,7 @@ def test_render_rejects_resolution_unsupported_by_model(monkeypatch, tmp_path):
     assert backend.calls == []
 
 
-def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(
-    monkeypatch, tmp_path
-):
+def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
@@ -419,11 +386,14 @@ def test_unknown_group_returns_404(monkeypatch, tmp_path):
 
 def test_put_video_plan_updates_units_and_enforces_cas(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
-    groups = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ]
+    groups = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).json()["data"]
     assert groups[0]["video_plan"]["revision"] == 1
-    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/plan"
+    endpoint = (
+        "/api/v1/projects/demo/episodes/1/narrative-groups/"
+        "ng-01/video/plan"
+    )
     body = {
         "expected_revision": 1,
         "units": [
@@ -604,21 +574,16 @@ def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_p
     assert backend.calls == []
 
 
-def test_video_generate_enqueues_only_stable_director_identifiers(
-    monkeypatch, tmp_path
-):
+def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
-            "model": "runninghub:minimax-h3",
-            "mode": "auto",
-            "revision": 0,
+            "model": "runninghub:minimax-h3", "mode": "auto", "revision": 0,
             "plan_revision": 1,
-            "aspect_ratio": "16:9",
-            "resolution": "720p",
+            "aspect_ratio": "16:9", "resolution": "720p",
         },
     )
 
@@ -639,9 +604,7 @@ def test_video_generate_enqueues_only_stable_director_identifiers(
     }
 
 
-def test_video_generate_rejects_stale_revision_without_changing_sidecar(
-    monkeypatch, tmp_path
-):
+def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
@@ -659,9 +622,7 @@ def test_video_generate_rejects_stale_revision_without_changing_sidecar(
 
     assert stale.status_code == 409
     assert len(backend.calls) == 1
-    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ][0]["stages"]["video"]
+    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["video"]
     assert stage["revision"] == 1
     assert stage["status"] == "queued"
 
@@ -671,28 +632,16 @@ def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     video = tmp_path / "videos" / "prior.mp4"
     manifest = tmp_path / "videos" / "prior.manifest.json"
-    stems = [
-        tmp_path / "videos" / name
-        for name in ("original.wav", "dialogue.wav", "ambience.wav")
-    ]
+    stems = [tmp_path / "videos" / name for name in ("original.wav", "dialogue.wav", "ambience.wav")]
     video.parent.mkdir(parents=True, exist_ok=True)
     for path in (video, manifest, *stems):
         path.write_bytes(b"old")
     advance_revision(tmp_path, 1, "ng-01", "video")
     record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "video",
-        expected_revision=1,
-        status="completed",
-        video_asset=str(video),
-        manifest_asset=str(manifest),
-        original_audio_path=str(stems[0]),
-        dialogue_stem_path=str(stems[1]),
-        ambience_stem_path=str(stems[2]),
-        dialogue_stem_status="succeeded",
-        ambience_stem_status="succeeded",
+        tmp_path, 1, "ng-01", "video", expected_revision=1, status="completed",
+        video_asset=str(video), manifest_asset=str(manifest), original_audio_path=str(stems[0]),
+        dialogue_stem_path=str(stems[1]), ambience_stem_path=str(stems[2]),
+        dialogue_stem_status="succeeded", ambience_stem_status="succeeded",
     )
     before = sidecar_path(tmp_path, 1).read_bytes()
     failing = FailingBackend()
@@ -701,10 +650,8 @@ def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
-            "model": "runninghub:minimax-h3",
-            "mode": "auto",
-            "revision": 1,
-            "plan_revision": 1,
+            "model": "runninghub:minimax-h3", "mode": "auto",
+            "revision": 1, "plan_revision": 1,
         },
     )
 
@@ -736,55 +683,26 @@ def test_list_urlizes_only_project_scoped_assets(monkeypatch, tmp_path):
     cell.parent.mkdir(parents=True)
     grid.write_bytes(b"grid")
     cell.write_bytes(b"cell")
-    record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "render",
-        expected_revision=1,
-        status="completed",
-        grid_asset=str(grid),
-        cell_assets=[{"cell": 0, "path": str(cell)}],
-    )
+    record_stage_result(tmp_path, 1, "ng-01", "render", expected_revision=1,
+                        status="completed", grid_asset=str(grid),
+                        cell_assets=[{"cell": 0, "path": str(cell)}])
 
-    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ][0]["stages"]["render"]
+    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["render"]
     assert stage["grid_asset"] == "/api/v1/projects/demo/media/grids/grid.png"
-    assert (
-        stage["cell_assets"][0]["url"] == "/api/v1/projects/demo/media/frames/cell.png"
-    )
-    assert (
-        stage["cell_assets"][0]["path"] == "/api/v1/projects/demo/media/frames/cell.png"
-    )
+    assert stage["cell_assets"][0]["url"] == "/api/v1/projects/demo/media/frames/cell.png"
+    assert stage["cell_assets"][0]["path"] == "/api/v1/projects/demo/media/frames/cell.png"
 
 
 def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     advance_revision(tmp_path, 1, "ng-01", "render")
-    record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "render",
-        expected_revision=1,
-        status="completed",
-        grid_asset="one.png",
-    )
+    record_stage_result(tmp_path, 1, "ng-01", "render", expected_revision=1,
+                        status="completed", grid_asset="one.png")
     advance_revision(tmp_path, 1, "ng-01", "render", regenerate=True)
-    record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "render",
-        expected_revision=2,
-        status="completed",
-        grid_asset="two.png",
-    )
-    history_url = (
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/revisions"
-    )
+    record_stage_result(tmp_path, 1, "ng-01", "render", expected_revision=2,
+                        status="completed", grid_asset="two.png")
+    history_url = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/revisions"
     history = client.get(history_url).json()["data"]
     assert history["items"][0]["revision"] == 1
     assert history["current_revision"] == 2
@@ -792,9 +710,7 @@ def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
     assert rolled["stages"]["render"]["revision"] == 3
 
 
-def test_reference_preview_is_safe_project_scoped_and_group_bounded(
-    monkeypatch, tmp_path
-):
+def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path, beat_count=10)
     preview = make_reference_preview(tmp_path)
     calls = []
@@ -807,11 +723,8 @@ def test_reference_preview_is_safe_project_scoped_and_group_bounded(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["style"] == {
-        "id": "style-opaque",
-        "label": "cinematic",
-        "prompt": "moody",
-        "enabled_by_default": True,
-        "warning": "",
+        "id": "style-opaque", "label": "cinematic", "prompt": "moody",
+        "enabled_by_default": True, "warning": "",
     }
     assert data["character_references"][0]["thumbnail_url"] == (
         "/api/v1/projects/demo/media/assets/characters/hero.png"
@@ -823,15 +736,11 @@ def test_reference_preview_is_safe_project_scoped_and_group_bounded(
     assert [beat["id"] for beat in calls[0][1]] == ["beat-10"]
     assert calls[0][2] == "render"
     assert data["limits"] == {
-        "max_images": 9,
-        "selected_images": 2,
-        "omitted_reference_ids": [],
+        "max_images": 9, "selected_images": 2, "omitted_reference_ids": [],
     }
 
 
-def test_reference_preview_unknown_group_returns_404_without_resolving(
-    monkeypatch, tmp_path
-):
+def test_reference_preview_unknown_group_returns_404_without_resolving(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     calls = []
     install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
@@ -844,9 +753,7 @@ def test_reference_preview_unknown_group_returns_404_without_resolving(
     assert calls == []
 
 
-def test_generate_preserves_explicit_reference_selection_and_empty_list(
-    monkeypatch, tmp_path
-):
+def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     calls = []
     install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
@@ -902,9 +809,7 @@ def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp
 
     assert response.status_code == 422
     assert backend.calls == []
-    groups = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ]
+    groups = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"]
     assert groups[0]["stages"]["render"]["revision"] == 0
 
 
@@ -915,38 +820,26 @@ def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_
 
     valid = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
-        json={
-            "selected_scene_reference_ids": ["scene-opaque"],
-            "allow_unconstrained": True,
-        },
+        json={"selected_scene_reference_ids": ["scene-opaque"], "allow_unconstrained": True},
     )
     invalid = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
-        json={
-            "selected_scene_reference_ids": ["foreign-id"],
-            "allow_unconstrained": True,
-        },
+        json={"selected_scene_reference_ids": ["foreign-id"], "allow_unconstrained": True},
     )
 
     assert valid.status_code == 202
-    assert backend.calls[0][1]["payload"]["reference_selection"][
-        "selected_scene_reference_ids"
-    ] == ["scene-opaque"]
+    assert backend.calls[0][1]["payload"]["reference_selection"]["selected_scene_reference_ids"] == ["scene-opaque"]
     assert invalid.status_code == 422
     assert len(backend.calls) == 1
 
 
-def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(
-    monkeypatch, tmp_path
-):
+def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
 
     def fail_resolver(*args, **kwargs):
         raise AssertionError("split must not resolve references")
 
-    monkeypatch.setattr(
-        narrative_groups, "resolve_group_reference_preview", fail_resolver
-    )
+    monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", fail_resolver)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/split",
         json={"aspect_ratio": "16:9", "use_style": False},
@@ -971,10 +864,7 @@ def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):
     )
 
     assert sketch.status_code == render.status_code == 202
-    assert [call[1]["payload"]["stage"] for call in backend.calls] == [
-        "sketch",
-        "render",
-    ]
+    assert [call[1]["payload"]["stage"] for call in backend.calls] == ["sketch", "render"]
     assert all("reference_selection" in call[1]["payload"] for call in backend.calls)
 
 
@@ -1004,51 +894,22 @@ def _seed_director_manifest(tmp_path: Path) -> None:
     video.parent.mkdir(parents=True, exist_ok=True)
     for path in (video, ambience, dialogue):
         path.write_bytes(b"media")
-    entries = build_h3_timeline_data(
-        (
-            H3DirectorSegment(
-                segment_id="s1",
-                beat_number=1,
-                prompt="p",
-                duration_seconds=1,
-                first_frame="f1.png",
-                dialogue_source=DialogueSource.EXTERNAL_TTS,
-            ),
-            H3DirectorSegment(
-                segment_id="s2",
-                beat_number=2,
-                prompt="p",
-                duration_seconds=1,
-                first_frame="f2.png",
-                dialogue_source=DialogueSource.H3_NATIVE,
-            ),
-        )
-    ).entries
+    entries = build_h3_timeline_data((
+        H3DirectorSegment(segment_id="s1", beat_number=1, prompt="p", duration_seconds=1,
+                          first_frame="f1.png", dialogue_source=DialogueSource.EXTERNAL_TTS),
+        H3DirectorSegment(segment_id="s2", beat_number=2, prompt="p", duration_seconds=1,
+                          first_frame="f2.png", dialogue_source=DialogueSource.H3_NATIVE),
+    )).entries
     manifest_path = tmp_path / "videos" / "director.manifest.json"
-    save_h3_director_manifest(
-        manifest_path,
-        H3DirectorOutputManifest(
-            physical_video=str(video),
-            entries=entries,
-            ambience_stem_path=str(ambience),
-            ambience_stem_status="succeeded",
-            dialogue_stem_path=str(dialogue),
-            dialogue_stem_status="succeeded",
-        ),
-    )
+    save_h3_director_manifest(manifest_path, H3DirectorOutputManifest(
+        physical_video=str(video), entries=entries,
+        ambience_stem_path=str(ambience), ambience_stem_status="succeeded",
+        dialogue_stem_path=str(dialogue), dialogue_stem_status="succeeded",
+    ))
     advance_revision(tmp_path, 1, "ng-01", "video")
-    record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "video",
-        expected_revision=1,
-        status="completed",
-        video_asset=str(video),
-        manifest_asset=str(manifest_path),
-        ambience_stem_path=str(ambience),
-        dialogue_stem_path=str(dialogue),
-    )
+    record_stage_result(tmp_path, 1, "ng-01", "video", expected_revision=1,
+                        status="completed", video_asset=str(video), manifest_asset=str(manifest_path),
+                        ambience_stem_path=str(ambience), dialogue_stem_path=str(dialogue))
 
 
 def test_list_video_stage_exposes_manifest_video_spans_and_urls(monkeypatch, tmp_path):
@@ -1056,34 +917,18 @@ def test_list_video_stage_exposes_manifest_video_spans_and_urls(monkeypatch, tmp
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
 
-    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ][0]["stages"]["video"]
+    stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["video"]
     assert stage["video_asset"] == "/api/v1/projects/demo/media/videos/director.mp4"
-    assert (
-        stage["ambience_stem_path"] == "/api/v1/projects/demo/media/videos/ambience.wav"
-    )
+    assert stage["ambience_stem_path"] == "/api/v1/projects/demo/media/videos/ambience.wav"
     assert stage["video_spans"] == [
-        {
-            "span_index": 0,
-            "beat_numbers": [1],
-            "start_seconds": 0.0,
-            "end_seconds": 39 / 24,
-            "dialogue_source": "external_tts",
-        },
-        {
-            "span_index": 1,
-            "beat_numbers": [2],
-            "start_seconds": 39 / 24,
-            "end_seconds": 78 / 24,
-            "dialogue_source": "h3_native",
-        },
+        {"span_index": 0, "beat_numbers": [1], "start_seconds": 0.0,
+         "end_seconds": 39 / 24, "dialogue_source": "external_tts"},
+        {"span_index": 1, "beat_numbers": [2], "start_seconds": 39 / 24,
+         "end_seconds": 78 / 24, "dialogue_source": "h3_native"},
     ]
 
 
-def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(
-    monkeypatch, tmp_path
-):
+def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
@@ -1096,61 +941,26 @@ def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(
     assert response.status_code == 202
     assert backend.calls[0][1]["task_type"] == "narrative_group_video_compose"
     assert backend.calls[0][1]["payload"] == {
-        "episode": 1,
-        "group_id": "ng-01",
-        "revision": 1,
-        "span_index": 0,
-        "dialogue_source": "h3_native",
+        "episode": 1, "group_id": "ng-01", "revision": 1,
+        "span_index": 0, "dialogue_source": "h3_native",
     }
-    from novelvideo.media_capabilities.video.h3_timeline import (
-        load_h3_director_manifest,
-    )
-
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
     manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
     assert manifest.entries[0].dialogue_source.value == "h3_native"
 
 
-def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(
-    monkeypatch, tmp_path
-):
+def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
-    endpoint = (
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source"
-    )
+    endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source"
 
-    assert (
-        client.post(
-            endpoint,
-            json={"span_index": 9, "dialogue_source": "h3_native", "revision": 1},
-        ).status_code
-        == 404
-    )
-    assert (
-        client.post(
-            endpoint,
-            json={"span_index": 0, "dialogue_source": "h3_native", "revision": 2},
-        ).status_code
-        == 409
-    )
-    assert (
-        client.post(
-            endpoint, json={"span_index": 0, "dialogue_source": "h3_native"}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            endpoint, json={"span_index": 0, "dialogue_source": "unknown"}
-        ).status_code
-        == 422
-    )
+    assert client.post(endpoint, json={"span_index": 9, "dialogue_source": "h3_native", "revision": 1}).status_code == 404
+    assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "h3_native", "revision": 2}).status_code == 409
+    assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "h3_native"}).status_code == 422
+    assert client.post(endpoint, json={"span_index": 0, "dialogue_source": "unknown"}).status_code == 422
     assert backend.calls == []
-    from novelvideo.media_capabilities.video.h3_timeline import (
-        load_h3_director_manifest,
-    )
-
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
     manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
     assert manifest.entries[0].dialogue_source.value == "external_tts"
 
@@ -1541,6 +1351,7 @@ def test_put_segment_continuity_repairs_manifest_after_save_failure(
     assert observed.result_contract_revision == 3
 
 
+
 def _seed_prompt_review_manifest(tmp_path: Path, payload: dict) -> Path:
     manifest = tmp_path / "videos" / "prompt-review.manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1561,9 +1372,7 @@ def _seed_prompt_review_manifest(tmp_path: Path, payload: dict) -> Path:
     return manifest
 
 
-def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(
-    monkeypatch, tmp_path
-):
+def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     first = tmp_path / "frames" / "beat-1.png"
@@ -1571,64 +1380,55 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(
     first.parent.mkdir(parents=True)
     first.write_bytes(b"first")
     last.write_bytes(b"last")
-    _seed_prompt_review_manifest(
-        tmp_path,
-        {
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": "workflow-136",
+        "provider_task_id": "task-42",
+        "api_key": "manifest-secret",
+        "workflow_json": {"authorization": "Bearer secret"},
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1--beat-2",
+                "beat_number": 1,
+                "prompt": "the exact submitted prompt",
+                "duration_seconds": 8.5,
+                "first_frame": str(first),
+                "last_frame": str(last),
+            },
             "workflow_id": "workflow-136",
             "provider_task_id": "task-42",
-            "api_key": "manifest-secret",
-            "workflow_json": {"authorization": "Bearer secret"},
-            "entries": [
-                {
-                    "segment": {
-                        "segment_id": "beat-1--beat-2",
-                        "beat_number": 1,
-                        "prompt": "the exact submitted prompt",
-                        "duration_seconds": 8.5,
-                        "first_frame": str(first),
-                        "last_frame": str(last),
-                    },
-                    "workflow_id": "workflow-136",
-                    "provider_task_id": "task-42",
-                    "director_plan": {
-                        "mode": "fl2va",
-                        "shots": [
-                            {"action": "camera tracks quickly to the locked end pose"}
-                        ],
-                        "credential": "must-not-leak",
-                        "token": "director-token-secret",
-                        "headers": {"X-Api-Key": "director-header-secret"},
-                        "workflow": {"nodes": [{"secret": "director-workflow-secret"}]},
-                        "source_path": str(tmp_path / "private" / "plan.json"),
-                    },
-                    "prompt_profile": {
-                        "id": "minimax-h3-director",
-                        "version": 4,
-                        "compiler_version": 1,
-                        "token": "profile-token-secret",
-                    },
-                    "quality_report": {
-                        "passed": True,
-                        "issues": [],
-                        "headers": {"X-Api-Key": "quality-header-secret"},
-                        "workflow_json": {"token": "quality-workflow-secret"},
-                    },
-                    "input_summary": {
-                        "beat_ids": ["beat-1", "beat-2"],
-                        "mode": "fl2va",
-                        "duration_seconds": 8.5,
-                        "first_frame_sha256": "a" * 64,
-                        "last_frame_sha256": "b" * 64,
-                        "authorization": "Bearer secret",
-                        "token": "summary-token-secret",
-                        "headers": {"X-Api-Key": "summary-header-secret"},
-                        "workflow": {"credential": "summary-workflow-secret"},
-                        "server_path": str(tmp_path),
-                    },
-                }
-            ],
-        },
-    )
+            "director_plan": {
+                "mode": "fl2va",
+                "shots": [{"action": "camera tracks quickly to the locked end pose"}],
+                "credential": "must-not-leak",
+                "token": "director-token-secret",
+                "headers": {"X-Api-Key": "director-header-secret"},
+                "workflow": {"nodes": [{"secret": "director-workflow-secret"}]},
+                "source_path": str(tmp_path / "private" / "plan.json"),
+            },
+            "prompt_profile": {
+                "id": "minimax-h3-director", "version": 4, "compiler_version": 1,
+                "token": "profile-token-secret",
+            },
+            "quality_report": {
+                "passed": True,
+                "issues": [],
+                "headers": {"X-Api-Key": "quality-header-secret"},
+                "workflow_json": {"token": "quality-workflow-secret"},
+            },
+            "input_summary": {
+                "beat_ids": ["beat-1", "beat-2"],
+                "mode": "fl2va",
+                "duration_seconds": 8.5,
+                "first_frame_sha256": "a" * 64,
+                "last_frame_sha256": "b" * 64,
+                "authorization": "Bearer secret",
+                "token": "summary-token-secret",
+                "headers": {"X-Api-Key": "summary-header-secret"},
+                "workflow": {"credential": "summary-workflow-secret"},
+                "server_path": str(tmp_path),
+            },
+        }],
+    })
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -1651,28 +1451,15 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(
     assert item["provider_task_id"] == "task-42"
     serialized = response.text.lower()
     for forbidden in (
-        "api_key",
-        "authorization",
-        "credential",
-        "workflow_json",
-        "x-api-key",
-        '"token"',
-        '"headers"',
-        '"workflow":{"nodes"',
+        "api_key", "authorization", "credential", "workflow_json", "x-api-key",
+        '"token"', '"headers"', '"workflow":{"nodes"',
     ):
         assert forbidden not in serialized
     for secret in (
-        "manifest-secret",
-        "must-not-leak",
-        "director-token-secret",
-        "director-header-secret",
-        "director-workflow-secret",
-        "profile-token-secret",
-        "quality-header-secret",
-        "quality-workflow-secret",
-        "summary-token-secret",
-        "summary-header-secret",
-        "summary-workflow-secret",
+        "manifest-secret", "must-not-leak", "director-token-secret",
+        "director-header-secret", "director-workflow-secret", "profile-token-secret",
+        "quality-header-secret", "quality-workflow-secret", "summary-token-secret",
+        "summary-header-secret", "summary-workflow-secret",
     ):
         assert secret not in serialized
     assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
@@ -1814,56 +1601,41 @@ def test_get_video_prompts_whitelists_continuity_review_evidence(monkeypatch, tm
         assert forbidden not in serialized
 
 
+
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
-    _seed_prompt_review_manifest(
-        tmp_path,
-        {
-            "entries": [
-                {
-                    "segment": {
-                        "segment_id": "beat-1",
-                        "beat_number": 1,
-                        "prompt": "safe prompt",
-                        "duration_seconds": 5,
-                    },
-                    "director_plan": {
-                        "mode": "i2va",
-                        "visual_style": str(tmp_path),
-                        "api_key": "plan-api-secret",
-                        "token": "plan-token-secret",
-                        "headers": {"X-Api-Key": "plan-header-secret"},
-                        "workflow": {"nodes": [{"credential": "plan-workflow-secret"}]},
-                    },
-                    "prompt_profile": {
-                        "id": "minimax-h3-director",
-                        "version": 4,
-                        "authorization": "profile-auth-secret",
-                    },
-                    "quality_report": {
-                        "passed": True,
-                        "issues": [
-                            {
-                                "code": "safe-code",
-                                "message": str(tmp_path),
-                                "credential": "quality-credential-secret",
-                            }
-                        ],
-                        "workflow_json": {"token": "quality-workflow-secret"},
-                    },
-                    "input_summary": {
-                        "beat_ids": ["beat-1"],
-                        "mode": "i2va",
-                        "duration_seconds": 5,
-                        "first_frame_sha256": "a" * 64,
-                        "server_path": str(tmp_path),
-                        "token": "summary-token-secret",
-                    },
-                }
-            ],
-        },
-    )
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+            "director_plan": {
+                "mode": "i2va", "visual_style": str(tmp_path),
+                "api_key": "plan-api-secret", "token": "plan-token-secret",
+                "headers": {"X-Api-Key": "plan-header-secret"},
+                "workflow": {"nodes": [{"credential": "plan-workflow-secret"}]},
+            },
+            "prompt_profile": {
+                "id": "minimax-h3-director", "version": 4,
+                "authorization": "profile-auth-secret",
+            },
+            "quality_report": {
+                "passed": True,
+                "issues": [{
+                    "code": "safe-code", "message": str(tmp_path),
+                    "credential": "quality-credential-secret",
+                }],
+                "workflow_json": {"token": "quality-workflow-secret"},
+            },
+            "input_summary": {
+                "beat_ids": ["beat-1"], "mode": "i2va", "duration_seconds": 5,
+                "first_frame_sha256": "a" * 64,
+                "server_path": str(tmp_path), "token": "summary-token-secret",
+            },
+        }],
+    })
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -1873,28 +1645,15 @@ def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_pa
     unit = response.json()["data"]["units"][0]
     assert unit["director_plan"] == {"mode": "i2va"}
     assert unit["quality_report"] == {
-        "passed": True,
-        "issues": [{"code": "safe-code"}],
+        "passed": True, "issues": [{"code": "safe-code"}],
     }
     serialized = response.text.lower()
     for forbidden in (
-        "api_key",
-        "authorization",
-        "credential",
-        "workflow_json",
-        "x-api-key",
-        '"token"',
-        '"headers"',
-        '"nodes"',
-        str(tmp_path).lower(),
-        "plan-api-secret",
-        "plan-token-secret",
-        "plan-header-secret",
-        "plan-workflow-secret",
-        "profile-auth-secret",
-        "quality-credential-secret",
-        "quality-workflow-secret",
-        "summary-token-secret",
+        "api_key", "authorization", "credential", "workflow_json", "x-api-key",
+        '"token"', '"headers"', '"nodes"', str(tmp_path).lower(),
+        "plan-api-secret", "plan-token-secret", "plan-header-secret",
+        "plan-workflow-secret", "profile-auth-secret", "quality-credential-secret",
+        "quality-workflow-secret", "summary-token-secret",
     ):
         assert forbidden not in serialized
 
@@ -1902,23 +1661,15 @@ def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_pa
 def test_get_video_prompts_keeps_legacy_final_prompt(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
-    _seed_prompt_review_manifest(
-        tmp_path,
-        {
-            "entries": [
-                {
-                    "segment": {
-                        "segment_id": "beat-1",
-                        "beat_number": 1,
-                        "prompt": "legacy submitted prompt",
-                        "duration_seconds": 5,
-                        "first_frame": None,
-                        "last_frame": None,
-                    }
-                }
-            ]
-        },
-    )
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "legacy submitted prompt", "duration_seconds": 5,
+                "first_frame": None, "last_frame": None,
+            }
+        }]
+    })
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -1932,9 +1683,7 @@ def test_get_video_prompts_keeps_legacy_final_prompt(monkeypatch, tmp_path):
     assert item["quality_report"] is None
 
 
-def test_get_video_prompts_rejects_missing_group_and_unsafe_manifest(
-    monkeypatch, tmp_path
-):
+def test_get_video_prompts_rejects_missing_group_and_unsafe_manifest(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -1942,22 +1691,15 @@ def test_get_video_prompts_rejects_missing_group_and_unsafe_manifest(
     assert client.get(endpoint.replace("ng-01", "missing")).status_code == 404
     advance_revision(tmp_path, 1, "ng-01", "video")
     record_stage_result(
-        tmp_path,
-        1,
-        "ng-01",
-        "video",
-        expected_revision=1,
-        status="completed",
-        manifest_asset=str(tmp_path.parent / "secret.json"),
+        tmp_path, 1, "ng-01", "video", expected_revision=1,
+        status="completed", manifest_asset=str(tmp_path.parent / "secret.json"),
     )
     response = client.get(endpoint)
     assert response.status_code == 404
     assert str(tmp_path.parent).lower() not in response.text.lower()
 
 
-def test_get_video_prompts_reports_corrupt_manifest_without_path_leak(
-    monkeypatch, tmp_path
-):
+def test_get_video_prompts_reports_corrupt_manifest_without_path_leak(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     manifest = _seed_prompt_review_manifest(tmp_path, {"entries": []})
@@ -1975,26 +1717,15 @@ def test_get_video_prompts_rejects_manifest_over_hard_byte_limit(monkeypatch, tm
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     monkeypatch.setattr(
-        narrative_group_service,
-        "VIDEO_PROMPT_MANIFEST_MAX_BYTES",
-        128,
+        narrative_group_service, "VIDEO_PROMPT_MANIFEST_MAX_BYTES", 128,
         raising=False,
     )
-    _seed_prompt_review_manifest(
-        tmp_path,
-        {
-            "entries": [
-                {
-                    "segment": {
-                        "segment_id": "beat-1",
-                        "beat_number": 1,
-                        "prompt": "x" * 512,
-                        "duration_seconds": 5,
-                    }
-                }
-            ],
-        },
-    )
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{"segment": {
+            "segment_id": "beat-1", "beat_number": 1,
+            "prompt": "x" * 512, "duration_seconds": 5,
+        }}],
+    })
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -2008,61 +1739,32 @@ def test_get_video_prompts_rejects_manifest_over_hard_byte_limit(monkeypatch, tm
     ("limit_name", "limit", "payload"),
     [
         (
-            "VIDEO_PROMPT_MANIFEST_MAX_ENTRIES",
-            1,
-            {
-                "entries": [
-                    {"segment": {"segment_id": "beat-1", "prompt": "p"}},
-                    {"segment": {"segment_id": "beat-2", "prompt": "p"}},
-                ]
-            },
+            "VIDEO_PROMPT_MANIFEST_MAX_ENTRIES", 1,
+            {"entries": [
+                {"segment": {"segment_id": "beat-1", "prompt": "p"}},
+                {"segment": {"segment_id": "beat-2", "prompt": "p"}},
+            ]},
         ),
         (
-            "VIDEO_PROMPT_MANIFEST_MAX_DEPTH",
-            4,
-            {
-                "entries": [
-                    {
-                        "segment": {"segment_id": "beat-1", "prompt": "p"},
-                        "extra": {"a": {"b": {"c": {"d": "deep-secret"}}}},
-                    }
-                ]
-            },
+            "VIDEO_PROMPT_MANIFEST_MAX_DEPTH", 4,
+            {"entries": [{"segment": {"segment_id": "beat-1", "prompt": "p"},
+                          "extra": {"a": {"b": {"c": {"d": "deep-secret"}}}}}]},
         ),
         (
-            "VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS",
-            3,
-            {
-                "entries": [
-                    {
-                        "segment": {"segment_id": "beat-1", "prompt": "p"},
-                        "extra": [1, 2, 3, 4],
-                    }
-                ]
-            },
+            "VIDEO_PROMPT_MANIFEST_MAX_COLLECTION_ITEMS", 3,
+            {"entries": [{"segment": {"segment_id": "beat-1", "prompt": "p"},
+                          "extra": [1, 2, 3, 4]}]},
         ),
         (
-            "VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH",
-            32,
-            {
-                "entries": [
-                    {
-                        "segment": {
-                            "segment_id": "beat-1",
-                            "prompt": "long-secret" * 8,
-                        }
-                    }
-                ]
-            },
+            "VIDEO_PROMPT_MANIFEST_MAX_STRING_LENGTH", 32,
+            {"entries": [{"segment": {
+                "segment_id": "beat-1", "prompt": "long-secret" * 8,
+            }}]},
         ),
     ],
 )
 def test_get_video_prompts_rejects_structural_manifest_limits(
-    monkeypatch,
-    tmp_path,
-    limit_name,
-    limit,
-    payload,
+    monkeypatch, tmp_path, limit_name, limit, payload,
 ):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -2079,34 +1781,28 @@ def test_get_video_prompts_rejects_structural_manifest_limits(
 
 
 def test_get_video_prompts_rejects_non_scalar_dto_fields_and_unsafe_frame_paths(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path,
 ):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
-    _seed_prompt_review_manifest(
-        tmp_path,
-        {
-            "workflow_id": {"secret": "workflow-secret"},
-            "provider_task_id": {"secret": "task-secret"},
-            "entries": [
-                {
-                    "segment": {
-                        "segment_id": {"secret": "segment-secret"},
-                        "beat_number": {"secret": "beat-secret"},
-                        "prompt": {"secret": "prompt-secret"},
-                        "duration_seconds": {"secret": "duration-secret"},
-                        "first_frame": "file:///C:/private/frame.png",
-                        "last_frame": r"\\server\share\frame.png",
-                    },
-                    "workflow_id": {"secret": "entry-workflow-secret"},
-                    "provider_task_id": {"secret": "entry-task-secret"},
-                    "model": {"secret": "model-secret"},
-                    "actual_duration_seconds": {"secret": "actual-duration-secret"},
-                }
-            ],
-        },
-    )
+    _seed_prompt_review_manifest(tmp_path, {
+        "workflow_id": {"secret": "workflow-secret"},
+        "provider_task_id": {"secret": "task-secret"},
+        "entries": [{
+            "segment": {
+                "segment_id": {"secret": "segment-secret"},
+                "beat_number": {"secret": "beat-secret"},
+                "prompt": {"secret": "prompt-secret"},
+                "duration_seconds": {"secret": "duration-secret"},
+                "first_frame": "file:///C:/private/frame.png",
+                "last_frame": r"\\server\share\frame.png",
+            },
+            "workflow_id": {"secret": "entry-workflow-secret"},
+            "provider_task_id": {"secret": "entry-task-secret"},
+            "model": {"secret": "model-secret"},
+            "actual_duration_seconds": {"secret": "actual-duration-secret"},
+        }],
+    })
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
@@ -2123,45 +1819,25 @@ def test_get_video_prompts_rejects_non_scalar_dto_fields_and_unsafe_frame_paths(
     assert unit["last_frame_url"] == ""
     assert unit["workflow"] == ""
     assert unit["provider_task_id"] == ""
-    assert all(
-        isinstance(unit[field], str)
-        for field in (
-            "label",
-            "mode",
-            "final_prompt",
-            "first_frame_url",
-            "last_frame_url",
-            "workflow",
-            "model",
-            "provider",
-            "provider_task_id",
-        )
-    )
+    assert all(isinstance(unit[field], str) for field in (
+        "label", "mode", "final_prompt", "first_frame_url", "last_frame_url",
+        "workflow", "model", "provider", "provider_task_id",
+    ))
     serialized = response.text.lower()
     for forbidden in (
-        "workflow-secret",
-        "task-secret",
-        "segment-secret",
-        "beat-secret",
-        "prompt-secret",
-        "duration-secret",
-        "entry-workflow-secret",
-        "entry-task-secret",
-        "model-secret",
-        "actual-duration-secret",
-        "file://",
-        "c:/private",
-        "server\\share",
+        "workflow-secret", "task-secret", "segment-secret", "beat-secret",
+        "prompt-secret", "duration-secret", "entry-workflow-secret",
+        "entry-task-secret", "model-secret", "actual-duration-secret",
+        "file://", "c:/private", "server\\share",
     ):
         assert forbidden not in serialized
-
 
 def test_put_video_plan_uses_active_director_shot_ids(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     activate_director_plan(tmp_path)
-    [group] = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()[
-        "data"
-    ]
+    [group] = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).json()["data"]
 
     response = client.put(
         "/api/v1/projects/demo/episodes/1/narrative-groups/director-group/video/plan",

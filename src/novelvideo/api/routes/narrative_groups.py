@@ -14,14 +14,7 @@ from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import (
@@ -202,9 +195,7 @@ class NarrativeGroupStyleRequest(BaseModel):
     action: Literal["restyle", "redirect"] = "restyle"
 
 
-async def _resolve_groups(
-    project: str, episode: int, user: dict, *, rebuild: bool = False
-):
+async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = await make_sqlite_store_for_context(resolved.ctx)
     beats = await store.get_beats_as_dicts(episode)
@@ -258,24 +249,20 @@ def _asset_url(project: str, project_dir: Path, value: str) -> str:
     return f"/api/v1/projects/{encoded_project}/media/{encoded_path}"
 
 
-def _serialize(
-    project: str, project_dir: Path, groups: list[NarrativeGroup]
-) -> list[dict]:
+def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) -> list[dict]:
     result = []
     for group in groups:
         item = group.to_dict()
         effective_style = dict(item.get("effective_style_snapshot") or {})
         snapshot_id = str(effective_style.get("snapshot_id") or "project-default")
-        effective_style.update(
-            {
-                "snapshot_id": snapshot_id,
-                "style_id": str(effective_style.get("style_id") or snapshot_id),
-                "style_version": str(effective_style.get("style_version") or "1"),
-                "catalog_hash": str(effective_style.get("catalog_hash") or snapshot_id),
-                "style_hash": str(effective_style.get("style_hash") or snapshot_id),
-                "inherited": effective_style.get("source", "inherited") == "inherited",
-            }
-        )
+        effective_style.update({
+            "snapshot_id": snapshot_id,
+            "style_id": str(effective_style.get("style_id") or snapshot_id),
+            "style_version": str(effective_style.get("style_version") or "1"),
+            "catalog_hash": str(effective_style.get("catalog_hash") or snapshot_id),
+            "style_hash": str(effective_style.get("style_hash") or snapshot_id),
+            "inherited": effective_style.get("source", "inherited") == "inherited",
+        })
         item["effective_style_snapshot"] = effective_style
         for stage_name, state in item["stages"].items():
             state.pop("revision_history", None)
@@ -283,9 +270,7 @@ def _serialize(
                 manifest_name = str(state.get("manifest_asset") or "").strip()
                 if manifest_name:
                     try:
-                        from novelvideo.media_capabilities.video.h3_timeline import (
-                            load_h3_director_manifest,
-                        )
+                        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
 
                         manifest = load_h3_director_manifest(manifest_name)
                         state["video_spans"] = [
@@ -301,17 +286,11 @@ def _serialize(
                         if not state.get("video_asset"):
                             state["video_asset"] = manifest.physical_video
                         if not state.get("original_audio_path"):
-                            state["original_audio_path"] = (
-                                manifest.original_audio_path or ""
-                            )
+                            state["original_audio_path"] = manifest.original_audio_path or ""
                         if not state.get("dialogue_stem_path"):
-                            state["dialogue_stem_path"] = (
-                                manifest.dialogue_stem_path or ""
-                            )
+                            state["dialogue_stem_path"] = manifest.dialogue_stem_path or ""
                         if not state.get("ambience_stem_path"):
-                            state["ambience_stem_path"] = (
-                                manifest.ambience_stem_path or ""
-                            )
+                            state["ambience_stem_path"] = manifest.ambience_stem_path or ""
                     except (OSError, ValueError):
                         state["video_spans"] = []
                 else:
@@ -324,11 +303,8 @@ def _serialize(
                 cell["path"] = url
                 cell["url"] = url
             for field in (
-                "video_asset",
-                "manifest_asset",
-                "original_audio_path",
-                "dialogue_stem_path",
-                "ambience_stem_path",
+                "video_asset", "manifest_asset", "original_audio_path",
+                "dialogue_stem_path", "ambience_stem_path",
             ):
                 state[field] = _asset_url(project, project_dir, state.get(field, ""))
         result.append(item)
@@ -345,9 +321,7 @@ def _group_beats(
         str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number")): beat
         for beat in beats
     }
-    return group, [
-        beat_by_id[beat_id] for beat_id in group.beat_ids if beat_id in beat_by_id
-    ]
+    return group, [beat_by_id[beat_id] for beat_id in group.beat_ids if beat_id in beat_by_id]
 
 
 def _serialize_reference_preview(
@@ -452,12 +426,10 @@ _DIRECTOR_PLAN_SCHEMA = {
     "visual_style": _SAFE_TEXT,
     "continuity_locks": [_SAFE_TEXT],
     "shots": [_SHOT_PLAN_SCHEMA],
-    "frame_differences": [
-        {
-            "description": _SAFE_TEXT,
-            "convergence_frame": _SAFE_INT,
-        }
-    ],
+    "frame_differences": [{
+        "description": _SAFE_TEXT,
+        "convergence_frame": _SAFE_INT,
+    }],
     "soundscape": _SAFE_TEXT,
     "music": _SAFE_TEXT,
 }
@@ -468,14 +440,12 @@ _PROMPT_PROFILE_SCHEMA = {
 }
 _QUALITY_REPORT_SCHEMA = {
     "passed": _SAFE_BOOL,
-    "issues": [
-        {
-            "code": _SAFE_TEXT,
-            "message": _SAFE_TEXT,
-            "severity": _SAFE_TEXT,
-            "location": _SAFE_TEXT,
-        }
-    ],
+    "issues": [{
+        "code": _SAFE_TEXT,
+        "message": _SAFE_TEXT,
+        "severity": _SAFE_TEXT,
+        "location": _SAFE_TEXT,
+    }],
     "version": _SAFE_INT,
 }
 _INPUT_SUMMARY_SCHEMA = {
@@ -627,11 +597,7 @@ def _first_safe_review_string(*values: Any) -> str:
 
 
 def _safe_prompt(value: Any) -> str:
-    return (
-        value
-        if isinstance(value, str) and len(value) <= _MAX_REVIEW_PROMPT_LENGTH
-        else ""
-    )
+    return value if isinstance(value, str) and len(value) <= _MAX_REVIEW_PROMPT_LENGTH else ""
 
 
 def _safe_duration(*values: Any) -> float | int:
@@ -662,7 +628,9 @@ def _safe_frame_reference(value: Any) -> str:
 
 
 def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> list[str]:
-    summary = _project_review_value(entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA)
+    summary = _project_review_value(
+        entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
+    )
     beat_ids = [
         safe
         for value in (summary.get("beat_ids") or ())[:_MAX_REVIEW_BEAT_IDS]
@@ -702,23 +670,24 @@ def _serialize_prompt_review(
         continuity_contracts = entry.get("continuity_contracts") or ()
         terminal_contract = _manifest_mapping(
             continuity_contracts[-1]
-            if isinstance(continuity_contracts, (list, tuple)) and continuity_contracts
+            if isinstance(continuity_contracts, (list, tuple))
+            and continuity_contracts
             else None
         )
         terminal_boundary = _manifest_mapping(terminal_contract.get("boundary"))
         summary = _project_review_value(
             entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
         )
-        plan = _project_review_value(entry.get("director_plan"), _DIRECTOR_PLAN_SCHEMA)
+        plan = _project_review_value(
+            entry.get("director_plan"), _DIRECTOR_PLAN_SCHEMA
+        )
         beat_ids = _review_beat_ids(entry, segment)
         first_frame = _safe_frame_reference(segment.get("first_frame"))
         last_frame = _safe_frame_reference(segment.get("last_frame"))
         mode = next(
             (
-                value
-                for value in (
-                    summary.get("mode"),
-                    plan.get("mode"),
+                value for value in (
+                    summary.get("mode"), plan.get("mode"),
                     getattr(stage, "actual_mode", ""),
                 )
                 if isinstance(value, str) and value in {"auto", "i2va", "fl2va"}
@@ -730,83 +699,77 @@ def _serialize_prompt_review(
             entry.get("actual_duration_seconds"),
             segment.get("duration_seconds"),
         )
-        units.append(
-            {
-                "segment_id": _safe_review_string(segment.get("segment_id")),
-                "beat_ids": beat_ids,
-                "label": _review_label(beat_ids),
-                "mode": mode,
-                "duration_seconds": duration,
-                "first_frame_url": _asset_url(project, project_dir, first_frame),
-                "last_frame_url": _asset_url(project, project_dir, last_frame),
-                "director_plan": (
-                    plan if entry.get("director_plan") is not None else None
-                ),
-                "final_prompt": _safe_prompt(segment.get("prompt")),
-                "prompt_profile": (
-                    _project_review_value(
-                        entry.get("prompt_profile"), _PROMPT_PROFILE_SCHEMA
-                    )
-                    if entry.get("prompt_profile") is not None
-                    else None
-                ),
-                "quality_report": (
-                    _project_review_value(
-                        entry.get("quality_report"), _QUALITY_REPORT_SCHEMA
-                    )
-                    if entry.get("quality_report") is not None
-                    else None
-                ),
-                "input_summary": summary,
-                "workflow": _first_safe_review_string(
-                    entry.get("workflow_id"), manifest.get("workflow_id")
-                ),
-                "model": _first_safe_review_string(
-                    entry.get("model"),
-                    manifest.get("model"),
-                    getattr(stage, "actual_model", ""),
-                ),
-                "provider": _safe_review_string(
-                    getattr(stage, "actual_provider", "") or ""
-                ),
-                "provider_task_id": _first_safe_review_string(
-                    entry.get("provider_task_id"), manifest.get("provider_task_id")
-                ),
-                "continuity_contracts": _project_review_value(
-                    continuity_contracts, [_CONTINUITY_CONTRACT_SCHEMA]
-                ),
-                "risk_report": (
-                    _project_review_value(entry.get("risk_report"), _RISK_REPORT_SCHEMA)
-                    if entry.get("risk_report") is not None
-                    else None
-                ),
-                "mode_decision": (
-                    _project_review_value(
-                        entry.get("mode_decision"), _MODE_DECISION_SCHEMA
-                    )
-                    if entry.get("mode_decision") is not None
-                    else None
-                ),
-                "compiled_bundle": (
-                    _project_review_value(
-                        entry.get("compiled_bundle"), _COMPILED_BUNDLE_SCHEMA
-                    )
-                    if entry.get("compiled_bundle") is not None
-                    else None
-                ),
-                "planned_carry_out": _safe_review_string(
-                    terminal_boundary.get("planned_carry_out"), max_length=2000
-                ),
-                "observed_carry_out": (
-                    _project_review_value(
-                        entry.get("observed_carry_out"), _OBSERVED_BOUNDARY_SCHEMA
-                    )
-                    if entry.get("observed_carry_out") is not None
-                    else None
-                ),
-            }
-        )
-
+        units.append({
+            "segment_id": _safe_review_string(segment.get("segment_id")),
+            "beat_ids": beat_ids,
+            "label": _review_label(beat_ids),
+            "mode": mode,
+            "duration_seconds": duration,
+            "first_frame_url": _asset_url(project, project_dir, first_frame),
+            "last_frame_url": _asset_url(project, project_dir, last_frame),
+            "director_plan": (
+                plan if entry.get("director_plan") is not None else None
+            ),
+            "final_prompt": _safe_prompt(segment.get("prompt")),
+            "prompt_profile": (
+                _project_review_value(
+                    entry.get("prompt_profile"), _PROMPT_PROFILE_SCHEMA
+                )
+                if entry.get("prompt_profile") is not None else None
+            ),
+            "quality_report": (
+                _project_review_value(
+                    entry.get("quality_report"), _QUALITY_REPORT_SCHEMA
+                )
+                if entry.get("quality_report") is not None else None
+            ),
+            "input_summary": summary,
+            "workflow": _first_safe_review_string(
+                entry.get("workflow_id"), manifest.get("workflow_id")
+            ),
+            "model": _first_safe_review_string(
+                entry.get("model"), manifest.get("model"),
+                getattr(stage, "actual_model", ""),
+            ),
+            "provider": _safe_review_string(
+                getattr(stage, "actual_provider", "") or ""
+            ),
+            "provider_task_id": _first_safe_review_string(
+                entry.get("provider_task_id"), manifest.get("provider_task_id")
+            ),
+            "continuity_contracts": _project_review_value(
+                continuity_contracts, [_CONTINUITY_CONTRACT_SCHEMA]
+            ),
+            "risk_report": (
+                _project_review_value(entry.get("risk_report"), _RISK_REPORT_SCHEMA)
+                if entry.get("risk_report") is not None
+                else None
+            ),
+            "mode_decision": (
+                _project_review_value(
+                    entry.get("mode_decision"), _MODE_DECISION_SCHEMA
+                )
+                if entry.get("mode_decision") is not None
+                else None
+            ),
+            "compiled_bundle": (
+                _project_review_value(
+                    entry.get("compiled_bundle"), _COMPILED_BUNDLE_SCHEMA
+                )
+                if entry.get("compiled_bundle") is not None
+                else None
+            ),
+            "planned_carry_out": _safe_review_string(
+                terminal_boundary.get("planned_carry_out"), max_length=2000
+            ),
+            "observed_carry_out": (
+                _project_review_value(
+                    entry.get("observed_carry_out"), _OBSERVED_BOUNDARY_SCHEMA
+                )
+                if entry.get("observed_carry_out") is not None
+                else None
+            ),
+        })
     def snapshot(name: str) -> dict[str, Any]:
         value = manifest.get(name)
         return dict(value) if isinstance(value, Mapping) else {}
@@ -836,7 +799,8 @@ async def list_narrative_groups(
 
 
 @router.get(
-    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/prompts"
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/video/prompts"
 )
 async def get_group_video_prompts(
     project: str,
@@ -850,17 +814,11 @@ async def get_group_video_prompts(
             resolved.project_dir, episode, group_id
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Video prompt manifest not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Video prompt manifest not found") from exc
     except (ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code=409, detail="Video prompt manifest is invalid"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Video prompt manifest is invalid") from exc
     return {
         "ok": True,
         "data": _serialize_prompt_review(
@@ -887,20 +845,14 @@ async def put_group_video_segment_continuity(
             resolved.project_dir, episode, group_id
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Video manifest not found") from exc
     except (ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code=409, detail="Video manifest is invalid"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
 
     if stage.status not in {"review", "completed", "partial_failure", "failed"}:
-        raise HTTPException(
-            status_code=409, detail="Video stage is not ready for review"
-        )
+        raise HTTPException(status_code=409, detail="Video stage is not ready for review")
 
     root = Path(resolved.project_dir).resolve()
     stored_path = Path(str(stage.manifest_asset).strip())
@@ -911,13 +863,9 @@ async def put_group_video_segment_continuity(
     try:
         manifest = load_h3_director_manifest(manifest_path)
     except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=409, detail="Video manifest is invalid"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
     if manifest.format_version < 2 or manifest.status in {"planned", "submitted"}:
-        raise HTTPException(
-            status_code=409, detail="Video manifest is not terminal review evidence"
-        )
+        raise HTTPException(status_code=409, detail="Video manifest is not terminal review evidence")
 
     matches = [
         (index, entry)
@@ -927,55 +875,39 @@ async def put_group_video_segment_continuity(
     if not matches:
         raise HTTPException(status_code=404, detail="Video segment not found")
     if len(matches) != 1:
-        raise HTTPException(
-            status_code=409, detail="Video segment evidence is ambiguous"
-        )
+        raise HTTPException(status_code=409, detail="Video segment evidence is ambiguous")
     entry_index, entry = matches[0]
     if entry.status in {"planned", "submitted"}:
-        raise HTTPException(
-            status_code=409, detail="Video segment is not terminal review evidence"
-        )
+        raise HTTPException(status_code=409, detail="Video segment is not terminal review evidence")
     if not entry.continuity_contracts:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract evidence is missing"
-        )
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is missing")
     try:
-        contract = ShotContinuityContract.model_validate(entry.continuity_contracts[-1])
+        contract = ShotContinuityContract.model_validate(
+            entry.continuity_contracts[-1]
+        )
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract evidence is invalid"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is invalid") from exc
     if contract.revision != request.contract_revision:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract revision is stale"
-        )
+        raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
     if contract.shot_id != segment_id.split("--")[-1]:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract does not match video segment"
-        )
+        raise HTTPException(status_code=409, detail="Continuity contract does not match video segment")
 
     planned = contract.boundary.planned_carry_out
     is_deviation = request.observed_carry_out != planned
     if is_deviation and not request.accept_deviation:
-        raise HTTPException(
-            status_code=409, detail="Observed boundary deviates from the plan"
-        )
+        raise HTTPException(status_code=409, detail="Observed boundary deviates from the plan")
     reason = request.deviation_reason if request.accept_deviation else ""
-    boundary = contract.boundary.model_copy(
-        update={
-            "observed_carry_out": request.observed_carry_out,
-            "deviation_accepted": request.accept_deviation,
-            "deviation_reason": reason,
-        }
-    )
+    boundary = contract.boundary.model_copy(update={
+        "observed_carry_out": request.observed_carry_out,
+        "deviation_accepted": request.accept_deviation,
+        "deviation_reason": reason,
+    })
     candidate = contract.model_copy(update={"boundary": boundary})
     continuity_store = ShotContinuityStore(root)
     try:
         active = continuity_store.load_active(episode, contract.shot_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract evidence is invalid"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is invalid") from exc
     candidate_semantics = candidate.model_copy(update={"revision": 0})
     if (
         active is not None
@@ -987,18 +919,14 @@ async def put_group_video_segment_continuity(
                 episode, candidate, expected_revision=request.contract_revision
             )
         except ContinuityRevisionConflict as exc:
-            raise HTTPException(
-                status_code=409, detail="Continuity contract revision is stale"
-            ) from exc
+            raise HTTPException(status_code=409, detail="Continuity contract revision is stale") from exc
     elif (
         active is not None
         and active.model_copy(update={"revision": 0}) == candidate_semantics
     ):
         saved = active
     else:
-        raise HTTPException(
-            status_code=409, detail="Continuity contract revision is stale"
-        )
+        raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
 
     observed = H3ObservedBoundary(
         value=request.observed_carry_out,
@@ -1059,9 +987,7 @@ async def preview_group_references(
     try:
         _, selected_beats = _group_beats(groups, beats, group_id)
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     preview = resolve_group_reference_preview(
         resolved.project_dir, selected_beats, stage=stage_name
     )
@@ -1126,9 +1052,7 @@ async def rollback_stage(
             revision=revision,
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group revision not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group revision not found") from exc
     return {"ok": True, "data": _serialize(project, resolved.project_dir, [group])[0]}
 
 
@@ -1222,9 +1146,7 @@ async def _enqueue_group_action(
             regenerate=regenerate,
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail=f"Narrative group '{group_id}' not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
 
     scope = f"group_{group_id}_{stage}_r{revision}"
     mapping = [item.__dict__ for item in group.cell_to_beat]
@@ -1256,23 +1178,14 @@ async def _enqueue_group_action(
             }
         )
     queued = await get_task_backend().enqueue_project_task(
-        resolved.ctx,
-        task_type=task_type,
-        queue_kind="default",
-        episode=episode,
-        scope=scope,
-        payload=payload,
+        resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
+        scope=scope, payload=payload,
     )
-    return {
-        "ok": True,
-        "data": {
-            "task_id": queued.task_state.task_id,
-            "scope": scope,
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
-        },
-    }
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
+    }}
 
 
 async def _enqueue_group_video(
@@ -1302,9 +1215,7 @@ async def _enqueue_group_video(
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     source_group = next((item for item in groups if item.id == group_id), None)
     if source_group is None:
-        raise HTTPException(
-            status_code=404, detail=f"Narrative group '{group_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
     settings = source_group.video_settings
     if request.settings_revision is not None:
         if request.settings_revision != settings.revision:
@@ -1330,20 +1241,14 @@ async def _enqueue_group_video(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         group, reservation = reserve_video_revision(
-            resolved.project_dir,
-            episode,
-            group_id,
+            resolved.project_dir, episode, group_id,
             expected_revision=request.revision,
             expected_plan_revision=request.plan_revision,
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail=f"Narrative group '{group_id}' not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
     except RuntimeError:
-        raise HTTPException(
-            status_code=409, detail="Narrative group video revision is stale"
-        )
+        raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
     revision = reservation.revision
     scope = f"group_{group_id}_video_r{revision}"
     payload = {
@@ -1361,30 +1266,17 @@ async def _enqueue_group_video(
         payload["segment_id"] = segment_id
     try:
         queued = await get_task_backend().enqueue_project_task(
-            resolved.ctx,
-            task_type="narrative_group_video",
-            queue_kind="video",
-            episode=episode,
-            scope=scope,
-            payload=payload,
+            resolved.ctx, task_type="narrative_group_video", queue_kind="video",
+            episode=episode, scope=scope, payload=payload,
         )
     except Exception as exc:
         restore_video_reservation(resolved.project_dir, episode, reservation)
-        raise HTTPException(
-            status_code=503, detail="Narrative group video queue is unavailable"
-        ) from exc
-    return {
-        "ok": True,
-        "data": {
-            "task_id": queued.task_state.task_id,
-            "scope": scope,
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
-        },
-    }
-
-
+        raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/sketch/generate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1466,9 +1358,7 @@ async def put_group_video_settings(
     except VideoWorkflowParameterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except (RuntimeError, TypeError) as exc:
         status_code = 409 if isinstance(exc, RuntimeError) else 422
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -1523,9 +1413,7 @@ async def generate_video_group(
     project: str,
     episode: int,
     group_id: str,
-    request: NarrativeGroupVideoRequest = Body(
-        default_factory=NarrativeGroupVideoRequest
-    ),
+    request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
     media_store: MediaCapabilityStore = Depends(get_media_capability_store),
     credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
     user: dict = Depends(get_api_user),
@@ -1546,13 +1434,8 @@ async def generate_video_group(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def generate_video_segment(
-    project: str,
-    episode: int,
-    group_id: str,
-    segment_id: str,
-    request: NarrativeGroupVideoRequest = Body(
-        default_factory=NarrativeGroupVideoRequest
-    ),
+    project: str, episode: int, group_id: str, segment_id: str,
+    request: NarrativeGroupVideoRequest = Body(default_factory=NarrativeGroupVideoRequest),
     media_store: MediaCapabilityStore = Depends(get_media_capability_store),
     credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
     user: dict = Depends(get_api_user),
@@ -1564,22 +1447,16 @@ async def generate_video_segment(
     if segment_id not in {str(item.get("id")) for item in group.video_segments}:
         raise HTTPException(status_code=404, detail="Video segment not found")
     return await _enqueue_group_video(
-        project,
-        episode,
-        group_id,
-        user,
-        request,
-        media_store,
-        credential_resolver,
-        segment_id=segment_id,
+        project, episode, group_id, user, request, media_store,
+        credential_resolver, segment_id=segment_id,
     )
 
 
-@router.put("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/style")
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/style"
+)
 async def put_group_style(
-    project: str,
-    episode: int,
-    group_id: str,
+    project: str, episode: int, group_id: str,
     request: NarrativeGroupStyleRequest,
     user: dict = Depends(get_api_user),
 ):
@@ -1597,36 +1474,26 @@ async def put_group_style(
     )
     project_style = str(config.get("visual_style") or "chinese_period_drama")
     snapshot = StyleService.resolve_style_snapshot(
-        project_style,
-        request.style_id,
-        username=resolved.ctx.owner_username,
-        project=resolved.ctx.project_name,
-        project_dir=resolved.project_dir,
+        project_style, request.style_id, username=resolved.ctx.owner_username,
+        project=resolved.ctx.project_name, project_dir=resolved.project_dir,
     )
     store = DirectorPlanStore(resolved.project_dir)
     active = store.load_active(episode)
     if active is None:
         raise HTTPException(status_code=409, detail="Active director plan required")
     child = active.new(
-        episode=active.episode,
-        source_script_hash=active.source_script_hash,
-        director_model=active.director_model,
-        prompt_version=active.prompt_version,
+        episode=active.episode, source_script_hash=active.source_script_hash,
+        director_model=active.director_model, prompt_version=active.prompt_version,
         project_style_snapshot_id=snapshot.snapshot_id,
         project_style_snapshot=snapshot,
         groups=tuple(
             item.model_copy(update={"style_snapshot_id": snapshot.snapshot_id})
-            if item.id == group_id
-            else item
-            for item in active.groups
+            if item.id == group_id else item for item in active.groups
         ),
         parent_revision_id=active.revision_id,
-    ).model_copy(
-        update={
-            "status": "review_required",
-            "validation_report": active.validation_report,
-        }
-    )
+    ).model_copy(update={
+        "status": "review_required", "validation_report": active.validation_report
+    })
     store.save(child)
     if request.action == "restyle":
         child = store.activate(episode, child.revision_id)
@@ -1637,8 +1504,7 @@ async def put_group_style(
         )
         source = next(
             (
-                item
-                for item in await source_store.list_sources()
+                item for item in await source_store.list_sources()
                 if int(item.episode_number) == episode
             ),
             None,
@@ -1666,16 +1532,12 @@ async def put_group_style(
             "queue": queued.queue,
             "scope": scope,
         }
-    return {
-        "ok": True,
-        "data": {
-            "revision_id": child.revision_id,
-            "status": child.status,
-            "action": request.action,
-            "style_snapshot": snapshot.model_dump(mode="json"),
-            **task_data,
-        },
-    }
+    return {"ok": True, "data": {
+        "revision_id": child.revision_id, "status": child.status,
+        "action": request.action,
+        "style_snapshot": snapshot.model_dump(mode="json"),
+        **task_data,
+    }}
 
 
 @router.post(
@@ -1700,13 +1562,9 @@ async def change_group_video_dialogue_source(
             expected_revision=request.revision,
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except (FileNotFoundError, IndexError) as exc:
-        raise HTTPException(
-            status_code=404, detail="Narrative group video span not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Narrative group video span not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1727,16 +1585,13 @@ async def change_group_video_dialogue_source(
         scope=scope,
         payload=payload,
     )
-    return {
-        "ok": True,
-        "data": {
-            "task_id": queued.task_state.task_id,
-            "scope": scope,
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
-        },
-    }
+    return {"ok": True, "data": {
+        "task_id": queued.task_state.task_id,
+        "scope": scope,
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+    }}
 
 
 @router.post(
