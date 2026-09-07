@@ -1077,6 +1077,8 @@ def _seed_continuity_review(
         provider_parameters={
             "safe": "visible",
             "nested": {"Authorization": "Bearer put-nested-secret"},
+            "output_path": "private/put-result.mov",
+            "message": "saved=(/srv/private/put-result.mov)",
         },
     )
     manifest_path = tmp_path / "videos" / "continuity.manifest.json"
@@ -1138,9 +1140,14 @@ def test_put_segment_continuity_accepts_explained_deviation(monkeypatch, tmp_pat
         == "right hand holds the lantern"
     )
     assert data["workflow_parameters"] == {"resolution": "720p"}
-    assert data["provider_parameters"] == {"safe": "visible", "nested": {}}
+    assert data["provider_parameters"] == {
+        "safe": "visible",
+        "nested": {},
+        "output_path": "[redacted]",
+    }
     assert "put-manifest-secret" not in response.text
     assert "put-nested-secret" not in response.text
+    assert "private/put-result.mov" not in response.text
 
 
 @pytest.mark.parametrize(
@@ -1871,23 +1878,42 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
         }}],
         "workflow_parameters": {
             "resolution": "720p",
+            "description": "ordinary prompt text stays visible",
             "nested": {
                 "Authorization": "Bearer workflow-secret",
                 "apiKey": "api-secret",
                 "credential_ref": "credential-secret",
-                "safe": ["visible", {"ToKeN": "nested-token"}],
+                "safe": [
+                    "visible",
+                    {"ToKeN": "nested-token"},
+                    {"folder": "private/renders", "label": "kept"},
+                ],
             },
         },
         "provider_parameters": {
             "width": 720,
             "PASSWORD": "provider-password",
-            "output_path": str(tmp_path / "private.mp4"),
-            "message": f"saved at {tmp_path}/leaked.mp4",
+            "output_path": "private/a.mov",
+            "message": "path=/srv/app/private.json",
+            "windows_message": r"saved=C:\private\render.mov",
         },
         "actual_output": {
             "width": 720,
             "Cookie": "session-cookie",
-            "nested": {"secret_value": "actual-secret", "height": 1280},
+            "nested": {
+                "secret_value": "actual-secret",
+                "height": 1280,
+                "message": "saved=(/Users/alice/private.mov)",
+                "items": [{"file_name": "private/frame.png", "kind": "preview"}],
+                "boundary_samples": [
+                    "saved=[/srv/bracket.mov]",
+                    "saved={/srv/brace.mov}",
+                    "saved=:/srv/colon.mov",
+                    "saved=;/srv/semicolon.mov",
+                    "saved=,/srv/comma.mov",
+                    "asset=file:///srv/uri.mov",
+                ],
+            },
         },
     })
 
@@ -1898,15 +1924,28 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["workflow_parameters"] == {
-        "resolution": "720p", "nested": {"safe": ["visible", {}]},
+        "resolution": "720p",
+        "description": "ordinary prompt text stays visible",
+        "nested": {
+            "safe": ["visible", {}, {"folder": "[redacted]", "label": "kept"}],
+        },
     }
-    assert data["provider_parameters"] == {"width": 720}
-    assert data["actual_output"] == {"width": 720, "nested": {"height": 1280}}
+    assert data["provider_parameters"] == {
+        "width": 720, "output_path": "[redacted]",
+    }
+    assert data["actual_output"] == {
+        "width": 720,
+        "nested": {
+            "height": 1280,
+            "items": [{"file_name": "[redacted]", "kind": "preview"}],
+            "boundary_samples": [],
+        },
+    }
     serialized = response.text.lower()
     for forbidden in (
         "authorization", "apikey", "token", "password", "cookie", "secret",
-        "credential", "saved at",
-        str(tmp_path).lower(),
+        "credential", "path=/srv", "saved=(/users", r"c:\private",
+        "private/a.mov", "private/frame.png",
     ):
         assert forbidden not in serialized
 

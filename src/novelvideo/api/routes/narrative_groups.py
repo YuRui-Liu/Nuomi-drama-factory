@@ -391,8 +391,10 @@ _SENSITIVE_SNAPSHOT_KEY_PARTS = (
     "authorization", "apikey", "token", "secret", "password", "cookie",
     "credential", "accesskey", "privatekey",
 )
+_PATH_SNAPSHOT_KEY_PARTS = ("path", "file", "dir", "folder", "uri", "url")
 _EMBEDDED_PATH_OR_URI_RE = re.compile(
-    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|\s)/\S+|[A-Za-z]:[\\/]\S+|\\\\\S+)"
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|[\s=([{,:;])/\S+|"
+    r"[A-Za-z]:[\\/]\S+|\\\\\S+)"
 )
 _CAMERA_PLAN_SCHEMA = {
     "type": _SAFE_TEXT,
@@ -575,7 +577,7 @@ def _project_review_value(value: Any, schema: Any) -> Any:
     return _REJECTED_REVIEW_VALUE
 
 
-def _sanitize_manifest_snapshot(value: Any) -> Any:
+def _sanitize_manifest_snapshot(value: Any, *, path_context: bool = False) -> Any:
     if isinstance(value, Mapping):
         result = {}
         for raw_key, raw_child in value.items():
@@ -589,7 +591,12 @@ def _sanitize_manifest_snapshot(value: Any) -> Any:
                 for sensitive in _SENSITIVE_SNAPSHOT_KEY_PARTS
             ) or normalized_key in {"auth", "session"}:
                 continue
-            child = _sanitize_manifest_snapshot(raw_child)
+            child = _sanitize_manifest_snapshot(
+                raw_child,
+                path_context=path_context or any(
+                    part in normalized_key for part in _PATH_SNAPSHOT_KEY_PARTS
+                ),
+            )
             if child is not _REJECTED_REVIEW_VALUE:
                 result[raw_key] = child
         return result
@@ -597,7 +604,7 @@ def _sanitize_manifest_snapshot(value: Any) -> Any:
         return [
             child
             for item in value
-            if (child := _sanitize_manifest_snapshot(item))
+            if (child := _sanitize_manifest_snapshot(item, path_context=path_context))
             is not _REJECTED_REVIEW_VALUE
         ]
     if value is None or isinstance(value, bool):
@@ -607,6 +614,12 @@ def _sanitize_manifest_snapshot(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else _REJECTED_REVIEW_VALUE
     if isinstance(value, str):
+        if path_context and (
+            _is_path_or_uri(value)
+            or "/" in value
+            or "\\" in value
+        ):
+            return "[redacted]"
         if _EMBEDDED_PATH_OR_URI_RE.search(value):
             return _REJECTED_REVIEW_VALUE
         return _project_review_value(value, _SAFE_TEXT)
