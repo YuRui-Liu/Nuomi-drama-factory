@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import enTranslation from "../../../../../public/locales/en/translation.json";
@@ -25,6 +26,67 @@ beforeAll(async () => {
 beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
+  it("shows H3 Ref in the video card but keeps an unverified workflow disabled", async () => {
+    const user = userEvent.setup();
+    const changeModel = vi.fn();
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame
+      models={[
+        { id: "runninghub:minimax-h3", label: "RunningHub MiniMax H3", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+        { id: "runninghub:minimax-h3-ref", label: "RunningHub MiniMax H3 · Ref", provider: "runninghub", available: false, unavailable_reason: "hybrid_input_unverified", supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+      ]}
+      onModelChange={changeModel}
+    />);
+
+    await user.click(screen.getByRole("combobox", { name: "视频模型" }));
+    expect(await screen.findByRole("option", { name: "RunningHub MiniMax H3" })).toBeInTheDocument();
+    const refOption = await screen.findByRole("option", { name: /RunningHub MiniMax H3 · Ref.*需完成 RunningHub 验证/ });
+    expect(refOption).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(refOption);
+    expect(changeModel).not.toHaveBeenCalled();
+  });
+
+  it("explains when the RunningHub credential makes H3 Ref unavailable", async () => {
+    const user = userEvent.setup();
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame
+      models={[
+        { id: "runninghub:minimax-h3", label: "RunningHub MiniMax H3", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+        { id: "runninghub:minimax-h3-ref", label: "RunningHub MiniMax H3 · Ref", provider: "runninghub", available: false, unavailable_reason: "credential_unavailable", supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+      ]}
+      onModelChange={vi.fn()}
+    />);
+
+    await user.click(screen.getByRole("combobox", { name: "视频模型" }));
+    expect(await screen.findByRole("option", { name: /RunningHub MiniMax H3 · Ref.*RunningHub 凭据不可用/ })).toBeInTheDocument();
+  });
+
+  it("switches to an available H3 Ref workflow from the video card", async () => {
+    const user = userEvent.setup();
+    const changeModel = vi.fn();
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame
+      models={[
+        { id: "runninghub:minimax-h3", label: "RunningHub MiniMax H3", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+        { id: "runninghub:minimax-h3-ref", label: "RunningHub MiniMax H3 · Ref", provider: "runninghub", available: true, supported_modes: ["auto"], default_mode: "auto", parameters: [] },
+      ]}
+      onModelChange={changeModel}
+    />);
+
+    await user.click(screen.getByRole("combobox", { name: "视频模型" }));
+    await user.click(await screen.findByRole("option", { name: "RunningHub MiniMax H3 · Ref" }));
+    expect(changeModel).toHaveBeenCalledWith("runninghub:minimax-h3-ref");
+  });
+
   it("shows inherited H3 and the actual automatic mode", () => {
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame />);
     expect(screen.getByText(/MiniMax H3/)).toBeInTheDocument();

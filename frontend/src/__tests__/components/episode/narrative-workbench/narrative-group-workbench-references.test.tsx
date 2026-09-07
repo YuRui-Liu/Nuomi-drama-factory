@@ -64,7 +64,7 @@ vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}))
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
 vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
- GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode==="auto"?"i2va":props.mode})}>生成组合视频</button></>},
+ GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.models?.map((model:any)=><button key={model.id} aria-label={`卡片切换至 ${model.label}`} disabled={!model.available} onClick={()=>props.onModelChange(model.id)}>{model.id}</button>)}{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode==="auto"?"i2va":props.mode})}>生成组合视频</button></>},
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
 }));
 vi.mock("@/components/episode/narrative-workbench/group-video-reference-dialog",()=>({GroupVideoReferenceDialog:({open,onSaved,onDirtyChange}:any)=>open?<div role="dialog" aria-label="管理视频参考图"><button onClick={()=>onDirtyChange(true)}>修改描述</button><button onClick={()=>onSaved({revision:8,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]})}>保存参考图</button></div>:null}));
@@ -198,22 +198,31 @@ describe("NarrativeGroupWorkbench references",()=>{
  });
  it("ignores a saved newapi default and exposes RunningHub MiniMax H3 as the only video model",()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
-  expect(screen.getByText("RunningHub MiniMax H3")).toBeInTheDocument();
+  expect(screen.getByRole("button",{name:"卡片切换至 RunningHub MiniMax H3"})).toBeInTheDocument();
   expect(screen.getByText("stage-model:runninghub:minimax-h3")).toBeInTheDocument();
   expect(screen.queryByText(/newapi/i)).not.toBeInTheDocument();
  expect(screen.queryByText("项目默认视频模型")).not.toBeInTheDocument();
-  expect(screen.queryByRole("combobox",{name:"视频模型"})).not.toBeInTheDocument();
+ expect(screen.queryByRole("combobox",{name:"视频模型"})).not.toBeInTheDocument();
  });
- it("shows a video model combobox for multiple available workflows and uses the selection",async()=>{
-  const user=userEvent.setup();
+ it("passes the full workflow catalog to the video card, including unavailable H3 Ref",()=>{
+  m.videoModels=[
+   {id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
+   {id:"runninghub:minimax-h3-ref",label:"RunningHub MiniMax H3 · Ref",provider:"runninghub",available:false,unavailable_reason:"hybrid_input_unverified",supported_modes:["auto"],default_mode:"auto"},
+  ];
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  const props=m.stageProps.mock.calls[m.stageProps.mock.calls.length-1]?.[0];
+  expect(props.models).toBe(m.videoModels);
+  expect(props.onModelChange).toEqual(expect.any(Function));
+  expect(screen.getByRole("button",{name:"卡片切换至 RunningHub MiniMax H3 · Ref"})).toBeDisabled();
+ });
+ it("shows the video model control in the card for multiple available workflows and uses the selection",async()=>{
   m.videoModels=[
    {id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"},
    {id:"runninghub:future",label:"RunningHub Future",provider:"runninghub",available:true,supported_modes:["i2va"],default_mode:"i2va"},
   ];
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
 
-  await user.click(screen.getByRole("combobox",{name:"视频模型"}));
-  await user.click(await screen.findByRole("option",{name:"RunningHub Future"}));
+  fireEvent.click(screen.getByRole("button",{name:"卡片切换至 RunningHub Future"}));
 
   await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({videoModel:"runninghub:future",videoMode:"i2va"})));
   expect(screen.getByText("stage-mode:i2va")).toBeInTheDocument();
@@ -233,7 +242,6 @@ describe("NarrativeGroupWorkbench references",()=>{
   await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith(expect.objectContaining({referenceRevision:7})));
  });
  it("synchronizes existing group settings when switching to Ref before allowing generation",async()=>{
-  const user=userEvent.setup();
   m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3"};
   m.videoModels=[
    {id:"runninghub:minimax-h3",label:"Legacy",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto"},
@@ -246,8 +254,7 @@ describe("NarrativeGroupWorkbench references",()=>{
    return {ok:true,data:m.groups[0]};
   });
   const view=render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
-  await user.click(screen.getByRole("combobox",{name:"视频模型"}));
-  await user.click(await screen.findByRole("option",{name:"Ref"}));
+  fireEvent.click(screen.getByRole("button",{name:"卡片切换至 Ref"}));
   await waitFor(()=>expect(m.updateVideoSettings).toHaveBeenCalledWith("p",1,{groupId:"g1",expectedRevision:4,workflowId:"runninghub:minimax-h3-ref",overrides:{}}));
   view.rerender(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByRole("button",{name:"生成组合视频"}));
