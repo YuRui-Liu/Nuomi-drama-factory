@@ -138,12 +138,17 @@ def contracts_for_segment(
     plan: DirectorPlanRevision,
     segment_id: str,
     *,
+    source_shot_ids: tuple[str, ...] | None = None,
     predecessors: Mapping[str, ShotContinuityContract],
     director_world_by_shot: Mapping[str, Mapping[str, object]],
     asset_evidence_by_entity: Mapping[str, AssetEvidence],
 ) -> tuple[ShotContinuityContract, ...]:
-    """Build one or two contracts named by a ``--``-joined segment id."""
-    shot_ids = tuple(segment_id.split("--"))
+    """Build contracts from explicit IDs, with legacy segment splitting fallback."""
+    shot_ids = (
+        source_shot_ids
+        if source_shot_ids is not None
+        else tuple(segment_id.split("--"))
+    )
     if (
         not 1 <= len(shot_ids) <= 2
         or any(not shot_id for shot_id in shot_ids)

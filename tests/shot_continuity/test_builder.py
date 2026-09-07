@@ -236,6 +236,24 @@ def test_contracts_for_single_and_double_segments_preserve_requested_order() -> 
     assert double[1].director_world is not None
 
 
+def test_contracts_for_segment_prefers_explicit_source_shot_ids() -> None:
+    plan = _plan(_shot("shot--close"), _shot("shot--wide"))
+
+    contracts = contracts_for_segment(
+        plan,
+        "shot--close--shot--wide",
+        source_shot_ids=("shot--close", "shot--wide"),
+        predecessors={},
+        director_world_by_shot={},
+        asset_evidence_by_entity={},
+    )
+
+    assert tuple(contract.shot_id for contract in contracts) == (
+        "shot--close",
+        "shot--wide",
+    )
+
+
 def test_contracts_for_segment_reports_all_missing_legacy_shots() -> None:
     with pytest.raises(
         ContinuityContractUnavailable,
