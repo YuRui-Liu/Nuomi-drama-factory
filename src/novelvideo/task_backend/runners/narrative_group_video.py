@@ -45,6 +45,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     build_h3_timeline_data,
     load_h3_director_manifest,
     save_h3_director_manifest,
+    source_shot_ids_for,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
@@ -488,7 +489,7 @@ async def _optimize_missing_prompts(
         H3EpisodeVideoSegment(
             segment_id=segment.segment_id,
             group_id=segment_group_ids.get(segment.segment_id, "group"),
-            shot_ids=tuple(segment.segment_id.split("--")),
+            shot_ids=source_shot_ids_for(segment),
             duration_seconds=segment.duration_seconds,
             style_snapshot_id=str(
                 getattr(snapshot, "snapshot_id", "") or "legacy-style"
@@ -555,7 +556,7 @@ async def _optimize_missing_prompts(
                 )
                 bundle = compile_shot_bundle(
                     segment_id=segment.segment_id,
-                    source_shot_ids=tuple(segment.segment_id.split("--")),
+                    source_shot_ids=source_shot_ids_for(segment),
                     contracts=prepared.contracts,
                     optimization=item,
                     decision=prepared.mode_decision,
@@ -649,7 +650,7 @@ def _input_summary(
     mode: H3Mode,
 ) -> dict[str, Any]:
     return {
-        "beat_ids": segment.segment_id.split("--"),
+        "beat_ids": source_shot_ids_for(segment),
         "mode": mode.value,
         "duration_seconds": segment.duration_seconds,
         "first_frame_sha256": context.first_frame_sha256,
@@ -908,7 +909,8 @@ def _build_segments(
             )
         dialogue_source = DialogueSource(str(beat.get("dialogue_source") or DialogueSource.EXTERNAL_TTS))
         segments.append(H3DirectorSegment(
-            segment_id=str(beat_id), beat_number=_beat_number(beat, index),
+            segment_id=str(beat_id), source_shot_ids=(str(beat_id),),
+            beat_number=_beat_number(beat, index),
             prompt=_raw_prompt(beat), duration_seconds=_duration(beat),
             first_frame=first, last_frame=last,
             dialogue=h3_dialogue_text(beat),
@@ -954,6 +956,7 @@ def _build_planned_segments(
             beat = beats[0]
             segments.append(H3DirectorSegment(
                 segment_id=beat_ids[0],
+                source_shot_ids=(beat_ids[0],),
                 beat_number=_beat_number(beat, index),
                 prompt=_raw_prompt(beat),
                 duration_seconds=_planned_duration(unit, beat),
@@ -974,6 +977,7 @@ def _build_planned_segments(
         synthetic = _synthetic_pair_beat(beats[0], beats[1])
         segments.append(H3DirectorSegment(
             segment_id=str(synthetic["id"]),
+            source_shot_ids=tuple(beat_ids),
             beat_number=int(synthetic["beat_number"]),
             prompt=str(synthetic["visual_description"]),
             duration_seconds=sum(_duration(beat) for beat in beats),
@@ -1000,9 +1004,13 @@ def _canonical_beats_for_segments(
         if exact is not None:
             result.append(exact)
             continue
-        left_id, separator, right_id = segment.segment_id.partition("--")
-        left = by_id.get(left_id)
-        right = by_id.get(right_id) if separator else None
+        source_shot_ids = source_shot_ids_for(segment)
+        if len(source_shot_ids) != 2:
+            raise ValueError(
+                f"canonical beat mapping is unavailable: {segment.segment_id}"
+            )
+        left = by_id.get(source_shot_ids[0])
+        right = by_id.get(source_shot_ids[1])
         if left is None or right is None:
             raise ValueError(
                 f"canonical beat mapping is unavailable: {segment.segment_id}"
@@ -1219,7 +1227,7 @@ def _shot_beat_numbers(
 ) -> dict[str, int]:
     result: dict[str, int] = {}
     for segment, beat in zip(segments, beats, strict=True):
-        shot_ids = segment.segment_id.split("--")
+        shot_ids = source_shot_ids_for(segment)
         numbers = (
             (beat.get("start_beat_number"), beat.get("target_beat_number"))
             if len(shot_ids) == 2
@@ -1280,7 +1288,7 @@ def _prepare_continuity(
         contracts = []
         reports = []
         extra_blockers: list[str] = []
-        for shot_id in segment.segment_id.split("--"):
+        for shot_id in source_shot_ids_for(segment):
             try:
                 shot, scene_id, scene_state = shot_context[shot_id]
             except KeyError as exc:
@@ -1734,7 +1742,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
                     },
                     "quality_report": report,
                     "input_summary": {
-                        "beat_ids": segment.segment_id.split("--"),
+                        "beat_ids": source_shot_ids_for(segment),
                         "mode": _mode_for(segment).value,
                         "duration_seconds": segment.duration_seconds,
                         "first_frame_sha256": _frame_sha256(str(segment.first_frame)),

@@ -1076,9 +1076,14 @@ def _seed_continuity_review(
         },
         provider_parameters={
             "safe": "visible",
+            "profile": "cinematic/v2",
+            "direction": "left/right",
             "nested": {"Authorization": "Bearer put-nested-secret"},
             "output_path": "private/put-result.mov",
             "message": "saved=(/srv/private/put-result.mov)",
+            "windows_message": r"saved=C:\private\put-result.mov",
+            "unc_message": r"saved=\\server\share\put-result.mov",
+            "artifact_message": "artifact private/put-result.mov",
         },
     )
     manifest_path = tmp_path / "videos" / "continuity.manifest.json"
@@ -1142,6 +1147,8 @@ def test_put_segment_continuity_accepts_explained_deviation(monkeypatch, tmp_pat
     assert data["workflow_parameters"] == {"resolution": "720p"}
     assert data["provider_parameters"] == {
         "safe": "visible",
+        "profile": "cinematic/v2",
+        "direction": "left/right",
         "nested": {},
         "output_path": "[redacted]",
     }
@@ -1902,6 +1909,8 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
             "quoted_posix": "failed opening '/srv/a'",
             "double_quoted_posix": 'failed opening "/Users/a"',
             "angled_windows": r"failed opening <C:\x>",
+            "unc_message": r"failed opening \\server\share\render.mov",
+            "artifact_message": "artifact private/render.mov",
         },
         "actual_output": {
             "width": 720,
@@ -1956,7 +1965,7 @@ def test_get_video_prompts_recursively_redacts_top_level_snapshots(
         "authorization", "apikey", "token", "password", "cookie", "secret",
         "credential", "path=/srv", "saved=(/users", r"c:\private",
         "private/a.mov", "private.mov", "private/frame.png",
-        "failed opening",
+        "private/render.mov", "failed opening", "server\\share",
     ):
         assert forbidden not in serialized
 

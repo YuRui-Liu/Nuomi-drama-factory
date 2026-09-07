@@ -88,6 +88,7 @@ def transition_for(
 class H3DirectorSegment(BaseModel):
     model_config = _MODEL_CONFIG
     segment_id: str = Field(min_length=1)
+    source_shot_ids: tuple[str, ...] = Field(default=(), max_length=2)
     beat_number: int = Field(gt=0)
     prompt: str = Field(min_length=1)
     duration_seconds: float = Field(gt=0, allow_inf_nan=False)
@@ -104,6 +105,14 @@ class H3DirectorSegment(BaseModel):
     def trim_required_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("source_shot_ids")
+    @classmethod
+    def validate_source_shot_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(shot_id.strip() for shot_id in value)
+        if any(not shot_id for shot_id in normalized):
+            raise ValueError("source shot IDs must not be blank")
+        return normalized
+
     @field_validator("first_frame", "last_frame", mode="before")
     @classmethod
     def trim_optional_frame(cls, value: object) -> object:
@@ -112,6 +121,11 @@ class H3DirectorSegment(BaseModel):
             if not value:
                 raise ValueError("frame path must not be blank")
         return value
+
+
+def source_shot_ids_for(segment: H3DirectorSegment) -> tuple[str, ...]:
+    """Return structured IDs, falling back only for legacy manifests."""
+    return segment.source_shot_ids or tuple(segment.segment_id.split("--"))
 
 class H3TimelineEntry(BaseModel):
     model_config = _MODEL_CONFIG

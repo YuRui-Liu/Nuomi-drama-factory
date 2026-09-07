@@ -1256,6 +1256,29 @@ def test_auto_plan_pair_builds_semantic_transition_with_both_dialogues(tmp_path)
     assert "坚定" in segment.tone and "焦急" in segment.tone
 
 
+def test_planned_segments_preserve_source_ids_containing_pair_separator(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frames, saved = _planned_render_state(tmp_path)
+    beats = _planned_beats()
+    beats[0]["id"] = "shot--close"
+    beats[1]["id"] = "shot--wide"
+    beats[2]["id"] = "shot--detail"
+    saved["cell_assets"] = [
+        {"beat_id": beat["id"], "path": path}
+        for beat, path in zip(beats, frames.values(), strict=True)
+    ]
+    saved["video_plan"]["units"] = [
+        {"beat_ids": ["shot--close"]},
+        {"beat_ids": ["shot--wide", "shot--detail"]},
+    ]
+
+    segments = _build_segments({"mode": "auto"}, beats, saved)
+
+    assert segments[0].source_shot_ids == ("shot--close",)
+    assert segments[1].source_shot_ids == ("shot--wide", "shot--detail")
+
+
 def test_fl2va_plan_supports_mixed_singleton_and_pair(tmp_path):
     from novelvideo.task_backend.runners.narrative_group_video import _build_segments
 
@@ -1787,8 +1810,8 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
             visible_turn="ready",
             relation_to_previous="single",
             shots=(
-                shot("shot-1", "line-1"),
-                shot("shot-2", "line-2", continuous=True),
+                shot("shot--wide", "line-1"),
+                shot("shot--close", "line-2", continuous=True),
             ),
         ),),
         validation_report=ValidationReport(passed=True),
@@ -1802,7 +1825,8 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
     first.write_bytes(b"first")
     last.write_bytes(b"last")
     segment = H3DirectorSegment(
-        segment_id="shot-1--shot-2",
+        segment_id="shot--wide--shot--close",
+        source_shot_ids=("shot--wide", "shot--close"),
         beat_number=1,
         prompt="wait",
         duration_seconds=4,
@@ -1820,10 +1844,10 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
     )[segment.segment_id]
 
     assert [contract.shot_id for contract in prepared.contracts] == [
-        "shot-1",
-        "shot-2",
+        "shot--wide",
+        "shot--close",
     ]
-    assert prepared.contracts[1].predecessor_shot_id == "shot-1"
+    assert prepared.contracts[1].predecessor_shot_id == "shot--wide"
     assert prepared.contracts[1].predecessor_revision == 1
     assert "predecessor_observation_required" in prepared.risk_report.blockers
 
@@ -1877,7 +1901,7 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
     from novelvideo.shot_continuity import ShotContinuityStore
 
     continuity_store = ShotContinuityStore(tmp_path)
-    predecessor = continuity_store.load_active(1, "shot-1")
+    predecessor = continuity_store.load_active(1, "shot--wide")
     assert predecessor is not None
     continuity_store.put(
         1,
@@ -1889,7 +1913,8 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
         predecessor.revision,
     )
     child_only = segment.model_copy(update={
-        "segment_id": "shot-2",
+        "segment_id": "shot--close",
+        "source_shot_ids": ("shot--close",),
         "last_frame": None,
     })
     refreshed = _prepare_continuity(
@@ -1899,7 +1924,7 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
         segments=[child_only],
         beats=[{"beat_number": 2}],
         render_state={},
-    )["shot-2"]
+    )["shot--close"]
 
     assert "predecessor_revision_stale" in refreshed.risk_report.blockers
     assert "predecessor_observation_required" not in refreshed.risk_report.blockers

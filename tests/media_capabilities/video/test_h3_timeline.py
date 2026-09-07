@@ -280,6 +280,27 @@ def test_manifest_entry_round_trip_preserves_submitted_prompt_evidence(tmp_path:
     assert entry.input_summary["beat_ids"] == ["beat-1"]
 
 
+def test_manifest_round_trip_preserves_structured_source_shot_ids(tmp_path: Path) -> None:
+    segment = _segment(
+        "shot--close", 1, 1, source_shot_ids=("shot--close",)
+    )
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4",
+        entries=build_h3_timeline_data([segment]).entries,
+    )
+    target = tmp_path / "structured-source-shots.json"
+
+    save_director_manifest(target, manifest)
+
+    persisted = json.loads(target.read_text(encoding="utf-8"))
+    assert persisted["entries"][0]["segment"]["source_shot_ids"] == [
+        "shot--close"
+    ]
+    assert load_h3_director_manifest(target).entries[0].segment.source_shot_ids == (
+        "shot--close",
+    )
+
+
 def test_old_manifest_without_prompt_evidence_remains_loadable(tmp_path: Path) -> None:
     timeline = build_h3_timeline_data([_segment("legacy", 1, 1)])
     manifest = H3DirectorOutputManifest(

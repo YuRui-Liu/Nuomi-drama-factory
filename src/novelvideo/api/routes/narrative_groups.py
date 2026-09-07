@@ -71,6 +71,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3ObservedBoundary,
     load_h3_director_manifest,
     save_h3_director_manifest,
+    source_shot_ids_for,
 )
 
 router = APIRouter()
@@ -394,7 +395,9 @@ _SENSITIVE_SNAPSHOT_KEY_PARTS = (
 _PATH_SNAPSHOT_KEY_PARTS = ("path", "file", "dir", "folder", "uri", "url")
 _EMBEDDED_PATH_OR_URI_RE = re.compile(
     r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|[\s=([{,:;'\"<`])/\S+|"
-    r"[A-Za-z]:[\\/]\S+|\\\\\S+)"
+    r"[A-Za-z]:[\\/]\S+|\\\\\S+|"
+    r"(?:^|[\s=([{,:;'\"<`])(?:[^/\\\s]+[\\/])+"
+    r"[^/\\\s]+\.[A-Za-z0-9]{1,16}(?=$|[\s)\]}>,'\";:`]))"
 )
 _CAMERA_PLAN_SCHEMA = {
     "type": _SAFE_TEXT,
@@ -700,6 +703,13 @@ def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> li
     ]
     if beat_ids:
         return beat_ids
+    source_shot_ids = [
+        safe
+        for value in (segment.get("source_shot_ids") or ())[:_MAX_REVIEW_BEAT_IDS]
+        if (safe := _safe_review_string(value))
+    ]
+    if source_shot_ids:
+        return source_shot_ids
     segment_id = _safe_review_string(segment.get("segment_id"))
     if segment_id:
         return [part for part in segment_id.split("--") if part]
@@ -1031,7 +1041,7 @@ def _put_group_video_segment_continuity_locked(
         raise HTTPException(status_code=409, detail="Continuity contract evidence is invalid") from exc
     if contract.revision != request.contract_revision:
         raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
-    if contract.shot_id != segment_id.split("--")[-1]:
+    if contract.shot_id != source_shot_ids_for(entry.segment)[-1]:
         raise HTTPException(status_code=409, detail="Continuity contract does not match video segment")
 
     planned = contract.boundary.planned_carry_out
