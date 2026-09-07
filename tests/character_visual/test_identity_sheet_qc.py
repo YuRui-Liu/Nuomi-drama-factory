@@ -53,12 +53,11 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
     assert "2D" in captured["prompt"]
     assert "不要求毛孔" in captured["prompt"]
     qc_prompt = captured["prompt"].lower()
-    assert "complete head" in qc_prompt
-    assert "hair outline" in qc_prompt
-    assert "facial features" in qc_prompt
-    assert "head safety zone" not in qc_prompt
-    assert "any face, facial feature, head" not in qc_prompt
-    assert "unique visible face source" in qc_prompt
+    assert "no head, hair, ears, or face" in qc_prompt
+    assert "any head, hair, ear, face" in qc_prompt
+    assert "clean collar and shoulder boundary" in qc_prompt
+    assert "back of the head, hair, and neck" in qc_prompt
+    assert "unique visible face" in qc_prompt
     assert "turned face" in qc_prompt
     assert "reflected face" in qc_prompt
     assert "text, labels, watermark" in qc_prompt
@@ -66,9 +65,9 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
     assert "portrait_face_occluded" in qc_prompt
     assert "hands, arms, weapons, tools, clothing, hair, or props" in qc_prompt
     assert "panel_boundary_intrusion" in qc_prompt
-    assert "50% and 75%" in qc_prompt
+    assert "40% and 70%" in qc_prompt
     assert "body_cropped" in qc_prompt
-    assert "top of the head" in qc_prompt
+    assert "body, hand, leg, foot, or sole" in qc_prompt
     assert report.technical_error is None
     assert "technical_error" not in report.model_dump(exclude_none=True)
 
