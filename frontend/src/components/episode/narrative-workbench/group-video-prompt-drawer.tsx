@@ -106,8 +106,8 @@ const violationLabels: Array<{ value: ContinuityLockViolation; label: string }> 
   { value: "lighting", label: "灯光锁违规" },
 ];
 
-function orderedContracts(contracts: ContinuityContract[] | undefined) {
-  return [...(contracts ?? [])].sort((left, right) => left.revision - right.revision);
+function contractsInSourceOrder(contracts: ContinuityContract[] | undefined) {
+  return [...(contracts ?? [])];
 }
 
 function ContinuityEvidencePanel({ unit, canRecord, project, episode, groupId }: {
@@ -141,7 +141,7 @@ function ContinuityEvidenceDetails({ unit, canRecord, project, episode, groupId 
 }) {
   const recordObservedBoundary = useRecordObservedBoundary(project, episode, groupId);
   const pending = recordObservedBoundary.isPending;
-  const contracts = orderedContracts(unit.continuity_contracts);
+  const contracts = contractsInSourceOrder(unit.continuity_contracts);
   const terminalContract = contracts[contracts.length - 1];
   const observed = unit.observed_carry_out;
   const [observedCarryOut, setObservedCarryOut] = useState(observed?.value ?? "");

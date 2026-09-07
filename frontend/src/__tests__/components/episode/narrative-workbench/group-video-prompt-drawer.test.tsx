@@ -164,8 +164,8 @@ describe("GroupVideoPromptDrawer", () => {
         segment_id: "segment-8", beat_ids: ["8", "9"], label: "Beat 8 → Beat 9",
         mode: "fl2va", duration_seconds: 10, final_prompt: "prompt",
         continuity_contracts: [
-          { revision: 1, shot_id: "shot-8", boundary: { carry_in: "门关闭", planned_carry_out: "门半开" } },
-          { revision: 2, shot_id: "shot-9", boundary: { carry_in: "门半开", planned_carry_out: "门完全打开" } },
+          { revision: 7, shot_id: "shot-1", boundary: { carry_in: "门关闭", planned_carry_out: "第一镜计划末态" } },
+          { revision: 1, shot_id: "shot-2", boundary: { carry_in: "门半开", planned_carry_out: "第二镜计划末态" } },
         ],
         risk_report: {
           spatial: { dimension: "spatial", level: 0, reasons: [] },
@@ -179,6 +179,11 @@ describe("GroupVideoPromptDrawer", () => {
     } as unknown as ReturnType<typeof useNarrativeGroupVideoPrompts>);
     render(<GroupVideoPromptDrawer open onOpenChange={vi.fn()} project="project-1" episode={3} groupId="group-1" />);
 
+    expect(screen.getByText("第二镜计划末态")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Revision 7 · shot-1",
+      "Revision 1 · shot-2",
+    ]);
     await user.type(screen.getByLabelText("记录实际末态"), "门只打开一半");
     expect(screen.getByLabelText("偏差原因")).toBeRequired();
     expect(screen.getByRole("button", { name: "保存实际末态" })).toBeDisabled();
@@ -191,7 +196,7 @@ describe("GroupVideoPromptDrawer", () => {
     expect(mockedRecordObservedBoundary).toHaveBeenCalledWith("project-1", 3, "group-1");
     expect(mutateAsync).toHaveBeenCalledWith({
       segmentId: "segment-8",
-      contractRevision: 2,
+      contractRevision: 1,
       observedCarryOut: "门只打开一半",
       acceptDeviation: true,
       deviationReason: "成片动作幅度不足，接受后续承接",
