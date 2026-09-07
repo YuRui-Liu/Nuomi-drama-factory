@@ -235,6 +235,44 @@ def _h3_reference_unavailable_reason(
     return None
 
 
+def _h3_parameters() -> tuple[VideoWorkflowParameterDefinition, ...]:
+    return (
+        VideoWorkflowParameterDefinition(
+            key="resolution",
+            label="分辨率",
+            default="720p",
+            scope="narrative_group",
+            options=(
+                VideoWorkflowParameterOption(
+                    value="720p",
+                    label="标准",
+                    relative_cost="standard",
+                ),
+                VideoWorkflowParameterOption(
+                    value="1080p",
+                    label="高清",
+                    description="画质更高，预计耗时和额度增加。",
+                    relative_cost="higher",
+                ),
+            ),
+        ),
+        VideoWorkflowParameterDefinition(
+            key="continuity_policy",
+            label="连续性策略",
+            default="legacy",
+            scope="narrative_group",
+            options=(
+                VideoWorkflowParameterOption(value="legacy", label="旧流程"),
+                VideoWorkflowParameterOption(value="observe", label="只观察"),
+                VideoWorkflowParameterOption(
+                    value="guard", label="阻断确定性错误"
+                ),
+                VideoWorkflowParameterOption(value="enforce", label="启用新编译"),
+            ),
+        ),
+    )
+
+
 def build_video_workflow_registry(
     store: MediaCapabilityStore,
     resolver: CredentialResolver,
@@ -263,20 +301,27 @@ def build_video_workflow_registry(
                 "temporary_upload",
             ),
         ),
+        parameters=_h3_parameters(),
     )
     reference_unavailable_reason = _h3_reference_unavailable_reason(
         store,
         resolver,
         reference_definition,
     )
-    if reference_unavailable_reason is not None:
-        reference_definition = VideoWorkflowDefinition.model_validate(
-            reference_definition.model_dump()
-            | {
-                "available": False,
-                "unavailable_reason": reference_unavailable_reason,
-            }
-        )
+    if reference_unavailable_reason == "provider_not_configured":
+        reference_unavailable_reason = None
+    # Keep the fully described workflow contract available for local validation,
+    # but do not expose the provider transport until hybrid-input verification is
+    # complete. More specific configuration/profile errors retain precedence.
+    reference_definition = VideoWorkflowDefinition.model_validate(
+        reference_definition.model_dump()
+        | {
+            "available": False,
+            "unavailable_reason": (
+                reference_unavailable_reason or "hybrid_input_unverified"
+            ),
+        }
+    )
     return VideoWorkflowRegistry(
         (
             VideoWorkflowDefinition(
@@ -290,27 +335,7 @@ def build_video_workflow_registry(
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
                 supported_modes=("auto", "i2va", "fl2va"),
                 is_default=True,
-                parameters=(
-                    VideoWorkflowParameterDefinition(
-                        key="resolution",
-                        label="分辨率",
-                        default="720p",
-                        scope="narrative_group",
-                        options=(
-                            VideoWorkflowParameterOption(
-                                value="720p",
-                                label="标准",
-                                relative_cost="standard",
-                            ),
-                            VideoWorkflowParameterOption(
-                                value="1080p",
-                                label="高清",
-                                description="画质更高，预计耗时和额度增加。",
-                                relative_cost="higher",
-                            ),
-                        ),
-                    ),
-                ),
+                parameters=_h3_parameters(),
                 available=unavailable_reason is None,
                 unavailable_reason=unavailable_reason,
             ),

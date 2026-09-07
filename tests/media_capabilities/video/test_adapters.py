@@ -183,8 +183,22 @@ def test_runner_explicit_model_selects_future_workflow_adapter(tmp_path, monkeyp
 
     monkeypatch.setattr(runner, "stage_payload", stage_payload)
     monkeypatch.setattr(runner, "record_stage_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner, "record_video_segment_result", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(runner, "_assert_stage_revision", lambda *_args: None)
     monkeypatch.setattr(runner, "_load_canonical_beats", load_beats)
+    monkeypatch.setattr(
+        runner,
+        "load_materialized_groups",
+        lambda *_args: [
+            SimpleNamespace(
+                id="ng-01", video_segments=({"id": "beat-1"},)
+            )
+        ],
+    )
     monkeypatch.setattr(runner, "_optimize_missing_prompts", optimize)
+
     class WorkflowRegistry:
         def resolve(self, model, _scene):
             return SimpleNamespace(
@@ -275,6 +289,8 @@ def test_runner_unavailable_model_never_enters_adapter_or_transport(
         lambda *_args: {"revision": 1},
     )
     monkeypatch.setattr(runner, "record_stage_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_assert_stage_revision", lambda *_args: None)
+
     class WorkflowRegistry:
         def resolve(self, _model, _scene):
             raise VideoWorkflowUnavailable("workflow is unavailable")

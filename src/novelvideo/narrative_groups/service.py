@@ -74,6 +74,13 @@ def _sidecar_guard(project_dir: str | Path, episode: int):
                 _SIDECAR_LOCK_STATE.held = previous
 
 
+@contextmanager
+def narrative_group_sidecar_guard(project_dir: str | Path, episode: int):
+    """Serialize a multi-step operation with narrative-group stage mutations."""
+    with _sidecar_guard(project_dir, episode):
+        yield
+
+
 def layout_for_group(count: int) -> GridLayout:
     if count < 1 or count > 9:
         raise ValueError("a narrative group must contain between 1 and 9 beats")
@@ -622,6 +629,7 @@ def record_video_segment_result(
     error: str = "",
     provider_task_id: str | None = None,
     result: Mapping[str, Any] | None = None,
+    expected_revision: int | None = None,
 ) -> NarrativeGroup:
     """Persist an isolated provider outcome without discarding sibling segments."""
     with _sidecar_guard(project_dir, episode):
@@ -632,6 +640,12 @@ def record_video_segment_result(
             if group.id != group_id:
                 updated.append(group)
                 continue
+            if (
+                expected_revision is not None
+                and group.stages.get("video", GroupStageState()).revision
+                != int(expected_revision)
+            ):
+                raise RuntimeError("narrative group video revision is stale")
             matched = False
             segments = []
             for item in group.video_segments:

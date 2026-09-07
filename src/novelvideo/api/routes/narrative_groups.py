@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.schemas import NarrativeReferenceResolutionRequest
@@ -84,6 +84,8 @@ from novelvideo.narrative_groups.service import (
     generation_beats_for_group,
     load_effective_groups,
     load_group_video_prompt_manifest,
+    load_materialized_groups,
+    narrative_group_sidecar_guard,
     rebuild_groups,
     rollback_stage_revision,
     reserve_video_revision,
@@ -106,7 +108,19 @@ from novelvideo.narrative_groups.video_references import (
     temporary_upload_path,
     write_temporary_video_reference,
 )
+from novelvideo.media_capabilities.video.h3_timeline import (
+    H3DirectorOutputManifest,
+    H3ObservedBoundary,
+    load_h3_director_manifest,
+    save_h3_director_manifest,
+    source_shot_ids_for,
+)
 from novelvideo.ports import get_task_backend
+from novelvideo.shot_continuity import (
+    ContinuityRevisionConflict,
+    ShotContinuityContract,
+    ShotContinuityStore,
+)
 from novelvideo.task_state import (
     ACTIVE_PROJECT_TASK_STATUSES,
     TERMINAL_TASK_STATUSES,
@@ -304,6 +318,28 @@ class NarrativeGroupDialogueSourceRequest(BaseModel):
     span_index: int = Field(ge=0)
     dialogue_source: Literal["external_tts", "h3_native"]
     revision: int = Field(ge=1)
+
+
+class NarrativeGroupContinuityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    contract_revision: int = Field(ge=1)
+    observed_carry_out: str = Field(min_length=1, max_length=2000)
+    accept_deviation: bool = False
+    deviation_reason: str = Field(default="", max_length=2000)
+    lock_violations: tuple[
+        Literal["identity", "spatial", "prop", "camera", "lighting"], ...
+    ] = ()
+
+    @field_validator("observed_carry_out", "deviation_reason", mode="before")
+    @classmethod
+    def trim_continuity_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_explained_deviation(self) -> "NarrativeGroupContinuityRequest":
+        if self.accept_deviation and not self.deviation_reason:
+            raise ValueError("accepted deviation requires a nonblank reason")
+        return self
 
 
 class NarrativeGroupStyleRequest(BaseModel):
@@ -785,11 +821,24 @@ _SAFE_TEXT = object()
 _SAFE_INT = object()
 _SAFE_NUMBER = object()
 _SAFE_BOOL = object()
+_SAFE_OPTIONAL_TEXT = object()
+_SAFE_OPTIONAL_INT = object()
 _MAX_REVIEW_ID_LENGTH = 256
 _MAX_REVIEW_TEXT_LENGTH = 16 * 1024
 _MAX_REVIEW_PROMPT_LENGTH = 256 * 1024
 _MAX_REVIEW_BEAT_IDS = 32
 _URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_SENSITIVE_SNAPSHOT_KEY_PARTS = (
+    "authorization", "apikey", "token", "secret", "password", "cookie",
+    "credential", "accesskey", "privatekey",
+)
+_PATH_SNAPSHOT_KEY_PARTS = ("path", "file", "dir", "folder", "uri", "url")
+_EMBEDDED_PATH_OR_URI_RE = re.compile(
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:^|[\s=([{,:;'\"<`])/\S+|"
+    r"[A-Za-z]:[\\/]\S+|\\\\\S+|"
+    r"(?:^|[\s=([{,:;'\"<`])(?:[^/\\\s]+[\\/])+"
+    r"[^/\\\s]+\.[A-Za-z0-9]{1,16}(?=$|[\s)\]}>,'\";:`]))"
+)
 _CAMERA_PLAN_SCHEMA = {
     "type": _SAFE_TEXT,
     "direction": _SAFE_TEXT,
@@ -862,6 +911,55 @@ _INPUT_SUMMARY_SCHEMA = {
     "first_frame_sha256": _SAFE_TEXT,
     "last_frame_sha256": _SAFE_TEXT,
 }
+_OBSERVED_BOUNDARY_SCHEMA = {
+    "value": _SAFE_TEXT,
+    "source_contract_revision": _SAFE_INT,
+    "result_contract_revision": _SAFE_INT,
+    "accepted": _SAFE_BOOL,
+    "deviation_reason": _SAFE_TEXT,
+    "lock_violations": [_SAFE_TEXT],
+}
+_CONTINUITY_BOUNDARY_SCHEMA = {
+    "carry_in": _SAFE_TEXT,
+    "planned_carry_out": _SAFE_TEXT,
+    "observed_carry_out": _SAFE_OPTIONAL_TEXT,
+    "deviation_accepted": _SAFE_BOOL,
+    "deviation_reason": _SAFE_TEXT,
+}
+_CONTINUITY_CONTRACT_SCHEMA = {
+    "revision": _SAFE_INT,
+    "shot_id": _SAFE_TEXT,
+    "scene_id": _SAFE_TEXT,
+    "predecessor_shot_id": _SAFE_OPTIONAL_TEXT,
+    "predecessor_revision": _SAFE_OPTIONAL_INT,
+    "boundary": _CONTINUITY_BOUNDARY_SCHEMA,
+}
+_RISK_DIMENSION_SCHEMA = {
+    "dimension": _SAFE_TEXT,
+    "level": _SAFE_INT,
+    "reasons": [_SAFE_TEXT],
+}
+_RISK_REPORT_SCHEMA = {
+    "spatial": _RISK_DIMENSION_SCHEMA,
+    "identity": _RISK_DIMENSION_SCHEMA,
+    "motion": _RISK_DIMENSION_SCHEMA,
+    "continuity": _RISK_DIMENSION_SCHEMA,
+    "blockers": [_SAFE_TEXT],
+}
+_MODE_DECISION_SCHEMA = {
+    "requested": _SAFE_TEXT,
+    "mode": _SAFE_OPTIONAL_TEXT,
+    "reason_codes": [_SAFE_TEXT],
+    "blockers": [_SAFE_TEXT],
+}
+_COMPILED_BUNDLE_SCHEMA = {
+    "adapter": _SAFE_TEXT,
+    "mode": _SAFE_TEXT,
+    "compiler_id": _SAFE_TEXT,
+    "compiler_version": _SAFE_INT,
+    "diagnostics": [_SAFE_TEXT],
+    "bundle_sha256": _SAFE_TEXT,
+}
 
 
 def _manifest_mapping(value: Any) -> dict[str, Any]:
@@ -872,11 +970,16 @@ def _manifest_mapping(value: Any) -> dict[str, Any]:
 
 
 def _project_review_value(value: Any, schema: Any) -> Any:
+    if schema is _SAFE_OPTIONAL_TEXT:
+        return None if value is None else _project_review_value(value, _SAFE_TEXT)
+    if schema is _SAFE_OPTIONAL_INT:
+        return None if value is None else _project_review_value(value, _SAFE_INT)
     if schema is _SAFE_TEXT:
         if (
             isinstance(value, str)
             and len(value) <= _MAX_REVIEW_TEXT_LENGTH
             and not _is_path_or_uri(value)
+            and not _EMBEDDED_PATH_OR_URI_RE.search(value)
         ):
             return value
         return _REJECTED_REVIEW_VALUE
@@ -915,6 +1018,57 @@ def _project_review_value(value: Any, schema: Any) -> Any:
             if (child := _project_review_value(item, schema[0]))
             is not _REJECTED_REVIEW_VALUE
         ]
+    return _REJECTED_REVIEW_VALUE
+
+
+def _is_path_snapshot_key(key: str) -> bool:
+    folded = key.casefold()
+    tokens = {token for token in re.split(r"[^a-z0-9]+", folded) if token}
+    return bool(tokens.intersection(_PATH_SNAPSHOT_KEY_PARTS)) or folded.endswith(
+        ("_path", "_file", "_dir")
+    )
+
+
+def _sanitize_manifest_snapshot(value: Any, *, path_context: bool = False) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for raw_key, raw_child in value.items():
+            if not isinstance(raw_key, str):
+                continue
+            normalized_key = "".join(
+                character for character in raw_key.casefold() if character.isalnum()
+            )
+            if any(
+                sensitive in normalized_key
+                for sensitive in _SENSITIVE_SNAPSHOT_KEY_PARTS
+            ) or normalized_key in {"auth", "session"}:
+                continue
+            child = _sanitize_manifest_snapshot(
+                raw_child,
+                path_context=path_context or _is_path_snapshot_key(raw_key),
+            )
+            if child is not _REJECTED_REVIEW_VALUE:
+                result[raw_key] = child
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            child
+            for item in value
+            if (child := _sanitize_manifest_snapshot(item, path_context=path_context))
+            is not _REJECTED_REVIEW_VALUE
+        ]
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _REJECTED_REVIEW_VALUE
+    if isinstance(value, str):
+        if path_context and value.strip():
+            return "[redacted]"
+        if _EMBEDDED_PATH_OR_URI_RE.search(value):
+            return _REJECTED_REVIEW_VALUE
+        return _project_review_value(value, _SAFE_TEXT)
     return _REJECTED_REVIEW_VALUE
 
 
@@ -965,7 +1119,16 @@ def _safe_duration(*values: Any) -> float | int:
 
 
 def _safe_frame_reference(value: Any) -> str:
-    if not isinstance(value, str) or len(value) > 2048 or _URI_RE.match(value.strip()):
+    if not isinstance(value, str) or len(value) > 2048:
+        return ""
+    stripped = value.strip()
+    if (
+        _URI_RE.match(stripped)
+        or stripped.casefold().startswith("file://")
+        or stripped.startswith(("\\\\", "//"))
+        or PureWindowsPath(stripped).drive
+        or PureWindowsPath(stripped).is_absolute()
+    ):
         return ""
     return value
 
@@ -981,6 +1144,13 @@ def _review_beat_ids(entry: Mapping[str, Any], segment: Mapping[str, Any]) -> li
     ]
     if beat_ids:
         return beat_ids
+    source_shot_ids = [
+        safe
+        for value in (segment.get("source_shot_ids") or ())[:_MAX_REVIEW_BEAT_IDS]
+        if (safe := _safe_review_string(value))
+    ]
+    if source_shot_ids:
+        return source_shot_ids
     segment_id = _safe_review_string(segment.get("segment_id"))
     if segment_id:
         return [part for part in segment_id.split("--") if part]
@@ -1010,6 +1180,14 @@ def _serialize_prompt_review(
     for raw_entry in manifest.get("entries") or ():
         entry = _manifest_mapping(raw_entry)
         segment = _manifest_mapping(entry.get("segment"))
+        continuity_contracts = entry.get("continuity_contracts") or ()
+        terminal_contract = _manifest_mapping(
+            continuity_contracts[-1]
+            if isinstance(continuity_contracts, (list, tuple))
+            and continuity_contracts
+            else None
+        )
+        terminal_boundary = _manifest_mapping(terminal_contract.get("boundary"))
         summary = _project_review_value(
             entry.get("input_summary"), _INPUT_SUMMARY_SCHEMA
         )
@@ -1035,6 +1213,7 @@ def _serialize_prompt_review(
             segment.get("duration_seconds"),
         )
         units.append({
+            "segment_id": _safe_review_string(segment.get("segment_id")),
             "beat_ids": beat_ids,
             "label": _review_label(beat_ids),
             "mode": mode,
@@ -1071,10 +1250,43 @@ def _serialize_prompt_review(
             "provider_task_id": _first_safe_review_string(
                 entry.get("provider_task_id"), manifest.get("provider_task_id")
             ),
+            "continuity_contracts": _project_review_value(
+                continuity_contracts, [_CONTINUITY_CONTRACT_SCHEMA]
+            ),
+            "risk_report": (
+                _project_review_value(entry.get("risk_report"), _RISK_REPORT_SCHEMA)
+                if entry.get("risk_report") is not None
+                else None
+            ),
+            "mode_decision": (
+                _project_review_value(
+                    entry.get("mode_decision"), _MODE_DECISION_SCHEMA
+                )
+                if entry.get("mode_decision") is not None
+                else None
+            ),
+            "compiled_bundle": (
+                _project_review_value(
+                    entry.get("compiled_bundle"), _COMPILED_BUNDLE_SCHEMA
+                )
+                if entry.get("compiled_bundle") is not None
+                else None
+            ),
+            "planned_carry_out": _safe_review_string(
+                terminal_boundary.get("planned_carry_out"), max_length=2000
+            ),
+            "observed_carry_out": (
+                _project_review_value(
+                    entry.get("observed_carry_out"), _OBSERVED_BOUNDARY_SCHEMA
+                )
+                if entry.get("observed_carry_out") is not None
+                else None
+            ),
         })
     def snapshot(name: str) -> dict[str, Any]:
         value = manifest.get(name)
-        return dict(value) if isinstance(value, Mapping) else {}
+        sanitized = _sanitize_manifest_snapshot(value)
+        return sanitized if isinstance(sanitized, dict) else {}
 
     workflow_id = _safe_review_string(manifest.get("workflow_id"))
     provider_workflow_id = _safe_review_string(
@@ -1133,6 +1345,12 @@ def _serialize_prompt_review(
         })
 
     return {
+        "format_version": (
+            manifest.get("format_version")
+            if isinstance(manifest.get("format_version"), int)
+            and not isinstance(manifest.get("format_version"), bool)
+            else 1
+        ),
         "workflow_id": workflow_id or None,
         "provider_workflow_id": provider_workflow_id or None,
         "reference_settings_revision": reference_revision,
@@ -1182,6 +1400,246 @@ async def get_group_video_prompts(
             project, resolved.project_dir, manifest, stage
         ),
     }
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/"
+    "video/segments/{segment_id}/continuity"
+)
+async def put_group_video_segment_continuity(
+    project: str,
+    episode: int,
+    group_id: str,
+    segment_id: str,
+    request: NarrativeGroupContinuityRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    root = Path(resolved.project_dir).resolve()
+    with narrative_group_sidecar_guard(root, episode):
+        expected_stage = _load_current_video_stage(root, episode, group_id)
+        if expected_stage.status not in _POSTFLIGHT_STAGE_STATUSES:
+            raise HTTPException(
+                status_code=409, detail="Video stage is not ready for review"
+            )
+        expected_fingerprint = _postflight_stage_fingerprint(root, expected_stage)
+        stage = _load_postflight_stage(root, episode, group_id)
+        if _postflight_stage_fingerprint(root, stage) != expected_fingerprint:
+            raise HTTPException(
+                status_code=409, detail="Narrative group video stage changed"
+            )
+        return _put_group_video_segment_continuity_locked(
+            project, root, episode, segment_id, request, stage
+        )
+
+
+_POSTFLIGHT_STAGE_STATUSES = {
+    "review",
+    "completed",
+    "partial_failure",
+    "failed",
+}
+_POSTFLIGHT_MANIFEST_STATUSES = {
+    "completed",
+    "partial_failure",
+    "quality_rejected",
+    "transport_failed",
+    "postprocess_failed",
+    "quality_mismatch",
+}
+
+
+def _load_postflight_stage(project_dir: Path, episode: int, group_id: str):
+    try:
+        _, stage = load_group_video_prompt_manifest(project_dir, episode, group_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Video manifest not found") from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
+    return stage
+
+
+def _load_current_video_stage(project_dir: Path, episode: int, group_id: str):
+    group = next(
+        (
+            item
+            for item in load_materialized_groups(project_dir, episode)
+            if item.id == group_id
+        ),
+        None,
+    )
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    return group.stages["video"]
+
+
+def _postflight_manifest_path(project_dir: Path, stage: Any) -> Path:
+    stored_path = Path(str(stage.manifest_asset).strip())
+    candidate = stored_path if stored_path.is_absolute() else project_dir / stored_path
+    manifest_path = candidate.resolve()
+    if not manifest_path.is_relative_to(project_dir) or not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="Video manifest not found")
+    return manifest_path
+
+
+def _postflight_stage_fingerprint(project_dir: Path, stage: Any) -> tuple[int, str, str]:
+    stored_path = Path(str(stage.manifest_asset).strip())
+    candidate = stored_path if stored_path.is_absolute() else project_dir / stored_path
+    manifest_path = candidate.resolve()
+    return (
+        int(stage.revision),
+        str(stage.status),
+        str(manifest_path),
+    )
+
+
+def _put_group_video_segment_continuity_locked(
+    project: str,
+    root: Path,
+    episode: int,
+    segment_id: str,
+    request: NarrativeGroupContinuityRequest,
+    stage: Any,
+):
+    if stage.status not in _POSTFLIGHT_STAGE_STATUSES:
+        raise HTTPException(status_code=409, detail="Video stage is not ready for review")
+
+    manifest_path = _postflight_manifest_path(root, stage)
+    try:
+        manifest = load_h3_director_manifest(manifest_path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
+    if (
+        manifest.format_version < 2
+        or manifest.status not in _POSTFLIGHT_MANIFEST_STATUSES
+    ):
+        raise HTTPException(
+            status_code=409, detail="Video manifest is not terminal review evidence"
+        )
+
+    matches = [
+        (index, entry)
+        for index, entry in enumerate(manifest.entries)
+        if entry.segment.segment_id == segment_id
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Video segment not found")
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="Video segment evidence is ambiguous")
+    entry_index, entry = matches[0]
+    if entry.status not in _POSTFLIGHT_MANIFEST_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="Video segment is not terminal review evidence"
+        )
+    if not entry.continuity_contracts:
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is missing")
+    try:
+        contract = ShotContinuityContract.model_validate(
+            entry.continuity_contracts[-1]
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is invalid") from exc
+    if contract.revision != request.contract_revision:
+        raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
+    if contract.shot_id != source_shot_ids_for(entry.segment)[-1]:
+        raise HTTPException(status_code=409, detail="Continuity contract does not match video segment")
+
+    planned = contract.boundary.planned_carry_out
+    is_deviation = request.observed_carry_out != planned
+    if is_deviation and not request.accept_deviation:
+        raise HTTPException(status_code=409, detail="Observed boundary deviates from the plan")
+    reason = request.deviation_reason if request.accept_deviation else ""
+    boundary = contract.boundary.model_copy(update={
+        "observed_carry_out": request.observed_carry_out,
+        "deviation_accepted": request.accept_deviation,
+        "deviation_reason": reason,
+    })
+    candidate = contract.model_copy(update={"boundary": boundary})
+    continuity_store = ShotContinuityStore(root)
+    try:
+        active = continuity_store.load_active(episode, contract.shot_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Continuity contract evidence is invalid") from exc
+    candidate_semantics = candidate.model_copy(update={"revision": 0})
+    if (
+        active is not None
+        and active.revision == request.contract_revision
+        and active.contract_sha256 == contract.contract_sha256
+    ):
+        try:
+            saved = continuity_store.put(
+                episode, candidate, expected_revision=request.contract_revision
+            )
+        except ContinuityRevisionConflict as exc:
+            raise HTTPException(status_code=409, detail="Continuity contract revision is stale") from exc
+    elif (
+        active is not None
+        and active.revision == request.contract_revision + 1
+        and active.model_copy(update={"revision": 0}) == candidate_semantics
+    ):
+        replay_observed = H3ObservedBoundary(
+            value=request.observed_carry_out,
+            source_contract_revision=request.contract_revision,
+            result_contract_revision=active.revision,
+            accepted=request.accept_deviation,
+            deviation_reason=reason,
+            lock_violations=request.lock_violations,
+        )
+        if (
+            entry.observed_carry_out is not None
+            and entry.observed_carry_out != replay_observed
+        ):
+            raise HTTPException(
+                status_code=409, detail="Observed boundary replay does not match manifest"
+            )
+        try:
+            saved = continuity_store.put(
+                episode, candidate, expected_revision=request.contract_revision + 1
+            )
+        except ContinuityRevisionConflict as exc:
+            raise HTTPException(
+                status_code=409, detail="Continuity contract revision is stale"
+            ) from exc
+    else:
+        raise HTTPException(status_code=409, detail="Continuity contract revision is stale")
+
+    observed = H3ObservedBoundary(
+        value=request.observed_carry_out,
+        source_contract_revision=request.contract_revision,
+        result_contract_revision=saved.revision,
+        accepted=request.accept_deviation,
+        deviation_reason=reason,
+        lock_violations=request.lock_violations,
+    )
+    entries = list(manifest.entries)
+    entries[entry_index] = entry.model_copy(update={"observed_carry_out": observed})
+    if entry.observed_carry_out == observed:
+        updated_manifest = manifest
+    else:
+        updated_manifest = H3DirectorOutputManifest(
+            **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
+        )
+        try:
+            save_h3_director_manifest(manifest_path, updated_manifest)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Continuity revision was saved but the video manifest update failed; retry is safe",
+            ) from exc
+
+    data = _serialize_prompt_review(
+        project,
+        root,
+        updated_manifest.model_dump(mode="json"),
+        stage,
+    )
+    data["stale_dependent_shot_ids"] = sorted(
+        item.shot_id
+        for item in continuity_store.stale_dependents(episode, contract.shot_id)
+    )
+    return {"ok": True, "data": data}
 
 
 @router.post("/projects/{project}/episodes/{episode}/narrative-groups/rebuild")
@@ -1748,8 +2206,9 @@ async def _enqueue_group_video(
         "aspect_ratio": request.aspect_ratio,
         "workflow_parameters": workflow_parameters,
         "settings_revision": group.video_settings.revision,
-        "segment_id": segment_id,
     }
+    if segment_id:
+        payload["segment_id"] = segment_id
     if reference_revision is not None:
         try:
             frozen_frames = freeze_h3_reference_frames(

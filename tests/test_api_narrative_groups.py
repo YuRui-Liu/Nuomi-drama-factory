@@ -46,6 +46,13 @@ from novelvideo.narrative_groups.references import (
 )
 from novelvideo.narrative_groups import service as narrative_group_service
 from novelvideo.narrative_groups.service import advance_revision, record_stage_result, sidecar_path
+from novelvideo.shot_continuity import (
+    BoundaryState,
+    CameraLock,
+    SceneLock,
+    ShotContinuityContract,
+    ShotContinuityStore,
+)
 
 
 class FakeStore:
@@ -2121,6 +2128,690 @@ def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(monkeypa
     assert manifest.entries[0].dialogue_source.value == "external_tts"
 
 
+def _continuity_contract(
+    shot_id: str,
+    *,
+    planned: str = "right hand holds the lantern",
+    revision: int = 0,
+    predecessor_shot_id: str | None = None,
+    predecessor_revision: int | None = None,
+) -> ShotContinuityContract:
+    return ShotContinuityContract(
+        revision=revision,
+        shot_id=shot_id,
+        scene_id="hallway",
+        predecessor_shot_id=predecessor_shot_id,
+        predecessor_revision=predecessor_revision,
+        scene=SceneLock(scene_state="night hallway"),
+        camera=CameraLock(shot_size="medium", angle="eye-level"),
+        boundary=BoundaryState(carry_in="at the door", planned_carry_out=planned),
+    )
+
+
+def _seed_continuity_review(
+    client: TestClient,
+    tmp_path: Path,
+    *,
+    stage_status: str = "completed",
+    manifest_format_version: int = 2,
+    manifest_status: str = "completed",
+    entry_status: str = "completed",
+    include_contract: bool = True,
+    duplicate_segment: bool = False,
+    segment_id: str = "shot-1",
+    source_shot_ids: tuple[str, ...] = (),
+) -> tuple[Path, ShotContinuityStore]:
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        H3DirectorOutputManifest,
+        H3DirectorSegment,
+        H3TimelineEntry,
+        build_h3_timeline_data,
+        save_h3_director_manifest,
+    )
+
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    store = ShotContinuityStore(tmp_path)
+    terminal_shot_id = source_shot_ids[-1] if source_shot_ids else segment_id
+    first = store.put(1, _continuity_contract(terminal_shot_id), expected_revision=0)
+    second = store.put(
+        1,
+        first.model_copy(
+            update={
+                "revision": 0,
+                "scene": SceneLock(scene_state="night hallway, door open"),
+            }
+        ),
+        expected_revision=1,
+    )
+    store.put(
+        1,
+        _continuity_contract(
+            "shot-2",
+            predecessor_shot_id=terminal_shot_id,
+            predecessor_revision=2,
+        ),
+        expected_revision=0,
+    )
+    base = build_h3_timeline_data(
+        (
+            H3DirectorSegment(
+                segment_id=segment_id,
+                source_shot_ids=source_shot_ids,
+                beat_number=1,
+                prompt="hero exits",
+                duration_seconds=1,
+                first_frame="frames/first.png",
+            ),
+        )
+    ).entries[0]
+    entry = base.model_copy(
+        update={
+            "continuity_contracts": (
+                (second.model_dump(mode="json"),) if include_contract else ()
+            ),
+            "status": entry_status,
+        }
+    )
+    entries = (
+        (
+            entry,
+            H3TimelineEntry(
+                **entry.model_dump(
+                    exclude={
+                        "start_frame",
+                        "start_seconds",
+                        "end_seconds",
+                        "actual_duration_seconds",
+                        "dialogue_start_seconds",
+                        "dialogue_end_seconds",
+                    }
+                ),
+                start_frame=entry.frame_count,
+            ),
+        )
+        if duplicate_segment
+        else (entry,)
+    )
+    manifest = H3DirectorOutputManifest(
+        entries=entries,
+        format_version=manifest_format_version,
+        total_frames=entry.frame_count * len(entries),
+        status=manifest_status,
+        workflow_parameters={
+            "resolution": "720p",
+            "api_key": "put-manifest-secret",
+        },
+        provider_parameters={
+            "safe": "visible",
+            "profile": "cinematic/v2",
+            "direction": "left/right",
+            "nested": {"Authorization": "Bearer put-nested-secret"},
+            "output_path": "private/put-result.mov",
+            "message": "saved=(/srv/private/put-result.mov)",
+            "windows_message": r"saved=C:\private\put-result.mov",
+            "unc_message": r"saved=\\server\share\put-result.mov",
+            "artifact_message": "artifact private/put-result.mov",
+        },
+    )
+    manifest_path = tmp_path / "videos" / "continuity.manifest.json"
+    save_h3_director_manifest(manifest_path, manifest)
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path,
+        1,
+        "ng-01",
+        "video",
+        expected_revision=1,
+        status=stage_status,
+        manifest_asset=str(manifest_path),
+    )
+    return manifest_path, store
+
+
+def _continuity_endpoint(segment_id: str = "shot-1") -> str:
+    return (
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/segments/"
+        f"{segment_id}/continuity"
+    )
+
+
+def test_put_segment_continuity_accepts_explained_deviation(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "left hand holds the lantern",
+            "accept_deviation": True,
+            "deviation_reason": "Actor changed hands during the take",
+            "lock_violations": ["prop", "identity"],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["stale_dependent_shot_ids"] == ["shot-2"]
+    assert data["units"][0]["planned_carry_out"] == "right hand holds the lantern"
+    assert data["units"][0]["observed_carry_out"] == {
+        "value": "left hand holds the lantern",
+        "source_contract_revision": 2,
+        "result_contract_revision": 3,
+        "accepted": True,
+        "deviation_reason": "Actor changed hands during the take",
+        "lock_violations": ["prop", "identity"],
+    }
+    assert store.load_active(1, "shot-1").revision == 3
+    persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert persisted["entries"][0]["continuity_contracts"][-1]["revision"] == 2
+    assert (
+        persisted["entries"][0]["continuity_contracts"][-1]["boundary"][
+            "planned_carry_out"
+        ]
+        == "right hand holds the lantern"
+    )
+    assert data["workflow_parameters"] == {"resolution": "720p"}
+    assert data["provider_parameters"] == {
+        "safe": "visible",
+        "profile": "cinematic/v2",
+        "direction": "left/right",
+        "nested": {},
+        "output_path": "[redacted]",
+    }
+    assert "put-manifest-secret" not in response.text
+    assert "put-nested-secret" not in response.text
+    assert "private/put-result.mov" not in response.text
+
+
+def test_put_segment_continuity_uses_structured_terminal_shot_id(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(
+        client,
+        tmp_path,
+        segment_id="shot--close",
+        source_shot_ids=("shot--close",),
+    )
+
+    response = client.put(
+        _continuity_endpoint("shot--close"),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+            "accept_deviation": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["units"][0]["beat_ids"] == ["shot--close"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        (
+            {
+                "contract_revision": 2,
+                "observed_carry_out": "different",
+                "accept_deviation": True,
+            },
+            422,
+        ),
+        ({"contract_revision": 2, "observed_carry_out": "different"}, 409),
+        (
+            {
+                "contract_revision": 1,
+                "observed_carry_out": "right hand holds the lantern",
+            },
+            409,
+        ),
+        ({"contract_revision": 2, "observed_carry_out": "", "extra": "forbidden"}, 422),
+        (
+            {
+                "contract_revision": 2,
+                "observed_carry_out": "same",
+                "lock_violations": ["motion"],
+            },
+            422,
+        ),
+    ],
+)
+def test_put_segment_continuity_validates_request_and_revision(
+    monkeypatch,
+    tmp_path,
+    payload,
+    expected_status,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(client, tmp_path)
+
+    assert (
+        client.put(_continuity_endpoint(), json=payload).status_code == expected_status
+    )
+
+
+def test_put_segment_continuity_same_value_needs_no_acceptance(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+            "accept_deviation": False,
+            "deviation_reason": "ignored",
+        },
+    )
+
+    assert response.status_code == 200
+    boundary = store.load_active(1, "shot-1").boundary
+    assert boundary.planned_carry_out == boundary.observed_carry_out
+    assert boundary.deviation_accepted is False
+    assert boundary.deviation_reason == ""
+
+
+@pytest.mark.parametrize(
+    (
+        "stage_status",
+        "format_version",
+        "include_contract",
+        "segment_id",
+        "duplicate",
+        "status_code",
+    ),
+    [
+        ("running", 2, True, "shot-1", False, 409),
+        ("completed", 1, True, "shot-1", False, 409),
+        ("completed", 2, False, "shot-1", False, 409),
+        ("completed", 2, True, "missing", False, 404),
+        ("completed", 2, True, "shot-1", True, 409),
+    ],
+)
+def test_put_segment_continuity_rejects_nonreview_evidence(
+    monkeypatch,
+    tmp_path,
+    stage_status,
+    format_version,
+    include_contract,
+    segment_id,
+    duplicate,
+    status_code,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(
+        client,
+        tmp_path,
+        stage_status=stage_status,
+        manifest_format_version=format_version,
+        include_contract=include_contract,
+        duplicate_segment=duplicate,
+    )
+
+    response = client.put(
+        _continuity_endpoint(segment_id),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == status_code
+
+
+@pytest.mark.parametrize(
+    ("manifest_status", "entry_status"),
+    [("generated", "completed"), ("completed", "generated")],
+)
+def test_put_segment_continuity_rejects_generated_evidence(
+    monkeypatch, tmp_path, manifest_status, entry_status,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(
+        client,
+        tmp_path,
+        manifest_status=manifest_status,
+        entry_status=entry_status,
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_put_segment_continuity_accepts_failed_stage_quality_rejected_manifest(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(
+        client,
+        tmp_path,
+        stage_status="failed",
+        manifest_status="quality_rejected",
+        entry_status="quality_rejected",
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 200
+    assert store.load_active(1, "shot-1").revision == 3
+
+
+def test_put_segment_continuity_rejects_advance_before_lock(
+    monkeypatch, tmp_path,
+):
+    from contextlib import contextmanager
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+
+    @contextmanager
+    def advance_before_lock(project_dir, episode):
+        advance_revision(project_dir, episode, "ng-01", "video", regenerate=True)
+        yield
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "narrative_group_sidecar_guard",
+        advance_before_lock,
+    )
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2]
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0].get(
+        "observed_carry_out"
+    ) is None
+
+
+def test_put_segment_continuity_rejects_stage_fingerprint_mismatch(
+    monkeypatch, tmp_path,
+):
+    from dataclasses import replace
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    real_load = narrative_groups._load_postflight_stage
+
+    def load_changed_stage(project_dir, episode, group_id):
+        return replace(
+            real_load(project_dir, episode, group_id),
+            revision=2,
+        )
+
+    monkeypatch.setattr(
+        narrative_groups, "_load_postflight_stage", load_changed_stage
+    )
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2]
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0].get(
+        "observed_carry_out"
+    ) is None
+
+
+def test_put_segment_continuity_rejects_manifest_escape(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path,
+        1,
+        "ng-01",
+        "video",
+        expected_revision=1,
+        status="completed",
+        manifest_asset=str(tmp_path.parent / "escaped.manifest.json"),
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={"contract_revision": 2, "observed_carry_out": "same"},
+    )
+
+    assert response.status_code == 404
+    assert str(tmp_path.parent).lower() not in response.text.lower()
+
+
+def test_put_segment_continuity_rejects_contract_for_another_shot(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["entries"][0]["continuity_contracts"][-1] = store.load_active(
+        1, "shot-2"
+    ).model_dump(mode="json")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 1,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+    assert store.load_active(1, "shot-2").revision == 1
+
+
+def test_put_segment_continuity_retry_is_idempotent(monkeypatch, tmp_path):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    endpoint = _continuity_endpoint()
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+
+    first = client.put(endpoint, json=payload)
+    second = client.put(endpoint, json=payload)
+
+    assert first.status_code == second.status_code == 200
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+    assert (
+        load_h3_director_manifest(manifest_path)
+        .entries[0]
+        .observed_carry_out.result_contract_revision
+        == 3
+    )
+
+
+def test_put_segment_continuity_matching_manifest_replay_does_not_save(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+
+    def fail_save(*_args):
+        raise AssertionError("matching replay must not save the manifest")
+
+    monkeypatch.setattr(narrative_groups, "save_h3_director_manifest", fail_save)
+    replay = client.put(_continuity_endpoint(), json=payload)
+
+    assert replay.status_code == 200
+    assert replay.json()["data"]["units"][0]["observed_carry_out"][
+        "result_contract_revision"
+    ] == 3
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+
+
+def test_put_segment_continuity_replay_rejects_changed_lock_violations(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+        "lock_violations": ["prop"],
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+
+    changed = client.put(
+        _continuity_endpoint(),
+        json={**payload, "lock_violations": ["identity"]},
+    )
+
+    assert changed.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+    observed = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "entries"
+    ][0]["observed_carry_out"]
+    assert observed["lock_violations"] == ["prop"]
+
+
+def test_put_segment_continuity_replay_uses_atomic_store_cas(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+    assert client.put(_continuity_endpoint(), json=payload).status_code == 200
+    real_load_active = ShotContinuityStore.load_active
+    raced = False
+
+    def load_then_advance(self, episode, shot_id):
+        nonlocal raced
+        active = real_load_active(self, episode, shot_id)
+        if not raced and active is not None and active.revision == 3:
+            raced = True
+            changed = active.model_copy(update={
+                "scene": SceneLock(scene_state="concurrent replacement"),
+            })
+            self.put(episode, changed, expected_revision=3)
+        return active
+
+    monkeypatch.setattr(ShotContinuityStore, "load_active", load_then_advance)
+    replay = client.put(_continuity_endpoint(), json=payload)
+
+    assert replay.status_code == 409
+    assert store.list_revisions(1, "shot-1")[-1].revision == 4
+
+
+def test_put_segment_continuity_rejects_aba_replay_from_old_source(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _, store = _seed_continuity_review(client, tmp_path)
+    source = store.load_active(1, "shot-1")
+    boundary_a = source.boundary.model_copy(update={
+        "observed_carry_out": "left hand holds the lantern",
+        "deviation_accepted": True,
+        "deviation_reason": "Accepted on review",
+    })
+    revision_a3 = store.put(
+        1, source.model_copy(update={"boundary": boundary_a}), expected_revision=2
+    )
+    boundary_b = boundary_a.model_copy(update={
+        "observed_carry_out": "right hand holds the lantern",
+        "deviation_accepted": False,
+        "deviation_reason": "",
+    })
+    revision_b4 = store.put(
+        1, revision_a3.model_copy(update={"boundary": boundary_b}), expected_revision=3
+    )
+    store.put(
+        1, revision_b4.model_copy(update={"boundary": boundary_a}), expected_revision=4
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "left hand holds the lantern",
+            "accept_deviation": True,
+            "deviation_reason": "Accepted on review",
+        },
+    )
+
+    assert response.status_code == 409
+    assert store.load_active(1, "shot-1").revision == 5
+
+
+def test_put_segment_continuity_repairs_manifest_after_save_failure(
+    monkeypatch, tmp_path
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+        save_h3_director_manifest,
+    )
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    payload = {
+        "contract_revision": 2,
+        "observed_carry_out": "left hand holds the lantern",
+        "accept_deviation": True,
+        "deviation_reason": "Accepted on review",
+    }
+
+    def fail_save(*_args):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(narrative_groups, "save_h3_director_manifest", fail_save)
+    failed = client.put(_continuity_endpoint(), json=payload)
+    monkeypatch.setattr(
+        narrative_groups, "save_h3_director_manifest", save_h3_director_manifest
+    )
+    repaired = client.put(_continuity_endpoint(), json=payload)
+
+    assert failed.status_code == 500
+    assert "retry is safe" in failed.json()["detail"]
+    assert repaired.status_code == 200
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2, 3]
+    observed = load_h3_director_manifest(manifest_path).entries[0].observed_carry_out
+    assert observed.source_contract_revision == 2
+    assert observed.result_contract_revision == 3
+
+
+
 def _seed_prompt_review_manifest(tmp_path: Path, payload: dict) -> Path:
     manifest = tmp_path / "videos" / "prompt-review.manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -2234,6 +2925,142 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
     assert str(tmp_path).lower().replace("\\", "\\\\") not in serialized
 
 
+def test_get_video_prompts_whitelists_continuity_review_evidence(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(
+        tmp_path,
+        {
+            "format_version": 2,
+            "entries": [
+                {
+                    "segment": {
+                        "segment_id": "shot-1",
+                        "beat_number": 1,
+                        "prompt": "safe prompt",
+                        "duration_seconds": 5,
+                    },
+                    "continuity_contracts": [
+                        {
+                            "revision": 2,
+                            "shot_id": "shot-1",
+                            "scene_id": "hallway",
+                            "predecessor_shot_id": None,
+                            "predecessor_revision": None,
+                            "boundary": {
+                                "carry_in": "door closed",
+                                "planned_carry_out": "right hand holds lantern",
+                                "observed_carry_out": None,
+                                "deviation_accepted": False,
+                                "deviation_reason": "",
+                                "private_path": str(tmp_path / "contract.json"),
+                            },
+                            "api_key": "contract-secret",
+                        }
+                    ],
+                    "risk_report": {
+                        "spatial": {
+                            "dimension": "spatial",
+                            "level": 1,
+                            "reasons": ["screen direction"],
+                        },
+                        "identity": {
+                            "dimension": "identity",
+                            "level": 0,
+                            "reasons": [],
+                        },
+                        "motion": {
+                            "dimension": "motion",
+                            "level": 2,
+                            "reasons": ["fast action"],
+                        },
+                        "continuity": {
+                            "dimension": "continuity",
+                            "level": 1,
+                            "reasons": ["prop hand"],
+                        },
+                        "blockers": ["needs review"],
+                        "token": "risk-secret",
+                    },
+                    "mode_decision": {
+                        "requested": "auto",
+                        "mode": "fl2va",
+                        "reason_codes": ["LAST_FRAME_AVAILABLE"],
+                        "blockers": [],
+                        "authorization": "mode-secret",
+                    },
+                    "compiled_bundle": {
+                        "adapter": "h3-ref",
+                        "mode": "fl2va",
+                        "compiler_id": "minimax-h3-shot-compiler",
+                        "compiler_version": 1,
+                        "diagnostics": ["reference binding active"],
+                        "bundle_sha256": "b" * 64,
+                        "prompt": "private compiled prompt",
+                        "first_frame": {"asset_id": str(tmp_path / "frame.png")},
+                        "credential": "bundle-secret",
+                    },
+                }
+            ],
+        },
+    )
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    unit = response.json()["data"]["units"][0]
+    assert unit["continuity_contracts"] == [
+        {
+            "revision": 2,
+            "shot_id": "shot-1",
+            "scene_id": "hallway",
+            "predecessor_shot_id": None,
+            "predecessor_revision": None,
+            "boundary": {
+                "carry_in": "door closed",
+                "planned_carry_out": "right hand holds lantern",
+                "observed_carry_out": None,
+                "deviation_accepted": False,
+                "deviation_reason": "",
+            },
+        }
+    ]
+    assert unit["risk_report"]["motion"] == {
+        "dimension": "motion",
+        "level": 2,
+        "reasons": ["fast action"],
+    }
+    assert unit["mode_decision"] == {
+        "requested": "auto",
+        "mode": "fl2va",
+        "reason_codes": ["LAST_FRAME_AVAILABLE"],
+        "blockers": [],
+    }
+    assert unit["compiled_bundle"] == {
+        "adapter": "h3-ref",
+        "mode": "fl2va",
+        "compiler_id": "minimax-h3-shot-compiler",
+        "compiler_version": 1,
+        "diagnostics": ["reference binding active"],
+        "bundle_sha256": "b" * 64,
+    }
+    serialized = response.text.lower()
+    for forbidden in (
+        "api_key",
+        "authorization",
+        "credential",
+        "private compiled prompt",
+        "contract-secret",
+        "risk-secret",
+        "mode-secret",
+        "bundle-secret",
+        str(tmp_path).lower(),
+    ):
+        assert forbidden not in serialized
+
+
 def test_get_video_prompts_returns_safe_h3_reference_manifest_contract(
     monkeypatch, tmp_path
 ):
@@ -2310,6 +3137,103 @@ def test_get_video_prompts_treats_non_list_global_references_as_empty(
     assert "must-not-leak" not in response.text
 
 
+def test_get_video_prompts_recursively_redacts_top_level_snapshots(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{"segment": {
+            "segment_id": "beat-1", "beat_number": 1,
+            "prompt": "safe", "duration_seconds": 5,
+        }}],
+        "workflow_parameters": {
+            "resolution": "720p",
+            "description": "ordinary prompt text stays visible",
+            "nested": {
+                "Authorization": "Bearer workflow-secret",
+                "apiKey": "api-secret",
+                "credential_ref": "credential-secret",
+                "safe": [
+                    "visible",
+                    {"ToKeN": "nested-token"},
+                    {"folder": "private/renders", "label": "kept"},
+                ],
+            },
+        },
+        "provider_parameters": {
+            "width": 720,
+            "profile": "cinematic/v2",
+            "direction": "left/right",
+            "PASSWORD": "provider-password",
+            "output_path": "private/a.mov",
+            "output_file": "private.mov",
+            "message": "path=/srv/app/private.json",
+            "windows_message": r"saved=C:\private\render.mov",
+            "quoted_posix": "failed opening '/srv/a'",
+            "double_quoted_posix": 'failed opening "/Users/a"',
+            "angled_windows": r"failed opening <C:\x>",
+            "unc_message": r"failed opening \\server\share\render.mov",
+            "artifact_message": "artifact private/render.mov",
+        },
+        "actual_output": {
+            "width": 720,
+            "Cookie": "session-cookie",
+            "nested": {
+                "secret_value": "actual-secret",
+                "height": 1280,
+                "message": "saved=(/Users/alice/private.mov)",
+                "items": [{"file_name": "private/frame.png", "kind": "preview"}],
+                "boundary_samples": [
+                    "saved=[/srv/bracket.mov]",
+                    "saved={/srv/brace.mov}",
+                    "saved=:/srv/colon.mov",
+                    "saved=;/srv/semicolon.mov",
+                    "saved=,/srv/comma.mov",
+                    "asset=file:///srv/uri.mov",
+                ],
+            },
+        },
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workflow_parameters"] == {
+        "resolution": "720p",
+        "description": "ordinary prompt text stays visible",
+        "nested": {
+            "safe": ["visible", {}, {"folder": "[redacted]", "label": "kept"}],
+        },
+    }
+    assert data["provider_parameters"] == {
+        "width": 720,
+        "profile": "cinematic/v2",
+        "direction": "left/right",
+        "output_path": "[redacted]",
+        "output_file": "[redacted]",
+    }
+    assert data["actual_output"] == {
+        "width": 720,
+        "nested": {
+            "height": 1280,
+            "items": [{"file_name": "[redacted]", "kind": "preview"}],
+            "boundary_samples": [],
+        },
+    }
+    serialized = response.text.lower()
+    for forbidden in (
+        "authorization", "apikey", "token", "password", "cookie", "secret",
+        "credential", "path=/srv", "saved=(/users", r"c:\private",
+        "private/a.mov", "private.mov", "private/frame.png",
+        "private/render.mov", "failed opening", "server\\share",
+    ):
+        assert forbidden not in serialized
+
+
 def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -2362,6 +3286,67 @@ def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_pa
         "plan-api-secret", "plan-token-secret", "plan-header-secret",
         "plan-workflow-secret", "profile-auth-secret", "quality-credential-secret",
         "quality-workflow-secret", "summary-token-secret",
+    ):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "failed opening /Users/alice/private.mov",
+        r"failed opening C:\Users\alice\private.mov",
+        r"failed opening \\server\share\private.mov",
+        "artifact private/render.mov",
+    ],
+)
+def test_project_review_text_rejects_embedded_paths(value):
+    assert (
+        narrative_groups._project_review_value(value, narrative_groups._SAFE_TEXT)
+        is narrative_groups._REJECTED_REVIEW_VALUE
+    )
+
+
+def test_get_video_prompts_redacts_paths_from_projected_text_fields(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+            "director_plan": {
+                "mode": "i2va",
+                "visual_style": "cinematic/v2",
+                "soundscape": "failed opening /Users/alice/private.mov",
+                "music": r"failed opening C:\Users\alice\private.mov",
+                "continuity_locks": [
+                    r"failed opening \\server\share\private.mov",
+                    "artifact private/render.mov",
+                    "left/right",
+                ],
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["units"][0]["director_plan"] == {
+        "mode": "i2va",
+        "visual_style": "cinematic/v2",
+        "continuity_locks": ["left/right"],
+    }
+    serialized = response.text.lower()
+    for forbidden in (
+        "/users/alice/private.mov",
+        r"c:\users\alice\private.mov",
+        r"server\share\private.mov",
+        "private/render.mov",
     ):
         assert forbidden not in serialized
 

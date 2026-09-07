@@ -119,6 +119,22 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
                     ),
                 ),
             ),
+            VideoWorkflowParameterDefinition(
+                key="continuity_policy",
+                label="连续性策略",
+                default="legacy",
+                scope="narrative_group",
+                options=(
+                    VideoWorkflowParameterOption(value="legacy", label="旧流程"),
+                    VideoWorkflowParameterOption(value="observe", label="只观察"),
+                    VideoWorkflowParameterOption(
+                        value="guard", label="阻断确定性错误"
+                    ),
+                    VideoWorkflowParameterOption(
+                        value="enforce", label="启用新编译"
+                    ),
+                ),
+            ),
         ),
         available=True,
     )
@@ -243,6 +259,42 @@ def test_reference_policy_defaults_are_non_reference() -> None:
     )
 
 
+def test_registry_lists_ref_after_base_as_unavailable_local_contract(
+    tmp_path,
+) -> None:
+    registry = _configured_registry(tmp_path)
+    base, ref = registry.list(VideoWorkflowScene.NARRATIVE_GROUP)
+
+    assert registry.default(VideoWorkflowScene.NARRATIVE_GROUP) is base
+    assert ref == VideoWorkflowDefinition(
+        id="runninghub:minimax-h3-ref",
+        label="RunningHub MiniMax H3 · Ref",
+        provider="runninghub",
+        adapter_key="minimax-h3-ref",
+        workflow_settings_key="video_minimax_h3_ref",
+        provider_workflow_id="2096502793044582401",
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=("auto", "i2va", "fl2va"),
+        default_mode="auto",
+        parameters=base.parameters,
+        reference_policy=workflow_registry_module.VideoReferencePolicy(
+            required=True,
+            min_images=1,
+            max_images=5,
+            source_kinds=(
+                "character_identity",
+                "scene_master",
+                "prop_reference",
+                "temporary_upload",
+            ),
+        ),
+        available=False,
+        unavailable_reason="hybrid_input_unverified",
+    )
+    with pytest.raises(VideoWorkflowUnavailable, match="hybrid_input_unverified"):
+        registry.resolve(ref.id, VideoWorkflowScene.NARRATIVE_GROUP)
+
+
 def test_workflow_definition_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         VideoWorkflowDefinition(
@@ -280,6 +332,23 @@ def test_workflow_definition_exposes_supported_modes(tmp_path) -> None:
 
     assert definition.supported_modes == ("auto", "i2va", "fl2va")
     assert "modes" not in VideoWorkflowDefinition.model_fields
+
+
+def test_h3_registry_exposes_staged_continuity_policy(tmp_path) -> None:
+    definition = _configured_registry(tmp_path).list()[0]
+
+    assert [parameter.key for parameter in definition.parameters] == [
+        "resolution",
+        "continuity_policy",
+    ]
+    policy = definition.parameters[1]
+    assert policy.default == "legacy"
+    assert [(option.value, option.label) for option in policy.options] == [
+        ("legacy", "旧流程"),
+        ("observe", "只观察"),
+        ("guard", "阻断确定性错误"),
+        ("enforce", "启用新编译"),
+    ]
 
 
 @pytest.mark.parametrize(

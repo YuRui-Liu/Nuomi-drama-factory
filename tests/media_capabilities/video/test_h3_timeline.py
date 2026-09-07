@@ -9,6 +9,8 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3CompiledTimeline,
     H3DirectorOutputManifest,
     H3DirectorSegment,
+    H3GenerationAttemptEvidence,
+    H3ObservedBoundary,
     H3TimelineEntry,
     build_h3_timeline_data,
     frames_for_duration,
@@ -230,12 +232,12 @@ def test_manifest_round_trip_maps_one_physical_video_to_multiple_entries(tmp_pat
         "director.mp4"
     }
     restored = load_h3_director_manifest(target)
-    assert restored.format_version == 1
+    assert restored.format_version == 2
     assert restored.workflow_id == "workflow-136"
     assert restored.provider_task_id == "task-42"
     assert restored.actual_duration_seconds == pytest.approx(163 / 24)
     assert restored.dialogue_stem_status == "ready"
-    assert all(entry.format_version == 1 for entry in restored.entries)
+    assert all(entry.format_version == 2 for entry in restored.entries)
     assert restored.entries[0].dialogue_source is DialogueSource.EXTERNAL_TTS
     assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
@@ -276,6 +278,27 @@ def test_manifest_entry_round_trip_preserves_submitted_prompt_evidence(tmp_path:
     }
     assert entry.quality_report["passed"] is True
     assert entry.input_summary["beat_ids"] == ["beat-1"]
+
+
+def test_manifest_round_trip_preserves_structured_source_shot_ids(tmp_path: Path) -> None:
+    segment = _segment(
+        "shot--close", 1, 1, source_shot_ids=("shot--close",)
+    )
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4",
+        entries=build_h3_timeline_data([segment]).entries,
+    )
+    target = tmp_path / "structured-source-shots.json"
+
+    save_director_manifest(target, manifest)
+
+    persisted = json.loads(target.read_text(encoding="utf-8"))
+    assert persisted["entries"][0]["segment"]["source_shot_ids"] == [
+        "shot--close"
+    ]
+    assert load_h3_director_manifest(target).entries[0].segment.source_shot_ids == (
+        "shot--close",
+    )
 
 
 def test_old_manifest_without_prompt_evidence_remains_loadable(tmp_path: Path) -> None:
@@ -370,3 +393,124 @@ def test_director_paths_are_group_and_revision_scoped_and_safe(tmp_path: Path) -
         resolver.director_video("../escape", 3)
     with pytest.raises(ValueError, match="revision"):
         resolver.director_video("group-01", 0)
+
+
+def test_manifest_v2_round_trip_preserves_continuity_evidence(tmp_path: Path) -> None:
+    timeline = build_h3_timeline_data([_segment("s1", 1, 1)])
+    entry = timeline.entries[0].model_copy(update={
+        "continuity_contracts": ({"kind": "identity", "revision": 3},),
+        "risk_report": {"score": 0.25, "risks": ["camera"]},
+        "mode_decision": {"mode": "i2va", "reason": "single frame"},
+        "compiled_bundle": {"sha256": "a" * 64, "payload": {"revision": 2}},
+        "attempts": (
+            H3GenerationAttemptEvidence(
+                attempt=1, status="submitted", provider_task_id="provider-7"
+            ),
+        ),
+        "observed_carry_out": H3ObservedBoundary(
+            value="actor facing camera",
+            source_contract_revision=2,
+            result_contract_revision=3,
+            accepted=False,
+            deviation_reason="camera crossed axis",
+            lock_violations=("camera",),
+        ),
+    })
+    manifest = H3DirectorOutputManifest(
+        physical_video="director.mp4", entries=(entry,)
+    )
+    target = tmp_path / "v2.json"
+
+    save_director_manifest(target, manifest)
+    restored = load_h3_director_manifest(target)
+
+    assert restored.format_version == 2
+    assert restored.entries[0].format_version == 2
+    assert restored.entries[0].compiled_bundle["sha256"] == "a" * 64
+    assert restored.entries[0].risk_report["risks"] == ["camera"]
+    assert restored.entries[0].continuity_contracts[0]["revision"] == 3
+    assert restored.entries[0].attempts[0].provider_task_id == "provider-7"
+    assert restored.entries[0].observed_carry_out.lock_violations == ("camera",)
+
+
+def test_manifest_v1_without_continuity_evidence_loads_with_defaults(
+    tmp_path: Path,
+) -> None:
+    timeline = build_h3_timeline_data([_segment("legacy", 1, 1)])
+    payload = H3DirectorOutputManifest(
+        physical_video="legacy.mp4", entries=timeline.entries, format_version=1
+    ).model_dump(mode="json")
+    for entry in payload["entries"]:
+        for field in (
+            "continuity_contracts", "risk_report", "mode_decision",
+            "compiled_bundle", "attempts", "observed_carry_out",
+        ):
+            entry.pop(field, None)
+    target = tmp_path / "v1.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    restored = load_h3_director_manifest(target)
+    round_trip = tmp_path / "v1-round-trip.json"
+    save_director_manifest(round_trip, restored)
+
+    assert restored.format_version == 1
+    assert restored.entries[0].format_version == 1
+    assert restored.entries[0].continuity_contracts == ()
+    assert restored.entries[0].risk_report is None
+    assert restored.entries[0].mode_decision is None
+    assert restored.entries[0].compiled_bundle is None
+    assert restored.entries[0].attempts == ()
+    assert restored.entries[0].observed_carry_out is None
+    assert load_h3_director_manifest(round_trip) == restored
+
+
+def test_entry_snapshots_nested_continuity_dicts_from_caller_mutation() -> None:
+    contract = {"locks": {"identity": ["hero"]}}
+    risk = {"risks": [{"kind": "camera"}]}
+    decision = {"mode": {"value": "i2va"}}
+    bundle = {"hash": {"sha256": "b" * 64}}
+
+    entry = H3TimelineEntry(
+        segment=_segment("s1", 1, 1), start_frame=0, frame_count=39,
+        continuity_contracts=(contract,), risk_report=risk,
+        mode_decision=decision, compiled_bundle=bundle,
+    )
+    contract["locks"]["identity"].append("villain")
+    risk["risks"][0]["kind"] = "lighting"
+    decision["mode"]["value"] = "fl2va"
+    bundle["hash"]["sha256"] = "changed"
+
+    assert entry.continuity_contracts[0]["locks"]["identity"] == ["hero"]
+    assert entry.risk_report["risks"][0]["kind"] == "camera"
+    assert entry.mode_decision["mode"]["value"] == "i2va"
+    assert entry.compiled_bundle["hash"]["sha256"] == "b" * 64
+
+
+def test_attempt_and_observed_boundary_contracts_are_strict() -> None:
+    with pytest.raises(ValidationError):
+        H3GenerationAttemptEvidence(attempt=0, status="submitted")
+    with pytest.raises(ValidationError):
+        H3GenerationAttemptEvidence(attempt=1, status="unknown")
+    with pytest.raises(ValidationError):
+        H3ObservedBoundary(
+            value=" ", source_contract_revision=1, result_contract_revision=1
+        )
+    with pytest.raises(ValidationError):
+        H3ObservedBoundary(
+            value="ok", source_contract_revision=1,
+            result_contract_revision=1, lock_violations=("dialogue",),
+        )
+
+
+def test_manifest_retains_partial_failure_lifecycle_status() -> None:
+    entry = H3TimelineEntry(
+        segment=_segment("s1", 1, 1), start_frame=0, frame_count=39,
+        status="partial_failure",
+    )
+
+    manifest = H3DirectorOutputManifest(
+        entries=(entry,), status="partial_failure"
+    )
+
+    assert manifest.status == "partial_failure"
+    assert manifest.entries[0].status == "partial_failure"
