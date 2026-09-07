@@ -35,7 +35,7 @@
 
 - [ ] **步骤 1：编写失败测试**
 
-增加断言：生成提示包含 `identity reference only`、`no hand-to-face gesture`、`must not cross panel boundaries`；保存后的输出字节与 provider 返回图一致；同步和异步生成元数据包含：
+增加断言：生成提示包含 `identity reference only`、`no hand-to-face gesture`、`must not cross panel boundaries`；PNG 输出保持 provider 原始字节，JPEG/WebP 输出仅规范化为同尺寸 PNG；同步和异步生成元数据包含：
 
 ```python
 assert metadata["composition_mode"] == "provider_canvas"
@@ -54,14 +54,12 @@ assert metadata["face_source_usage"] == "reference_only"
 
 - [ ] **步骤 3：最小实现**
 
-在 `identity_sheet.py` 增加只做格式规范化、不裁切内容的保存函数：
+在 `identity_sheet.py` 增加只做格式规范化、不裁切或缩放内容的原子保存函数。PNG 保持原始字节，其他 Pillow 可解码格式规范化为同尺寸 PNG，并在发布前验证完整 3:2 画布：
 
 ```python
 def save_provider_identity_sheet(candidate_path: str | Path, output_path: str | Path) -> Path:
-    with Image.open(candidate_path) as source:
-        image = source.convert("RGB")
-        image.save(output_path, format="PNG")
-    return Path(output_path)
+    # copy to same-directory temp -> validate/normalize -> atomic replace
+    ...
 ```
 
 生成提示明确头像仅为 reference，禁止遮脸、越栏和裁切。同步、异步路径改用该函数，并记录 `composition_mode` 与 `face_source_usage`。

@@ -47,8 +47,10 @@ The prompt must explicitly require:
 - complete front and back silhouettes with safe margins around head and feet;
 - one visible face only, in the left portrait panel.
 
-The raw provider image becomes the final version asset. Generation metadata retains
-the raw path for compatibility, but records that the composition mode is
+The complete provider canvas becomes the final version asset without cropping,
+resizing, or panel recomposition. PNG bytes are preserved; other supported image
+formats are decoded and normalized to PNG at the same dimensions. Generation metadata
+retains the raw path for compatibility, but records that the composition mode is
 `provider_canvas` and no pixel replacement occurred.
 
 ## Quality Control

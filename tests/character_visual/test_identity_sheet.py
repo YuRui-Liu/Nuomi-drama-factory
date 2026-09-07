@@ -298,15 +298,25 @@ def test_save_provider_identity_sheet_rejects_non_three_by_two_canvas(tmp_path: 
     assert not output.exists()
 
 
-def test_save_provider_identity_sheet_rejects_three_by_two_jpeg(tmp_path: Path) -> None:
-    candidate = tmp_path / "candidate.jpg"
-    Image.new("RGB", (900, 600), (128, 128, 128)).save(candidate, format="JPEG")
+@pytest.mark.parametrize(
+    ("suffix", "image_format"),
+    [(".jpg", "JPEG"), (".webp", "WEBP")],
+)
+def test_save_provider_identity_sheet_normalizes_three_by_two_provider_images_to_png(
+    tmp_path: Path,
+    suffix: str,
+    image_format: str,
+) -> None:
+    candidate = tmp_path / f"candidate{suffix}"
+    Image.new("RGB", (900, 600), (128, 128, 128)).save(candidate, format=image_format)
     output = tmp_path / "sheet.png"
 
-    with pytest.raises(ValueError, match="PNG"):
-        save_provider_identity_sheet(candidate, output)
+    result = save_provider_identity_sheet(candidate, output)
 
-    assert not output.exists()
+    assert result == output
+    with Image.open(output) as normalized:
+        assert normalized.format == "PNG"
+        assert normalized.size == (900, 600)
 
 
 def test_save_provider_identity_sheet_validates_the_bytes_it_publishes(

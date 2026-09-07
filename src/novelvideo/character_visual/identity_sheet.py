@@ -254,7 +254,7 @@ def save_provider_identity_sheet(
     candidate = Path(candidate_path)
     output = Path(output_path)
 
-    def validate_provider_canvas(path: Path) -> None:
+    def validate_provider_canvas(path: Path) -> str:
         try:
             with Image.open(path) as source:
                 image_format = source.format
@@ -264,17 +264,22 @@ def save_provider_identity_sheet(
             raise ValueError(
                 "provider identity sheet candidate is not a valid image"
             ) from exc
-        if image_format != "PNG":
-            raise ValueError("provider identity sheet candidate must be a PNG image")
         if width * 2 != height * 3:
             raise ValueError("provider identity sheet candidate must use a 3:2 canvas")
+        return str(image_format or "")
+
+    def normalize_as_png(path: Path) -> None:
+        with Image.open(path) as source:
+            source.load()
+            normalized = source.copy()
+        normalized.save(path, format="PNG")
 
     if not candidate.is_file() or candidate.stat().st_size <= 0:
         raise ValueError("provider identity sheet candidate is missing or empty")
     output.parent.mkdir(parents=True, exist_ok=True)
     if candidate.resolve() == output.resolve():
-        validate_provider_canvas(candidate)
-        return output
+        if validate_provider_canvas(candidate) == "PNG":
+            return output
 
     temporary_path: Path | None = None
     try:
@@ -286,7 +291,10 @@ def save_provider_identity_sheet(
         ) as temporary:
             temporary_path = Path(temporary.name)
         shutil.copyfile(candidate, temporary_path)
-        validate_provider_canvas(temporary_path)
+        if validate_provider_canvas(temporary_path) != "PNG":
+            normalize_as_png(temporary_path)
+            if validate_provider_canvas(temporary_path) != "PNG":
+                raise ValueError("provider identity sheet normalization did not produce PNG")
         os.replace(temporary_path, output)
         temporary_path = None
     finally:
