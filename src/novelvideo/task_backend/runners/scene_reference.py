@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
+from novelvideo.production_workflow.slot_ids import (
+    scene_base_slot_id,
+    scene_state_slot_id,
+)
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
@@ -59,10 +63,10 @@ def _register_scene_reference_candidate(
     base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
     state_id = str(scene.name) if base_scene_id else ""
     if state_id:
-        slot_id = f"scene:{base_scene_id}:state:{state_id}:{kind}"
+        slot_id = scene_state_slot_id(base_scene_id, state_id, kind)
         asset_kind = "scene_state"
     else:
-        slot_id = f"scene:{scene.name}:base:{kind}"
+        slot_id = scene_base_slot_id(str(scene.name), kind)
         asset_kind = "scene_base"
     version_id = output_path.stem
     with production_workflow_project_lock(ctx.state_dir):

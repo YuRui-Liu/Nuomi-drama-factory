@@ -57,6 +57,7 @@ from novelvideo.character_visual.identity_sheet import (
     classify_identity_sheet_style,
 )
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
+from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.config import (
     image_generation_selection_options,
     character_image_selection_options,
@@ -2231,7 +2232,7 @@ async def generate_identity_image(
     def relative_asset_path(path: Path) -> str:
         return path.resolve().relative_to(root).as_posix()
 
-    slot_id = f"character:{name}:state:{identity.identity_id}"
+    slot_id = character_state_slot_id(name, identity.identity_id)
     state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / "_state"
     promote_path: Path | None = None
     with production_workflow_project_lock(state_dir):

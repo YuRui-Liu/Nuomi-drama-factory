@@ -39,6 +39,35 @@ def test_scene_canonical_replace_failure_rolls_back_workflow_and_canonical(
     assert not (tmp_path / "production_workflow.json").exists()
 
 
+def test_scene_state_registration_uses_state_slot_factory(monkeypatch, tmp_path):
+    from novelvideo.task_backend.runners import scene_reference
+
+    candidate = tmp_path / "assets/scenes/hall-night/versions/master-v1.png"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    canonical = tmp_path / "assets/scenes/hall-night/master.png"
+    calls: list[tuple[str, str, str]] = []
+
+    def scene_state_slot(base_scene_id: str, state_id: str, kind: str) -> str:
+        calls.append((base_scene_id, state_id, kind))
+        return f"scene:{base_scene_id}:state:{state_id}:{kind}"
+
+    monkeypatch.setattr(scene_reference, "scene_state_slot_id", scene_state_slot)
+    result, _canonical_updated = scene_reference._register_scene_reference_candidate(
+        ctx=SimpleNamespace(state_dir=tmp_path, requester_username="system"),
+        output_dir=tmp_path,
+        scene=SimpleNamespace(name="hall-night", base_scene_id="hall"),
+        kind="master",
+        output_path=candidate,
+        canonical_path=canonical,
+        source_attempt_id="attempt",
+        recipe_revision="1",
+    )
+
+    assert result["slot_id"] == "scene:hall:state:hall-night:master"
+    assert calls == [("hall", "hall-night", "master")]
+
+
 @pytest.mark.asyncio
 async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tmp_path):
     from novelvideo.models import NovelScene
@@ -46,6 +75,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
 
     scene = NovelScene(name="大厅", description="地下大厅")
     calls: dict[str, object] = {"clear_stale": []}
+
+    def scene_slot(scene_name: str, kind: str) -> str:
+        calls.setdefault("slot_factory", []).append((scene_name, kind))
+        return f"scene:{scene_name}:base:{kind}"
 
     class FakeSQLiteStore:
         def __init__(self, project_name, *, output_dir, state_dir):
@@ -89,6 +122,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
         "get_task_manager",
         lambda: SimpleNamespace(update_progress_for_project=lambda *_a, **_k: None),
     )
+    monkeypatch.setattr(scene_reference, "scene_base_slot_id", scene_slot)
     monkeypatch.setattr(
         "novelvideo.api.deps.get_media_capability_store", lambda: object()
     )
@@ -136,6 +170,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert calls["generate"]["model"] == "gpt-image-2"
     assert "versions" in str(calls["generate"]["output_path_override"])
     assert calls["clear_stale"] == [("大厅", "master")]
+    assert calls["slot_factory"] == [("大厅", "master")]
 
     from novelvideo.production_workflow import ProductionWorkflowStore
 
@@ -168,3 +203,4 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert second["version_id"] != result["version_id"]
     assert second_slot.current_version_id == result["version_id"]
     assert calls["clear_stale"] == [("大厅", "master")]
+    assert calls["slot_factory"] == [("大厅", "master"), ("大厅", "master")]

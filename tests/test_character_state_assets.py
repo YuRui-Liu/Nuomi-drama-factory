@@ -60,6 +60,11 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
     Image.new("RGB", (320, 480), "gray").save(portrait)
     generated_prompts: list[str] = []
     generated_aspect_ratios: list[str] = []
+    slot_factory_calls: list[tuple[str, str]] = []
+
+    def character_slot(character_name: str, identity_id: str) -> str:
+        slot_factory_calls.append((character_name, identity_id))
+        return f"character:{character_name}:state:{identity_id}"
 
     def custom_style(style_id: str, *, project_dir=None, **_kwargs):
         assert style_id == "custom_anime_realistic"
@@ -115,6 +120,7 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
     monkeypatch.setattr("novelvideo.sqlite_store.SQLiteStore", FakeSQLiteStore)
     monkeypatch.setattr(character_image, "_generate_grsai_image", fake_grsai_image)
     monkeypatch.setattr(character_image, "assess_identity_sheet_quality", passing_qc)
+    monkeypatch.setattr(character_image, "character_state_slot_id", character_slot)
     monkeypatch.setattr(
         "novelvideo.services.style_service.StyleService.get_style",
         custom_style,
@@ -205,6 +211,7 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
     }
     assert all("Identity Sheet v2" in prompt for prompt in generated_prompts)
     assert generated_aspect_ratios == ["3:2", "3:2"]
+    assert slot_factory_calls == [("林默", "linmo-duty"), ("林默", "linmo-duty")]
     assert first["layout_version"] == "identity_sheet_v2"
     assert first["qc_passed"] is True
     assert json.loads((ctx.state_dir / "production_workflow.json").read_text("utf-8"))

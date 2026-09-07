@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
+from novelvideo.production_workflow.slot_ids import prop_reference_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
@@ -56,7 +57,7 @@ def _register_prop_candidate(
     )
 
     root = output_dir.resolve()
-    slot_id = f"prop:{prop.name}:reference"
+    slot_id = prop_reference_slot_id(str(prop.name))
     with production_workflow_project_lock(ctx.state_dir):
         qc_passed = output_path.is_file() and output_path.stat().st_size > 0
         staged_canonical: Path | None = None

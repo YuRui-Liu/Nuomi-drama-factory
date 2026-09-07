@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import hashlib
+import json
+
+import pytest
+
+
+def _binding(
+    *,
+    entity_id: str,
+    asset_kind: str = "character_identity",
+    group_ids: tuple[str, ...] = (),
+    revision: str = "plan-r1",
+    display_label: str = "林默 / 值班员",
+):
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    return PlannedReferenceBinding.create(
+        project_id="project-1",
+        episode_number=1,
+        source_plan_revision_id=revision,
+        asset_kind=asset_kind,
+        entity_id=entity_id,
+        asset_slot_id=f"slot:{entity_id}",
+        group_ids=group_ids,
+        beat_ids=("beat-1",),
+        shot_ids=("shot-1",),
+        status="ready",
+        resolution="auto_matched",
+        display_label=display_label,
+    )
+
+
+def test_binding_id_uses_only_stable_asset_identity_fields() -> None:
+    first = _binding(entity_id="linmo-duty", group_ids=("group-1",))
+    replanned = _binding(
+        entity_id="linmo-duty",
+        group_ids=("group-2",),
+        revision="plan-r2",
+        display_label="林默（值班）",
+    )
+    canonical = json.dumps(
+        {
+            "asset_kind": "character_identity",
+            "asset_slot_id": "slot:linmo-duty",
+            "base_entity_id": "",
+            "entity_id": "linmo-duty",
+            "episode_number": 1,
+            "project_id": "project-1",
+            "variant_id": "",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    assert first.binding_id == "planned-ref-" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()[:24]
+    assert replanned.binding_id == first.binding_id
+    assert replanned.group_ids == ("group-2",)
+
+
+def test_binding_id_uses_validated_canonical_values() -> None:
+    integer_episode = _binding(entity_id="linmo-duty")
+    string_episode = integer_episode.create(
+        project_id="project-1",
+        episode_number="1",  # type: ignore[arg-type]
+        source_plan_revision_id="plan-r2",
+        asset_kind="character_identity",
+        entity_id="linmo-duty",
+        asset_slot_id="slot:linmo-duty",
+        status="ready",
+        resolution="auto_matched",
+        display_label="replanned",
+    )
+
+    assert string_episode.episode_number == 1
+    assert string_episode.binding_id == integer_episode.binding_id
+
+
+def test_binding_is_frozen_forbids_extra_and_requires_positive_episode() -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    binding = _binding(entity_id="linmo-duty")
+    with pytest.raises(ValidationError):
+        binding.display_label = "changed"
+    with pytest.raises(ValidationError):
+        PlannedReferenceBinding.model_validate(
+            {**binding.model_dump(), "unexpected": True}
+        )
+    with pytest.raises(ValidationError):
+        PlannedReferenceBinding.model_validate(
+            {**binding.model_dump(), "episode_number": 0}
+        )
+
+
+@pytest.mark.asyncio
+async def test_store_lists_filters_and_gets_bindings_in_requested_order(tmp_path) -> None:
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(
+        "test/planned-bindings",
+        output_dir=str(tmp_path / "output"),
+        state_dir=str(tmp_path / "state"),
+    )
+    try:
+        first = _binding(entity_id="linmo-duty", group_ids=("group-1",))
+        second = _binding(
+            entity_id="hall",
+            asset_kind="scene_base",
+            group_ids=("group-2", "group-1"),
+            display_label="大厅",
+        )
+        await store.replace_planned_reference_bindings_atomic(
+            1, ("character_identity", "scene_base"), (first, second)
+        )
+
+        listed = await store.list_planned_reference_bindings(1)
+        assert {item.binding_id for item in listed} == {
+            first.binding_id,
+            second.binding_id,
+        }
+        assert [item.binding_id for item in await store.list_planned_reference_bindings(
+            1, group_id="group-2"
+        )] == [second.binding_id]
+        assert await store.get_planned_reference_bindings(
+            1, (second.binding_id, first.binding_id)
+        ) == [second, first]
+        with pytest.raises(ValueError, match="duplicate"):
+            await store.get_planned_reference_bindings(
+                1, (first.binding_id, first.binding_id)
+            )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_replace_bindings_rolls_back_delete_when_insert_fails(tmp_path) -> None:
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(
+        "test/planned-bindings-rollback",
+        output_dir=str(tmp_path / "output"),
+        state_dir=str(tmp_path / "state"),
+    )
+    try:
+        original = _binding(entity_id="linmo-duty")
+        await store.replace_planned_reference_bindings_atomic(
+            1, ("character_identity",), (original,)
+        )
+        replacement = _binding(entity_id="zhou", display_label="周警官")
+
+        with pytest.raises(Exception):
+            await store.replace_planned_reference_bindings_atomic(
+                1,
+                ("character_identity",),
+                (replacement, replacement),
+            )
+
+        assert await store.list_planned_reference_bindings(1) == [original]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_binding_replacements_do_not_share_a_transaction(tmp_path) -> None:
+    import asyncio
+
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(
+        "test/planned-bindings-concurrent",
+        output_dir=str(tmp_path / "output"),
+        state_dir=str(tmp_path / "state"),
+    )
+    try:
+        first = _binding(entity_id="linmo-duty")
+        second = _binding(entity_id="zhou", display_label="周警官")
+        await asyncio.gather(
+            store.replace_planned_reference_bindings_atomic(
+                1, ("character_identity",), (first,)
+            ),
+            store.replace_planned_reference_bindings_atomic(
+                1, ("character_identity",), (second,)
+            ),
+        )
+
+        listed = await store.list_planned_reference_bindings(1)
+        assert listed in ([first], [second])
+    finally:
+        await store.close()

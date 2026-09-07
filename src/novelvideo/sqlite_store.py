@@ -39,6 +39,7 @@ from novelvideo.models import (
     sync_beat_asset_refs,
 )
 from novelvideo.novel_source import load_imported_novel_content
+from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 from novelvideo.sqlite_pragmas import configure_sqlite_connection_async
 from novelvideo.utils.path_resolver import compute_identity_path
 
@@ -149,6 +150,28 @@ CREATE TABLE IF NOT EXISTS beats (
 );
 
 CREATE INDEX IF NOT EXISTS idx_beats_episode ON beats(episode_number);
+
+CREATE TABLE IF NOT EXISTS planned_reference_bindings (
+    binding_id             TEXT PRIMARY KEY,
+    project_id             TEXT NOT NULL,
+    episode_number         INTEGER NOT NULL,
+    source_plan_revision_id TEXT NOT NULL,
+    asset_kind             TEXT NOT NULL,
+    entity_id              TEXT NOT NULL,
+    base_entity_id         TEXT NOT NULL DEFAULT '',
+    variant_id             TEXT NOT NULL DEFAULT '',
+    asset_slot_id          TEXT NOT NULL,
+    group_ids_json         TEXT NOT NULL DEFAULT '[]',
+    beat_ids_json          TEXT NOT NULL DEFAULT '[]',
+    shot_ids_json          TEXT NOT NULL DEFAULT '[]',
+    required               INTEGER NOT NULL DEFAULT 1,
+    status                 TEXT NOT NULL,
+    resolution             TEXT NOT NULL,
+    display_label          TEXT NOT NULL,
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_planned_reference_bindings_episode_kind
+    ON planned_reference_bindings(episode_number, asset_kind);
 
 CREATE TABLE IF NOT EXISTS sketch_failure_modes (
     code                   TEXT PRIMARY KEY,
@@ -553,6 +576,129 @@ class SQLiteStore:
     async def initialize(self) -> None:
         await self._ensure_db()
         console.print(f"[dim]SQLite 存储已初始化 (db: {self.db_path})[/dim]")
+
+    @staticmethod
+    def _planned_reference_binding_from_row(
+        row: aiosqlite.Row,
+    ) -> PlannedReferenceBinding:
+        return PlannedReferenceBinding(
+            binding_id=row["binding_id"],
+            project_id=row["project_id"],
+            episode_number=row["episode_number"],
+            source_plan_revision_id=row["source_plan_revision_id"],
+            asset_kind=row["asset_kind"],
+            entity_id=row["entity_id"],
+            base_entity_id=row["base_entity_id"],
+            variant_id=row["variant_id"],
+            asset_slot_id=row["asset_slot_id"],
+            group_ids=tuple(json.loads(row["group_ids_json"])),
+            beat_ids=tuple(json.loads(row["beat_ids_json"])),
+            shot_ids=tuple(json.loads(row["shot_ids_json"])),
+            required=bool(row["required"]),
+            status=row["status"],
+            resolution=row["resolution"],
+            display_label=row["display_label"],
+        )
+
+    async def list_planned_reference_bindings(
+        self,
+        episode_number: int,
+        group_id: str | None = None,
+    ) -> list[PlannedReferenceBinding]:
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT * FROM planned_reference_bindings "
+            "WHERE episode_number = ? ORDER BY binding_id",
+            (episode_number,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        bindings = [self._planned_reference_binding_from_row(row) for row in rows]
+        if group_id is None:
+            return bindings
+        return [binding for binding in bindings if group_id in binding.group_ids]
+
+    async def get_planned_reference_bindings(
+        self,
+        episode_number: int,
+        binding_ids: tuple[str, ...] | list[str],
+    ) -> list[PlannedReferenceBinding]:
+        requested_ids = tuple(binding_ids)
+        if len(set(requested_ids)) != len(requested_ids):
+            raise ValueError("duplicate binding_ids are not allowed")
+        if not requested_ids:
+            return []
+        db = await self._ensure_db()
+        placeholders = ", ".join("?" for _ in requested_ids)
+        async with db.execute(
+            "SELECT * FROM planned_reference_bindings "
+            f"WHERE episode_number = ? AND binding_id IN ({placeholders})",
+            (episode_number, *requested_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        by_id = {
+            row["binding_id"]: self._planned_reference_binding_from_row(row)
+            for row in rows
+        }
+        return [by_id[binding_id] for binding_id in requested_ids if binding_id in by_id]
+
+    async def replace_planned_reference_bindings_atomic(
+        self,
+        episode_number: int,
+        asset_kinds: tuple[str, ...] | list[str],
+        bindings: tuple[PlannedReferenceBinding, ...] | list[PlannedReferenceBinding],
+    ) -> None:
+        kinds = tuple(asset_kinds)
+        replacement_bindings = tuple(bindings)
+        if len(set(kinds)) != len(kinds):
+            raise ValueError("duplicate asset_kinds are not allowed")
+        if any(binding.episode_number != episode_number for binding in replacement_bindings):
+            raise ValueError("binding episode_number does not match replacement episode")
+        if any(binding.asset_kind not in kinds for binding in replacement_bindings):
+            raise ValueError("binding asset_kind is outside replacement asset_kinds")
+
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await configure_sqlite_connection_async(db)
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                if kinds:
+                    placeholders = ", ".join("?" for _ in kinds)
+                    await db.execute(
+                        "DELETE FROM planned_reference_bindings "
+                        f"WHERE episode_number = ? AND asset_kind IN ({placeholders})",
+                        (episode_number, *kinds),
+                    )
+                for binding in replacement_bindings:
+                    await db.execute(
+                        "INSERT INTO planned_reference_bindings "
+                        "(binding_id, project_id, episode_number, source_plan_revision_id, "
+                        "asset_kind, entity_id, base_entity_id, variant_id, asset_slot_id, "
+                        "group_ids_json, beat_ids_json, shot_ids_json, required, status, "
+                        "resolution, display_label, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                        (
+                            binding.binding_id,
+                            binding.project_id,
+                            binding.episode_number,
+                            binding.source_plan_revision_id,
+                            binding.asset_kind,
+                            binding.entity_id,
+                            binding.base_entity_id,
+                            binding.variant_id,
+                            binding.asset_slot_id,
+                            json.dumps(binding.group_ids, ensure_ascii=False),
+                            json.dumps(binding.beat_ids, ensure_ascii=False),
+                            json.dumps(binding.shot_ids, ensure_ascii=False),
+                            int(binding.required),
+                            binding.status,
+                            binding.resolution,
+                            binding.display_label,
+                        ),
+                    )
+                await db.commit()
+            except BaseException:
+                await asyncio.shield(db.rollback())
+                raise
 
     def is_closed(self) -> bool:
         return self._closing or self._closed

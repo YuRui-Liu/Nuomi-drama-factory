@@ -23,6 +23,7 @@ from novelvideo.character_visual.identity_sheet import (
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.project_context import ProjectContext
 from novelvideo.production_workflow import production_workflow_project_lock
+from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
@@ -528,7 +529,7 @@ def _register_character_state_candidate(
     quality_report = generation.quality_report.model_dump(
         mode="json", exclude_none=True
     )
-    slot_id = f"character:{character_name}:state:{generation.state_id}"
+    slot_id = character_state_slot_id(character_name, generation.state_id)
     version_id = generation.output_path.stem
     staged_canonical: Path | None = None
     state_dir = Path(ctx.state_dir)
