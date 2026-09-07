@@ -3,8 +3,9 @@ import { Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { effectiveVideoMode, type VideoModelMode } from "@/lib/queries/media-models";
+import { effectiveVideoMode, type VideoModelCatalogItem, type VideoModelMode } from "@/lib/queries/media-models";
 import type { NarrativeGroup, NarrativeGroupVideoPlan } from "@/lib/queries/narrative-groups";
+import { ProjectVideoModelSelect } from "./project-video-model-select";
 
 interface DraftVideoUnit {
   beatIds: string[];
@@ -83,14 +84,16 @@ export interface GroupVideoReferenceState {
   onManage?: () => void;
 }
 
-export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, taskStatus = "pending", inherited = true, available = true, unavailableReason, reference, onPlanSave, onGenerate }: {
+export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onPlanSave, onGenerate }: {
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
   plan?: NarrativeGroup["video_plan"];
   planSaving?: boolean;
   taskStatus?: NarrativeGroup["stages"]["video"]["status"];
   inherited?: boolean; available?: boolean; unavailableReason?: string | null;
+  models?: VideoModelCatalogItem[]; modelSaving?: boolean;
   reference?: GroupVideoReferenceState;
+  onModelChange?: (modelId: string) => void;
   onPlanSave?: (units: Array<{ beatIds: string[] }>) => void | Promise<void>;
   onGenerate?: (request: { video_model: string; h3_mode: VideoModelMode }) => void;
 }) {
@@ -115,7 +118,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
           <Video className="size-4 text-primary" />
           <div><h3 className="text-sm font-semibold">视频生成</h3><p className="text-xs text-muted-foreground">{label} · {modeLabel} · {inherited ? "继承项目默认" : "本次临时覆盖"}</p></div>
         </div>
-        <div className="flex items-center gap-2">{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!available || !hasFirstFrame || !onGenerate || planChanged || planSaving || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
+        <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!available || !hasFirstFrame || !onGenerate || planChanged || planSaving || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
       </div>
       {!available && <p className="mt-2 text-xs text-destructive">{unavailableReason || "模型尚未配置"}</p>}
       {planChanged && <p className="mt-2 text-xs text-muted-foreground">请先保存视频方案</p>}
