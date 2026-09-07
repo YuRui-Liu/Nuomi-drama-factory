@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
 
 import pytest
@@ -9,6 +9,7 @@ from novelvideo.narrative_groups.service import (
     group_beats,
     layout_for_group,
     load_groups,
+    narrative_group_sidecar_guard,
     record_stage_result,
     record_video_segment_result,
     rollback_stage_revision,
@@ -20,6 +21,22 @@ from novelvideo.narrative_groups.service import (
     ensure_groups,
     update_video_plan,
 )
+
+
+def test_public_sidecar_guard_serializes_stage_revision_updates(tmp_path):
+    save_groups(tmp_path, 1, group_beats([{"id": "1"}]))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with narrative_group_sidecar_guard(tmp_path, 1):
+            future = pool.submit(
+                advance_revision, tmp_path, 1, "ng-01", "video"
+            )
+            with pytest.raises(TimeoutError):
+                future.result(timeout=0.05)
+
+        _, revision = future.result(timeout=2)
+
+    assert revision == 1
 
 
 def test_record_video_segment_result_compares_video_revision(tmp_path):

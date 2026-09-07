@@ -991,6 +991,8 @@ def _seed_continuity_review(
     *,
     stage_status: str = "completed",
     manifest_format_version: int = 2,
+    manifest_status: str = "completed",
+    entry_status: str = "completed",
     include_contract: bool = True,
     duplicate_segment: bool = False,
 ) -> tuple[Path, ShotContinuityStore]:
@@ -1040,7 +1042,7 @@ def _seed_continuity_review(
             "continuity_contracts": (
                 (second.model_dump(mode="json"),) if include_contract else ()
             ),
-            "status": "completed",
+            "status": entry_status,
         }
     )
     entries = (
@@ -1067,6 +1069,7 @@ def _seed_continuity_review(
         entries=entries,
         format_version=manifest_format_version,
         total_frames=entry.frame_count * len(entries),
+        status=manifest_status,
     )
     manifest_path = tmp_path / "videos" / "continuity.manifest.json"
     save_h3_director_manifest(manifest_path, manifest)
@@ -1239,6 +1242,98 @@ def test_put_segment_continuity_rejects_nonreview_evidence(
     )
 
     assert response.status_code == status_code
+
+
+@pytest.mark.parametrize(
+    ("manifest_status", "entry_status"),
+    [("generated", "completed"), ("completed", "generated")],
+)
+def test_put_segment_continuity_rejects_generated_evidence(
+    monkeypatch, tmp_path, manifest_status, entry_status,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(
+        client,
+        tmp_path,
+        manifest_status=manifest_status,
+        entry_status=entry_status,
+    )
+
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_put_segment_continuity_rejects_advance_before_lock(
+    monkeypatch, tmp_path,
+):
+    from contextlib import contextmanager
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+
+    @contextmanager
+    def advance_before_lock(project_dir, episode):
+        advance_revision(project_dir, episode, "ng-01", "video", regenerate=True)
+        yield
+
+    monkeypatch.setattr(
+        narrative_groups,
+        "narrative_group_sidecar_guard",
+        advance_before_lock,
+    )
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2]
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0].get(
+        "observed_carry_out"
+    ) is None
+
+
+def test_put_segment_continuity_rejects_stage_fingerprint_mismatch(
+    monkeypatch, tmp_path,
+):
+    from dataclasses import replace
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    manifest_path, store = _seed_continuity_review(client, tmp_path)
+    real_load = narrative_groups._load_postflight_stage
+
+    def load_changed_stage(project_dir, episode, group_id):
+        return replace(
+            real_load(project_dir, episode, group_id),
+            revision=2,
+        )
+
+    monkeypatch.setattr(
+        narrative_groups, "_load_postflight_stage", load_changed_stage
+    )
+    response = client.put(
+        _continuity_endpoint(),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+        },
+    )
+
+    assert response.status_code == 409
+    assert [item.revision for item in store.list_revisions(1, "shot-1")] == [1, 2]
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0].get(
+        "observed_carry_out"
+    ) is None
 
 
 def test_put_segment_continuity_rejects_manifest_escape(monkeypatch, tmp_path):

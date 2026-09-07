@@ -68,6 +68,13 @@ def _sidecar_guard(project_dir: str | Path, episode: int):
                 _SIDECAR_LOCK_STATE.held = previous
 
 
+@contextmanager
+def narrative_group_sidecar_guard(project_dir: str | Path, episode: int):
+    """Serialize a multi-step operation with narrative-group stage mutations."""
+    with _sidecar_guard(project_dir, episode):
+        yield
+
+
 def layout_for_group(count: int) -> GridLayout:
     if count < 1 or count > 9:
         raise ValueError("a narrative group must contain between 1 and 9 beats")

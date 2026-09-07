@@ -49,6 +49,8 @@ from novelvideo.narrative_groups.service import (
     generation_beats_for_group,
     load_effective_groups,
     load_group_video_prompt_manifest,
+    load_materialized_groups,
+    narrative_group_sidecar_guard,
     rebuild_groups,
     rollback_stage_revision,
     reserve_video_revision,
@@ -840,32 +842,103 @@ async def put_group_video_segment_continuity(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
-    try:
-        _, stage = load_group_video_prompt_manifest(
-            resolved.project_dir, episode, group_id
+    root = Path(resolved.project_dir).resolve()
+    with narrative_group_sidecar_guard(root, episode):
+        expected_stage = _load_current_video_stage(root, episode, group_id)
+        if expected_stage.status not in _POSTFLIGHT_TERMINAL_STATUSES:
+            raise HTTPException(
+                status_code=409, detail="Video stage is not ready for review"
+            )
+        expected_fingerprint = _postflight_stage_fingerprint(root, expected_stage)
+        stage = _load_postflight_stage(root, episode, group_id)
+        if _postflight_stage_fingerprint(root, stage) != expected_fingerprint:
+            raise HTTPException(
+                status_code=409, detail="Narrative group video stage changed"
+            )
+        return _put_group_video_segment_continuity_locked(
+            project, root, episode, segment_id, request, stage
         )
+
+
+_POSTFLIGHT_TERMINAL_STATUSES = {
+    "completed",
+    "partial_failure",
+    "quality_rejected",
+    "transport_failed",
+    "postprocess_failed",
+    "quality_mismatch",
+}
+
+
+def _load_postflight_stage(project_dir: Path, episode: int, group_id: str):
+    try:
+        _, stage = load_group_video_prompt_manifest(project_dir, episode, group_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Video manifest not found") from exc
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
+    return stage
 
-    if stage.status not in {"review", "completed", "partial_failure", "failed"}:
+
+def _load_current_video_stage(project_dir: Path, episode: int, group_id: str):
+    group = next(
+        (
+            item
+            for item in load_materialized_groups(project_dir, episode)
+            if item.id == group_id
+        ),
+        None,
+    )
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    return group.stages["video"]
+
+
+def _postflight_manifest_path(project_dir: Path, stage: Any) -> Path:
+    stored_path = Path(str(stage.manifest_asset).strip())
+    candidate = stored_path if stored_path.is_absolute() else project_dir / stored_path
+    manifest_path = candidate.resolve()
+    if not manifest_path.is_relative_to(project_dir) or not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="Video manifest not found")
+    return manifest_path
+
+
+def _postflight_stage_fingerprint(project_dir: Path, stage: Any) -> tuple[int, str, str]:
+    stored_path = Path(str(stage.manifest_asset).strip())
+    candidate = stored_path if stored_path.is_absolute() else project_dir / stored_path
+    manifest_path = candidate.resolve()
+    return (
+        int(stage.revision),
+        str(stage.status),
+        str(manifest_path),
+    )
+
+
+def _put_group_video_segment_continuity_locked(
+    project: str,
+    root: Path,
+    episode: int,
+    segment_id: str,
+    request: NarrativeGroupContinuityRequest,
+    stage: Any,
+):
+    if stage.status not in _POSTFLIGHT_TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="Video stage is not ready for review")
 
-    root = Path(resolved.project_dir).resolve()
-    stored_path = Path(str(stage.manifest_asset).strip())
-    manifest_path = stored_path if stored_path.is_absolute() else root / stored_path
-    manifest_path = manifest_path.resolve()
-    if not manifest_path.is_relative_to(root):
-        raise HTTPException(status_code=404, detail="Video manifest not found")
+    manifest_path = _postflight_manifest_path(root, stage)
     try:
         manifest = load_h3_director_manifest(manifest_path)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="Video manifest is invalid") from exc
-    if manifest.format_version < 2 or manifest.status in {"planned", "submitted"}:
-        raise HTTPException(status_code=409, detail="Video manifest is not terminal review evidence")
+    if (
+        manifest.format_version < 2
+        or manifest.status not in _POSTFLIGHT_TERMINAL_STATUSES
+    ):
+        raise HTTPException(
+            status_code=409, detail="Video manifest is not terminal review evidence"
+        )
 
     matches = [
         (index, entry)
@@ -877,8 +950,10 @@ async def put_group_video_segment_continuity(
     if len(matches) != 1:
         raise HTTPException(status_code=409, detail="Video segment evidence is ambiguous")
     entry_index, entry = matches[0]
-    if entry.status in {"planned", "submitted"}:
-        raise HTTPException(status_code=409, detail="Video segment is not terminal review evidence")
+    if entry.status not in _POSTFLIGHT_TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="Video segment is not terminal review evidence"
+        )
     if not entry.continuity_contracts:
         raise HTTPException(status_code=409, detail="Continuity contract evidence is missing")
     try:
