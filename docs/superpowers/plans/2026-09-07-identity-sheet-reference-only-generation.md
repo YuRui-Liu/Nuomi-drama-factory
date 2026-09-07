@@ -13,6 +13,7 @@
 ## 文件职责
 
 - 修改 `src/novelvideo/character_visual/identity_sheet.py`：加强完整画布生成契约，提供不改像素的候选落盘函数。
+- 修改 `src/novelvideo/generators/nanobanana_character.py`：同步生成入口停止头像像素覆盖。
 - 修改 `src/novelvideo/task_backend/runners/character_image.py`：异步任务保存 provider 原图并记录 `provider_canvas` 元数据。
 - 修改 `src/novelvideo/api/routes/characters.py`：同步生成路径采用相同的原图落盘逻辑和元数据。
 - 修改 `src/novelvideo/character_visual/identity_sheet_qc.py`：新增稳定缺陷码并保留脱敏 QC 异常。
@@ -28,6 +29,7 @@
 - 修改：`tests/character_visual/test_identity_sheet.py`
 - 修改：`tests/test_character_state_assets.py`
 - 修改：`src/novelvideo/character_visual/identity_sheet.py`
+- 修改：`src/novelvideo/generators/nanobanana_character.py`
 - 修改：`src/novelvideo/task_backend/runners/character_image.py`
 - 修改：`src/novelvideo/api/routes/characters.py`
 
@@ -71,7 +73,7 @@ def save_provider_identity_sheet(candidate_path: str | Path, output_path: str | 
 提交：
 
 ```bash
-git add src/novelvideo/character_visual/identity_sheet.py src/novelvideo/task_backend/runners/character_image.py src/novelvideo/api/routes/characters.py tests/character_visual/test_identity_sheet.py tests/test_character_state_assets.py
+git add src/novelvideo/character_visual/identity_sheet.py src/novelvideo/generators/nanobanana_character.py src/novelvideo/task_backend/runners/character_image.py src/novelvideo/api/routes/characters.py tests/character_visual/test_identity_sheet.py tests/test_character_state_assets.py
 git commit -m "fix: keep identity sheet provider canvas intact"
 ```
 
@@ -96,7 +98,7 @@ assert report.checks["body_cropped"] is False
 
 ```python
 assert report.issues == ["qc_unavailable"]
-assert report.technical_error == "ValueError: 普通文本模型 API key 未配置"
+assert report.technical_error == "ValueError"
 ```
 
 - [ ] **步骤 2：运行红灯测试**
@@ -111,7 +113,7 @@ assert report.technical_error == "ValueError: 普通文本模型 API key 未配�
 
 - [ ] **步骤 3：最小实现**
 
-将三个缺陷码加入 `_ISSUE_CODES` 和提示；为 `IdentitySheetQualityReport` 增加可选 `technical_error`。异常仅保存异常类型和经过长度限制、换行清理的消息，不包含请求头、API Key 或响应体。
+将三个缺陷码加入 `_ISSUE_CODES` 和提示；为 `IdentitySheetQualityReport` 增加可选 `technical_error`。异常仅保存经过白名单校验和长度限制的异常类型名，不读取异常消息、请求头、API Key、响应体或异常实例属性。
 
 - [ ] **步骤 4：运行绿灯测试并提交**
 
@@ -203,7 +205,7 @@ git commit -m "feat: confirm adoption when visual qc is unavailable"
 运行：
 
 ```bash
-pnpm --dir frontend vitest run src/__tests__/components/assets/character-state-versions.test.tsx src/__tests__/lib/queries/production-assets.test.tsx
+pnpm --dir frontend exec vitest run src/__tests__/components/assets/character-state-versions.test.tsx src/__tests__/lib/queries/production-assets.test.tsx
 ```
 
 预期：FAIL，QC 不可用候选当前不可点击。
@@ -238,7 +240,7 @@ git commit -m "feat: confirm identity sheet adoption without qc"
 - [ ] **步骤 2：运行前端目标测试和类型检查**
 
 ```bash
-pnpm --dir frontend vitest run src/__tests__/components/assets/character-state-versions.test.tsx src/__tests__/lib/queries/production-assets.test.tsx
+pnpm --dir frontend exec vitest run src/__tests__/components/assets/character-state-versions.test.tsx src/__tests__/lib/queries/production-assets.test.tsx
 pnpm --dir frontend exec tsc --noEmit
 ```
 
