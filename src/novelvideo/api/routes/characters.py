@@ -2256,6 +2256,8 @@ async def generate_identity_image(
                     "state_id": identity.identity_id,
                     "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
                     "panel_layout": list(IDENTITY_SHEET_PANEL_LAYOUT),
+                    "composition_mode": "provider_canvas",
+                    "face_source_usage": "reference_only",
                     "face_source": relative_asset_path(Path(reference_image_path)),
                     "face_source_panel": "portrait_3q",
                     "quality_report": report_data,

@@ -18,7 +18,7 @@ from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_PANEL_LAYOUT,
     IdentitySheetQualityReport,
     build_identity_sheet_v2_prompt,
-    compose_identity_sheet_v2,
+    save_provider_identity_sheet,
 )
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.project_context import ProjectContext
@@ -570,6 +570,8 @@ def _register_character_state_candidate(
                     "state_id": generation.state_id,
                     "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
                     "panel_layout": list(IDENTITY_SHEET_PANEL_LAYOUT),
+                    "composition_mode": "provider_canvas",
+                    "face_source_usage": "reference_only",
                     "face_source": face_source,
                     "face_source_panel": "portrait_3q",
                     "quality_report": quality_report,
@@ -684,7 +686,7 @@ async def _generate_identity_image(
             reference_paths=[path for path in references if path],
             aspect_ratio="3:2",
         )
-    compose_identity_sheet_v2(raw_candidate_path, reference_image_path, output_path)
+    save_provider_identity_sheet(raw_candidate_path, output_path)
     quality_report = await assess_identity_sheet_quality(
         image_data=output_path.read_bytes(),
         style=style,

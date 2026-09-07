@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 import re
+import shutil
 from statistics import median
 
 from PIL import Image
@@ -201,10 +202,16 @@ COSTUME REFERENCE (CRITICAL):
 """
     quality = style_quality_instructions(style_family)
     return f"""Identity Sheet v2 for {character_tag} ({character_name}).
-Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions:
-- LEFT 50%: LARGE THREE-QUARTER PORTRAIT. Use the confirmed Portrait exactly as the identity anchor; this is the only visible face source in the entire sheet.
+Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions.
+The confirmed Portrait is an identity reference only. Never copy or paste pixels from the reference image into the output; newly render every panel:
+- LEFT 50%: LARGE THREE-QUARTER PORTRAIT. Preserve the confirmed Portrait's identity; this is the only visible face source in the entire sheet. Use a clean neutral pose with no hand-to-face gesture. Keep the eyes, nose, mouth, jawline, and recognizable facial contour unobstructed: hands, arms, weapons, tools, clothing, hair, or props must not cover them. Limited shoulder and neck visibility is allowed.
 - CENTER 25%: FACELESS FRONT FULL BODY in a neutral standing pose, fully visible from the complete top of the head to the soles of the feet. Preserve the complete head, hairstyle and hair outline, ears, neck, body proportions, outfit, and footwear without cropping. Render the facial plane as a smooth neutral surface consistent with the project style, with no identifiable facial features: no eyes, eyebrows, nose, lips, beard, or face-like markings. Do not replace the face with a mask, veil, prop, wound, hole, or horror element. This is a clean identity-isolation presentation with no wound, blood, gore, or horror.
 - RIGHT 25%: BACK FULL BODY, naturally facing fully away, head to feet. Never turn back; show no profile, visible face, mirror face, or reflection.
+
+PANEL GEOMETRY (CRITICAL):
+- Keep clear neutral gutters at the 50% and 75% boundaries.
+- Every person and every body part must stay fully contained in its own panel and must not cross panel boundaries.
+- Keep a safe margin above the head and below the feet in both full-body panels.
 
 IDENTITY AND STATE LOCK:
 - All panels depict the same age, body proportions, hair state, outfit, accessories, colors, footwear, and silhouette.
@@ -234,6 +241,21 @@ class IdentitySheetComposition:
     output_path: Path
     neutral_gray: tuple[int, int, int]
     panel_bounds: dict[str, tuple[int, int, int, int]]
+
+
+def save_provider_identity_sheet(
+    candidate_path: str | Path,
+    output_path: str | Path,
+) -> Path:
+    """Save the provider's complete sheet without cropping, resizing, or overlaying it."""
+    candidate = Path(candidate_path)
+    output = Path(output_path)
+    if not candidate.is_file() or candidate.stat().st_size <= 0:
+        raise ValueError("provider identity sheet candidate is missing or empty")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if candidate.resolve() != output.resolve():
+        shutil.copyfile(candidate, output)
+    return output
 
 
 def fit_crop(image: Image.Image, size: tuple[int, int]) -> Image.Image:

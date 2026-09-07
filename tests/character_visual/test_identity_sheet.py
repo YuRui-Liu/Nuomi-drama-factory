@@ -14,6 +14,7 @@ from novelvideo.character_visual.identity_sheet import (
     classify_identity_sheet_style,
     compose_identity_sheet_v2,
     resolve_identity_sheet_style_family,
+    save_provider_identity_sheet,
 )
 
 
@@ -110,6 +111,17 @@ def test_v2_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
     assert "neck up empty" not in prompt
     assert "FRONT VIEW" not in prompt
     assert "SIDE VIEW" not in prompt
+
+
+def test_v2_prompt_uses_portrait_as_reference_only_and_protects_panel_geometry() -> None:
+    prompt = _prompt("anime_2d")
+
+    assert "identity reference only" in prompt
+    assert "Never copy or paste pixels from the reference image" in prompt
+    assert "no hand-to-face gesture" in prompt
+    assert "must not cross panel boundaries" in prompt
+    assert "safe margin above the head and below the feet" in prompt
+    assert "hands, arms, weapons, tools, clothing, hair, or props" in prompt
 
 
 def test_v2_prompt_drops_scene_and_camera_fragments_from_dynamic_inputs() -> None:
@@ -240,6 +252,16 @@ def _candidate(path: Path) -> Path:
     image.paste((30, 40, 210), (600, 100, 800, 600))
     image.save(path)
     return path
+
+
+def test_save_provider_identity_sheet_preserves_provider_canvas_bytes(tmp_path: Path) -> None:
+    candidate = _candidate(tmp_path / "candidate.png")
+    output = tmp_path / "nested" / "sheet.png"
+
+    result = save_provider_identity_sheet(candidate, output)
+
+    assert result == output
+    assert output.read_bytes() == candidate.read_bytes()
 
 
 def test_compose_v2_uses_confirmed_portrait_and_preserves_body_panels(
@@ -448,7 +470,7 @@ async def test_identity_generation_requires_portrait_before_model_call(
 
 
 @pytest.mark.asyncio
-async def test_identity_generation_composes_raw_candidate_once(
+async def test_identity_generation_preserves_provider_canvas_once(
     monkeypatch, tmp_path: Path
 ) -> None:
     from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
@@ -493,5 +515,7 @@ async def test_identity_generation_composes_raw_candidate_once(
     assert calls == 1
     assert output.exists()
     assert output.with_name("sheet_body_temp.png").exists()
-    assert Image.open(output).size == (1536, 1024)
-    assert Image.open(output).convert("RGB").getpixel((384, 512)) == (12, 34, 56)
+    raw = output.with_name("sheet_body_temp.png")
+    assert Image.open(output).size == (800, 600)
+    assert output.read_bytes() == raw.read_bytes()
+    assert Image.open(output).convert("RGB").getpixel((384, 512)) == (210, 30, 40)

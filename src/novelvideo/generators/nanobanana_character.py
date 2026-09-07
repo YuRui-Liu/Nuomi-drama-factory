@@ -38,7 +38,7 @@ from novelvideo.services.style_service import StyleService
 from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_PANEL_LAYOUT,
     build_identity_sheet_v2_prompt,
-    compose_identity_sheet_v2,
+    save_provider_identity_sheet,
 )
 from novelvideo.generators.nanobanana_grid import (
     _InlineImagePart,
@@ -616,12 +616,8 @@ class NanoBananaCharacterGenerator:
             )
 
             if image_bytes:
-                # 保留 raw candidate；正式输出仅由确定性面板适配和拼版写入。
-                compose_identity_sheet_v2(
-                    candidate_path=temp_body_path,
-                    portrait_path=reference_image_path,
-                    output_path=output_path,
-                )
+                # Portrait 仅作为身份参考；保留 provider 的完整画布，不做裁切或覆盖。
+                save_provider_identity_sheet(temp_body_path, output_path)
                 print(f"[NanoBanana Character] {body_label}已保存: {output_path}")
 
                 generation_time = time.time() - start_time
