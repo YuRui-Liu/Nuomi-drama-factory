@@ -539,6 +539,7 @@ def _project_review_value(value: Any, schema: Any) -> Any:
             isinstance(value, str)
             and len(value) <= _MAX_REVIEW_TEXT_LENGTH
             and not _is_path_or_uri(value)
+            and not _EMBEDDED_PATH_OR_URI_RE.search(value)
         ):
             return value
         return _REJECTED_REVIEW_VALUE

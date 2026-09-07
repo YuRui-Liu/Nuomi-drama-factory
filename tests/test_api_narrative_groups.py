@@ -2052,6 +2052,67 @@ def test_get_video_prompts_whitelists_nested_manifest_fields(monkeypatch, tmp_pa
         assert forbidden not in serialized
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "failed opening /Users/alice/private.mov",
+        r"failed opening C:\Users\alice\private.mov",
+        r"failed opening \\server\share\private.mov",
+        "artifact private/render.mov",
+    ],
+)
+def test_project_review_text_rejects_embedded_paths(value):
+    assert (
+        narrative_groups._project_review_value(value, narrative_groups._SAFE_TEXT)
+        is narrative_groups._REJECTED_REVIEW_VALUE
+    )
+
+
+def test_get_video_prompts_redacts_paths_from_projected_text_fields(
+    monkeypatch, tmp_path,
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_prompt_review_manifest(tmp_path, {
+        "entries": [{
+            "segment": {
+                "segment_id": "beat-1", "beat_number": 1,
+                "prompt": "safe prompt", "duration_seconds": 5,
+            },
+            "director_plan": {
+                "mode": "i2va",
+                "visual_style": "cinematic/v2",
+                "soundscape": "failed opening /Users/alice/private.mov",
+                "music": r"failed opening C:\Users\alice\private.mov",
+                "continuity_locks": [
+                    r"failed opening \\server\share\private.mov",
+                    "artifact private/render.mov",
+                    "left/right",
+                ],
+            },
+        }],
+    })
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prompts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["units"][0]["director_plan"] == {
+        "mode": "i2va",
+        "visual_style": "cinematic/v2",
+        "continuity_locks": ["left/right"],
+    }
+    serialized = response.text.lower()
+    for forbidden in (
+        "/users/alice/private.mov",
+        r"c:\users\alice\private.mov",
+        r"server\share\private.mov",
+        "private/render.mov",
+    ):
+        assert forbidden not in serialized
+
+
 def test_get_video_prompts_keeps_legacy_final_prompt(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
