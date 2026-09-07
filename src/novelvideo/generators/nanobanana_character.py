@@ -622,7 +622,7 @@ class NanoBananaCharacterGenerator:
 
                 generation_time = time.time() - start_time
                 print(
-                    f"[NanoBanana Character] 复合身份图已生成: {output_path}，耗时 {generation_time:.1f}s"
+                    f"[NanoBanana Character] 身份图完整画布已生成: {output_path}，耗时 {generation_time:.1f}s"
                 )
                 if usage_recorded and project_output_dir:
                     update_image_request_status(

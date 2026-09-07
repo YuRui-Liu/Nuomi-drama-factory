@@ -254,14 +254,111 @@ def _candidate(path: Path) -> Path:
     return path
 
 
+def _provider_candidate(path: Path) -> Path:
+    image = Image.new("RGB", (900, 600), (128, 128, 128))
+    image.paste((210, 30, 40), (0, 0, 450, 600))
+    image.paste((30, 210, 40), (450, 0, 675, 600))
+    image.paste((30, 40, 210), (675, 0, 900, 600))
+    image.save(path)
+    return path
+
+
 def test_save_provider_identity_sheet_preserves_provider_canvas_bytes(tmp_path: Path) -> None:
-    candidate = _candidate(tmp_path / "candidate.png")
+    candidate = _provider_candidate(tmp_path / "candidate.png")
     output = tmp_path / "nested" / "sheet.png"
 
     result = save_provider_identity_sheet(candidate, output)
 
     assert result == output
     assert output.read_bytes() == candidate.read_bytes()
+
+
+@pytest.mark.parametrize("candidate_bytes", [b"not an image", b"\x89PNG\r\n\x1a\ntruncated"])
+def test_save_provider_identity_sheet_rejects_invalid_images(
+    tmp_path: Path,
+    candidate_bytes: bytes,
+) -> None:
+    candidate = tmp_path / "candidate.png"
+    candidate.write_bytes(candidate_bytes)
+    output = tmp_path / "sheet.png"
+
+    with pytest.raises(ValueError, match="valid image"):
+        save_provider_identity_sheet(candidate, output)
+
+    assert not output.exists()
+
+
+def test_save_provider_identity_sheet_rejects_non_three_by_two_canvas(tmp_path: Path) -> None:
+    candidate = _candidate(tmp_path / "candidate.png")
+    output = tmp_path / "sheet.png"
+
+    with pytest.raises(ValueError, match="3:2"):
+        save_provider_identity_sheet(candidate, output)
+
+    assert not output.exists()
+
+
+def test_save_provider_identity_sheet_rejects_three_by_two_jpeg(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.jpg"
+    Image.new("RGB", (900, 600), (128, 128, 128)).save(candidate, format="JPEG")
+    output = tmp_path / "sheet.png"
+
+    with pytest.raises(ValueError, match="PNG"):
+        save_provider_identity_sheet(candidate, output)
+
+    assert not output.exists()
+
+
+def test_save_provider_identity_sheet_validates_the_bytes_it_publishes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.character_visual import identity_sheet
+
+    candidate = _provider_candidate(tmp_path / "candidate.png")
+    output = tmp_path / "sheet.png"
+    output.write_bytes(b"existing")
+
+    def replace_copy_with_invalid_bytes(_source, target):
+        Path(target).write_bytes(b"not an image")
+
+    monkeypatch.setattr(identity_sheet.shutil, "copyfile", replace_copy_with_invalid_bytes)
+
+    with pytest.raises(ValueError, match="valid image"):
+        save_provider_identity_sheet(candidate, output)
+
+    assert output.read_bytes() == b"existing"
+    assert list(tmp_path.glob(".sheet.png.*.tmp")) == []
+
+
+def test_save_provider_identity_sheet_is_atomic_when_publish_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.character_visual import identity_sheet
+
+    candidate = _provider_candidate(tmp_path / "candidate.png")
+    output = tmp_path / "sheet.png"
+    output.write_bytes(b"existing")
+
+    def fail_replace(_source, _target):
+        raise OSError("publish failed")
+
+    monkeypatch.setattr(identity_sheet.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="publish failed"):
+        save_provider_identity_sheet(candidate, output)
+
+    assert output.read_bytes() == b"existing"
+    assert list(tmp_path.glob(".sheet.png.*.tmp")) == []
+
+
+def test_save_provider_identity_sheet_allows_validated_same_path(tmp_path: Path) -> None:
+    candidate = _provider_candidate(tmp_path / "candidate.png")
+    before = candidate.read_bytes()
+
+    assert save_provider_identity_sheet(candidate, candidate) == candidate
+    assert candidate.read_bytes() == before
 
 
 def test_compose_v2_uses_confirmed_portrait_and_preserves_body_panels(
@@ -487,7 +584,7 @@ async def test_identity_generation_preserves_provider_canvas_once(
     async def fake_generate(**kwargs):
         nonlocal calls
         calls += 1
-        _candidate(Path(kwargs["output_path"]))
+        _provider_candidate(Path(kwargs["output_path"]))
         return b"candidate"
 
     generator._generate_with_reference = fake_generate
@@ -516,6 +613,6 @@ async def test_identity_generation_preserves_provider_canvas_once(
     assert output.exists()
     assert output.with_name("sheet_body_temp.png").exists()
     raw = output.with_name("sheet_body_temp.png")
-    assert Image.open(output).size == (800, 600)
+    assert Image.open(output).size == (900, 600)
     assert output.read_bytes() == raw.read_bytes()
     assert Image.open(output).convert("RGB").getpixel((384, 512)) == (210, 30, 40)

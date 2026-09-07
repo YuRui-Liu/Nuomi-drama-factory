@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import os
 from pathlib import Path
 import re
 import shutil
 from statistics import median
+import tempfile
 
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -250,11 +252,45 @@ def save_provider_identity_sheet(
     """Save the provider's complete sheet without cropping, resizing, or overlaying it."""
     candidate = Path(candidate_path)
     output = Path(output_path)
+
+    def validate_provider_canvas(path: Path) -> None:
+        try:
+            with Image.open(path) as source:
+                image_format = source.format
+                width, height = source.size
+                source.verify()
+        except Exception as exc:
+            raise ValueError(
+                "provider identity sheet candidate is not a valid image"
+            ) from exc
+        if image_format != "PNG":
+            raise ValueError("provider identity sheet candidate must be a PNG image")
+        if width * 2 != height * 3:
+            raise ValueError("provider identity sheet candidate must use a 3:2 canvas")
+
     if not candidate.is_file() or candidate.stat().st_size <= 0:
         raise ValueError("provider identity sheet candidate is missing or empty")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if candidate.resolve() != output.resolve():
-        shutil.copyfile(candidate, output)
+    if candidate.resolve() == output.resolve():
+        validate_provider_canvas(candidate)
+        return output
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        shutil.copyfile(candidate, temporary_path)
+        validate_provider_canvas(temporary_path)
+        os.replace(temporary_path, output)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return output
 
 
