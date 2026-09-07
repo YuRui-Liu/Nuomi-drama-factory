@@ -25,7 +25,9 @@ def test_character_state_prompt_uses_identity_sheet_v2_contract() -> None:
 
     assert "3-panel" in prompt
     assert "LEFT 50%" in prompt
-    assert "HEADLESS FRONT FULL BODY" in prompt
+    assert "FACELESS FRONT FULL BODY" in prompt
+    assert "complete head, hairstyle and hair outline" in prompt
+    assert "no identifiable facial features" in prompt
     assert "BACK FULL BODY" in prompt
     assert "Portrait is the sole facial identity authority" in prompt
 
