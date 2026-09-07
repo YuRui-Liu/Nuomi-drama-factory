@@ -9,6 +9,7 @@ import enTranslation from "../../../../public/locales/en/translation.json";
 import zhTranslation from "../../../../public/locales/zh/translation.json";
 
 const adoptMock = vi.hoisted(() => vi.fn());
+const deleteMock = vi.hoisted(() => vi.fn());
 const fixtureState = vi.hoisted(() => ({
   currentVersionId: "state-v1",
   includeQcUnavailable: false,
@@ -51,8 +52,14 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.qcUnavailableConfirm.description": "请人工核验头像无遮挡、正身完整、背身完整。",
         "characters.stateVersions.qcUnavailableConfirm.cancel": "取消",
         "characters.stateVersions.qcUnavailableConfirm.confirm": "已核验，继续采用",
+        "characters.stateVersions.deleteConfirm.currentDescription": "删除当前采用版本后，将自动采用剩余版本中最新的一张。",
+        "characters.stateVersions.deleteConfirm.otherDescription": "删除后无法恢复。",
+        "characters.stateVersions.deleteConfirm.cancel": "取消",
+        "characters.stateVersions.deleteConfirm.confirm": "删除版本",
       };
       if (key === "characters.stateVersions.versionCount") return `${options?.count ?? 0} 个版本`;
+      if (key === "characters.stateVersions.deleteLabel") return `删除版本 ${String((options as { versionId?: string })?.versionId ?? "")}`;
+      if (key === "characters.stateVersions.deleteConfirm.title") return `删除版本 ${String((options as { versionId?: string })?.versionId ?? "")}？`;
       return translations[key] ?? options?.defaultValue ?? key;
     },
   }),
@@ -175,13 +182,36 @@ vi.mock("@/lib/queries/production-assets", () => ({
     mutateAsync: adoptMock,
     isPending: false,
   }),
+  useDeleteProductionAssetVersion: () => ({
+    mutateAsync: deleteMock,
+    isPending: false,
+  }),
 }));
 
 describe("CharacterStateVersions", () => {
   beforeEach(() => {
     adoptMock.mockReset();
+    deleteMock.mockReset();
     fixtureState.currentVersionId = "state-v1";
     fixtureState.includeQcUnavailable = false;
+  });
+
+  it("confirms deletion and explains automatic fallback for the current version", async () => {
+    const user = userEvent.setup();
+    render(
+      <CharacterStateVersions
+        project="demo"
+        characterName="林默"
+        identityId="linmo-duty"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "删除版本 state-v1" }));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText("删除当前采用版本后，将自动采用剩余版本中最新的一张。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "删除版本" }));
+    expect(deleteMock).toHaveBeenCalledWith({ versionId: "state-v1" });
   });
 
   it("describes the complete faceless front body in both locales", () => {

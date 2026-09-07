@@ -633,6 +633,16 @@
       },
       "adoptSuccess": "已采用人物状态版本",
       "adoptFailed": "采用失败，请检查任务日志",
+      "deleteLabel": "删除版本 {{versionId}}",
+      "deleteSuccess": "历史版本已删除",
+      "deleteFailed": "删除版本失败",
+      "deleteConfirm": {
+        "title": "删除版本 {{versionId}}？",
+        "currentDescription": "删除当前采用版本后，将自动采用剩余版本中最新的一张；如果没有剩余版本，将清空身份图。此操作不可撤销。",
+        "otherDescription": "将永久删除该历史版本及其图片，此操作不可撤销。",
+        "cancel": "取消",
+        "confirm": "删除版本"
+      },
       "status": {
         "current": "当前采用",
         "qcFailed": "QC 未通过",

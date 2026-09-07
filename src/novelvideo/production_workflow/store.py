@@ -215,6 +215,7 @@ class ProductionWorkflowStore:
             qc_passed=qc_passed,
             soft_issues=soft_issues or [],
             technical_error=technical_error,
+            created_at=at,
         )
         updated_slot, updated_version, event = register_candidate(
             slot,

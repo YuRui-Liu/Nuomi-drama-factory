@@ -85,6 +85,10 @@ export interface AdoptProductionAssetVersionInput {
   confirmQcUnavailable?: boolean;
 }
 
+export interface DeleteProductionAssetVersionInput {
+  versionId: string;
+}
+
 export function useProductionAssetSlot(
   project: string,
   slotId: string,
@@ -137,6 +141,25 @@ export function useAdoptProductionAssetVersion(
           },
         )
         .json<OkResponse<AdoptProductionAssetVersionData>>(),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.productionAssetSlot(project, slotId),
+      }),
+  });
+}
+
+export function useDeleteProductionAssetVersion(
+  project: string,
+  slotId: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ versionId }: DeleteProductionAssetVersionInput) =>
+      api
+        .delete(
+          p`api/v1/projects/${project}/production-assets/slots/${slotId}/versions/${versionId}`,
+        )
+        .json<OkResponse<ProductionAssetSlotData & { deleted_version: ProductionAssetVersion }>>(),
     onSuccess: () =>
       queryClient.invalidateQueries({
         queryKey: queryKeys.productionAssetSlot(project, slotId),

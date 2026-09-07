@@ -633,6 +633,16 @@
       },
       "adoptSuccess": "Character state version adopted",
       "adoptFailed": "Adoption failed. Check the task log.",
+      "deleteLabel": "Delete version {{versionId}}",
+      "deleteSuccess": "Previous version deleted",
+      "deleteFailed": "Failed to delete version",
+      "deleteConfirm": {
+        "title": "Delete version {{versionId}}?",
+        "currentDescription": "Deleting the adopted version will automatically adopt the newest remaining version. If none remain, the identity image will be cleared. This cannot be undone.",
+        "otherDescription": "This permanently deletes the version and its image. This cannot be undone.",
+        "cancel": "Cancel",
+        "confirm": "Delete version"
+      },
       "status": {
         "current": "Currently adopted",
         "qcFailed": "QC failed",

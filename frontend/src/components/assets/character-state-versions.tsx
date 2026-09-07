@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   useAdoptProductionAssetVersion,
+  useDeleteProductionAssetVersion,
   useProductionAssetSlot,
   type ProductionAssetVersion,
 } from "@/lib/queries/production-assets";
@@ -105,7 +106,9 @@ export function CharacterStateVersions({
     legacyAssetPath ?? undefined,
   );
   const adoptVersion = useAdoptProductionAssetVersion(project, slotId);
+  const deleteVersion = useDeleteProductionAssetVersion(project, slotId);
   const [qcUnavailableVersionId, setQcUnavailableVersionId] = useState<string | null>(null);
+  const [deleteVersionId, setDeleteVersionId] = useState<string | null>(null);
   const payload = slotQuery.data?.ok ? slotQuery.data.data : undefined;
 
   if (slotQuery.isLoading) {
@@ -157,6 +160,18 @@ export function CharacterStateVersions({
     }
   };
 
+  const removeVersion = async () => {
+    const versionId = deleteVersionId;
+    setDeleteVersionId(null);
+    if (!versionId) return;
+    try {
+      await deleteVersion.mutateAsync({ versionId });
+      toast.success(t("characters.stateVersions.deleteSuccess"));
+    } catch {
+      toast.error(t("characters.stateVersions.deleteFailed"));
+    }
+  };
+
   return (
     <section className="border-t border-white/[0.06] pt-4" aria-label={t("characters.stateVersions.ariaLabel")}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -191,8 +206,25 @@ export function CharacterStateVersions({
           return (
             <article
               key={version.version_id}
-              className="overflow-hidden rounded-[8px] border border-border bg-background/30"
+              className="relative overflow-hidden rounded-[8px] border border-border bg-background/30"
             >
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="secondary"
+                className="absolute right-2 top-2 z-10 bg-background/85 text-muted-foreground shadow-sm backdrop-blur hover:text-destructive"
+                aria-label={t("characters.stateVersions.deleteLabel", {
+                  versionId: version.version_id,
+                })}
+                disabled={payload.read_only || deleteVersion.isPending}
+                onClick={() => setDeleteVersionId(version.version_id)}
+              >
+                {deleteVersion.isPending && deleteVersionId === version.version_id ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+              </Button>
               <img
                 src={assetMediaUrl(project, version.asset_path)}
                 alt={t("characters.stateVersions.imageAlt", {
@@ -293,6 +325,41 @@ export function CharacterStateVersions({
               onClick={() => void adoptQcUnavailable()}
             >
               {t("characters.stateVersions.qcUnavailableConfirm.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deleteVersionId !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteVersionId(null);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("characters.stateVersions.deleteConfirm.title", {
+                versionId: deleteVersionId ?? "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                deleteVersionId === payload.slot.current_version_id
+                  ? "characters.stateVersions.deleteConfirm.currentDescription"
+                  : "characters.stateVersions.deleteConfirm.otherDescription",
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              {t("characters.stateVersions.deleteConfirm.cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteVersion.isPending}
+              onClick={() => void removeVersion()}
+            >
+              {t("characters.stateVersions.deleteConfirm.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
