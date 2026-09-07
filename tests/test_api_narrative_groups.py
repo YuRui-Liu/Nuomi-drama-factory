@@ -995,6 +995,8 @@ def _seed_continuity_review(
     entry_status: str = "completed",
     include_contract: bool = True,
     duplicate_segment: bool = False,
+    segment_id: str = "shot-1",
+    source_shot_ids: tuple[str, ...] = (),
 ) -> tuple[Path, ShotContinuityStore]:
     from novelvideo.media_capabilities.video.h3_timeline import (
         H3DirectorOutputManifest,
@@ -1006,7 +1008,8 @@ def _seed_continuity_review(
 
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     store = ShotContinuityStore(tmp_path)
-    first = store.put(1, _continuity_contract("shot-1"), expected_revision=0)
+    terminal_shot_id = source_shot_ids[-1] if source_shot_ids else segment_id
+    first = store.put(1, _continuity_contract(terminal_shot_id), expected_revision=0)
     second = store.put(
         1,
         first.model_copy(
@@ -1021,7 +1024,7 @@ def _seed_continuity_review(
         1,
         _continuity_contract(
             "shot-2",
-            predecessor_shot_id="shot-1",
+            predecessor_shot_id=terminal_shot_id,
             predecessor_revision=2,
         ),
         expected_revision=0,
@@ -1029,7 +1032,8 @@ def _seed_continuity_review(
     base = build_h3_timeline_data(
         (
             H3DirectorSegment(
-                segment_id="shot-1",
+                segment_id=segment_id,
+                source_shot_ids=source_shot_ids,
                 beat_number=1,
                 prompt="hero exits",
                 duration_seconds=1,
@@ -1155,6 +1159,28 @@ def test_put_segment_continuity_accepts_explained_deviation(monkeypatch, tmp_pat
     assert "put-manifest-secret" not in response.text
     assert "put-nested-secret" not in response.text
     assert "private/put-result.mov" not in response.text
+
+
+def test_put_segment_continuity_uses_structured_terminal_shot_id(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    _seed_continuity_review(
+        client,
+        tmp_path,
+        segment_id="shot--close",
+        source_shot_ids=("shot--close",),
+    )
+
+    response = client.put(
+        _continuity_endpoint("shot--close"),
+        json={
+            "contract_revision": 2,
+            "observed_carry_out": "right hand holds the lantern",
+            "accept_deviation": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["units"][0]["beat_ids"] == ["shot--close"]
 
 
 @pytest.mark.parametrize(
