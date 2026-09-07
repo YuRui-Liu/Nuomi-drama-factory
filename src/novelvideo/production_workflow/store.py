@@ -255,3 +255,57 @@ class ProductionWorkflowStore:
         self._events.append(event)
         self._save()
         return updated_slot, updated_versions, event
+
+    def delete_version(
+        self,
+        *,
+        slot_id: str,
+        version_id: str,
+    ) -> tuple[AssetSlot, dict[str, AssetVersion], AssetVersion, AssetVersion | None]:
+        """Remove one version and choose a deterministic fallback when it was current."""
+        if self.read_only_reason:
+            raise RuntimeError(self.read_only_reason)
+        slot, versions = self.get_slot(slot_id)
+        deleted = versions.get(version_id)
+        if deleted is None:
+            raise ValueError("asset version not found")
+
+        remaining_ids = [item for item in slot.version_ids if item != version_id]
+        remaining = {
+            item: versions[item]
+            for item in remaining_ids
+            if item in versions
+        }
+        fallback: AssetVersion | None = None
+        current_version_id = slot.current_version_id
+        if current_version_id == version_id:
+            if remaining_ids:
+                order = {item: index for index, item in enumerate(remaining_ids)}
+
+                def recency(item: AssetVersion) -> tuple[float, int]:
+                    created = item.created_at
+                    return (
+                        created.timestamp() if created is not None else float("-inf"),
+                        order[item.version_id],
+                    )
+
+                selected = max(remaining.values(), key=recency)
+                fallback = selected.model_copy(
+                    update={"adoption_status": AdoptionStatus.ADOPTED}
+                )
+                remaining[fallback.version_id] = fallback
+                current_version_id = fallback.version_id
+            else:
+                current_version_id = None
+
+        updated_slot = slot.model_copy(
+            update={
+                "current_version_id": current_version_id,
+                "version_ids": remaining_ids,
+            }
+        )
+        self._slots[slot_id] = updated_slot
+        self._versions.pop(version_id, None)
+        self._versions.update(remaining)
+        self._save()
+        return updated_slot, remaining, deleted, fallback

@@ -110,6 +110,74 @@ def test_manual_adoption_persists_selected_candidate(tmp_path):
     assert event.reason == "空间结构正确"
 
 
+def _store_with_three_versions(tmp_path):
+    store = ProductionWorkflowStore(tmp_path / "production_workflow.json")
+    for index, qc_passed in ((1, True), (2, True), (3, False)):
+        store.register_candidate_version(
+            slot_id="character:lin-mo:state:duty",
+            asset_kind="character_state",
+            version_id=f"state-v{index}",
+            asset_path=f"assets/characters/lin-mo/state-v{index}.png",
+            source_attempt_id=f"attempt-{index}",
+            qc_passed=qc_passed,
+            generation_metadata=None,
+            actor="system",
+            at=datetime(2026, 9, index, tzinfo=timezone.utc),
+        )
+    return store
+
+
+def test_delete_current_version_adopts_latest_remaining_version(tmp_path):
+    store = _store_with_three_versions(tmp_path)
+
+    slot, versions, deleted, fallback = store.delete_version(
+        slot_id="character:lin-mo:state:duty",
+        version_id="state-v1",
+    )
+
+    assert deleted.version_id == "state-v1"
+    assert fallback is not None
+    assert fallback.version_id == "state-v3"
+    assert fallback.adoption_status == AdoptionStatus.ADOPTED
+    assert slot.current_version_id == "state-v3"
+    assert slot.version_ids == ["state-v2", "state-v3"]
+    assert set(versions) == {"state-v2", "state-v3"}
+
+
+def test_delete_non_current_version_keeps_current_version(tmp_path):
+    store = _store_with_three_versions(tmp_path)
+
+    slot, versions, deleted, fallback = store.delete_version(
+        slot_id="character:lin-mo:state:duty",
+        version_id="state-v2",
+    )
+
+    assert deleted.version_id == "state-v2"
+    assert fallback is None
+    assert slot.current_version_id == "state-v1"
+    assert set(versions) == {"state-v1", "state-v3"}
+
+
+def test_delete_last_version_clears_current_version(tmp_path):
+    store = ProductionWorkflowStore(tmp_path / "production_workflow.json")
+    slot, version = store.materialize_legacy_current(
+        slot_id="character:lin-mo:state:duty",
+        asset_kind="character_state",
+        asset_path="assets/characters/lin-mo/state-v1.png",
+    )
+
+    slot, versions, deleted, fallback = store.delete_version(
+        slot_id=slot.slot_id,
+        version_id=version.version_id,
+    )
+
+    assert deleted.version_id == version.version_id
+    assert fallback is None
+    assert slot.current_version_id is None
+    assert slot.version_ids == []
+    assert versions == {}
+
+
 def test_prop_and_scene_runner_registrations_share_one_project_lock(
     tmp_path, monkeypatch
 ):
