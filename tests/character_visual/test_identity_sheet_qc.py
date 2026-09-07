@@ -68,6 +68,7 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
     assert "40% and 70%" in qc_prompt
     assert "body_cropped" in qc_prompt
     assert "body, hand, leg, foot, or sole" in qc_prompt
+    assert "missing back-view head or hair" in qc_prompt
     assert report.technical_error is None
     assert "technical_error" not in report.model_dump(exclude_none=True)
 

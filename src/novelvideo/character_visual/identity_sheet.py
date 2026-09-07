@@ -222,7 +222,7 @@ PANEL GEOMETRY (CRITICAL):
 - Keep a safe margin around both full-body views, including below the feet and above the middle back-view head.
 
 IDENTITY AND STATE LOCK:
-- All panels depict the same age, body proportions, hair state, outfit, accessories, colors, footwear, and silhouette.
+- All panels depict the same age, body proportions, outfit, accessories, colors, footwear, and silhouette; visible head panels preserve the same hair state.
 - Portrait is the sole facial identity authority. The two body panels supply body, outfit, and rear-silhouette information only.
 - Do not invent blood, dirt, injury, or costume damage. Include them only when specified by CHARACTER STATE, and reproduce that state consistently across applicable panels.
 - Default ethnicity when unspecified: {ethnicity}.
@@ -245,9 +245,30 @@ ADDITIONAL EXCLUSIONS:
 """.strip()
 
 
-def build_identity_sheet_v2_prompt(**kwargs: object) -> str:
+def build_identity_sheet_v2_prompt(
+    *,
+    character_name: str,
+    character_tag: str,
+    appearance: str,
+    project_style: str,
+    style_instructions: str,
+    avoid_instructions: str,
+    ethnicity: str,
+    has_costume_reference: bool,
+    project_dir: str | Path | None = None,
+) -> str:
     """Compatibility wrapper for callers migrating to the v3 generation contract."""
-    return build_identity_sheet_v3_prompt(**kwargs)
+    return build_identity_sheet_v3_prompt(
+        character_name=character_name,
+        character_tag=character_tag,
+        appearance=appearance,
+        project_style=project_style,
+        style_instructions=style_instructions,
+        avoid_instructions=avoid_instructions,
+        ethnicity=ethnicity,
+        has_costume_reference=has_costume_reference,
+        project_dir=project_dir,
+    )
 
 
 @dataclass(frozen=True, slots=True)

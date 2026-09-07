@@ -74,7 +74,8 @@ Limited unobstructed shoulder and neck visibility is valid.
 panel_boundary_intrusion is a defect when a person or any body part crosses the neutral
 gutter or either panel boundary at 40% and 70% of image width. Each view must remain fully contained
 inside its own panel. body_cropped is a defect when the front or back full-body view is cut
-by its panel boundary or the outer image edge, including any missing body, hand, leg, foot, or sole.
+by its panel boundary or the outer image edge, including any missing body, hand, leg, foot, or sole,
+or a missing back-view head or hair. The intentionally absent front-view head is valid.
 
 The LEFT 40% headless front full-body panel must show a clean collar and shoulder boundary
 with no head, hair, ears, or face. front_face_detected is a defect when any head, hair, ear, face,

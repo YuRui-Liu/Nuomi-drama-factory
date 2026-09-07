@@ -113,6 +113,8 @@ def test_v3_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
     assert "no wound, hole, gore, or exposed anatomy" in prompt
     assert "Do not invent blood, dirt, injury, or costume damage" in prompt
     assert "only when specified by CHARACTER STATE" in prompt
+    assert "All panels depict the same age, body proportions, hair state" not in prompt
+    assert "visible head panels preserve the same hair state" in prompt
     assert "neutral gray background" in prompt
     assert "no film grain" in prompt
     assert "no cinematic lens" in prompt
