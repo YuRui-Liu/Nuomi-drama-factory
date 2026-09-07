@@ -649,6 +649,16 @@ class SQLiteStore:
     ) -> None:
         kinds = tuple(asset_kinds)
         replacement_bindings = tuple(bindings)
+        if episode_number <= 0:
+            raise ValueError("episode_number must be greater than zero")
+        allowed_kinds = {
+            "character_identity",
+            "scene_base",
+            "scene_variant",
+            "prop",
+        }
+        if any(kind not in allowed_kinds for kind in kinds):
+            raise ValueError("asset_kinds contain an unsupported asset kind")
         if len(set(kinds)) != len(kinds):
             raise ValueError("duplicate asset_kinds are not allowed")
         if any(binding.episode_number != episode_number for binding in replacement_bindings):

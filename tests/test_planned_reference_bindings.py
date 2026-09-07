@@ -193,3 +193,55 @@ async def test_concurrent_binding_replacements_do_not_share_a_transaction(tmp_pa
         assert listed in ([first], [second])
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("episode_number", "asset_kinds", "error"),
+    [
+        (0, ("character_identity",), "episode_number"),
+        (1, ("character_identity_typo",), "asset_kinds"),
+    ],
+)
+async def test_replace_bindings_rejects_invalid_empty_replacement_scope(
+    tmp_path, episode_number, asset_kinds, error
+) -> None:
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(
+        "test/planned-bindings-invalid-scope",
+        output_dir=str(tmp_path / "output"),
+        state_dir=str(tmp_path / "state"),
+    )
+    try:
+        with pytest.raises(ValueError, match=error):
+            await store.replace_planned_reference_bindings_atomic(
+                episode_number, asset_kinds, ()
+            )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_replace_bindings_rejects_binding_outside_replacement_scope(
+    tmp_path,
+) -> None:
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(
+        "test/planned-bindings-mismatched-scope",
+        output_dir=str(tmp_path / "output"),
+        state_dir=str(tmp_path / "state"),
+    )
+    binding = _binding(entity_id="linmo-duty")
+    try:
+        with pytest.raises(ValueError, match="episode_number"):
+            await store.replace_planned_reference_bindings_atomic(
+                2, ("character_identity",), (binding,)
+            )
+        with pytest.raises(ValueError, match="asset_kind"):
+            await store.replace_planned_reference_bindings_atomic(
+                1, ("scene_base",), (binding,)
+            )
+    finally:
+        await store.close()
