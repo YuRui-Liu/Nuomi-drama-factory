@@ -90,6 +90,12 @@ def test_markdown_numbered_scene_heading_uses_only_location_as_identity():
     assert blocks[0].header_line == "### 1-1 谢家碑坊"
 
 
+def test_markdown_story_line_preserves_original_text():
+    blocks = parse_scene_blocks("1-1 谢家碑坊 日 外\n### 旁白")
+
+    assert blocks[0].lines == ["### 旁白"]
+
+
 def test_parse_numbered_marker_then_location_line():
     text = """
 1-1
