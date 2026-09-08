@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -41,7 +42,11 @@ class FakeModelApiAgent:
         return FakeAgentResult()
 
 
-async def test_codex_and_model_api_return_the_same_structured_type():
+async def test_codex_and_model_api_return_the_same_structured_type(monkeypatch):
+    monkeypatch.setattr(
+        "novelvideo.config.get_newapi_text_pydantic_model",
+        lambda *args, **kwargs: "fake-model-api",
+    )
     codex = CodexStructuredRuntime(
         AgentTaskRouteSnapshot(
             task_role="director_plan",
@@ -78,6 +83,42 @@ async def test_codex_and_model_api_return_the_same_structured_type():
     assert captured["output_type"].outputs == Answer
     assert captured["model_settings"] == {"openai_reasoning_effort": "high"}
     assert "tool_choice" not in captured["model_settings"]
+
+
+async def test_structured_runtime_agent_revalidates_with_context():
+    from novelvideo.text_task_runtime.runtime import StructuredRuntimeAgent
+
+    class ContextAnswer(BaseModel):
+        value: str
+
+        @classmethod
+        def model_validate(cls, obj, *, strict=None, extra=None, from_attributes=None, context=None, by_alias=None, by_name=None):
+            assert context == {"source": "episode"}
+            return super().model_validate(
+                obj,
+                strict=strict,
+                extra=extra,
+                from_attributes=from_attributes,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+
+    class Runtime:
+        snapshot = SimpleNamespace(model="gpt-5.6-sol")
+
+        async def run_structured(self, **kwargs):
+            return ContextAnswer.model_construct(value="ok")
+
+    agent = StructuredRuntimeAgent(
+        Runtime(),
+        output_type=ContextAnswer,
+        validation_context={"source": "episode"},
+    )
+
+    result = await agent.run("prompt")
+
+    assert result.output == ContextAnswer(value="ok")
 
 
 def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):

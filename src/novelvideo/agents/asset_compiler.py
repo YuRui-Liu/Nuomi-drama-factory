@@ -28,6 +28,10 @@ from novelvideo.models import (
 )
 from novelvideo.cognee.screenplay_normalizer import normalize_time_of_day
 from novelvideo.director_world import stage_manifest
+from novelvideo.text_task_runtime.runtime import (
+    StructuredRuntimeAgent,
+    current_text_task_runtime,
+)
 from novelvideo.utils.derived_scenes import compose_derived_scene_name
 from novelvideo.utils.path_resolver import (
     compute_scene_master_path,
@@ -49,6 +53,41 @@ class SceneBlock:
     interior_exterior: str = ""
     characters: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+
+
+def _asset_planning_agent(
+    *,
+    model_env: str,
+    default_model: str,
+    thinking_env: str,
+    default_thinking_level: str,
+    system_prompt: str,
+    output_type: type[Any],
+    name: str,
+    validation_context: dict[str, Any] | None = None,
+) -> Any:
+    """Build an Agent facade from the frozen task route when one is active."""
+
+    runtime = current_text_task_runtime()
+    if runtime is not None:
+        return StructuredRuntimeAgent(
+            runtime,
+            output_type=output_type,
+            system_prompt=system_prompt,
+            validation_context=validation_context,
+        )
+    return Agent(
+        get_newapi_text_pydantic_model(model_env, default_model),
+        system_prompt=system_prompt,
+        model_settings=get_newapi_text_pydantic_model_settings(
+            thinking_env,
+            default_thinking_level,
+        ),
+        output_type=output_type,
+        output_retries=2,
+        validation_context=validation_context,
+        name=name,
+    )
 
 
 def _asset_digest(payload: dict[str, Any]) -> str:
@@ -1077,18 +1116,13 @@ class AssetCompiler:
                 parts.append(f"描述: {prompt[:120]}")
             existing_lines.append("；".join(part for part in parts if part))
 
-        agent = Agent(
-            get_newapi_text_pydantic_model(
-                "EPISODE_SCENE_RECONCILE_MODEL",
-                "gemini-3.5-flash",
-            ),
+        agent = _asset_planning_agent(
+            model_env="EPISODE_SCENE_RECONCILE_MODEL",
+            default_model="gemini-3.5-flash",
+            thinking_env="EPISODE_SCENE_RECONCILE_THINKING_LEVEL",
+            default_thinking_level="low",
             system_prompt=BASE_SCENE_RECONCILE_PROMPT,
-            model_settings=get_newapi_text_pydantic_model_settings(
-                "EPISODE_SCENE_RECONCILE_THINKING_LEVEL",
-                "low",
-            ),
             output_type=EpisodeBaseSceneReconcileOutput,
-            output_retries=2,
             name="基础场景资产校对员",
         )
         result = await agent.run(f"""## 已有基础场景
@@ -1474,18 +1508,13 @@ class AssetCompiler:
 ## 本集文本
 {excerpt}
 """
-        agent = Agent(
-            get_newapi_text_pydantic_model(
-                "NARRATED_SCENE_ASSET_MODEL",
-                "gemini-3.5-flash",
-            ),
+        agent = _asset_planning_agent(
+            model_env="NARRATED_SCENE_ASSET_MODEL",
+            default_model="gemini-3.5-flash",
+            thinking_env="NARRATED_SCENE_ASSET_THINKING_LEVEL",
+            default_thinking_level="low",
             system_prompt=NARRATED_SCENE_PROMPT,
-            model_settings=get_newapi_text_pydantic_model_settings(
-                "NARRATED_SCENE_ASSET_THINKING_LEVEL",
-                "low",
-            ),
             output_type=NarratedScenePlanOutput,
-            output_retries=2,
             validation_context={
                 "source_text": source_text,
                 "existing_scene_names": existing_scene_names,
@@ -1576,18 +1605,13 @@ class AssetCompiler:
 ## 当前场景块文本
 {block_text}
 """
-        agent = Agent(
-            get_newapi_text_pydantic_model(
-                "EPISODE_SCENE_PLANNER_MODEL",
-                "gemini-3.5-flash",
-            ),
+        agent = _asset_planning_agent(
+            model_env="EPISODE_SCENE_PLANNER_MODEL",
+            default_model="gemini-3.5-flash",
+            thinking_env="EPISODE_SCENE_PLANNER_THINKING_LEVEL",
+            default_thinking_level="low",
             system_prompt=DERIVED_SCENE_PROMPT,
-            model_settings=get_newapi_text_pydantic_model_settings(
-                "EPISODE_SCENE_PLANNER_THINKING_LEVEL",
-                "low",
-            ),
             output_type=BlockDerivedSceneOutput,
-            output_retries=2,
             name="派生场景分析师",
         )
         result = await agent.run(task)
@@ -1753,18 +1777,13 @@ class AssetCompiler:
 ## 预筛命中的已有道具
 {candidate_section}
 """
-        agent = Agent(
-            get_newapi_text_pydantic_model(
-                "EPISODE_PROP_PLANNER_MODEL",
-                "gemini-3.5-flash",
-            ),
+        agent = _asset_planning_agent(
+            model_env="EPISODE_PROP_PLANNER_MODEL",
+            default_model="gemini-3.5-flash",
+            thinking_env="EPISODE_PROP_PLANNER_THINKING_LEVEL",
+            default_thinking_level="low",
             system_prompt=BLOCK_PROP_PROMPT,
-            model_settings=get_newapi_text_pydantic_model_settings(
-                "EPISODE_PROP_PLANNER_THINKING_LEVEL",
-                "low",
-            ),
             output_type=BlockPropRequirements,
-            output_retries=2,
             validation_context={
                 "block_text": block_text,
                 "allowed_existing_names": allowed_existing_names,

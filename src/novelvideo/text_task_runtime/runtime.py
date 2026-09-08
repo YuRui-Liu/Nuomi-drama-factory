@@ -172,10 +172,12 @@ class StructuredRuntimeAgent:
         *,
         output_type: type[Any],
         system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> None:
         self.runtime = runtime
         self.output_type = output_type
         self.system_prompt = system_prompt
+        self.validation_context = validation_context
         self.model_name = runtime.snapshot.model
 
     async def run(self, prompt: str) -> Any:
@@ -184,6 +186,14 @@ class StructuredRuntimeAgent:
             output_type=self.output_type,
             system_prompt=self.system_prompt,
         )
+        if self.validation_context is not None and hasattr(
+            self.output_type, "model_validate"
+        ):
+            payload = output.model_dump() if hasattr(output, "model_dump") else output
+            output = self.output_type.model_validate(
+                payload,
+                context=self.validation_context,
+            )
         return SimpleNamespace(output=output)
 
 

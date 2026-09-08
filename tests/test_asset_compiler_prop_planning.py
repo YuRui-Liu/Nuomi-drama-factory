@@ -90,6 +90,57 @@ def test_block_prop_prompt_explicitly_forbids_string_list_and_synonym_names():
 
 
 @pytest.mark.asyncio
+async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    captured: dict[str, object] = {}
+
+    class FakeRuntime:
+        snapshot = SimpleNamespace(model="gpt-5.6-sol")
+
+        async def run_structured(self, *, prompt, output_type, system_prompt=""):
+            captured.update(
+                prompt=prompt,
+                output_type=output_type,
+                system_prompt=system_prompt,
+            )
+            return output_type.model_construct(
+                requirements=[
+                    asset_compiler.PropRequirement(
+                        prop_name="强光手电",
+                        prop_type="object",
+                        owner="沈月白",
+                        visual_prompt="黑色金属筒身，冷白光束",
+                        description="地下室照明",
+                    )
+                ]
+            )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("ordinary text model must not be loaded")
+
+    monkeypatch.setattr(asset_compiler, "current_text_task_runtime", lambda: FakeRuntime())
+    monkeypatch.setattr(
+        asset_compiler,
+        "get_newapi_text_pydantic_model",
+        fail_if_called,
+    )
+    compiler = asset_compiler.AssetCompiler(_FakeCogneeStore())
+    block = asset_compiler.SceneBlock(
+        header_line="1-1、地下室 深夜 内",
+        lines=["△昏暗地下室里尘埃翻涌。", "沈月白：把强光手电给我。"],
+    )
+
+    requirements = await compiler._analyze_block_props(block, [], [])
+
+    assert [item.prop_name for item in requirements] == ["强光手电"]
+    assert captured["output_type"] is asset_compiler.BlockPropRequirements
+    assert captured["system_prompt"] == asset_compiler.BLOCK_PROP_PROMPT
+
+
+@pytest.mark.asyncio
 async def test_standard_drama_prop_planner_reports_string_list_validation_error(
     monkeypatch,
 ):
