@@ -25,6 +25,28 @@ export interface NarrativeReferenceBinding {
   thumbnail_url?: string | null;
 }
 
+export type PlannedReferenceStatus =
+  | "ready"
+  | "pending_confirmation"
+  | "missing_asset"
+  | "missing_image";
+
+export interface PlannedReferenceBinding {
+  binding_id: string;
+  asset_kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
+  display_label: string;
+  variant_id?: string | null;
+  beat_ids: string[];
+  required: boolean;
+  status: PlannedReferenceStatus;
+  selected_by_default: boolean;
+  asset_slot_id?: string | null;
+  version_id?: string | null;
+  adoption_status?: "provisional" | "adopted" | "candidate" | null;
+  thumbnail_url?: string | null;
+  warning?: string | null;
+}
+
 export interface NarrativeReferenceRequirement {
   id: string;
   kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
@@ -90,8 +112,11 @@ export interface NarrativeGroupImageReference {
 }
 
 export interface NarrativeGroupReferencePreview {
+  /** Planned-reference fields are optional until the legacy dialog is switched over. */
+  reference_revision?: string;
+  max_images?: number;
   requirements?: NarrativeReferenceRequirement[];
-  bindings?: NarrativeReferenceBinding[];
+  bindings?: PlannedReferenceBinding[];
   style: {
     id: string;
     label: string;
@@ -136,17 +161,34 @@ export interface VideoReferencePreview {
   warnings: string[];
 }
 
-export interface NarrativeGroupGenerationSelection {
+interface NarrativeGroupGenerationConfiguration {
   useStyle: boolean;
-  selectedCharacterReferenceIds: string[];
-  selectedSceneReferenceIds: string[];
   providerId?: string;
   model?: string;
   imageSize?: NarrativeImageSize;
   allowUnconstrained?: boolean;
   saveAsProjectDefault?: boolean;
-  referenceResolution?: NarrativeReferenceResolution;
 }
+
+export type NarrativeGroupGenerationSelection = NarrativeGroupGenerationConfiguration & (
+  | {
+    selectedBindingIds: string[];
+    uploadIds: string[];
+    referenceRevision: string;
+    selectedCharacterReferenceIds?: never;
+    selectedSceneReferenceIds?: never;
+    referenceResolution?: never;
+  }
+  | {
+    /** Compatibility branch for GroupReferenceDialog until its planned-reference cutover. */
+    selectedCharacterReferenceIds: string[];
+    selectedSceneReferenceIds: string[];
+    selectedBindingIds?: never;
+    uploadIds?: never;
+    referenceRevision?: never;
+    referenceResolution?: NarrativeReferenceResolution;
+  }
+);
 
 export interface NarrativeStageState {
   status: NarrativeStageStatus;
@@ -537,6 +579,9 @@ export function narrativeGroupActionPayload(input: {
     revision?: number;
     aspect_ratio?: "9:16" | "16:9";
     use_style?: boolean;
+    selected_binding_ids?: string[];
+    upload_ids?: string[];
+    reference_revision?: string;
     selected_character_reference_ids?: string[];
     selected_scene_reference_ids?: string[];
     provider_id?: string;
@@ -549,27 +594,33 @@ export function narrativeGroupActionPayload(input: {
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
-    payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
-    payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
+    if (input.selection.selectedBindingIds !== undefined) {
+      payload.selected_binding_ids = input.selection.selectedBindingIds;
+      payload.upload_ids = input.selection.uploadIds;
+      payload.reference_revision = input.selection.referenceRevision;
+    } else {
+      payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
+      payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
+      if (input.selection.referenceResolution) {
+        payload.reference_resolution = {
+          decisions: input.selection.referenceResolution.decisions,
+          ...(input.selection.referenceResolution.additional_asset_ids?.length
+            ? { additional_asset_ids: input.selection.referenceResolution.additional_asset_ids }
+            : {}),
+          ...(input.selection.referenceResolution.additional_upload_ids?.length
+            ? { additional_upload_ids: input.selection.referenceResolution.additional_upload_ids }
+            : {}),
+          ...(input.selection.referenceResolution.style_asset_id
+            ? { style_asset_id: input.selection.referenceResolution.style_asset_id }
+            : {}),
+        };
+      }
+    }
     if (input.selection.providerId) payload.provider_id = input.selection.providerId;
     if (input.selection.model) payload.model = input.selection.model;
     if (input.selection.imageSize) payload.image_size = input.selection.imageSize;
     if (input.selection.allowUnconstrained !== undefined) {
       payload.allow_unconstrained = input.selection.allowUnconstrained;
-    }
-    if (input.selection.referenceResolution) {
-      payload.reference_resolution = {
-        decisions: input.selection.referenceResolution.decisions,
-        ...(input.selection.referenceResolution.additional_asset_ids?.length
-          ? { additional_asset_ids: input.selection.referenceResolution.additional_asset_ids }
-          : {}),
-        ...(input.selection.referenceResolution.additional_upload_ids?.length
-          ? { additional_upload_ids: input.selection.referenceResolution.additional_upload_ids }
-          : {}),
-        ...(input.selection.referenceResolution.style_asset_id
-          ? { style_asset_id: input.selection.referenceResolution.style_asset_id }
-          : {}),
-      };
     }
   }
   return payload;

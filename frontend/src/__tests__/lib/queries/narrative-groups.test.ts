@@ -122,6 +122,42 @@ describe("narrative group query contract", () => {
     });
   });
 
+  it("serializes planned binding IDs without leaking legacy names or paths", () => {
+    expect(narrativeGroupActionPayload({
+      revision: 8,
+      aspectRatio: "16:9",
+      selection: {
+        selectedBindingIds: ["binding-2", "binding-1"],
+        uploadIds: ["upload-1"],
+        referenceRevision: "plan-revision-7",
+        useStyle: true,
+        providerId: "grsai-main",
+        model: "gpt-image-2",
+        imageSize: "2K",
+        allowUnconstrained: false,
+        displayName: "must-not-leak",
+        localPath: "/private/must-not-leak.png",
+        selectedCharacterReferenceIds: ["legacy-character"],
+        selectedSceneReferenceIds: ["legacy-scene"],
+        referenceResolution: {
+          decisions: [{ requirement_id: "legacy", action: "ignore" }],
+          additional_asset_ids: ["legacy-path-like-asset"],
+        },
+      },
+    } as never)).toEqual({
+      revision: 8,
+      aspect_ratio: "16:9",
+      selected_binding_ids: ["binding-2", "binding-1"],
+      upload_ids: ["upload-1"],
+      reference_revision: "plan-revision-7",
+      use_style: true,
+      provider_id: "grsai-main",
+      model: "gpt-image-2",
+      image_size: "2K",
+      allow_unconstrained: false,
+    });
+  });
+
   it("builds revision history and rollback endpoints with canonical stages", () => {
     expect(narrativeGroupRevisionPath("demo", 2, "ng-01", "sketch"))
       .toBe("api/v1/projects/demo/episodes/2/narrative-groups/ng-01/sketch/revisions");
