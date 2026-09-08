@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
@@ -18,14 +19,57 @@ def _build_identity_planner_result(
     resolved_count: int,
     identities: list[dict[str, str]],
     auto_promoted_characters: list[str],
+    binding_count: int | None = None,
+    binding_statuses: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "episode": episode,
         "new_count": new_count,
         "resolved_count": resolved_count,
         "identities": identities,
         "auto_promoted_characters": auto_promoted_characters,
     }
+    if binding_count is not None:
+        result["binding_count"] = binding_count
+        result["binding_statuses"] = dict(binding_statuses or {})
+    return result
+
+
+def _character_identity_bindings(
+    *,
+    project_id: str,
+    episode_number: int,
+    director_plan,
+    draft,
+    characters,
+    scenes,
+    props,
+):
+    """Project only identity bindings, overlaying the zero-write draft snapshot."""
+    from novelvideo.narrative_groups.planned_binding_service import (
+        bindings_by_kind,
+        bindings_for_director_plan,
+    )
+
+    groups = tuple(director_plan.groups)
+    shots = tuple(shot for group in groups for shot in group.shots)
+    if not groups or not shots:
+        raise ValueError("ACTIVE_DIRECTOR_PLAN_HAS_NO_SCOPE")
+    characters_by_name = {character.name: character for character in characters}
+    characters_by_name.update(
+        {character.name: character for character in draft.characters}
+    )
+    bindings = bindings_for_director_plan(
+        project_id=project_id,
+        episode_number=episode_number,
+        source_plan_revision_id=director_plan.revision_id,
+        groups=groups,
+        shots=shots,
+        characters=tuple(characters_by_name.values()),
+        scenes=scenes,
+        props=props,
+    )
+    return bindings_by_kind(bindings).get("character_identity", ())
 
 
 def run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
@@ -86,7 +130,30 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
     def on_log(message: str) -> None:
         update(log=message)
 
-    new_count, resolved_count = await planner.plan_single_episode(episode_obj, on_log=on_log)
+    draft = await planner.build_identity_plan_draft(episode_obj, on_log=on_log)
+
+    from novelvideo.director_plan.store import DirectorPlanStore
+
+    director_plan = DirectorPlanStore(ctx.output_dir).load_active(episode)
+    if director_plan is None:
+        raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
+    bindings = _character_identity_bindings(
+        project_id=ctx.project_id,
+        episode_number=episode,
+        director_plan=director_plan,
+        draft=draft,
+        characters=tuple(cognee_store.get_all_characters()),
+        scenes=tuple(await sqlite_store.list_scenes()),
+        props=tuple(await sqlite_store.list_props()),
+    )
+    await sqlite_store.publish_identity_plan_atomic(
+        episode_number=episode,
+        characters=draft.characters,
+        episode_identity_ids=draft.episode_identity_ids,
+        identity_default_map=draft.identity_default_map,
+        bindings=bindings,
+    )
+    await cognee_store.load_graph_state()
     refreshed = cognee_store.get_episode(episode) or episode_obj
 
     identities: list[dict[str, str]] = []
@@ -105,13 +172,19 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
                 }
             )
 
-    update(0.95, "身份规划完成", f"新增 {new_count} 个身份，复用 {resolved_count} 个身份")
+    update(
+        0.95,
+        "身份规划完成",
+        f"新增 {draft.new_count} 个身份，复用 {draft.resolved_count} 个身份",
+    )
     return _build_identity_planner_result(
         episode=episode,
-        new_count=new_count,
-        resolved_count=resolved_count,
+        new_count=draft.new_count,
+        resolved_count=draft.resolved_count,
         identities=identities,
         auto_promoted_characters=list(getattr(planner, "auto_promoted_characters", []) or []),
+        binding_count=len(bindings),
+        binding_statuses=dict(Counter(binding.status for binding in bindings)),
     )
 
 

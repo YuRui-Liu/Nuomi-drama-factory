@@ -131,3 +131,20 @@ async def test_identity_planner_does_not_auto_create_missing_characters():
     assert store.get_character("陆辰") is None
     assert planner.auto_promoted_characters == []
     assert store.updated_episode is None
+
+
+@pytest.mark.asyncio
+async def test_identity_plan_draft_does_not_write_during_planning():
+    store = FakeIdentityStore("陆辰在地下室推开一个腐朽的空书架。")
+    await store.add_character(NovelCharacter(name="陆辰", gender="男"))
+    planner = ExistingCharacterIdentityPlanner(store)
+
+    draft = await planner.build_identity_plan_draft(
+        NovelEpisode(number=1, title="命运之书")
+    )
+
+    assert draft.new_count == 0
+    assert draft.resolved_count == 1
+    assert draft.episode_identity_ids == ("陆辰_默认",)
+    assert draft.identity_default_map == {"陆辰": "陆辰_默认"}
+    assert store.updated_episode is None

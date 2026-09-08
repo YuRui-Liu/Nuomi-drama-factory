@@ -12,14 +12,21 @@
 import re
 from typing import Optional, Callable, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from pydantic_ai import Agent
 from novelvideo.config import (
     get_newapi_text_pydantic_model,
     get_newapi_text_pydantic_model_settings,
 )
-from novelvideo.models import CharacterIdentity
+from novelvideo.models import CharacterIdentity, NovelCharacter
 from novelvideo.shared.env_guard import preserve_st_env
 
 if TYPE_CHECKING:
@@ -244,6 +251,80 @@ class EpisodeCastList(BaseModel):
     )
 
 
+class IdentityPlanDraft(BaseModel):
+    """Complete identity state prepared without mutating persistent storage."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    new_count: int = Field(ge=0)
+    resolved_count: int = Field(ge=0)
+    characters: tuple[NovelCharacter, ...]
+    episode_identity_ids: tuple[str, ...]
+    identity_default_map: dict[str, str]
+
+
+class _IdentityPlanDraftStore:
+    """Write-isolated view over CogneeStore used while preparing a draft."""
+
+    def __init__(self, source, episode: "NovelEpisode") -> None:
+        self._source = source
+        self._characters = {
+            character.name: character.model_copy(deep=True)
+            for character in source.get_all_characters()
+        }
+        self.episode_updates: dict[str, object] = {
+            "identity_ids": list(episode.identity_ids),
+            "character_names": list(episode.character_names),
+            "identity_default_map": dict(episode.identity_default_map),
+        }
+
+    def __getattr__(self, name: str):
+        return getattr(self._source, name)
+
+    def get_all_characters(self) -> list[NovelCharacter]:
+        return list(self._characters.values())
+
+    def resolve_name(self, name: str) -> str:
+        return self._source.resolve_name(name)
+
+    def get_character(self, name: str) -> NovelCharacter | None:
+        return self._characters.get(self.resolve_name(name))
+
+    async def add_character_identity(
+        self, character_name: str, identity: CharacterIdentity
+    ) -> None:
+        character = self.get_character(character_name)
+        if character is None:
+            raise ValueError(f"角色 {character_name} 不存在")
+        identities = character.identities
+        if any(item.identity_id == identity.identity_id for item in identities):
+            raise ValueError(f"身份 {identity.identity_id} 已存在")
+        identity_copy = identity.model_copy(deep=True)
+        identity_copy.character_name = character.name
+        identities.append(identity_copy)
+        character.identities = identities
+
+    async def update_character_identity(
+        self, character_name: str, identity_id: str, **updates
+    ) -> None:
+        character = self.get_character(character_name)
+        if character is None:
+            raise ValueError(f"角色 {character_name} 不存在")
+        identities = character.identities
+        identity = next(
+            (item for item in identities if item.identity_id == identity_id), None
+        )
+        if identity is None:
+            raise ValueError(f"身份 {identity_id} 不存在")
+        for key, value in updates.items():
+            if hasattr(identity, key):
+                setattr(identity, key, value)
+        character.identities = identities
+
+    async def update_episode(self, episode_number: int, **updates) -> None:
+        self.episode_updates.update(updates)
+
+
 APPEARANCE_GENERATION_PROMPT = """# 你是专业的影视服装造型师
 
 ## 任务
@@ -423,7 +504,37 @@ class IdentityPlanner:
         episode: "NovelEpisode",
         on_log: Optional[Callable] = None,
     ) -> tuple[int, int]:
-        """规划单集身份。完成后自动保存缓存。
+        """Compatibility entry point: build completely, then persist the draft."""
+        source_characters = {
+            character.name: character
+            for character in self.cognee_store.get_all_characters()
+        }
+        draft = await self.build_identity_plan_draft(episode, on_log=on_log)
+        for character in draft.characters:
+            source = source_characters.get(character.name)
+            if source is None or source.model_dump() != character.model_dump():
+                await self.cognee_store.add_character(character.model_copy(deep=True))
+        if draft.episode_identity_ids:
+            character_names = list(
+                dict.fromkeys(
+                    identity_id.split("_", 1)[0]
+                    for identity_id in draft.episode_identity_ids
+                )
+            )
+            await self.cognee_store.update_episode(
+                episode.number,
+                identity_ids=list(draft.episode_identity_ids),
+                character_names=character_names,
+                identity_default_map=draft.identity_default_map,
+            )
+        return draft.new_count, draft.resolved_count
+
+    async def _plan_single_episode_in_current_store(
+        self,
+        episode: "NovelEpisode",
+        on_log: Optional[Callable] = None,
+    ) -> tuple[int, int]:
+        """Run the planning algorithm against the currently attached store.
 
         Returns:
             (new_count, resolved_count): 新建身份数 和 总解析身份数
@@ -535,6 +646,34 @@ class IdentityPlanner:
             )
 
         return new_count, len(resolved_ids)
+
+    async def build_identity_plan_draft(
+        self,
+        episode: "NovelEpisode",
+        on_log: Optional[Callable] = None,
+    ) -> IdentityPlanDraft:
+        """Plan against deep-copied characters and return a zero-write draft."""
+        source_store = self.cognee_store
+        draft_store = _IdentityPlanDraftStore(source_store, episode)
+        self.cognee_store = draft_store
+        try:
+            new_count, resolved_count = await self._plan_single_episode_in_current_store(
+                episode.model_copy(deep=True), on_log=on_log
+            )
+        finally:
+            self.cognee_store = source_store
+
+        identity_ids = tuple(draft_store.episode_updates.get("identity_ids", ()))
+        identity_default_map = dict(
+            draft_store.episode_updates.get("identity_default_map", {})
+        )
+        return IdentityPlanDraft(
+            new_count=new_count,
+            resolved_count=resolved_count,
+            characters=tuple(draft_store.get_all_characters()),
+            episode_identity_ids=identity_ids,
+            identity_default_map=identity_default_map,
+        )
 
     async def plan_all_episodes(
         self,

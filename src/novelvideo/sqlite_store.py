@@ -649,6 +649,38 @@ class SQLiteStore:
             )
         return [by_id[binding_id] for binding_id in requested_ids]
 
+    async def _insert_planned_reference_binding(
+        self,
+        db: aiosqlite.Connection,
+        binding: PlannedReferenceBinding,
+    ) -> None:
+        await db.execute(
+            "INSERT INTO planned_reference_bindings "
+            "(binding_id, project_id, episode_number, source_plan_revision_id, "
+            "asset_kind, entity_id, base_entity_id, variant_id, asset_slot_id, "
+            "group_ids_json, beat_ids_json, shot_ids_json, required, status, "
+            "resolution, display_label, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+            (
+                binding.binding_id,
+                binding.project_id,
+                binding.episode_number,
+                binding.source_plan_revision_id,
+                binding.asset_kind,
+                binding.entity_id,
+                binding.base_entity_id,
+                binding.variant_id,
+                binding.asset_slot_id,
+                json.dumps(binding.group_ids, ensure_ascii=False),
+                json.dumps(binding.beat_ids, ensure_ascii=False),
+                json.dumps(binding.shot_ids, ensure_ascii=False),
+                int(binding.required),
+                binding.status,
+                binding.resolution,
+                binding.display_label,
+            ),
+        )
+
     async def replace_planned_reference_bindings_atomic(
         self,
         episode_number: int,
@@ -687,36 +719,109 @@ class SQLiteStore:
                         (episode_number, *kinds),
                     )
                 for binding in replacement_bindings:
-                    await db.execute(
-                        "INSERT INTO planned_reference_bindings "
-                        "(binding_id, project_id, episode_number, source_plan_revision_id, "
-                        "asset_kind, entity_id, base_entity_id, variant_id, asset_slot_id, "
-                        "group_ids_json, beat_ids_json, shot_ids_json, required, status, "
-                        "resolution, display_label, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-                        (
-                            binding.binding_id,
-                            binding.project_id,
-                            binding.episode_number,
-                            binding.source_plan_revision_id,
-                            binding.asset_kind,
-                            binding.entity_id,
-                            binding.base_entity_id,
-                            binding.variant_id,
-                            binding.asset_slot_id,
-                            json.dumps(binding.group_ids, ensure_ascii=False),
-                            json.dumps(binding.beat_ids, ensure_ascii=False),
-                            json.dumps(binding.shot_ids, ensure_ascii=False),
-                            int(binding.required),
-                            binding.status,
-                            binding.resolution,
-                            binding.display_label,
-                        ),
-                    )
+                    await self._insert_planned_reference_binding(db, binding)
                 await db.commit()
             except BaseException:
                 await asyncio.shield(db.rollback())
                 raise
+
+    async def publish_identity_plan_atomic(
+        self,
+        *,
+        episode_number: int,
+        characters: tuple[NovelCharacter, ...] | list[NovelCharacter],
+        episode_identity_ids: tuple[str, ...] | list[str],
+        identity_default_map: dict[str, str],
+        bindings: tuple[PlannedReferenceBinding, ...]
+        | list[PlannedReferenceBinding],
+    ) -> None:
+        """Publish identity catalogue, episode mapping, and bindings together."""
+        character_items = tuple(characters)
+        identity_ids = tuple(episode_identity_ids)
+        binding_items = tuple(bindings)
+        if episode_number <= 0:
+            raise ValueError("episode_number must be greater than zero")
+        if len({character.name for character in character_items}) != len(character_items):
+            raise ValueError("duplicate character names are not allowed")
+        if any(binding.episode_number != episode_number for binding in binding_items):
+            raise ValueError("binding episode_number does not match publish episode")
+        if any(binding.asset_kind != "character_identity" for binding in binding_items):
+            raise ValueError("identity publish only accepts character_identity bindings")
+
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await configure_sqlite_connection_async(db)
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                for character in character_items:
+                    await db.execute(
+                        """INSERT INTO characters (
+                           name, aliases_json, role, is_main, extraction_locked,
+                           gender, age_group, body_type, fish_voice_id, description,
+                           face_prompt, appearance_details, identities_json,
+                           reference_audio_path, reference_audio_sha256,
+                           reference_audio_updated_at, voice_samples_by_age_group_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(name) DO UPDATE SET
+                           aliases_json=excluded.aliases_json, role=excluded.role,
+                           is_main=excluded.is_main,
+                           extraction_locked=excluded.extraction_locked,
+                           gender=excluded.gender, age_group=excluded.age_group,
+                           body_type=excluded.body_type,
+                           fish_voice_id=excluded.fish_voice_id,
+                           description=excluded.description,
+                           face_prompt=excluded.face_prompt,
+                           appearance_details=excluded.appearance_details,
+                           identities_json=excluded.identities_json,
+                           reference_audio_path=excluded.reference_audio_path,
+                           reference_audio_sha256=excluded.reference_audio_sha256,
+                           reference_audio_updated_at=excluded.reference_audio_updated_at,
+                           voice_samples_by_age_group_json=excluded.voice_samples_by_age_group_json,
+                           updated_at=datetime('now')""",
+                        (
+                            character.name,
+                            json.dumps(character.aliases, ensure_ascii=False),
+                            character.role,
+                            int(character.is_main),
+                            int(character.extraction_locked),
+                            character.gender,
+                            character.age_group,
+                            character.body_type,
+                            character.fish_voice_id,
+                            character.description,
+                            character.face_prompt,
+                            character.appearance_details,
+                            character.identities_json,
+                            character.reference_audio_path,
+                            character.reference_audio_sha256,
+                            character.reference_audio_updated_at,
+                            character.voice_samples_by_age_group_json,
+                        ),
+                    )
+                cursor = await db.execute(
+                    "UPDATE episodes SET identity_ids = ?, "
+                    "identity_default_map_json = ?, updated_at = datetime('now') "
+                    "WHERE number = ?",
+                    (
+                        json.dumps(identity_ids, ensure_ascii=False),
+                        json.dumps(identity_default_map, ensure_ascii=False),
+                        episode_number,
+                    ),
+                )
+                if (cursor.rowcount or 0) != 1:
+                    raise ValueError(f"Episode {episode_number} not found")
+                await db.execute(
+                    "DELETE FROM planned_reference_bindings "
+                    "WHERE episode_number = ? AND asset_kind = 'character_identity'",
+                    (episode_number,),
+                )
+                for binding in binding_items:
+                    await self._insert_planned_reference_binding(db, binding)
+                await db.commit()
+            except BaseException:
+                await asyncio.shield(db.rollback())
+                raise
+        await self.load_graph_state()
 
     def is_closed(self) -> bool:
         return self._closing or self._closed
