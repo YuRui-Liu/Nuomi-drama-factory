@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import logging
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+
+logger = logging.getLogger(__name__)
+
+
+async def _refresh_identity_caches(cognee_store: Any) -> bool:
+    """Refresh shared post-commit caches without invalidating a durable publish."""
+    try:
+        return await cognee_store.load_graph_state() is not False
+    except Exception:
+        logger.warning(
+            "identity plan committed but cache refresh raised an exception",
+            exc_info=True,
+        )
+        return False
 
 
 def _build_identity_planner_result(
@@ -21,6 +36,7 @@ def _build_identity_planner_result(
     auto_promoted_characters: list[str],
     binding_count: int | None = None,
     binding_statuses: dict[str, int] | None = None,
+    cache_refresh_pending: bool | None = None,
 ) -> dict[str, Any]:
     result = {
         "episode": episode,
@@ -32,6 +48,8 @@ def _build_identity_planner_result(
     if binding_count is not None:
         result["binding_count"] = binding_count
         result["binding_statuses"] = dict(binding_statuses or {})
+    if cache_refresh_pending is not None:
+        result["cache_refresh_pending"] = cache_refresh_pending
     return result
 
 
@@ -147,7 +165,7 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
             scenes=tuple(await sqlite_store.list_scenes()),
             props=tuple(await sqlite_store.list_props()),
         )
-        await sqlite_store.publish_identity_plan_atomic(
+        publication = await sqlite_store.publish_identity_plan_atomic(
             episode_number=episode,
             characters=draft.characters,
             episode_identity_ids=draft.episode_identity_ids,
@@ -158,7 +176,16 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
             ),
             bindings=bindings,
         )
-    await cognee_store.load_graph_state()
+    cache_refresh_pending = bool(
+        isinstance(publication, dict)
+        and publication.get("cache_refresh_pending", False)
+    )
+    if await _refresh_identity_caches(cognee_store):
+        cache_refresh_pending = False
+    else:
+        cache_refresh_pending = True
+        logger.warning("identity plan committed but runner cache refresh is pending")
+        update(log="身份规划已提交，缓存刷新待重试")
     refreshed = cognee_store.get_episode(episode) or episode_obj
 
     identities: list[dict[str, str]] = []
@@ -190,6 +217,7 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         auto_promoted_characters=list(getattr(planner, "auto_promoted_characters", []) or []),
         binding_count=len(bindings),
         binding_statuses=dict(Counter(binding.status for binding in bindings)),
+        cache_refresh_pending=cache_refresh_pending,
     )
 
 

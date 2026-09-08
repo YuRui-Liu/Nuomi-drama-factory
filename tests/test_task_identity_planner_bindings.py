@@ -163,6 +163,65 @@ async def test_publish_identity_plan_atomic_exposes_identity_and_binding_togethe
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("refresh_failure", ["false", "exception"])
+async def test_identity_commit_reports_cache_refresh_pending_without_rolling_back(
+    tmp_path, monkeypatch, refresh_failure
+):
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store.initialize()
+    old_identity = _identity("陆辰_默认")
+    new_identity = _identity("陆辰_战斗装")
+    await store.add_character(_character("陆辰", old_identity))
+    await store.add_episode(
+        NovelEpisode(
+            number=1,
+            title="第一集",
+            identity_ids=[old_identity.identity_id],
+            identity_default_map={"陆辰": old_identity.identity_id},
+        )
+    )
+    original_refresh = store.load_graph_state
+
+    async def fail_refresh():
+        if refresh_failure == "false":
+            return False
+        raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(store, "load_graph_state", fail_refresh)
+    result = await store.publish_identity_plan_atomic(
+        episode_number=1,
+        characters=(_character("陆辰", old_identity, new_identity),),
+        episode_identity_ids=(new_identity.identity_id,),
+        identity_default_map={"陆辰": new_identity.identity_id},
+        identity_baseline_digests={
+            "陆辰": hashlib.sha256(
+                _character("陆辰", old_identity).identities_json.encode()
+            ).hexdigest()
+        },
+        episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+            [old_identity.identity_id], {"陆辰": old_identity.identity_id}
+        ),
+        bindings=(_binding(new_identity.identity_id, revision="director-r2"),),
+    )
+
+    assert result == {"committed": True, "cache_refresh_pending": True}
+    assert [
+        item.identity_id for item in (await store.list_characters())[0].identities
+    ] == [old_identity.identity_id, new_identity.identity_id]
+    assert (await store.list_episodes())[0].identity_ids == [new_identity.identity_id]
+    assert await store.list_planned_reference_bindings(1) == [
+        _binding(new_identity.identity_id, revision="director-r2")
+    ]
+    assert store._cache_refresh_pending is True
+
+    monkeypatch.setattr(store, "load_graph_state", original_refresh)
+    await store.load_graph_state()
+    assert store._cache_refresh_pending is False
+
+
+@pytest.mark.asyncio
 async def test_publish_identity_plan_atomic_rolls_back_all_state_on_binding_insert_failure(
     tmp_path, monkeypatch
 ):

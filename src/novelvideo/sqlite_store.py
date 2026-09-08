@@ -811,7 +811,7 @@ class SQLiteStore:
         bindings: tuple[PlannedReferenceBinding, ...]
         | list[PlannedReferenceBinding]
         | None,
-    ) -> None:
+    ) -> dict[str, bool]:
         """Publish identity catalogue, episode mapping, and bindings together."""
         character_items = tuple(
             NovelCharacter.model_validate(character.model_dump())
@@ -952,7 +952,20 @@ class SQLiteStore:
             except BaseException:
                 await asyncio.shield(db.rollback())
                 raise
-        await self.load_graph_state()
+        refresh_pending = False
+        try:
+            refreshed = await self.load_graph_state()
+            if refreshed is False:
+                refresh_pending = True
+                self._cache_refresh_pending = True
+        except Exception:
+            refresh_pending = True
+            self._cache_refresh_pending = True
+            logger.warning(
+                "identity plan committed but cache refresh is pending",
+                exc_info=True,
+            )
+        return {"committed": True, "cache_refresh_pending": refresh_pending}
 
     @staticmethod
     def asset_menu_baseline_digest(items: Any, *, asset_kind: str | None = None) -> str:
