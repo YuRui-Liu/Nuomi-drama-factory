@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -732,6 +733,7 @@ class SQLiteStore:
         characters: tuple[NovelCharacter, ...] | list[NovelCharacter],
         episode_identity_ids: tuple[str, ...] | list[str],
         identity_default_map: dict[str, str],
+        identity_baseline_digests: dict[str, str],
         bindings: tuple[PlannedReferenceBinding, ...]
         | list[PlannedReferenceBinding],
     ) -> None:
@@ -739,10 +741,14 @@ class SQLiteStore:
         character_items = tuple(characters)
         identity_ids = tuple(episode_identity_ids)
         binding_items = tuple(bindings)
+        baseline_digests = dict(identity_baseline_digests)
         if episode_number <= 0:
             raise ValueError("episode_number must be greater than zero")
         if len({character.name for character in character_items}) != len(character_items):
             raise ValueError("duplicate character names are not allowed")
+        character_names = {character.name for character in character_items}
+        if set(baseline_digests) - character_names:
+            raise ValueError("identity baselines contain characters outside the draft")
         if any(binding.episode_number != episode_number for binding in binding_items):
             raise ValueError("binding episode_number does not match publish episode")
         if any(binding.asset_kind != "character_identity" for binding in binding_items):
@@ -754,6 +760,34 @@ class SQLiteStore:
             try:
                 await db.execute("BEGIN IMMEDIATE")
                 for character in character_items:
+                    async with db.execute(
+                        "SELECT identities_json FROM characters WHERE name = ?",
+                        (character.name,),
+                    ) as cursor:
+                        current = await cursor.fetchone()
+                    baseline_digest = baseline_digests.get(character.name)
+                    if baseline_digest is not None:
+                        if current is None:
+                            raise ValueError(
+                                f"identity plan conflict for {character.name}: character missing"
+                            )
+                        current_digest = hashlib.sha256(
+                            str(current[0] or "[]").encode("utf-8")
+                        ).hexdigest()
+                        if current_digest != baseline_digest:
+                            raise ValueError(
+                                f"identity plan conflict for {character.name}: identities changed"
+                            )
+                        await db.execute(
+                            "UPDATE characters SET identities_json = ?, "
+                            "updated_at = datetime('now') WHERE name = ?",
+                            (character.identities_json, character.name),
+                        )
+                        continue
+                    if current is not None:
+                        raise ValueError(
+                            f"identity plan conflict for {character.name}: character now exists"
+                        )
                     await db.execute(
                         """INSERT INTO characters (
                            name, aliases_json, role, is_main, extraction_locked,
@@ -761,23 +795,7 @@ class SQLiteStore:
                            face_prompt, appearance_details, identities_json,
                            reference_audio_path, reference_audio_sha256,
                            reference_audio_updated_at, voice_samples_by_age_group_json)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(name) DO UPDATE SET
-                           aliases_json=excluded.aliases_json, role=excluded.role,
-                           is_main=excluded.is_main,
-                           extraction_locked=excluded.extraction_locked,
-                           gender=excluded.gender, age_group=excluded.age_group,
-                           body_type=excluded.body_type,
-                           fish_voice_id=excluded.fish_voice_id,
-                           description=excluded.description,
-                           face_prompt=excluded.face_prompt,
-                           appearance_details=excluded.appearance_details,
-                           identities_json=excluded.identities_json,
-                           reference_audio_path=excluded.reference_audio_path,
-                           reference_audio_sha256=excluded.reference_audio_sha256,
-                           reference_audio_updated_at=excluded.reference_audio_updated_at,
-                           voice_samples_by_age_group_json=excluded.voice_samples_by_age_group_json,
-                           updated_at=datetime('now')""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             character.name,
                             json.dumps(character.aliases, ensure_ascii=False),

@@ -1,12 +1,14 @@
 import pytest
 
 from novelvideo.agents.identity_planner import (
+    AppearanceDescription,
     DefaultIdentityRequirement,
     EpisodeDefaultIdentities,
     EpisodeIdentityRequirements,
+    IdentityRequirement,
     IdentityPlanner,
 )
-from novelvideo.models import NovelCharacter, NovelEpisode
+from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 
 
 class FakeIdentityStore:
@@ -147,4 +149,70 @@ async def test_identity_plan_draft_does_not_write_during_planning():
     assert draft.resolved_count == 1
     assert draft.episode_identity_ids == ("陆辰_默认",)
     assert draft.identity_default_map == {"陆辰": "陆辰_默认"}
+    assert draft.characters == ()
+    assert draft.identity_baseline_digests == {}
+    assert store.updated_episode is None
+
+
+class RealResolveDraftPlanner(IdentityPlanner):
+    async def _filter_cast(self, all_names, content_text, episode, on_log=None):
+        return ["陆辰"], ""
+
+    async def _analyze_default_identities(self, *args, **kwargs):
+        return EpisodeDefaultIdentities(
+            defaults=[
+                DefaultIdentityRequirement(
+                    character_name="陆辰",
+                    visual_state="默认",
+                    reason="现实主线",
+                )
+            ]
+        )
+
+    async def _analyze_special_identities(self, *args, **kwargs):
+        return EpisodeIdentityRequirements(
+            requirements=[
+                IdentityRequirement(
+                    character_name="陆辰",
+                    visual_state="战斗装",
+                    reason="稳定战斗造型",
+                )
+            ]
+        )
+
+    async def _generate_appearance(self, *args, **kwargs):
+        return AppearanceDescription(
+            appearance_details="深色束袖战袍配皮革护腕与金属腰封，长发高束便于行动"
+        )
+
+
+@pytest.mark.asyncio
+async def test_identity_draft_real_resolve_adds_and_repairs_only_in_memory():
+    pending = CharacterIdentity(
+        identity_id="陆辰_默认",
+        character_name="陆辰",
+        identity_name="默认",
+        source="identity_planner",
+    )
+    store = FakeIdentityStore("陆辰换上战斗装进入地下室。")
+    original = NovelCharacter(name="陆辰", gender="男")
+    original.identities = [pending]
+    await store.add_character(original)
+    await store.add_character(NovelCharacter(name="路人", gender="男"))
+    planner = RealResolveDraftPlanner(store)
+
+    draft = await planner.build_identity_plan_draft(
+        NovelEpisode(number=1, title="命运之书")
+    )
+
+    assert [item.identity_id for item in original.identities] == ["陆辰_默认"]
+    assert original.identities[0].appearance_details == ""
+    assert [character.name for character in draft.characters] == ["陆辰"]
+    assert list(draft.identity_baseline_digests) == ["陆辰"]
+    planned = draft.characters[0]
+    assert [item.identity_id for item in planned.identities] == [
+        "陆辰_默认",
+        "陆辰_战斗装",
+    ]
+    assert all(item.appearance_details for item in planned.identities)
     assert store.updated_episode is None

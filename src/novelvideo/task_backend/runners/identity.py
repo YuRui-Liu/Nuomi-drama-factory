@@ -151,6 +151,7 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         characters=draft.characters,
         episode_identity_ids=draft.episode_identity_ids,
         identity_default_map=draft.identity_default_map,
+        identity_baseline_digests=draft.identity_baseline_digests,
         bindings=bindings,
     )
     await cognee_store.load_graph_state()

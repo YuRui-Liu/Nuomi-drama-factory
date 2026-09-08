@@ -9,6 +9,7 @@
 4. resolve / create 并写回 episode.identity_ids + episode.identity_default_map
 """
 
+import hashlib
 import re
 from typing import Optional, Callable, TYPE_CHECKING
 
@@ -261,6 +262,7 @@ class IdentityPlanDraft(BaseModel):
     characters: tuple[NovelCharacter, ...]
     episode_identity_ids: tuple[str, ...]
     identity_default_map: dict[str, str]
+    identity_baseline_digests: dict[str, str]
 
 
 class _IdentityPlanDraftStore:
@@ -270,6 +272,10 @@ class _IdentityPlanDraftStore:
         self._source = source
         self._characters = {
             character.name: character.model_copy(deep=True)
+            for character in source.get_all_characters()
+        }
+        self._identity_baselines = {
+            character.name: character.identities_json
             for character in source.get_all_characters()
         }
         self.episode_updates: dict[str, object] = {
@@ -283,6 +289,24 @@ class _IdentityPlanDraftStore:
 
     def get_all_characters(self) -> list[NovelCharacter]:
         return list(self._characters.values())
+
+    def changed_characters(self) -> tuple[NovelCharacter, ...]:
+        return tuple(
+            character
+            for character in self._characters.values()
+            if self._identity_baselines.get(character.name) != character.identities_json
+        )
+
+    def identity_baseline_digests(
+        self, characters: tuple[NovelCharacter, ...]
+    ) -> dict[str, str]:
+        return {
+            character.name: hashlib.sha256(
+                self._identity_baselines[character.name].encode("utf-8")
+            ).hexdigest()
+            for character in characters
+            if character.name in self._identity_baselines
+        }
 
     def resolve_name(self, name: str) -> str:
         return self._source.resolve_name(name)
@@ -512,8 +536,29 @@ class IdentityPlanner:
         draft = await self.build_identity_plan_draft(episode, on_log=on_log)
         for character in draft.characters:
             source = source_characters.get(character.name)
-            if source is None or source.model_dump() != character.model_dump():
+            if source is None:
                 await self.cognee_store.add_character(character.model_copy(deep=True))
+                continue
+            source_by_id = {
+                identity.identity_id: identity for identity in source.identities
+            }
+            for identity in character.identities:
+                existing = source_by_id.get(identity.identity_id)
+                if existing is None:
+                    await self.cognee_store.add_character_identity(
+                        character.name, identity.model_copy(deep=True)
+                    )
+                    continue
+                updates = {
+                    key: value
+                    for key, value in identity.model_dump().items()
+                    if key not in {"identity_id", "character_name"}
+                    and getattr(existing, key) != value
+                }
+                if updates:
+                    await self.cognee_store.update_character_identity(
+                        character.name, identity.identity_id, **updates
+                    )
         if draft.episode_identity_ids:
             character_names = list(
                 dict.fromkeys(
@@ -667,12 +712,16 @@ class IdentityPlanner:
         identity_default_map = dict(
             draft_store.episode_updates.get("identity_default_map", {})
         )
+        changed_characters = draft_store.changed_characters()
         return IdentityPlanDraft(
             new_count=new_count,
             resolved_count=resolved_count,
-            characters=tuple(draft_store.get_all_characters()),
+            characters=changed_characters,
             episode_identity_ids=identity_ids,
             identity_default_map=identity_default_map,
+            identity_baseline_digests=draft_store.identity_baseline_digests(
+                changed_characters
+            ),
         )
 
     async def plan_all_episodes(
