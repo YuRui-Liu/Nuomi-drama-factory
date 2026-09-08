@@ -80,6 +80,97 @@ def test_binding_id_uses_validated_canonical_values() -> None:
     assert string_episode.binding_id == integer_episode.binding_id
 
 
+def test_direct_binding_construction_normalizes_required_text_fields() -> None:
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    expected = _binding(entity_id="linmo-duty")
+    direct = PlannedReferenceBinding(
+        **{
+            **expected.model_dump(),
+            "project_id": " project-1 ",
+            "source_plan_revision_id": " plan-r1 ",
+            "entity_id": " linmo-duty ",
+            "asset_slot_id": " slot:linmo-duty ",
+            "display_label": " 林默 / 值班员 ",
+        }
+    )
+
+    assert direct.project_id == "project-1"
+    assert direct.source_plan_revision_id == "plan-r1"
+    assert direct.entity_id == "linmo-duty"
+    assert direct.asset_slot_id == "slot:linmo-duty"
+    assert direct.display_label == "林默 / 值班员"
+    assert direct.binding_id == expected.binding_id
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "project_id",
+        "source_plan_revision_id",
+        "entity_id",
+        "asset_slot_id",
+        "display_label",
+    ],
+)
+def test_direct_binding_construction_rejects_blank_required_text(
+    field_name: str,
+) -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    with pytest.raises(ValidationError, match=field_name):
+        PlannedReferenceBinding.model_validate(
+            {**_binding(entity_id="linmo-duty").model_dump(), field_name: " \t "}
+        )
+
+
+def test_direct_binding_construction_rejects_forged_binding_id() -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    with pytest.raises(ValidationError, match="binding_id"):
+        PlannedReferenceBinding.model_validate(
+            {**_binding(entity_id="linmo-duty").model_dump(), "binding_id": "forged"}
+        )
+
+
+@pytest.mark.parametrize(
+    ("base_entity_id", "variant_id"),
+    [("", "night"), ("hall", "")],
+)
+def test_scene_variant_requires_base_and_variant_ids(
+    base_entity_id: str, variant_id: str
+) -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    valid = PlannedReferenceBinding.create(
+        project_id="project-1",
+        episode_number=1,
+        source_plan_revision_id="plan-r1",
+        asset_kind="scene_variant",
+        entity_id="hall-night",
+        base_entity_id="hall",
+        variant_id="night",
+        asset_slot_id="scene:hall:state:hall-night:master",
+        status="ready",
+        resolution="auto_matched",
+        display_label="大厅 / 夜景",
+    )
+    with pytest.raises(ValidationError, match="scene_variant"):
+        PlannedReferenceBinding.model_validate(
+            {
+                **valid.model_dump(),
+                "base_entity_id": base_entity_id,
+                "variant_id": variant_id,
+            }
+        )
+
+
 def test_binding_is_frozen_forbids_extra_and_requires_positive_episode() -> None:
     from pydantic import ValidationError
 
@@ -133,6 +224,16 @@ async def test_store_lists_filters_and_gets_bindings_in_requested_order(tmp_path
         with pytest.raises(ValueError, match="duplicate"):
             await store.get_planned_reference_bindings(
                 1, (first.binding_id, first.binding_id)
+            )
+        with pytest.raises(ValueError, match="missing-binding"):
+            await store.get_planned_reference_bindings(
+                1, (first.binding_id, "missing-binding")
+            )
+        with pytest.raises(ValueError, match=second.binding_id):
+            await store.get_planned_reference_bindings(2, (second.binding_id,))
+        with pytest.raises(ValueError, match="256"):
+            await store.get_planned_reference_bindings(
+                1, tuple(f"binding-{index}" for index in range(257))
             )
     finally:
         await store.close()

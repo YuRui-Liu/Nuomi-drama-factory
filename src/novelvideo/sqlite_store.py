@@ -623,6 +623,8 @@ class SQLiteStore:
         binding_ids: tuple[str, ...] | list[str],
     ) -> list[PlannedReferenceBinding]:
         requested_ids = tuple(binding_ids)
+        if len(requested_ids) > 256:
+            raise ValueError("at most 256 binding_ids may be requested")
         if len(set(requested_ids)) != len(requested_ids):
             raise ValueError("duplicate binding_ids are not allowed")
         if not requested_ids:
@@ -639,7 +641,13 @@ class SQLiteStore:
             row["binding_id"]: self._planned_reference_binding_from_row(row)
             for row in rows
         }
-        return [by_id[binding_id] for binding_id in requested_ids if binding_id in by_id]
+        missing_ids = [binding_id for binding_id in requested_ids if binding_id not in by_id]
+        if missing_ids:
+            raise ValueError(
+                "planned reference binding IDs missing from episode "
+                f"{episode_number}: {', '.join(missing_ids)}"
+            )
+        return [by_id[binding_id] for binding_id in requested_ids]
 
     async def replace_planned_reference_bindings_atomic(
         self,

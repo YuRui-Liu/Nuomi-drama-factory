@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from novelvideo.character_visual import identity_sheet
 from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_LAYOUT_VERSION,
+    IDENTITY_SHEET_PANEL_BOUNDS,
     IDENTITY_SHEET_PANEL_LAYOUT,
     IdentitySheetStyleFamily,
     build_identity_sheet_v2_prompt,
@@ -18,13 +20,19 @@ from novelvideo.character_visual.identity_sheet import (
 )
 
 
-def test_identity_sheet_v2_contract_and_style_families() -> None:
-    assert IDENTITY_SHEET_LAYOUT_VERSION == "identity_sheet_v2"
+def test_identity_sheet_v3_contract_and_style_families() -> None:
+    assert hasattr(identity_sheet, "build_identity_sheet_v3_prompt")
+    assert IDENTITY_SHEET_LAYOUT_VERSION == "identity_sheet_v3"
     assert IDENTITY_SHEET_PANEL_LAYOUT == (
-        "portrait_3q",
         "front_headless",
         "back_fullbody",
+        "portrait_3q",
     )
+    assert IDENTITY_SHEET_PANEL_BOUNDS == {
+        "front_headless": (0, 0, 614, 1024),
+        "back_fullbody": (614, 0, 1075, 1024),
+        "portrait_3q": (1075, 0, 1536, 1024),
+    }
     assert classify_identity_sheet_style("anime_2d") is IdentitySheetStyleFamily.TWO_D
     assert (
         classify_identity_sheet_style("stylized_2_5d")
@@ -81,7 +89,7 @@ def test_style_family_resolver_reads_custom_style_instructions(monkeypatch) -> N
 
 
 def _prompt(project_style: str) -> str:
-    return build_identity_sheet_v2_prompt(
+    return identity_sheet.build_identity_sheet_v3_prompt(
         character_name="林昭",
         character_tag="[LinZ]",
         appearance="深蓝长袍",
@@ -93,34 +101,38 @@ def _prompt(project_style: str) -> str:
     )
 
 
-def test_v2_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
+def test_v3_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
     prompt = _prompt("anime_2d")
 
-    assert "LARGE THREE-QUARTER PORTRAIT" in prompt
-    assert "FACELESS FRONT FULL BODY" in prompt
+    assert "HEADLESS FRONT FULL BODY" in prompt
     assert "BACK FULL BODY" in prompt
-    assert "the only visible face source" in prompt
-    assert "complete head, hairstyle and hair outline" in prompt
-    assert "no identifiable facial features" in prompt
-    assert "no wound, blood, gore, or horror" in prompt
+    assert "LARGE THREE-QUARTER PORTRAIT" in prompt
+    assert "only visible face" in prompt
+    assert "no head, hair, ears, or face" in prompt
+    assert "clean collar and shoulder boundary" in prompt
+    assert "no wound, hole, gore, or exposed anatomy" in prompt
+    assert "Do not invent blood, dirt, injury, or costume damage" in prompt
+    assert "only when specified by CHARACTER STATE" in prompt
+    assert "All panels depict the same age, body proportions, hair state" not in prompt
+    assert "visible head panels preserve the same hair state" in prompt
     assert "neutral gray background" in prompt
     assert "no film grain" in prompt
     assert "no cinematic lens" in prompt
     assert "visible pores" not in prompt
-    assert "HEADLESS" not in prompt
-    assert "neck up empty" not in prompt
+    assert "smooth neutral facial plane" not in prompt
     assert "FRONT VIEW" not in prompt
     assert "SIDE VIEW" not in prompt
 
 
-def test_v2_prompt_uses_portrait_as_reference_only_and_protects_panel_geometry() -> None:
+def test_v3_prompt_uses_portrait_as_reference_only_and_protects_panel_geometry() -> None:
     prompt = _prompt("anime_2d")
 
     assert "identity reference only" in prompt
     assert "Never copy or paste pixels from the reference image" in prompt
     assert "no hand-to-face gesture" in prompt
     assert "must not cross panel boundaries" in prompt
-    assert "safe margin above the head and below the feet" in prompt
+    assert "40% and 70% boundaries" in prompt
+    assert "safe margin around both full-body views" in prompt
     assert "hands, arms, weapons, tools, clothing, hair, or props" in prompt
 
 
@@ -216,7 +228,7 @@ def test_v2_prompt_uses_style_aware_quality_language(
     assert forbidden not in prompt
 
 
-def test_legacy_prompt_builder_is_a_v2_compatible_wrapper() -> None:
+def test_legacy_prompt_builder_uses_current_v3_contract() -> None:
     from novelvideo.generators.nanobanana_character import (
         CHARACTER_STATE_PANEL_LAYOUT,
         build_character_state_sheet_prompt,
@@ -235,7 +247,7 @@ def test_legacy_prompt_builder_is_a_v2_compatible_wrapper() -> None:
     )
 
     assert CHARACTER_STATE_PANEL_LAYOUT == IDENTITY_SHEET_PANEL_LAYOUT
-    assert "Identity Sheet v2" in prompt
+    assert "Identity Sheet v3" in prompt
     assert "COSTUME REFERENCE" in prompt
     assert "SIDE VIEW" not in prompt
 

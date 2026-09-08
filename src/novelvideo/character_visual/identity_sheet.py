@@ -1,4 +1,4 @@
-"""Shared contract and deterministic compositor for Identity Sheet v2."""
+"""Shared contracts for generated character identity sheets."""
 
 from __future__ import annotations
 
@@ -15,14 +15,19 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 
-IDENTITY_SHEET_LAYOUT_VERSION = "identity_sheet_v2"
+IDENTITY_SHEET_LAYOUT_VERSION = "identity_sheet_v3"
 IDENTITY_SHEET_PANEL_LAYOUT = (
-    "portrait_3q",
     "front_headless",
     "back_fullbody",
+    "portrait_3q",
 )
 IDENTITY_SHEET_SIZE = (1536, 1024)
 IDENTITY_SHEET_PANEL_BOUNDS = {
+    "front_headless": (0, 0, 614, 1024),
+    "back_fullbody": (614, 0, 1075, 1024),
+    "portrait_3q": (1075, 0, 1536, 1024),
+}
+_IDENTITY_SHEET_V2_PANEL_BOUNDS = {
     "portrait_3q": (0, 0, 768, 1024),
     "front_headless": (768, 0, 1152, 1024),
     "back_fullbody": (1152, 0, 1536, 1024),
@@ -172,7 +177,7 @@ def _neutral_dynamic_text(value: str, *, fallback: str = "") -> str:
     return "; ".join(fragments) or fallback
 
 
-def build_identity_sheet_v2_prompt(
+def build_identity_sheet_v3_prompt(
     *,
     character_name: str,
     character_tag: str,
@@ -184,7 +189,7 @@ def build_identity_sheet_v2_prompt(
     has_costume_reference: bool,
     project_dir: str | Path | None = None,
 ) -> str:
-    """Compile the provider-neutral, single-face Identity Sheet v2 prompt."""
+    """Compile the provider-neutral, single-face Identity Sheet v3 prompt."""
     style_family = resolve_identity_sheet_style_family(project_style, project_dir=project_dir)
     appearance = _neutral_dynamic_text(appearance, fallback="No additional state details.")
     project_style = _neutral_dynamic_text(
@@ -204,21 +209,22 @@ COSTUME REFERENCE (CRITICAL):
 - Combine the Portrait identity with the costume reference; do not copy its person or face.
 """
     quality = style_quality_instructions(style_family)
-    return f"""Identity Sheet v2 for {character_tag} ({character_name}).
+    return f"""Identity Sheet v3 for {character_tag} ({character_name}).
 Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions.
 The confirmed Portrait is an identity reference only. Never copy or paste pixels from the reference image into the output; newly render every panel:
-- LEFT 50%: LARGE THREE-QUARTER PORTRAIT. Preserve the confirmed Portrait's identity; this is the only visible face source in the entire sheet. Use a clean neutral pose with no hand-to-face gesture. Keep the eyes, nose, mouth, jawline, and recognizable facial contour unobstructed: hands, arms, weapons, tools, clothing, hair, or props must not cover them. Limited shoulder and neck visibility is allowed.
-- CENTER 25%: FACELESS FRONT FULL BODY in a neutral standing pose, fully visible from the complete top of the head to the soles of the feet. Preserve the complete head, hairstyle and hair outline, ears, neck, body proportions, outfit, and footwear without cropping. Render the facial plane as a smooth neutral surface consistent with the project style, with no identifiable facial features: no eyes, eyebrows, nose, lips, beard, or face-like markings. Do not replace the face with a mask, veil, prop, wound, hole, or horror element. This is a clean identity-isolation presentation with no wound, blood, gore, or horror.
-- RIGHT 25%: BACK FULL BODY, naturally facing fully away, head to feet. Never turn back; show no profile, visible face, mirror face, or reflection.
+- LEFT 40%: HEADLESS FRONT FULL BODY in a neutral standing pose. Show the complete body from a clean collar and shoulder boundary to the soles, with no head, hair, ears, or face at all. Use no wound, hole, gore, or exposed anatomy, and do not use a mannequin head, blank face, mask, helmet, or dark void to explain the missing head.
+- CENTER 30%: BACK FULL BODY, naturally facing fully away, head to feet. Preserve the back of the head, hair, and neck. Never turn back; show no profile, visible face, mirror face, or reflection.
+- RIGHT 30%: LARGE THREE-QUARTER PORTRAIT. Preserve the confirmed Portrait's identity; this is the only visible face in the entire sheet. Use a clean neutral pose with no hand-to-face gesture. Keep the eyes, nose, mouth, jawline, and recognizable facial contour unobstructed: hands, arms, weapons, tools, clothing, hair, or props must not cover them. Limited shoulder and neck visibility is allowed.
 
 PANEL GEOMETRY (CRITICAL):
-- Keep clear neutral gutters at the 50% and 75% boundaries.
+- Keep clear neutral gutters at the 40% and 70% boundaries.
 - Every person and every body part must stay fully contained in its own panel and must not cross panel boundaries.
-- Keep a safe margin above the head and below the feet in both full-body panels.
+- Keep a safe margin around both full-body views, including below the feet and above the middle back-view head.
 
 IDENTITY AND STATE LOCK:
-- All panels depict the same age, body proportions, hair state, outfit, accessories, colors, footwear, and silhouette.
+- All panels depict the same age, body proportions, outfit, accessories, colors, footwear, and silhouette; visible head panels preserve the same hair state.
 - Portrait is the sole facial identity authority. The two body panels supply body, outfit, and rear-silhouette information only.
+- Do not invent blood, dirt, injury, or costume damage. Include them only when specified by CHARACTER STATE, and reproduce that state consistently across applicable panels.
 - Default ethnicity when unspecified: {ethnicity}.
 
 CHARACTER STATE:
@@ -237,6 +243,32 @@ ADDITIONAL EXCLUSIONS:
 - {avoid_instructions}
 - Do not add an extra panel or any additional face.
 """.strip()
+
+
+def build_identity_sheet_v2_prompt(
+    *,
+    character_name: str,
+    character_tag: str,
+    appearance: str,
+    project_style: str,
+    style_instructions: str,
+    avoid_instructions: str,
+    ethnicity: str,
+    has_costume_reference: bool,
+    project_dir: str | Path | None = None,
+) -> str:
+    """Compatibility wrapper for callers migrating to the v3 generation contract."""
+    return build_identity_sheet_v3_prompt(
+        character_name=character_name,
+        character_tag=character_tag,
+        appearance=appearance,
+        project_style=project_style,
+        style_instructions=style_instructions,
+        avoid_instructions=avoid_instructions,
+        ethnicity=ethnicity,
+        has_costume_reference=has_costume_reference,
+        project_dir=project_dir,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,9 +389,9 @@ def compose_identity_sheet_v2(
     front_source = candidate.crop((portrait_end, 0, front_end, candidate.height))
     back_source = candidate.crop((front_end, 0, candidate.width, candidate.height))
 
-    portrait_bounds = IDENTITY_SHEET_PANEL_BOUNDS["portrait_3q"]
-    front_bounds = IDENTITY_SHEET_PANEL_BOUNDS["front_headless"]
-    back_bounds = IDENTITY_SHEET_PANEL_BOUNDS["back_fullbody"]
+    portrait_bounds = _IDENTITY_SHEET_V2_PANEL_BOUNDS["portrait_3q"]
+    front_bounds = _IDENTITY_SHEET_V2_PANEL_BOUNDS["front_headless"]
+    back_bounds = _IDENTITY_SHEET_V2_PANEL_BOUNDS["back_fullbody"]
     canvas.paste(fit_crop(portrait, (768, 1024)), portrait_bounds[:2])
     canvas.paste(fit_crop(front_source, (384, 1024)), front_bounds[:2])
     canvas.paste(fit_crop(back_source, (384, 1024)), back_bounds[:2])
@@ -369,5 +401,5 @@ def compose_identity_sheet_v2(
     return IdentitySheetComposition(
         output_path=output_path,
         neutral_gray=neutral_gray,
-        panel_bounds=dict(IDENTITY_SHEET_PANEL_BOUNDS),
+        panel_bounds=dict(_IDENTITY_SHEET_V2_PANEL_BOUNDS),
     )

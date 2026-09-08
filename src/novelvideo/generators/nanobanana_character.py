@@ -37,7 +37,7 @@ from novelvideo.image_request_usage import (
 from novelvideo.services.style_service import StyleService
 from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_PANEL_LAYOUT,
-    build_identity_sheet_v2_prompt,
+    build_identity_sheet_v3_prompt,
     save_provider_identity_sheet,
 )
 from novelvideo.generators.nanobanana_grid import (
@@ -79,8 +79,8 @@ def build_character_state_sheet_prompt(
     project_style: str | None = None,
     project_dir: str | Path | None = None,
 ) -> str:
-    """Compatibility wrapper for the shared Identity Sheet v2 prompt contract."""
-    return build_identity_sheet_v2_prompt(
+    """Compatibility wrapper for the shared Identity Sheet v3 prompt contract."""
+    return build_identity_sheet_v3_prompt(
         character_name=character_name,
         character_tag=character_tag,
         appearance=appearance,
@@ -450,7 +450,7 @@ class NanoBananaCharacterGenerator:
 
         使用角色的正面基准图作为身份锚点，保持面部一致性，
         只变换服装、背景等身份特定的外观。
-        统一生成 Identity Sheet v2（3/4 肖像 + 完整无面部正面全身 + 背面全身）。
+        统一生成 Identity Sheet v3（无头正面身体 + 背面全身 + 3/4 肖像）。
 
         Args:
             character_name: 角色名称
@@ -474,7 +474,7 @@ class NanoBananaCharacterGenerator:
             return CharacterReferenceResult(
                 success=False,
                 character_name=character_name,
-                error="Confirmed Portrait reference is required for Identity Sheet v2.",
+                error="Confirmed Portrait reference is required for Identity Sheet v3.",
                 generation_time=time.time() - start_time,
             )
 
@@ -498,7 +498,7 @@ class NanoBananaCharacterGenerator:
             if not character_tag:
                 character_tag = self._generate_character_tag(character_name)
 
-            print(f"[NanoBanana Character] 基于基准图生成 {character_name} Identity Sheet v2...")
+            print(f"[NanoBanana Character] 基于基准图生成 {character_name} Identity Sheet v3...")
 
             # 构建统一的身份锁定三视图状态资源 Prompt。
             has_costume_ref = bool(costume_image_path and os.path.exists(costume_image_path))
@@ -595,7 +595,7 @@ class NanoBananaCharacterGenerator:
             # 统一流程：只调用一次模型生成 v2 三格候选。
             aspect_ratio = "3:2"
             image_size = "1K"
-            body_label = "Identity Sheet v2 candidate"
+            body_label = "Identity Sheet v3 candidate"
 
             temp_body_path = output_path.replace(".png", "_body_temp.png")
             Path(temp_body_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1011,7 +1011,7 @@ A second reference image is provided showing the target costume/clothing.
         ethnicity: str = "Chinese",
         has_costume_reference: bool = False,
     ) -> str:
-        """Build the canonical Identity Sheet v2 resource prompt."""
+        """Build the canonical Identity Sheet v3 resource prompt."""
         family, _ = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,

@@ -453,13 +453,23 @@ def _current_identity_layout_metadata(
         metadata = current.generation_metadata if current is not None else None
     except (KeyError, OSError, TypeError, ValueError):
         return {}
-    if not isinstance(metadata, dict) or metadata.get("layout_version") != IDENTITY_SHEET_LAYOUT_VERSION:
+    if not isinstance(metadata, dict):
         return {}
+    layout_version = str(metadata.get("layout_version") or "")
+    if layout_version not in {"identity_sheet_v2", "v2", IDENTITY_SHEET_LAYOUT_VERSION, "v3"}:
+        return {}
+    is_v3 = layout_version in {IDENTITY_SHEET_LAYOUT_VERSION, "v3"}
     return {
-        "layout_version": IDENTITY_SHEET_LAYOUT_VERSION,
+        "layout_version": layout_version,
         "face_source_panel": "portrait_3q",
-        "front_panel_role": "body_and_outfit_only",
-        "back_panel_role": "silhouette_and_outfit_back_only",
+        "front_panel_role": (
+            "headless_body_and_outfit_only" if is_v3 else "body_and_outfit_only"
+        ),
+        "back_panel_role": (
+            "rear_head_silhouette_and_outfit_back_only"
+            if is_v3
+            else "silhouette_and_outfit_back_only"
+        ),
     }
 
 

@@ -17,7 +17,7 @@ from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_LAYOUT_VERSION,
     IDENTITY_SHEET_PANEL_LAYOUT,
     IdentitySheetQualityReport,
-    build_identity_sheet_v2_prompt,
+    build_identity_sheet_v3_prompt,
     save_provider_identity_sheet,
 )
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
@@ -669,7 +669,7 @@ async def _generate_identity_image(
 
     update(0.45, "调用图像模型生成身份图...")
     references = [reference_image_path] + ([costume_image] if has_costume_image else [])
-    prompt = build_identity_sheet_v2_prompt(
+    prompt = build_identity_sheet_v3_prompt(
             character_name=character.name,
             character_tag=str(identity.character_tag or character.name),
             appearance=_strip_known_style_prefix(

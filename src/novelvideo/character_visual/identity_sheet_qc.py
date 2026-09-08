@@ -66,24 +66,23 @@ Project style: {style}
 Style family: {style_family.value}
 {_material_policy(style_family)}
 
-The large three-quarter portrait must be the unique visible face source.
+The RIGHT 30% large three-quarter portrait must be the unique visible face.
 portrait_face_occluded is a defect when hands, arms, weapons, tools, clothing, hair, or props
-cover any eyes, nose, mouth, jawline, or the recognizable facial contour in the LEFT 50% panel.
+cover any eyes, nose, mouth, jawline, or the recognizable facial contour in that panel.
 Limited unobstructed shoulder and neck visibility is valid.
 
 panel_boundary_intrusion is a defect when a person or any body part crosses the neutral
-gutter or either panel boundary at 50% and 75% of image width. Each view must remain fully contained
+gutter or either panel boundary at 40% and 70% of image width. Each view must remain fully contained
 inside its own panel. body_cropped is a defect when the front or back full-body view is cut
-by its panel boundary or the outer image edge, including any missing top of the head, hair,
-limb, hand, body edge, leg, foot, or sole.
+by its panel boundary or the outer image edge, including any missing body, hand, leg, foot, or sole,
+or a missing back-view head or hair. The intentionally absent front-view head is valid.
 
-The front
-full-body panel must preserve the complete head, hair outline, ears, neck, body, and
-feet without cropping. A complete head is required and is not itself a defect.
-front_face_detected is a defect only when identifiable facial features appear there,
-including eyes, eyebrows, nose, lips, beard, face-like markings, or another recognizable
-face. A smooth neutral featureless facial plane is valid. The back full-body panel must face fully
-away: back_face_visible is a defect when it contains any turned face, profile,
+The LEFT 40% headless front full-body panel must show a clean collar and shoulder boundary
+with no head, hair, ears, or face. front_face_detected is a defect when any head, hair, ear, face,
+facial feature, mannequin head, blank face, mask, helmet, dark void, wound, hole, gore, or exposed
+anatomy appears above or replaces that boundary. The CENTER 30% back full-body panel must preserve
+the back of the head, hair, and neck and face fully away: back_face_visible is a defect when it
+contains any turned face, profile,
 reflected face, mirror face, or other visible facial detail.
 Reject text, labels, watermark, poster markings, and extra faces anywhere on the sheet;
 report the closest stable layout defect code (front_face_detected, back_face_visible,

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 
 def _required(value: str, field_name: str) -> str:
     text = str(value)
     if not text.strip():
         raise ValueError(f"{field_name} must not be empty")
+    if ":" in text:
+        raise ValueError(f"{field_name} must not contain a colon")
+    if any(unicodedata.category(character) == "Cc" for character in text):
+        raise ValueError(f"{field_name} must not contain control characters")
     return text
 
 

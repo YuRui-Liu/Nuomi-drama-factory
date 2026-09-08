@@ -37,3 +37,27 @@ def test_slot_id_factories_do_not_normalize_non_empty_fields() -> None:
 def test_slot_id_factories_reject_empty_fields(factory, args) -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         factory(*args)
+
+
+@pytest.mark.parametrize(
+    ("factory", "args"),
+    [
+        (character_state_slot_id, ("林:默", "identity")),
+        (character_state_slot_id, ("林默", "id:1")),
+        (scene_base_slot_id, ("大:厅", "master")),
+        (scene_base_slot_id, ("大厅", "reverse:master")),
+        (scene_state_slot_id, ("ha:ll", "hall-night", "master")),
+        (scene_state_slot_id, ("hall", "hall:night", "master")),
+        (scene_state_slot_id, ("hall", "hall-night", "mas:ter")),
+        (prop_reference_slot_id, ("手:机",)),
+    ],
+)
+def test_slot_id_factories_reject_collision_delimiter(factory, args) -> None:
+    with pytest.raises(ValueError, match="colon"):
+        factory(*args)
+
+
+@pytest.mark.parametrize("value", ["line\nbreak", "tab\tvalue", "delete\x7fvalue"])
+def test_slot_id_factories_reject_control_characters(value: str) -> None:
+    with pytest.raises(ValueError, match="control"):
+        prop_reference_slot_id(value)

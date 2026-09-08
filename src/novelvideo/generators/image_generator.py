@@ -1384,8 +1384,8 @@ async def generate_identity_image_unified(
             print(f"[Identity] {model} 配置错误: {e}")
             return {"success": False, "error": str(e)} if structured else False
 
-    # 不再降级为旧版独立生成：无法产出 v2 的模型必须 fail closed。
-    error = f"{model} 不支持 Identity Sheet v2"
+    # 不再降级为旧版独立生成：无法产出 v3 的模型必须 fail closed。
+    error = f"{model} 不支持 Identity Sheet v3"
     if raise_on_error:
         raise RuntimeError(error)
     return {"success": False, "error": error} if structured else False
