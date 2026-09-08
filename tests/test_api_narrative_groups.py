@@ -1653,15 +1653,24 @@ def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
     assert rolled["stages"]["render"]["revision"] == 3
 
 
-def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch, tmp_path):
+def test_reference_preview_with_unpublished_bindings_returns_warnings(
+    monkeypatch, tmp_path
+):
     client, _ = make_client(monkeypatch, tmp_path, beat_count=10)
+    activate_director_plan(tmp_path, group_id="ng-02")
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-02/render/references"
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["bindings"] == []
+    assert data["reference_revision"]
+    assert data["max_images"] == 9
+    assert data["warnings"] == [
+        "当前导演方案仍有未发布的必需引用：prop:letter"
+    ]
 
 
 def test_reference_preview_unknown_group_is_resolved_only_from_planned_bindings(

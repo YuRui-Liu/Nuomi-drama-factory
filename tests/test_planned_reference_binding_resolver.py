@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from novelvideo.narrative_groups.planned_binding_service import (
-    PlannedReferencesRequired,
+    PlannedReferencePreview,
     StaleReferenceBinding,
     build_planned_reference_snapshot,
     required_binding_keys_for_director_group,
@@ -140,6 +140,37 @@ def test_resolution_request_accepts_only_stable_ids_and_revision() -> None:
                 "reference_revision": "revision-1",
             }
         )
+
+
+def test_preview_warnings_default_to_empty_tuple() -> None:
+    preview = PlannedReferencePreview(
+        reference_revision="revision-1", bindings=(), max_images=9
+    )
+
+    assert preview.warnings == ()
+
+
+@pytest.mark.asyncio
+async def test_preview_without_bindings_is_stable_and_usable(tmp_path: Path) -> None:
+    kwargs = {
+        "project_id": "p1",
+        "episode_number": 1,
+        "group_id": "group-01",
+        "project_dir": tmp_path,
+        "max_images": 8,
+    }
+
+    first = await resolve_planned_reference_preview(
+        _BindingStore([]), ProductionWorkflowStore(tmp_path / "workflow.json"), **kwargs
+    )
+    second = await resolve_planned_reference_preview(
+        _BindingStore([]), ProductionWorkflowStore(tmp_path / "workflow.json"), **kwargs
+    )
+
+    assert first.bindings == ()
+    assert first.warnings == ()
+    assert first.max_images == 8
+    assert first.reference_revision == second.reference_revision
 
 
 @pytest.mark.asyncio
@@ -309,7 +340,7 @@ async def test_preview_rejects_mixed_or_inactive_plan_revisions(
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_partial_kind_publication_for_active_plan(
+async def test_preview_warns_for_partial_kind_publication_for_active_plan(
     tmp_path: Path,
 ) -> None:
     binding = _binding()
@@ -335,19 +366,22 @@ async def test_preview_rejects_partial_kind_publication_for_active_plan(
     )
     active_plan = SimpleNamespace(revision_id="director-r3", groups=(group,))
 
-    with pytest.raises(PlannedReferencesRequired, match="new-required-prop"):
-        await resolve_planned_reference_preview(
-            _BindingStore([binding]),
-            _workflow(tmp_path, binding),
-            project_id="p1",
-            episode_number=1,
-            group_id="group-01",
-            project_dir=tmp_path,
-            active_plan_revision_id="director-r3",
-            required_binding_keys=required_binding_keys_for_director_group(
-                active_plan, "group-01"
-            ),
-        )
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        _workflow(tmp_path, binding),
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        active_plan_revision_id="director-r3",
+        required_binding_keys=required_binding_keys_for_director_group(
+            active_plan, "group-01"
+        ),
+    )
+
+    assert preview.warnings == (
+        "当前导演方案仍有未发布的必需引用：prop:new-required-prop",
+    )
 
 
 @pytest.mark.asyncio
@@ -539,7 +573,7 @@ async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_snapshot_requires_every_ready_required_binding_to_be_selected(
+async def test_snapshot_allows_ready_required_binding_to_be_omitted(
     tmp_path: Path,
 ) -> None:
     binding = _binding()
@@ -554,18 +588,50 @@ async def test_snapshot_requires_every_ready_required_binding_to_be_selected(
         project_dir=tmp_path,
     )
 
-    with pytest.raises(PlannedReferencesRequired):
-        await build_planned_reference_snapshot(
-            store,
-            workflow,
-            project_id="p1",
-            episode_number=1,
-            group_id="group-01",
-            project_dir=tmp_path,
-            selected_binding_ids=(),
-            upload_ids=(),
-            reference_revision=preview.reference_revision,
-        )
+    snapshot = await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        selected_binding_ids=(),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+    )
+
+    assert snapshot.images == ()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_allows_unselected_required_binding_without_version(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    store = _BindingStore([binding])
+    workflow = ProductionWorkflowStore(tmp_path / "workflow.json")
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+
+    snapshot = await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        selected_binding_ids=(),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+    )
+
+    assert snapshot.images == ()
 
 
 def test_runner_rejects_missing_snapshot_instead_of_legacy_name_fallback(

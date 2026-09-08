@@ -139,6 +139,7 @@ class PlannedReferencePreview(BaseModel):
     reference_revision: str = Field(min_length=1)
     bindings: tuple[ResolvedPlannedReference, ...]
     max_images: int = Field(gt=0)
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,10 +723,6 @@ def _preview_from_bindings(
     active_plan_revision_id: str | None = None,
     required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
-    if not bindings:
-        raise PlannedReferencesRequired(
-            "请先重新规划本集身份、场景和道具引用"
-        )
     if any(
         item.project_id != project_id
         or item.episode_number != episode_number
@@ -734,11 +731,15 @@ def _preview_from_bindings(
     ):
         raise InvalidPlannedReference("planned binding scope does not match request")
     revisions = {item.source_plan_revision_id for item in bindings}
-    if len(revisions) != 1 or (
-        active_plan_revision_id is not None
-        and revisions != {active_plan_revision_id}
+    if bindings and (
+        len(revisions) != 1
+        or (
+            active_plan_revision_id is not None
+            and revisions != {active_plan_revision_id}
+        )
     ):
         raise StaleReferenceBinding("planned references do not match active director plan")
+    warnings: tuple[str, ...] = ()
     if required_binding_keys is not None:
         published_required = {
             _binding_requirement_key(item) for item in bindings if item.required
@@ -748,15 +749,14 @@ def _preview_from_bindings(
             labels = ", ".join(
                 ":".join(part for part in key if part) for key in missing
             )
-            raise PlannedReferencesRequired(
-                f"当前导演方案仍有未规划的必需引用: {labels}"
-            )
+            warnings = (f"当前导演方案仍有未发布的必需引用：{labels}",)
     root = Path(project_dir).resolve(strict=False)
     resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
     return PlannedReferencePreview(
         reference_revision=_reference_revision(bindings, resolved),
         bindings=resolved,
         max_images=max_images,
+        warnings=warnings,
     )
 
 
@@ -831,25 +831,6 @@ async def build_planned_reference_snapshot(
     unknown = [item for item in selected_binding_ids if item not in by_id]
     if unknown:
         raise InvalidPlannedReference("binding does not belong to requested group")
-    unresolved = [
-        item.binding_id
-        for item in preview.bindings
-        if item.required and not item.version_id
-    ]
-    if unresolved:
-        raise UnresolvedPlannedReference(
-            "unresolved planned references: " + ", ".join(unresolved)
-        )
-    omitted_required = [
-        item.binding_id
-        for item in preview.bindings
-        if item.required and item.binding_id not in selected_binding_ids
-    ]
-    if omitted_required:
-        raise PlannedReferencesRequired(
-            "required planned references were not selected: "
-            + ", ".join(omitted_required)
-        )
     chosen = [by_id[item] for item in selected_binding_ids]
     if any(not item.version_id for item in chosen):
         raise UnresolvedPlannedReference("selected planned reference is unresolved")
