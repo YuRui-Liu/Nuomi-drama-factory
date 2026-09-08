@@ -73,6 +73,9 @@ function statusLabel(
   t: TFunction,
 ): string {
   if (isCurrent) return t("characters.stateVersions.status.current");
+  if (isQcUnavailableOnly(version)) {
+    return t("characters.stateVersions.status.qcUnavailable");
+  }
   if (!version.qc_passed) return t("characters.stateVersions.status.qcFailed");
   if (version.adoption_status === "candidate") return t("characters.stateVersions.status.candidate");
   if (version.adoption_status === "superseded") return t("characters.stateVersions.status.superseded");

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
 
@@ -45,7 +46,8 @@ async def call_freezone_vision_model(
     images: list[VisionInput],
     model_override: str | None = None,
     timeout_seconds: float = 120.0,
-) -> tuple[str, str]:
+    output_type: Any = str,
+) -> tuple[str, Any]:
     """Run a PydanticAI vision Agent through the effective NewAPI gateway."""
     if not images:
         raise ValueError("at least one image is required")
@@ -62,7 +64,7 @@ async def call_freezone_vision_model(
             model_name_override=model,
             timeout_seconds_override=timeout_seconds,
         ),
-        output_type=str,
+        output_type=output_type,
         name="Freezone Vision Analyzer",
     )
     result = await agent.run(
@@ -74,7 +76,9 @@ async def call_freezone_vision_model(
             ],
         ]
     )
-    text = str(result.output or "").strip()
-    if not text:
+    output = result.output
+    if isinstance(output, str):
+        output = output.strip()
+    if output is None or output == "":
         raise RuntimeError("视觉模型返回空内容")
-    return model, text
+    return model, output

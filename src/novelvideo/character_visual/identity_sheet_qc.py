@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import re
 
+from pydantic import BaseModel
+
 from novelvideo.freezone.vision_gateway import (
     VisionInput,
     call_freezone_vision_model,
@@ -35,6 +37,21 @@ _ISSUE_CODES = (
 
 _SAFE_DIAGNOSTIC_VALUE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _TECHNICAL_ERROR_LIMIT = 240
+
+
+class _IdentitySheetQcChecks(BaseModel):
+    front_face_detected: bool
+    back_face_visible: bool
+    portrait_too_small: bool
+    state_inconsistent: bool
+    non_neutral_presentation: bool
+    style_mismatch: bool
+    dead_eyes: bool
+    unnatural_skin_texture: bool
+    plastic_material: bool
+    portrait_face_occluded: bool
+    panel_boundary_intrusion: bool
+    body_cropped: bool
 
 
 def _material_policy(style_family: IdentitySheetStyleFamily) -> str:
@@ -100,8 +117,11 @@ is absent. Do not add prose or markdown.
 """
 
 
-def _extract_checks(text: str) -> dict[str, bool]:
+def _extract_checks(text: str | _IdentitySheetQcChecks) -> dict[str, bool]:
     """Extract one complete, strictly boolean QC object from provider text."""
+
+    if isinstance(text, _IdentitySheetQcChecks):
+        return text.model_dump()
 
     decoder = json.JSONDecoder()
     for index, character in enumerate(text):
@@ -171,6 +191,7 @@ async def assess_identity_sheet_quality(
             images=[VisionInput(data=image_data, media_type=media_type)],
             model_override=model_override,
             timeout_seconds=timeout_seconds,
+            output_type=_IdentitySheetQcChecks,
         )
         checks = _extract_checks(response)
     except Exception as error:

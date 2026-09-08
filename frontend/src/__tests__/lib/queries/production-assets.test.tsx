@@ -157,7 +157,7 @@ describe("production asset query hooks", () => {
     expect(hasLegacyPath).toBe(false);
   });
 
-  it("adopts a version and invalidates every query for the slot", async () => {
+  it("adopts a version and invalidates the slot plus character identity data", async () => {
     let requestedPath = "";
     let requestedBody: unknown = null;
     server.use(
@@ -219,6 +219,9 @@ describe("production asset query hooks", () => {
         "demo",
         "character:lin:state:duty",
       ),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.characters("demo"),
     });
   });
 });

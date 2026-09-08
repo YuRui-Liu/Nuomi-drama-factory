@@ -74,6 +74,38 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_qc_requests_structured_output_from_vision_gateway(monkeypatch):
+    qc = _qc_module()
+    payload = {
+        "front_face_detected": False,
+        "back_face_visible": False,
+        "portrait_too_small": False,
+        "state_inconsistent": False,
+        "non_neutral_presentation": False,
+        "style_mismatch": False,
+        "dead_eyes": False,
+        "unnatural_skin_texture": False,
+        "plastic_material": False,
+        "portrait_face_occluded": False,
+        "panel_boundary_intrusion": False,
+        "body_cropped": False,
+    }
+
+    async def fake_call(**kwargs):
+        return "vision-model", kwargs["output_type"](**payload)
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+
+    report = await qc.assess_identity_sheet_quality(
+        image_data=b"sheet", style="anime_2d"
+    )
+
+    assert report.passed is True
+    assert report.issues == []
+    assert report.checks == payload
+
+
+@pytest.mark.asyncio
 async def test_qc_returns_stable_issue_codes_from_model_checks(monkeypatch):
     qc = _qc_module()
     payload = {

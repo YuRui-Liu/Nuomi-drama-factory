@@ -649,6 +649,7 @@
       "status": {
         "current": "Currently adopted",
         "qcFailed": "QC failed",
+        "qcUnavailable": "QC unavailable; manual review allowed",
         "candidate": "Candidate",
         "superseded": "Previous version"
       },

@@ -30,6 +30,7 @@ vi.mock("react-i18next", () => ({
         "characters.stateVersions.issueSeparator": "；",
         "characters.stateVersions.status.current": "当前采用",
         "characters.stateVersions.status.qcFailed": "QC 未通过",
+        "characters.stateVersions.status.qcUnavailable": "QC 暂不可用，可人工确认",
         "characters.stateVersions.status.candidate": "候选版本",
         "characters.stateVersions.status.superseded": "历史版本",
         "characters.stateVersions.panels.front": "正面",
@@ -276,6 +277,7 @@ describe("CharacterStateVersions", () => {
     );
 
     const adoptButtons = screen.getAllByRole("button", { name: "采用此版本" });
+    expect(screen.getByText("QC 暂不可用，可人工确认")).toBeInTheDocument();
     expect(adoptButtons).toHaveLength(5);
     expect(adoptButtons[2]).toBeEnabled();
     expect(adoptButtons[3]).toBeDisabled();

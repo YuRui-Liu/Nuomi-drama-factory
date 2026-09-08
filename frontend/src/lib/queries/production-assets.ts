@@ -141,10 +141,16 @@ export function useAdoptProductionAssetVersion(
           },
         )
         .json<OkResponse<AdoptProductionAssetVersionData>>(),
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.productionAssetSlot(project, slotId),
-      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.productionAssetSlot(project, slotId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.characters(project),
+        }),
+      ]);
+    },
   });
 }
 

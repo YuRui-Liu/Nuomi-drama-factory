@@ -649,6 +649,7 @@
       "status": {
         "current": "当前采用",
         "qcFailed": "QC 未通过",
+        "qcUnavailable": "QC 暂不可用，可人工确认",
         "candidate": "候选版本",
         "superseded": "历史版本"
       },
