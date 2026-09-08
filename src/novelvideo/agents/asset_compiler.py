@@ -28,6 +28,7 @@ from novelvideo.models import (
 )
 from novelvideo.cognee.screenplay_normalizer import normalize_time_of_day
 from novelvideo.director_world import stage_manifest
+from novelvideo.narrative_groups.reference_requirements import parse_scene_requirement
 from novelvideo.text_task_runtime.runtime import (
     StructuredRuntimeAgent,
     current_text_task_runtime,
@@ -1231,9 +1232,6 @@ class AssetCompiler:
         return None
 
     async def _load_scene_blocks(self, episode: Any) -> list[SceneBlock]:
-        director_blocks = self._director_scene_blocks()
-        if director_blocks:
-            return director_blocks
         source_text = await self._load_source_text(episode)
         if not source_text.strip():
             raise ValueError("当前集原文为空，无法编译资产")
@@ -1320,7 +1318,11 @@ class AssetCompiler:
                         planned_scene_writes.append(existing)
                     pending_scene_map[existing.name] = existing
 
-            derived_requirements = await self._analyze_derived_scenes(existing.name, block)
+            derived_requirements = (
+                []
+                if self.director_plan is not None
+                else await self._analyze_derived_scenes(existing.name, block)
+            )
             normalized_derived = self._build_derived_scene_specs(derived_requirements)
             self._add_to_scene_menu(existing.name, scene_menu, seen_scene_ids)
             for scene_time, count in sorted(time_plate_counts.get(location, {}).items()):
@@ -1358,7 +1360,89 @@ class AssetCompiler:
             extra = f" ({len(normalized_derived)} 派生场景)" if normalized_derived else ""
             log(f"  场景: {existing.name}{extra}")
 
+        if self.director_plan is not None:
+            director_scenes = await self._project_director_scene_variants(
+                scene_menu,
+                seen_scene_ids,
+                pending_scene_map,
+            )
+            pending_scenes.extend(director_scenes)
+
         return scene_menu, pending_scenes
+
+    async def _project_director_scene_variants(
+        self,
+        scene_menu: list[SceneMenuItem],
+        seen_scene_ids: set[str],
+        pending_scene_map: dict[str, NovelScene],
+    ) -> list[NovelScene]:
+        all_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        base_scenes = {
+            scene.name: scene
+            for scene in all_scenes
+            if not str(getattr(scene, "base_scene_id", "") or "").strip()
+        }
+        base_scenes.update(
+            {
+                name: scene
+                for name, scene in pending_scene_map.items()
+                if not str(getattr(scene, "base_scene_id", "") or "").strip()
+            }
+        )
+        known_base_ids = set(base_scenes)
+        pending: list[NovelScene] = []
+        for group in getattr(self.director_plan, "groups", ()) or ():
+            for shot in getattr(group, "shots", ()) or ():
+                for requirement in getattr(shot, "asset_requirements", ()) or ():
+                    if str(getattr(requirement, "kind", "") or "").strip() != "scene_state":
+                        continue
+                    entity_key = str(
+                        getattr(requirement, "entity_key", "") or ""
+                    ).strip()
+                    base_scene_id, variant_id = parse_scene_requirement(
+                        entity_key,
+                        known_base_ids,
+                    )
+                    if not variant_id or base_scene_id not in base_scenes:
+                        continue
+                    scene_name = compose_derived_scene_name(base_scene_id, variant_id)
+                    existing_variant = pending_scene_map.get(scene_name)
+                    if existing_variant is None:
+                        existing_variant = await self.cognee_store.sqlite_store.get_scene(
+                            scene_name
+                        )
+                    if existing_variant is None:
+                        visible_change = str(
+                            getattr(requirement, "visible_change", "") or ""
+                        ).strip()
+                        design_notes = str(
+                            getattr(requirement, "design_notes", "") or ""
+                        ).strip()
+                        variant_prompt = "\n".join(
+                            value for value in (visible_change, design_notes) if value
+                        )
+                        parent_scene = base_scenes[base_scene_id]
+                        existing_variant = NovelScene(
+                            name=scene_name,
+                            aliases=[base_scene_id],
+                            scene_type=parent_scene.scene_type,
+                            base_scene_id=base_scene_id,
+                            variant_id=variant_id,
+                            environment_prompt="",
+                            variant_prompt=variant_prompt,
+                            description=visible_change or design_notes,
+                            notes=f"由 AssetCompiler 从导演方案投影场景 {base_scene_id} 变体",
+                        )
+                        pending_scene_map[scene_name] = existing_variant
+                        pending.append(existing_variant)
+                    self._add_to_scene_menu(
+                        scene_name,
+                        scene_menu,
+                        seen_scene_ids,
+                        base_scene_id=base_scene_id,
+                        variant_id=variant_id,
+                    )
+        return pending
 
     async def _compile_narrated_scenes(
         self,
