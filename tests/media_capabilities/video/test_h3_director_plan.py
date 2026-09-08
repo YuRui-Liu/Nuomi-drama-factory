@@ -59,6 +59,7 @@ def _shot(
                 start_frame=start_frame + 12,
                 end_frame=end_frame,
                 description="He turns toward the rattling handle.",
+                moving_entities=("lin",),
             ),
         ),
         dialogue=(),
@@ -138,6 +139,7 @@ def _rigid_prompt() -> H3RigidPromptPlan:
             ),
         ),
         physics=H3PhysicsPlan(
+            moving_entities=("lin",),
             statements=(
                 "Lin's weight remains supported through both feet.",
                 "His palm stops against the handle with a firm contact shadow.",
@@ -160,7 +162,11 @@ def _rigid_prompt() -> H3RigidPromptPlan:
             requirements=("stable identity", "stable corridor geometry")
         ),
         positive_constraints=(
-            H3PositiveConstraint(assertion="exactly one Lin is visible", count=1),
+            H3PositiveConstraint(
+                assertion="exactly one Lin is visible",
+                count=1,
+                target="characters",
+            ),
         ),
     )
 
@@ -221,6 +227,60 @@ def test_lighting_is_strongly_typed_frozen_and_forbids_extra_fields() -> None:
         lighting.primary_source = "window"
     with pytest.raises(ValidationError, match="extra"):
         H3LightingPlan(**lighting.model_dump(), exposure="high key")
+
+
+def test_positive_constraint_target_is_typed_and_defaults_to_other() -> None:
+    legacy = H3PositiveConstraint(assertion="door stays closed", count=1)
+    characters = H3PositiveConstraint(
+        assertion="exactly one character", count=1, target="characters"
+    )
+
+    assert legacy.target == "other"
+    assert characters.target == "characters"
+
+
+def test_action_change_domain_and_moving_entities_are_typed_with_v1_defaults() -> None:
+    legacy = H3ActionPlan(
+        phase="execute",
+        start_frame=0,
+        end_frame=24,
+        description="Lin pivots toward the door.",
+    )
+    lighting = H3ActionPlan(
+        phase="execute",
+        start_frame=0,
+        end_frame=24,
+        description="The exposure falls across the corridor wall.",
+        change_domain="lighting_only",
+        moving_entities=(),
+    )
+
+    assert legacy.change_domain == "subject_or_prop"
+    assert legacy.moving_entities == ()
+    assert lighting.change_domain == "lighting_only"
+
+    with pytest.raises(ValidationError):
+        H3ActionPlan(
+            phase="execute",
+            start_frame=0,
+            end_frame=24,
+            description="The exposure changes.",
+            change_domain="unknown",
+        )
+
+
+def test_physics_moving_entities_default_empty_and_require_unique_nonblank_ids() -> None:
+    assert H3PhysicsPlan(statements=()).moving_entities == ()
+    with pytest.raises(ValidationError, match="unique"):
+        H3PhysicsPlan(
+            statements=("weight contact inertia",),
+            moving_entities=("lin", "lin"),
+        )
+    with pytest.raises(ValidationError, match="blank"):
+        H3PhysicsPlan(
+            statements=("weight contact inertia",),
+            moving_entities=(" ",),
+        )
 
 
 def test_dialogue_optional_performance_fields_preserve_legacy_construction() -> None:

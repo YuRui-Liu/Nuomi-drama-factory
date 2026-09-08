@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,11 +22,16 @@ from novelvideo.task_backend.subprocesses import run_project_subprocess
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
-    H3PromptOptimizationUnavailable,
+    authoritative_h3_style_prefix,
     create_h3_prompt_optimizer,
+    h3_lighting_facts_json,
 )
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.media_capabilities.video.models import H3Mode
+from novelvideo.media_capabilities.video.backends import (
+    H3_VIDEO_BACKEND,
+    normalize_video_backend,
+)
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,8 @@ def _h3_dialogue_required(beat: dict[str, Any], config: dict[str, Any]) -> bool:
 
 
 def _h3_prompt_context(
-    *, beat: dict[str, Any], config: dict[str, Any], first_frame: str, last_frame: str | None
+    *, beat: dict[str, Any], config: dict[str, Any], first_frame: str,
+    last_frame: str | None, project_dir: Path, episode: int, beat_num: int,
 ):
     from novelvideo.config import get_newapi_text_model_name
     from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
@@ -180,6 +185,17 @@ def _h3_prompt_context(
 
     next_beat = config.get("next_beat") or {}
     draft = str(config.get("prompt") or "").strip()
+    (
+        style_prefix,
+        lighting_facts_json,
+        active_character_ids,
+    ) = _load_h3_authoritative_context(
+        project_dir=project_dir,
+        episode=episode,
+        beat=beat,
+        config=config,
+        beat_num=beat_num,
+    )
     return H3PromptContext(
         visual_description=str(beat.get("visual_description") or beat.get("shot_description") or draft),
         narration=str(beat.get("narration") or beat.get("content") or ""),
@@ -193,12 +209,67 @@ def _h3_prompt_context(
             "H3_PROMPT_OPTIMIZER_MODEL", DEFAULT_H3_PROMPT_OPTIMIZER_MODEL
         ),
         dialogue_required=_h3_dialogue_required(beat, config),
+        style_prefix=style_prefix,
+        lighting_facts_json=lighting_facts_json,
+        active_character_ids=active_character_ids,
     )
+
+
+def _load_h3_authoritative_context(
+    *, project_dir: Path, episode: int, beat: dict[str, Any],
+    config: dict[str, Any], beat_num: int,
+) -> tuple[str, str, tuple[str, ...]]:
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.shot_continuity import ShotContinuityStore
+
+    active = DirectorPlanStore(project_dir).load_active(episode)
+    style_prefix = authoritative_h3_style_prefix(active)
+    identifiers = {
+        value
+        for source in (beat, config)
+        for key in ("id", "beat_id", "shot_id")
+        if (value := str(source.get(key) or "").strip())
+    }
+    all_shots = tuple(
+        shot
+        for group in getattr(active, "groups", ())
+        for shot in group.shots
+    )
+    matching_shots = tuple(
+        shot
+        for shot in all_shots
+        if identifiers
+        and (
+            shot.id in identifiers
+            or any(source_id in identifiers for source_id in shot.source_span_ids)
+        )
+    )
+    if all_shots and len(matching_shots) != 1:
+        raise ValueError(
+            f"H3 Beat {beat_num} identity must match exactly one DirectorPlan shot"
+        )
+    lighting_facts_json = ""
+    active_character_ids: tuple[str, ...] = ()
+    if matching_shots:
+        contract = ShotContinuityStore(project_dir).load_active(
+            episode, matching_shots[0].id
+        )
+        if contract is not None:
+            lighting_facts_json = h3_lighting_facts_json((contract.lighting,))
+            active_character_ids = tuple(
+                dict.fromkeys(
+                    subject.subject_id
+                    for subject in contract.subjects
+                    if subject.visible
+                )
+            )
+    return style_prefix, lighting_facts_json, active_character_ids
 
 
 async def _optimize_h3_single_prompt(
     *, ctx: ProjectContext, beat_num: int, beat: dict[str, Any], config: dict[str, Any],
     first_frame: str, last_frame: str | None, duration: float, draft: str,
+    project_dir: Path, episode: int,
 ) -> str:
     from novelvideo.media_capabilities.video.h3_beat_adapter import (
         h3_dialogue_text,
@@ -218,24 +289,19 @@ async def _optimize_h3_single_prompt(
     if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
         raise ValueError("single-video H3 requires a first frame")
     optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
-    try:
-        result = await optimizer.optimize_segment(
-            segment,
-            _h3_prompt_context(
-                beat=beat,
-                config=config,
-                first_frame=first_frame,
-                last_frame=last_frame,
-            ),
-            mode,
-        )
-    except H3PromptOptimizationUnavailable as exc:
-        logging.getLogger(__name__).warning(
-            "H3 prompt optimizer unavailable for beat %s; using draft prompt: %s",
-            beat_num,
-            exc,
-        )
-        return segment.prompt
+    result = await optimizer.optimize_segment(
+        segment,
+        _h3_prompt_context(
+            beat=beat,
+            config=config,
+            first_frame=first_frame,
+            last_frame=last_frame,
+            project_dir=project_dir,
+            episode=episode,
+            beat_num=beat_num,
+        ),
+        mode,
+    )
     return result.prompt
 
 
@@ -303,10 +369,12 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
     video_mode = config.get("video_mode", "first_frame")
     prompt = config.get("prompt", "")
     video_duration = config.get("video_duration", 5.0)
-    backend_str = config.get("video_backend", "runninghub_minimax_h3")
+    backend_str = normalize_video_backend(
+        config.get("video_backend", H3_VIDEO_BACKEND)
+    )
     last_frame_path = config.get("last_frame_path")
     seedance2_config = config.get("seedance2_config") or beat.get("seedance2_config_json")
-    is_h3_backend = str(backend_str).strip().lower() == "runninghub:minimax-h3"
+    is_h3_backend = backend_str == H3_VIDEO_BACKEND
 
     paths = PathResolver(output_dir, episode)
     videos_dir = paths.videos_dir()
@@ -322,6 +390,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
         optimized_prompt = await _optimize_h3_single_prompt(
             ctx=ctx, beat_num=beat_num, beat=beat, config=config, first_frame=first_frame,
             last_frame=normalized_last, duration=float(video_duration), draft=str(prompt),
+            project_dir=Path(output_dir), episode=episode,
         )
 
         generated = await generate_h3_video(
@@ -346,7 +415,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
                 source_video_path=Path(generated.output_path),
                 duration=video_duration,
                 video_mode=("keyframe" if generated.actual_mode == "fl2va" else "first_frame"),
-                backend="runninghub:minimax-h3",
+                backend=H3_VIDEO_BACKEND,
                 prompt=optimized_prompt,
             )
             video_pool_id = entry.id
@@ -358,7 +427,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
             "video_pool_id": video_pool_id,
             "provider_task_id": generated.provider_task_id,
             "actual_provider": "runninghub",
-            "actual_model": "runninghub:minimax-h3",
+            "actual_model": H3_VIDEO_BACKEND,
             "actual_mode": generated.actual_mode,
         }
     from novelvideo.generators.video_generator import ShotReference, create_video_generator
@@ -443,6 +512,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
         "episode": episode,
         "beat_num": beat_num,
         "task_type": task_type,
+        "idempotency_key": str(envelope.get("task_id") or "").strip() or None,
     }
     if model_references:
         generate_kwargs["references"] = model_references

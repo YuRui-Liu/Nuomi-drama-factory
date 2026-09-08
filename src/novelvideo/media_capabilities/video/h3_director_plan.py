@@ -102,11 +102,22 @@ class H3ActionPlan(BaseModel):
     start_frame: int = Field(ge=0)
     end_frame: int = Field(gt=0)
     description: str = Field(min_length=1)
+    change_domain: Literal[
+        "subject_or_prop", "camera_only", "lighting_only", "environment_only"
+    ] = "subject_or_prop"
+    moving_entities: tuple[str, ...] = ()
 
     @field_validator("description", mode="before")
     @classmethod
     def trim_description(cls, value: object) -> object:
         return _safe_structural_text(value)
+
+    @field_validator("moving_entities", mode="before")
+    @classmethod
+    def trim_moving_entities(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return tuple(_safe_structural_text(item) for item in value)
+        return value
 
     @model_validator(mode="after")
     def validate_interval(self) -> "H3ActionPlan":

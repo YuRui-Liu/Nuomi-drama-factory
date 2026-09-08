@@ -17,6 +17,8 @@ from novelvideo.media_capabilities.audio.stem_separator import (
 )
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
+    authoritative_h3_style_prefix,
+    h3_lighting_facts_json,
 )
 from novelvideo.media_capabilities.video.h3_episode_pack import (
     H3EpisodeInput,
@@ -44,6 +46,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3GenerationAttemptEvidence,
     H3TimelineEntry,
     H3ReferenceManifestEntry,
+    H3SourceDialogueLine,
     build_h3_timeline_data,
     load_h3_director_manifest,
     save_h3_director_manifest,
@@ -59,6 +62,9 @@ from novelvideo.media_capabilities.video.h3_reference_runtime import (
     load_h3_reference_input_snapshot,
     mark_h3_reference_snapshot_running,
     retain_h3_reference_snapshot,
+)
+from novelvideo.media_capabilities.video.h3_reference_payload import (
+    build_h3_resolved_reference_facts,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
@@ -389,6 +395,15 @@ def _synthetic_pair_beat(
         "dialogue": _join_beat_text(beats, h3_dialogue_text),
         "speaker": _join_labels(beats, h3_speaker_text),
         "tone": _join_labels(beats, h3_tone_text),
+        "dialogue_lines": tuple(
+            {
+                "speaker": h3_speaker_text(beat),
+                "text": dialogue,
+                "tone": h3_tone_text(beat),
+            }
+            for beat in beats
+            if (dialogue := h3_dialogue_text(beat))
+        ),
         "dialogue_required": any(h3_dialogue_required(beat) for beat in beats),
         "dialogue_source": _dialogue_source_for(beats).value,
         "duration_seconds": sum(_duration(beat) for beat in beats),
@@ -506,6 +521,12 @@ def _prompt_context(
     )
 
 
+def _load_active_director_plan(project_dir: Path, episode: int):
+    from novelvideo.director_plan.store import DirectorPlanStore
+
+    return DirectorPlanStore(project_dir).load_active(episode)
+
+
 async def _optimize_missing_prompts(
     segments: list[H3DirectorSegment],
     beats: list[Mapping[str, Any]],
@@ -518,6 +539,7 @@ async def _optimize_missing_prompts(
     episode_beats: list[Mapping[str, Any]] | None = None,
     policy: ContinuityPolicy = "legacy",
     continuity_by_segment: dict[str, PreparedContinuity] | None = None,
+    global_references: tuple[object, ...] = (),
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
@@ -555,6 +577,13 @@ async def _optimize_missing_prompts(
     optimizer = create_h3_episode_pack_optimizer(
         cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
     )
+    active = _load_active_director_plan(project_dir, episode)
+    style_prefix = authoritative_h3_style_prefix(active)
+    snapshot = active.project_style_snapshot
+    resolved_references = build_h3_resolved_reference_facts(
+        global_references
+    )
+    resolved_reference_tags = tuple(fact.tag for fact in resolved_references)
     contexts = []
     for index, (segment, beat) in enumerate(zip(segments, beats, strict=True)):
         context = _prompt_context(
@@ -565,25 +594,35 @@ async def _optimize_missing_prompts(
                 project_dir, episode, beat
             ),
         )
+        context_updates: dict[str, object] = {
+            "style_prefix": style_prefix,
+            "resolved_reference_tags": resolved_reference_tags,
+            "resolved_references": resolved_references,
+        }
         prepared = (continuity_by_segment or {}).get(segment.segment_id)
         if prepared is not None:
             from novelvideo.shot_continuity import continuity_locks_for
 
-            context = context.model_copy(update={
+            context_updates.update({
                 "continuity_locks": continuity_locks_for(prepared.contracts),
                 "continuity_contracts_json": _canonical_json([
                     contract.model_dump(mode="json")
                     for contract in prepared.contracts
                 ]),
                 "risk_report_json": _canonical_json(prepared.risk_report),
+                "active_character_ids": _active_character_ids(
+                    prepared.contracts
+                ),
+                "lighting_facts_json": _lighting_facts_json(
+                    prepared.contracts
+                ),
             })
+        context = H3PromptContext.model_validate(
+            {**context.model_dump(mode="python"), **context_updates}
+        )
         contexts.append(context)
 
-    active = __import__(
-        "novelvideo.director_plan.store", fromlist=["DirectorPlanStore"]
-    ).DirectorPlanStore(project_dir).load_active(episode)
     revision_id = str(getattr(active, "revision_id", "") or f"episode:{episode}")
-    snapshot = getattr(active, "project_style_snapshot", None)
     style_hash = str(getattr(snapshot, "style_hash", "") or "legacy-style")
     style_video = {
         "projection": str(
@@ -1100,9 +1139,24 @@ def _build_planned_segments(
             dialogue=str(synthetic["dialogue"]),
             speaker=str(synthetic["speaker"]),
             tone=str(synthetic["tone"]),
+            dialogue_lines=tuple(synthetic["dialogue_lines"]),
             dialogue_source=_dialogue_source_for(beats),
         ))
     return segments
+
+
+def _source_dialogue_lines(
+    beats: tuple[Mapping[str, Any], ...],
+) -> tuple[H3SourceDialogueLine, ...]:
+    return tuple(
+        H3SourceDialogueLine(
+            speaker=h3_speaker_text(beat),
+            text=dialogue,
+            tone=h3_tone_text(beat),
+        )
+        for beat in beats
+        if (dialogue := h3_dialogue_text(beat))
+    )
 
 
 def _canonical_beats_for_segments(
@@ -1166,6 +1220,25 @@ def _canonical_json(value: object) -> str:
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")  # type: ignore[union-attr]
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _active_character_ids(
+    contracts: tuple[ShotContinuityContract, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            subject.subject_id
+            for contract in contracts
+            for subject in contract.subjects
+            if subject.visible
+        )
+    )
+
+
+def _lighting_facts_json(
+    contracts: tuple[ShotContinuityContract, ...],
+) -> str:
+    return h3_lighting_facts_json(tuple(contract.lighting for contract in contracts))
 
 
 def _stable_union(*values: tuple[str, ...]) -> tuple[str, ...]:
@@ -1860,12 +1933,14 @@ async def _execute_inner(
                     project_dir=project_dir, episode=episode,
                     evidence_by_segment=evidence_by_segment,
                     episode_beats=source_beats,
+                    global_references=global_references,
                 )
             else:
                 legacy_segments = await _optimize_missing_prompts(
                     raw_segments, segment_beats, ctx=ctx,
                     project_dir=project_dir, episode=episode,
                     episode_beats=source_beats,
+                    global_references=global_references,
                 )
                 try:
                     if continuity_by_segment is None:
@@ -1877,6 +1952,7 @@ async def _execute_inner(
                         episode_beats=source_beats,
                         policy=policy,
                         continuity_by_segment=continuity_by_segment,
+                        global_references=global_references,
                     )
                 except Exception as shadow_exc:
                     if not _continuity_failure_is_observational(

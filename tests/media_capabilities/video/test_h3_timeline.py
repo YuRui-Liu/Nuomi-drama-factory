@@ -108,6 +108,30 @@ def test_models_are_frozen_and_forbid_extra_fields() -> None:
         segment.prompt = "changed"
 
 
+def test_structured_source_dialogue_lines_preserve_legacy_scalar_compatibility() -> None:
+    from novelvideo.media_capabilities.video.h3_timeline import H3SourceDialogueLine
+
+    legacy = _segment("legacy", 1, 1)
+    structured = _segment(
+        "paired",
+        1,
+        2,
+        dialogue="第一句\n第二句",
+        speaker="阿远 / 林默",
+        tone="紧张 / 克制",
+        dialogue_lines=(
+            H3SourceDialogueLine(speaker="阿远", text="第一句", tone="紧张"),
+            H3SourceDialogueLine(speaker="林默", text="第二句", tone="克制"),
+        ),
+    )
+
+    assert legacy.dialogue_lines == ()
+    assert [line.model_dump() for line in structured.dialogue_lines] == [
+        {"speaker": "阿远", "text": "第一句", "tone": "紧张"},
+        {"speaker": "林默", "text": "第二句", "tone": "克制"},
+    ]
+
+
 @pytest.mark.parametrize(
     "entries,total_frames",
     [

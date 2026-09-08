@@ -42,6 +42,20 @@ class H3GenerationAttemptEvidence(BaseModel):
     error_code: str | None = None
 
 
+class H3SourceDialogueLine(BaseModel):
+    """One immutable source line before director cue timing is assigned."""
+
+    model_config = _MODEL_CONFIG
+    speaker: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    tone: str = ""
+
+    @field_validator("speaker", "text", "tone", mode="before")
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class H3ObservedBoundary(BaseModel):
     model_config = _MODEL_CONFIG
     value: str = Field(min_length=1)
@@ -97,6 +111,7 @@ class H3DirectorSegment(BaseModel):
     dialogue: str = ""
     speaker: str = ""
     tone: str = ""
+    dialogue_lines: tuple[H3SourceDialogueLine, ...] = ()
     voice_style: str = ""
     dialogue_source: DialogueSource = DialogueSource.EXTERNAL_TTS
 
@@ -447,6 +462,7 @@ __all__ = [
     "H3DirectorManifest",
     "H3DirectorOutputManifest",
     "H3ReferenceManifestEntry",
+    "H3SourceDialogueLine",
     "H3DirectorSegment",
     "H3GenerationAttemptEvidence",
     "H3ObservedBoundary",

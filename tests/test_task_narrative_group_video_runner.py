@@ -24,6 +24,17 @@ def _optimizer_result(prompt: str):
     )
 
 
+def _active_style_plan():
+    return SimpleNamespace(
+        revision_id="rev-1",
+        project_style_snapshot=SimpleNamespace(
+            snapshot_id="style-1",
+            style_hash="style-hash",
+            projections=SimpleNamespace(video="2.5D ink animation"),
+        ),
+    )
+
+
 def _patch_segment_optimizer(monkeypatch, module, optimizer):
     class EpisodePackOptimizer:
         async def optimize(self, episode_input):
@@ -58,6 +69,11 @@ def _patch_test_workflow(monkeypatch, module):
             id="test-minimax-h3", adapter_key="minimax-h3", provider="minimax"
         ),
     )
+    monkeypatch.setattr(
+        module,
+        "_load_active_director_plan",
+        lambda *_args: _active_style_plan(),
+    )
 
     class Adapters:
         def resolve(self, _adapter_key):
@@ -85,6 +101,179 @@ def _patch_test_workflow(monkeypatch, module):
     monkeypatch.setattr(
         narrative_group_video_compose, "compose_local_segments", compose
     )
+
+
+def test_synthetic_pair_preserves_each_dialogue_speaker_text_and_tone(tmp_path):
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    left = {
+        "id": "beat-1",
+        "beat_number": 1,
+        "visual_description": "阿远抵住门。",
+        "dialogue": "别开门。",
+        "speaker": "阿远",
+        "tone": "紧张",
+    }
+    right = {
+        "id": "beat-2",
+        "beat_number": 2,
+        "visual_description": "林默握住门把。",
+        "dialogue": "已经晚了。",
+        "speaker": "林默",
+        "tone": "克制",
+    }
+    first = tmp_path / "left.png"
+    last = tmp_path / "right.png"
+    first.write_bytes(b"left")
+    last.write_bytes(b"right")
+
+    synthetic = narrative_group_video._synthetic_pair_beat(left, right)
+    segments = narrative_group_video._build_planned_segments(
+        "auto",
+        [{"beat_ids": ["beat-1", "beat-2"]}],
+        {"beat-1": left, "beat-2": right},
+        {
+            "beat-1": {"first_frame": str(first)},
+            "beat-2": {"first_frame": str(last)},
+        },
+    )
+
+    assert synthetic["dialogue_lines"] == (
+        {"speaker": "阿远", "text": "别开门。", "tone": "紧张"},
+        {"speaker": "林默", "text": "已经晚了。", "tone": "克制"},
+    )
+    assert [line.model_dump() for line in segments[0].dialogue_lines] == list(
+        synthetic["dialogue_lines"]
+    )
+
+
+def test_episode_optimizer_context_uses_the_provider_reference_tag_mapping(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        build_h3_reference_tag_map,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    frame = tmp_path / "first.png"
+    frame.write_bytes(b"first")
+    segment = H3DirectorSegment(
+        segment_id="beat-1",
+        beat_number=1,
+        prompt="Hero turns toward the door.",
+        duration_seconds=5,
+        first_frame=str(frame),
+    )
+    references = (
+        SimpleNamespace(
+            reference_id="Hero One",
+            source_kind="character_identity",
+            label="Hero",
+            subject_description="red-coated hero",
+        ),
+        SimpleNamespace(
+            reference_id="scene.main",
+            source_kind="scene_master",
+            label="Corridor",
+            subject_description="narrow corridor",
+        ),
+    )
+    captured = []
+
+    class Optimizer:
+        async def optimize(self, episode_input):
+            captured.extend(item.context for item in episode_input.segments)
+            return SimpleNamespace(
+                segments=tuple(
+                    SimpleNamespace(
+                        segment_id=item.segment_id,
+                        **vars(_optimizer_result(item.source_segment.prompt)),
+                    )
+                    for item in episode_input.segments
+                )
+            )
+
+    monkeypatch.setattr(
+        narrative_group_video, "load_materialized_groups", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "create_h3_episode_pack_optimizer",
+        lambda **_kwargs: Optimizer(),
+    )
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: _active_style_plan(),
+    )
+
+    asyncio.run(
+        narrative_group_video._optimize_missing_prompts(
+            [segment],
+            [{"id": "beat-1", "beat_number": 1}],
+            ctx=SimpleNamespace(state_dir=tmp_path / "state"),
+            project_dir=tmp_path,
+            episode=1,
+            global_references=references,
+        )
+    )
+
+    assert captured[0].resolved_reference_tags == tuple(
+        build_h3_reference_tag_map(references).values()
+    )
+    assert [fact.kind for fact in captured[0].resolved_references] == [
+        "character",
+        "location",
+    ]
+
+
+def test_paid_episode_optimizer_fails_before_runtime_without_active_style(
+    tmp_path, monkeypatch
+):
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    frame = tmp_path / "first.png"
+    frame.write_bytes(b"first")
+    segment = H3DirectorSegment(
+        segment_id="beat-1",
+        beat_number=1,
+        prompt="Hero turns toward the door.",
+        duration_seconds=5,
+        first_frame=str(frame),
+    )
+    runtime_calls = []
+
+    class Optimizer:
+        async def optimize(self, _episode_input):
+            runtime_calls.append("optimizer")
+            raise AssertionError("paid optimizer must not be called")
+
+    monkeypatch.setattr(
+        narrative_group_video, "load_materialized_groups", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "create_h3_episode_pack_optimizer",
+        lambda **_kwargs: Optimizer(),
+    )
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(ValueError, match="Style Prefix"):
+        asyncio.run(
+            narrative_group_video._optimize_missing_prompts(
+                [segment],
+                [{"id": "beat-1", "beat_number": 1}],
+                ctx=SimpleNamespace(state_dir=tmp_path / "state"),
+                project_dir=tmp_path,
+                episode=1,
+            )
+        )
+
+    assert runtime_calls == []
 
 
 def test_append_attempt_upserts_submitted_attempt_and_rejects_terminal_replacement():
@@ -2082,9 +2271,7 @@ def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
     )
     monkeypatch.setattr(
         "novelvideo.director_plan.store.DirectorPlanStore.load_active",
-        lambda *_args: SimpleNamespace(
-            revision_id="rev-1", project_style_snapshot=None
-        ),
+        lambda *_args: _active_style_plan(),
     )
 
     result = asyncio.run(
@@ -2830,9 +3017,7 @@ def test_observe_mode_mismatch_keeps_shadow_bundle_empty_with_diagnostic(
     _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(
         "novelvideo.director_plan.store.DirectorPlanStore.load_active",
-        lambda *_args: SimpleNamespace(
-            revision_id="rev-1", project_style_snapshot=None
-        ),
+        lambda *_args: _active_style_plan(),
     )
     evidence = {}
 

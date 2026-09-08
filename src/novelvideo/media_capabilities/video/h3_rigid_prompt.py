@@ -140,7 +140,14 @@ class H3OpticsPlan(_H3RigidModel):
 
 
 class H3PhysicsPlan(_H3RigidModel):
+    moving_entities: tuple[str, ...] = ()
     statements: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_moving_entities(self) -> "H3PhysicsPlan":
+        if len(self.moving_entities) != len(set(self.moving_entities)):
+            raise ValueError("moving entity IDs must be unique")
+        return self
 
 
 class H3LightingPlan(_H3RigidModel):
@@ -176,6 +183,7 @@ class H3QualityPlan(_H3RigidModel):
 class H3PositiveConstraint(_H3RigidModel):
     assertion: str = Field(min_length=1)
     count: int | None = Field(default=None, ge=0)
+    target: Literal["characters", "references", "props", "other"] = "other"
 
 
 class H3RigidPromptPlan(_H3RigidModel):

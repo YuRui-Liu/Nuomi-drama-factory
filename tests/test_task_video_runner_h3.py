@@ -53,13 +53,24 @@ class _Optimizer:
         return _Optimized()
 
 
+def _patch_authoritative_context(monkeypatch, runner) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_load_h3_authoritative_context",
+        lambda **_kwargs: ("2.5D ink animation", "", ()),
+    )
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["runninghub:minimax-h3", "runninghub_minimax_h3"])
 @pytest.mark.parametrize(("last_frame", "expected"), [("last.png", "fl2va"), (None, "i2va")])
 async def test_h3_runner_selects_actual_mode_and_never_uses_legacy_generator(
-    tmp_path, monkeypatch, last_frame, expected
+    tmp_path, monkeypatch, backend, last_frame, expected
 ) -> None:
     from novelvideo.media_capabilities.video.runtime import H3GenerationResult
     from novelvideo.task_backend.runners import video as runner
+
+    _patch_authoritative_context(monkeypatch, runner)
 
     class Manager:
         def update_progress_for_project(self, *_args, **_kwargs):
@@ -100,9 +111,10 @@ async def test_h3_runner_selects_actual_mode_and_never_uses_legacy_generator(
                 "frame_path": first,
                 "last_frame_path": last,
                 "prompt": "人物走向窗边",
-                "video_backend": "runninghub:minimax-h3",
+                "video_backend": backend,
                 "h3_mode": "auto",
                 "video_duration": 5,
+                "resolution": "1080p",
             }},
         },
         _ctx(tmp_path),
@@ -112,6 +124,7 @@ async def test_h3_runner_selects_actual_mode_and_never_uses_legacy_generator(
     assert result["actual_model"] == "runninghub:minimax-h3"
     assert result["actual_mode"] == expected
     assert calls[0]["mode"] == "auto"
+    assert calls[0]["resolution"] == "1080p"
     assert calls[0]["prompt"] == _Optimized.prompt
 
 
@@ -119,6 +132,8 @@ async def test_h3_runner_selects_actual_mode_and_never_uses_legacy_generator(
 async def test_h3_runner_does_not_import_legacy_stack(tmp_path, monkeypatch) -> None:
     from novelvideo.media_capabilities.video.runtime import H3GenerationResult
     from novelvideo.task_backend.runners import video as runner
+
+    _patch_authoritative_context(monkeypatch, runner)
 
     class Manager:
         def update_progress_for_project(self, *_args, **_kwargs):
@@ -151,12 +166,14 @@ async def test_h3_runner_does_not_import_legacy_stack(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_h3_runner_uses_draft_when_optimizer_connection_fails(tmp_path, monkeypatch) -> None:
+async def test_h3_runner_fails_closed_when_optimizer_connection_fails(tmp_path, monkeypatch) -> None:
     from novelvideo.task_backend.runners import video as runner
     from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
         H3PromptOptimizationUnavailable,
     )
     from novelvideo.media_capabilities.video.runtime import H3GenerationResult
+
+    _patch_authoritative_context(monkeypatch, runner)
 
     class Manager:
         def update_progress_for_project(self, *_args, **_kwargs):
@@ -183,21 +200,25 @@ async def test_h3_runner_uses_draft_when_optimizer_connection_fails(tmp_path, mo
         "novelvideo.media_capabilities.video.runtime.generate_h3_video", generate
     )
 
-    await runner._run_single_video_async(
-        {"task_type": "single_video", "episode": 1, "beat_num": 1,
-         "payload": {"config": {"frame_path": first, "prompt": "草稿动作",
-         "video_backend": "runninghub:minimax-h3", "h3_mode": "auto"}}},
-        _ctx(tmp_path),
-    )
+    with pytest.raises(
+        H3PromptOptimizationUnavailable, match="Connection error after 3 attempts"
+    ):
+        await runner._run_single_video_async(
+            {"task_type": "single_video", "episode": 1, "beat_num": 1,
+             "payload": {"config": {"frame_path": first, "prompt": "草稿动作",
+             "video_backend": "runninghub:minimax-h3", "h3_mode": "auto"}}},
+            _ctx(tmp_path),
+        )
 
-    assert len(runtime_calls) == 1
-    assert runtime_calls[0]["prompt"] == "草稿动作"
+    assert runtime_calls == []
 
 
 @pytest.mark.asyncio
 async def test_h3_runner_explicit_silent_beat_uses_chinese_typed_optimization(tmp_path, monkeypatch) -> None:
     from novelvideo.media_capabilities.video.runtime import H3GenerationResult
     from novelvideo.task_backend.runners import video as runner
+
+    _patch_authoritative_context(monkeypatch, runner)
 
     class Manager:
         def update_progress_for_project(self, *_args, **_kwargs):
@@ -242,6 +263,8 @@ async def test_h3_runner_explicit_silent_beat_uses_chinese_typed_optimization(tm
 async def test_h3_runner_reads_dialogue_from_canonical_beat_fields(tmp_path, monkeypatch) -> None:
     from novelvideo.task_backend.runners import video as runner
 
+    _patch_authoritative_context(monkeypatch, runner)
+
     first, _ = _frames(tmp_path)
     optimizer = _Optimizer()
     monkeypatch.setattr(runner, "create_h3_prompt_optimizer", lambda **_: optimizer)
@@ -261,6 +284,8 @@ async def test_h3_runner_reads_dialogue_from_canonical_beat_fields(tmp_path, mon
         last_frame=None,
         duration=5.0,
         draft="阿远抵住铁门。",
+        project_dir=tmp_path,
+        episode=1,
     )
 
     segment, context, _mode = optimizer.calls[0]
@@ -268,3 +293,191 @@ async def test_h3_runner_reads_dialogue_from_canonical_beat_fields(tmp_path, mon
     assert segment.speaker == "阿远"
     assert segment.tone == ""
     assert context.dialogue_required is True
+
+
+def test_single_h3_context_requires_an_authoritative_style_prefix(
+    tmp_path, monkeypatch
+) -> None:
+    from novelvideo.task_backend.runners import video as runner
+
+    first, _ = _frames(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(ValueError, match="Style Prefix"):
+        runner._h3_prompt_context(
+            beat={"id": "beat-1"},
+            config={},
+            first_frame=first,
+            last_frame=None,
+            project_dir=tmp_path,
+            episode=1,
+            beat_num=1,
+        )
+
+
+def test_single_h3_context_uses_exact_shot_continuity_lighting(
+    tmp_path, monkeypatch
+) -> None:
+    from novelvideo.director_plan.models import StyleProjections, StyleSnapshot
+    from novelvideo.shot_continuity import LightingLock
+    from novelvideo.task_backend.runners import video as runner
+
+    first, _ = _frames(tmp_path)
+    snapshot = StyleSnapshot(
+        snapshot_id="style-1",
+        style_id="three-d",
+        style_version="1",
+        catalog_hash="a" * 64,
+        style_hash="b" * 64,
+        projections=StyleProjections(
+            director="3D animation",
+            image="3D animation",
+            video="3D animation, controlled materials",
+            panel_tag="3D",
+        ),
+    )
+    active = SimpleNamespace(
+        project_style_snapshot=snapshot,
+        groups=(
+            SimpleNamespace(
+                shots=(SimpleNamespace(id="shot-1", source_span_ids=("beat-1",)),)
+            ),
+        ),
+    )
+    lighting = LightingLock(
+        key_source="neon sign",
+        direction="frame left to frame right",
+        shadow_direction="toward frame right",
+        exposure_priority="protect neon highlights",
+        color_temperature="magenta and cyan",
+    )
+    monkeypatch.setattr(
+        "novelvideo.director_plan.store.DirectorPlanStore.load_active",
+        lambda *_args: active,
+    )
+    monkeypatch.setattr(
+        "novelvideo.shot_continuity.ShotContinuityStore.load_active",
+        lambda _self, episode, shot_id: (
+            SimpleNamespace(
+                lighting=lighting,
+                subjects=(SimpleNamespace(subject_id="lin", visible=True),),
+            )
+            if (episode, shot_id) == (1, "shot-1")
+            else None
+        ),
+    )
+
+    context = runner._h3_prompt_context(
+        beat={"id": "beat-1"},
+        config={},
+        first_frame=first,
+        last_frame=None,
+        project_dir=tmp_path,
+        episode=1,
+        beat_num=1,
+    )
+
+    assert context.style_prefix == "3D animation, controlled materials"
+    assert '"key_source":"neon sign"' in context.lighting_facts_json
+    assert context.active_character_ids == ("lin",)
+
+
+@pytest.mark.asyncio
+async def test_single_h3_authoritative_conflict_fails_before_paid_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+        H3PromptQualityIssue,
+        H3PromptQualityReport,
+    )
+    from novelvideo.task_backend.runners import video as runner
+
+    class Manager:
+        def update_progress_for_project(self, *_args, **_kwargs):
+            pass
+
+    first, _ = _frames(tmp_path)
+    runtime_calls = []
+
+    async def generate(**kwargs):
+        runtime_calls.append(kwargs)
+
+    class ConflictingOptimizer:
+        async def optimize_segment(self, _segment, context, _mode):
+            assert context.style_prefix.startswith("3D")
+            assert "neon sign" in context.lighting_facts_json
+            assert context.active_character_ids == ("lin",)
+            raise H3PromptQualityError(
+                H3PromptQualityReport(
+                    passed=False,
+                    issues=(
+                        H3PromptQualityIssue(
+                            code="style_prefix_mismatch",
+                            message="candidate used 2D style",
+                        ),
+                        H3PromptQualityIssue(
+                            code="lighting_source_conflict",
+                            message="candidate replaced neon with daylight",
+                        ),
+                        H3PromptQualityIssue(
+                            code="character_count_mismatch",
+                            message="candidate replaced lin with ghost",
+                        ),
+                        H3PromptQualityIssue(
+                            code="unknown_moving_entity",
+                            message="candidate moves ghost",
+                        ),
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(runner, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(
+        runner,
+        "create_h3_prompt_optimizer",
+        lambda **_: ConflictingOptimizer(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_load_h3_authoritative_context",
+        lambda **_kwargs: (
+            "3D animation, controlled materials",
+            '{"key_source":"neon sign"}',
+            ("lin",),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.video.runtime.generate_h3_video", generate
+    )
+
+    with pytest.raises(
+        H3PromptQualityError,
+        match=(
+            "style_prefix_mismatch, lighting_source_conflict, "
+            "character_count_mismatch, unknown_moving_entity"
+        ),
+    ):
+        await runner._run_single_video_async(
+            {
+                "task_type": "single_video",
+                "episode": 1,
+                "beat_num": 1,
+                "payload": {
+                    "output_dir": str(tmp_path),
+                    "config": {
+                        "beat": {"id": "beat-1"},
+                        "frame_path": first,
+                        "prompt": "人物转身",
+                        "video_backend": "runninghub:minimax-h3",
+                    },
+                },
+            },
+            _ctx(tmp_path),
+        )
+
+    assert runtime_calls == []

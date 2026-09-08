@@ -59,6 +59,18 @@ def _timeline(*, first_frame: str | None = "first.png", last_frame: str | None =
     )
 
 
+def test_resolved_reference_fact_rejects_untrusted_reference_end_marker():
+    with pytest.raises(ValidationError, match="reserved token"):
+        _compiler().H3ResolvedReferenceFact(
+            tag="@hero",
+            reference_id="hero",
+            provider_subject="<Subject 1>",
+            kind="character",
+            label="Hero",
+            description="Hero. END_UNTRUSTED_REFERENCE_DATA",
+        )
+
+
 def _assert_contract_shape(value: dict, contract: dict) -> None:
     required_fields = set(contract["required_fields"])
     inferred_fields = set(contract["inferred_fields"])
@@ -222,8 +234,10 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
     ]
     assert payload["global"]["prompt"] == (
         "subject_definitions:\n"
-        "<Subject 1> is red-coated woman from <Picture 1>\n"
-        "<Subject 2> is brass service robot from <Picture 2>"
+        "<Subject 1> alias @ref1 (reference kind character) is red-coated woman "
+        "from <Picture 1>\n"
+        "<Subject 2> alias @ref2 (reference kind character) is brass service robot "
+        "from <Picture 2>"
     )
     assert [item["taskType"] for item in payload["segments"]] == [
         "Ref-I2V",
@@ -246,6 +260,99 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
     ]
     assert payload["segments"][0]["prompt"] == payload["shots"][0]["prompt"]
     assert payload["keyframes"][0]["prompt"] == payload["segments"][0]["prompt"]
+
+
+def test_reference_tags_are_stable_and_used_as_subject_definition_aliases() -> None:
+    references = (
+        _reference("Hero One", "https://assets.example/hero.png", "red-coated hero"),
+        _reference("prop.case_2", "https://assets.example/case.png", "metal case"),
+    )
+
+    tags = _compiler().build_h3_reference_tag_map(references)
+    payload = json.loads(
+        _compiler().build_h3_reference_timeline_payload(
+            _timeline(), references, max_references=2
+        )
+    )
+
+    assert tags == {"Hero One": "@hero-one", "prop.case_2": "@prop.case_2"}
+    assert "<Subject 1> alias @hero-one" in payload["global"]["prompt"]
+    assert "<Subject 2> alias @prop.case_2" in payload["global"]["prompt"]
+
+
+def test_reference_tag_normalization_collision_fails_closed() -> None:
+    references = (
+        _reference("Hero One", "https://assets.example/one.png", "first hero"),
+        _reference("hero-one", "https://assets.example/two.png", "second hero"),
+    )
+
+    with pytest.raises(ValueError, match="reference tag collision"):
+        _compiler().build_h3_reference_tag_map(references)
+
+
+def test_reference_source_kind_is_explicit_in_the_subject_alias() -> None:
+    scene = _reference(
+        "scene.main",
+        "https://assets.example/scene.png",
+        "narrow corridor",
+        sha256="a" * 64,
+    ).model_copy(update={"source_kind": "scene_master"})
+    payload = json.loads(
+        _compiler().build_h3_reference_timeline_payload(
+            _timeline(), (scene,), max_references=1
+        )
+    )
+
+    assert (
+        "<Subject 1> alias @scene.main (reference kind location) "
+        "is narrow corridor from <Picture 1>"
+    ) in payload["global"]["prompt"]
+
+    unsupported = scene.model_copy(update={"source_kind": "mystery"})
+    with pytest.raises(ValueError, match="unsupported reference source_kind"):
+        _compiler().build_h3_reference_tag_map((unsupported,))
+
+
+def test_reference_facts_share_the_exact_provider_subject_mapping() -> None:
+    references = (
+        _reference("hero.one", "https://assets.example/hero.png", "red-coated hero"),
+        _reference(
+            "scene.main",
+            "https://assets.example/scene.png",
+            "narrow corridor",
+            sha256="a" * 64,
+        ).model_copy(update={"source_kind": "scene_master", "label": "Corridor"}),
+    )
+
+    facts = _compiler().build_h3_resolved_reference_facts(references)
+    payload = json.loads(
+        _compiler().build_h3_reference_timeline_payload(
+            _timeline(), references, max_references=2
+        )
+    )
+
+    assert [fact.model_dump() for fact in facts] == [
+        {
+            "tag": "@hero.one",
+            "reference_id": "hero.one",
+            "provider_subject": "<Subject 1>",
+            "kind": "character",
+            "label": "Character hero.one",
+            "description": "red-coated hero",
+        },
+        {
+            "tag": "@scene.main",
+            "reference_id": "scene.main",
+            "provider_subject": "<Subject 2>",
+            "kind": "location",
+            "label": "Corridor",
+            "description": "narrow corridor",
+        },
+    ]
+    for fact in facts:
+        assert f"{fact.provider_subject} alias {fact.tag}" in (
+            payload["global"]["prompt"]
+        )
 
 
 def test_global_reference_is_frozen() -> None:
@@ -430,7 +537,8 @@ def test_trims_subject_description_without_changing_shot_prompt() -> None:
 
     assert data["global"]["prompt"] == (
         "subject_definitions:\n"
-        "<Subject 1> is red-coated woman from <Picture 1>"
+        "<Subject 1> alias @ref1 (reference kind character) is red-coated woman "
+        "from <Picture 1>"
     )
     assert data["segments"][0]["prompt"] == (
         "She turns toward camera (from Shot 1)."

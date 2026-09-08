@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .h3_size_settings import resolve_h3_size_setting
 from .h3_timeline import H3Timeline
@@ -16,11 +16,21 @@ from .h3_timeline import H3Timeline
 
 H3_REFERENCE_TASK_TYPE = "r2v — 参考主体生视频(Reference to Video)"
 H3_REFERENCE_TIMELINE_MODE = "prompt_batch"
+H3_REFERENCE_COMPILER_VERSION = 6
 _REFERENCE_NUMBERING = re.compile(
     r"(?<![A-Za-z0-9_])(?:subject|picture)\W*\d+\b",
     re.IGNORECASE,
 )
 _SHOT_ORIGIN = re.compile(r"\(?\s*from\s+shot\s+\d+\s*\)?", re.IGNORECASE)
+_REFERENCE_TAG_UNSAFE = re.compile(r"[^a-z0-9_.-]+")
+_RESERVED_FACT_TOKENS = (
+    "begin_untrusted_continuity_data",
+    "end_untrusted_continuity_data",
+    "begin_untrusted_reference_data",
+    "end_untrusted_reference_data",
+    "<resolved_reference_facts_json>",
+    "</resolved_reference_facts_json>",
+)
 _ASPECT_LABELS = {
     "9:16": "9:16 (竖版宽屏)",
     "16:9": "16:9 (宽屏)",
@@ -31,7 +41,8 @@ def _normalize_single_line_identifier(value: object, *, context: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{context} must be a non-empty string")
     if value.splitlines() != [value] or any(
-        unicodedata.category(character) == "Cc" for character in value
+        unicodedata.category(character) in {"Cc", "Zl", "Zp"}
+        for character in value
     ):
         raise ValueError(f"{context} must be a single line without control characters")
     return value.strip()
@@ -88,6 +99,104 @@ class H3GlobalReference(BaseModel):
         if _SHOT_ORIGIN.search(normalized):
             raise ValueError("subject_description must not define a Shot origin")
         return normalized
+
+
+class H3ResolvedReferenceFact(BaseModel):
+    """Safe one-to-one bridge between prompt tags and provider subjects."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tag: str = Field(pattern=r"^@[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    reference_id: str
+    provider_subject: str = Field(pattern=r"^<Subject [1-9][0-9]*>$")
+    kind: Literal["character", "location", "prop", "temporary"]
+    label: str
+    description: str
+
+    @field_validator("reference_id", "label", "description", mode="before")
+    @classmethod
+    def validate_safe_text(cls, value: object) -> str:
+        normalized = _normalize_single_line_identifier(
+            value, context="reference fact text"
+        )
+        if len(normalized.encode("utf-8")) > 4096:
+            raise ValueError("reference fact text must not exceed 4096 bytes")
+        if any(
+            token in normalized.casefold() for token in _RESERVED_FACT_TOKENS
+        ):
+            raise ValueError("reference fact text contains a reserved token")
+        return normalized
+
+
+def _reference_tag(reference_id: str) -> str:
+    component = _REFERENCE_TAG_UNSAFE.sub(
+        "-", reference_id.casefold()
+    ).strip("._-")
+    if not component or len(component.encode("ascii")) > 127:
+        raise ValueError(f"reference_id cannot form a safe @tag: {reference_id}")
+    return f"@{component}"
+
+
+def build_h3_resolved_reference_facts(
+    references: Iterable[object],
+) -> tuple[H3ResolvedReferenceFact, ...]:
+    result: list[H3ResolvedReferenceFact] = []
+    owners: dict[str, str] = {}
+    reference_ids: set[str] = set()
+    for index, reference in enumerate(references, start=1):
+        reference_id = _normalize_single_line_identifier(
+            getattr(reference, "reference_id", None), context="reference_id"
+        )
+        tag = _reference_tag(reference_id)
+        owner = owners.get(tag)
+        if owner is not None and owner != reference_id:
+            raise ValueError(
+                f"reference tag collision: {owner!r} and {reference_id!r} -> {tag}"
+            )
+        if reference_id in reference_ids:
+            raise ValueError(f"duplicate reference_id: {reference_id}")
+        owners[tag] = reference_id
+        reference_ids.add(reference_id)
+        result.append(
+            H3ResolvedReferenceFact(
+                tag=tag,
+                reference_id=reference_id,
+                provider_subject=f"<Subject {index}>",
+                kind=_reference_kind_label(reference),
+                label=getattr(reference, "label", None),
+                description=getattr(reference, "subject_description", None),
+            )
+        )
+    return tuple(result)
+
+
+def build_h3_reference_tag_map(
+    references: Iterable[object],
+) -> dict[str, str]:
+    """Map ordered stable reference IDs to safe prompt aliases."""
+
+    return {
+        fact.reference_id: fact.tag
+        for fact in build_h3_resolved_reference_facts(references)
+    }
+
+
+def _reference_kind_label(reference: object) -> str:
+    kinds = {
+        "character_identity": "character",
+        "character": "character",
+        "scene_master": "location",
+        "location": "location",
+        "prop_reference": "prop",
+        "prop": "prop",
+        "temporary_upload": "temporary",
+    }
+    try:
+        source_kind = str(getattr(reference, "source_kind"))
+        return kinds[source_kind]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported reference source_kind: {source_kind}"
+        ) from exc
 
 
 def _output_settings(aspect_ratio: str, resolution: str) -> dict[str, object]:
@@ -203,6 +312,7 @@ def build_h3_reference_timeline_payload(
         ordered_references,
         max_references=max_references,
     )
+    reference_facts = build_h3_resolved_reference_facts(references)
     requested_mode = str(mode).strip().lower()
     if requested_mode not in {"auto", "i2va", "fl2va"}:
         raise ValueError("mode must be auto, i2va, or fl2va")
@@ -311,9 +421,13 @@ def build_h3_reference_timeline_payload(
             )
 
     subject_definitions = "subject_definitions:\n" + "\n".join(
-        f"<Subject {index}> is {reference.subject_description} "
+        f"{fact.provider_subject} alias {fact.tag} "
+        f"(reference kind {fact.kind}) is "
+        f"{reference.subject_description} "
         f"from <Picture {index}>"
-        for index, reference in enumerate(references, start=1)
+        for index, (reference, fact) in enumerate(
+            zip(references, reference_facts, strict=True), start=1
+        )
     )
     payload = {
         "version": 5,
@@ -378,7 +492,11 @@ def build_h3_reference_timeline_payload(
 
 __all__ = [
     "H3GlobalReference",
+    "H3ResolvedReferenceFact",
+    "H3_REFERENCE_COMPILER_VERSION",
     "H3_REFERENCE_TASK_TYPE",
     "H3_REFERENCE_TIMELINE_MODE",
+    "build_h3_reference_tag_map",
+    "build_h3_resolved_reference_facts",
     "build_h3_reference_timeline_payload",
 ]

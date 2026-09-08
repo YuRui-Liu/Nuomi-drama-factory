@@ -31,6 +31,7 @@ from novelvideo.media_capabilities.runtime.executor import RunningHubExecutor
 from novelvideo.media_capabilities.task_store import TaskStore
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3GlobalReference,
+    H3_REFERENCE_COMPILER_VERSION,
     build_h3_reference_timeline_payload,
 )
 from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline
@@ -53,7 +54,7 @@ from novelvideo.narrative_groups.video_references import (
 )
 
 
-_COMPILER_VERSION = 5
+_COMPILER_VERSION = H3_REFERENCE_COMPILER_VERSION
 H3_FRAME_MAX_BYTES = MAX_VIDEO_REFERENCE_BYTES
 H3_FRAME_MAX_PIXELS = MAX_VIDEO_REFERENCE_PIXELS
 H3_FRAME_ALLOWED_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
