@@ -357,6 +357,67 @@ def test_invalid_canonical_slot_isolated_as_pending_and_later_binding_survives(
     assert normal.asset_slot_id == "prop:normal:reference"
 
 
+@pytest.mark.parametrize(
+    ("requirement", "characters", "scenes", "expected_kind"),
+    [
+        (
+            {"kind": "character_identity", "entity_key": "identity-1"},
+            [
+                {
+                    "name": "",
+                    "identities": [
+                        {
+                            "identity_id": "identity-1",
+                            "identity_name": "",
+                            "reference_images": ["identity.png"],
+                        }
+                    ],
+                }
+            ],
+            [],
+            "character_identity",
+        ),
+        (
+            {
+                "kind": "scene_state",
+                "entity_key": "hall",
+                "visible_change": "night",
+            },
+            [],
+            [{"name": "", "base_scene_id": "hall", "variant_id": "night"}],
+            "scene_variant",
+        ),
+    ],
+)
+def test_empty_matched_metadata_falls_back_only_for_pending_binding_record(
+    requirement: dict,
+    characters: list[dict],
+    scenes: list[dict],
+    expected_kind: str,
+) -> None:
+    result = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                requirement,
+                {"kind": "prop", "entity_key": "normal"},
+            )
+        ],
+        characters=characters,
+        scenes=scenes,
+        props=[{"name": "normal"}],
+    )
+
+    invalid, normal = result
+    assert invalid.asset_kind == expected_kind
+    assert invalid.status == "pending_confirmation"
+    assert invalid.asset_slot_id == ""
+    assert invalid.entity_id == requirement["entity_key"]
+    assert invalid.display_label == requirement["entity_key"]
+    assert normal.status == "ready"
+    assert normal.asset_slot_id == "prop:normal:reference"
+
+
 def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
     result = _project(
         shots=[

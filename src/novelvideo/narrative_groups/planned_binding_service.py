@@ -215,6 +215,7 @@ def _binding(
     base_entity_id = requirement.base_entity_id
     variant_id = requirement.variant_id
     label = requirement.entity_key
+    invalid_slot = False
 
     if requirement.kind == "character_identity":
         candidates = [
@@ -236,6 +237,7 @@ def _binding(
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
+                invalid_slot = True
             else:
                 status = (
                     "missing_image"
@@ -268,6 +270,7 @@ def _binding(
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
+                invalid_slot = True
         else:
             slot_id = ""
     elif requirement.kind == "scene_variant" and requirement.malformed_scene_state:
@@ -293,6 +296,7 @@ def _binding(
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
+                invalid_slot = True
         else:
             slot_id = ""
     else:
@@ -314,8 +318,16 @@ def _binding(
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
+                invalid_slot = True
         else:
             slot_id = ""
+
+    if invalid_slot:
+        if not entity_id:
+            entity_id = requirement.entity_key
+            label = requirement.entity_key
+        elif not label:
+            label = requirement.entity_key
 
     return PlannedReferenceBinding.create(
         project_id=project_id,
