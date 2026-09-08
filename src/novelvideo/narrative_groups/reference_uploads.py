@@ -61,6 +61,7 @@ class ValidatedReferenceImage:
     image_path: str
     mime_type: str
     size_bytes: int
+    sha256: str
 
 
 def _scope(project_dir: Path) -> str:
@@ -240,7 +241,12 @@ def validate_reference_image(
         raise InvalidReferenceUpload("image extension does not match actual image format")
     if expected_mime and mime_type != expected_mime:
         raise InvalidReferenceUpload("actual image format does not match recorded MIME type")
-    return ValidatedReferenceImage(str(lexical_path.resolve()), mime_type, len(data))
+    return ValidatedReferenceImage(
+        str(lexical_path.resolve()),
+        mime_type,
+        len(data),
+        hashlib.sha256(data).hexdigest(),
+    )
 
 
 def _atomic_write(root: Path, target: Path, data: bytes) -> None:

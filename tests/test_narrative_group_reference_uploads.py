@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from novelvideo.narrative_groups.reference_uploads import (
     InvalidReferenceUpload,
     load_reference_upload,
     save_reference_upload,
+    validate_reference_image,
 )
 
 
@@ -28,6 +30,17 @@ def test_upload_is_temporary_by_default_and_uses_opaque_id(tmp_path):
     assert result.upload_id not in result.image_path
     assert result.image_path.startswith(str(tmp_path / ".runtime" / "reference_uploads"))
     assert (tmp_path / "assets").exists() is False
+
+
+def test_existing_image_validation_returns_digest_from_validated_bytes(tmp_path):
+    path = tmp_path / "assets" / "portrait.png"
+    path.parent.mkdir(parents=True)
+    data = _png()
+    path.write_bytes(data)
+
+    validated = validate_reference_image(path, allowed_roots=(tmp_path / "assets",))
+
+    assert validated.sha256 == hashlib.sha256(data).hexdigest()
 
 
 @pytest.mark.parametrize(

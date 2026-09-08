@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 
 from novelvideo.narrative_groups.planned_binding_service import (
+    PlannedReferencesRequired,
     StaleReferenceBinding,
     build_planned_reference_snapshot,
     resolve_planned_reference_preview,
@@ -74,6 +75,50 @@ def _workflow(project_dir: Path, binding: PlannedReferenceBinding) -> Production
         at=datetime.now(UTC),
     )
     return workflow
+
+
+def _planned_runner_payload(
+    tmp_path: Path, image: Path, *, sha256: str, use_style: bool = True
+) -> dict[str, object]:
+    return {
+        "project_dir": str(tmp_path),
+        "project_id": "p1",
+        "episode": 1,
+        "group_id": "group-01",
+        "stage": "render",
+        "beats": [{"id": "beat-07", "beat_number": 1, "action": "Alice enters"}],
+        "image_projection": "STYLE_PROJECTION",
+        "use_style": use_style,
+        "reference_scope": {
+            "beat_ids": ["beat-07"],
+            "shot_ids": ["shot-07"],
+        },
+        "reference_resolution": {
+            "id": "refsnap-planned",
+            "schema_version": "narrative-reference-decision/v1",
+            "ignored_requirement_ids": [],
+            "warnings": [],
+            "images": [{
+                "requirement_id": "planned-ref-hero",
+                "source": "matched",
+                "source_id": "version-1",
+                "asset_kind": "character_identity",
+                "image_path": str(image),
+                "resolution": "matched",
+                "entity_id": "alice-youth",
+                "shot_ids": ["shot-07"],
+                "beat_ids": ["beat-07"],
+                "group_ids": ["group-01"],
+                "binding_id": "planned-ref-hero",
+                "asset_slot_id": "character:alice:state:alice-youth",
+                "version_id": "version-1",
+                "relative_path": "assets/alice.png",
+                "sha256": sha256,
+                "project_id": "p1",
+                "episode_number": 1,
+            }],
+        },
+    }
 
 
 def test_resolution_request_accepts_only_stable_ids_and_revision() -> None:
@@ -235,6 +280,110 @@ async def test_snapshot_rejects_revision_after_current_version_changes(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_reloads_workflow_under_project_lock_before_freezing(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    store = _BindingStore([binding])
+    writer = _workflow(tmp_path, binding)
+    stale_reader = ProductionWorkflowStore(writer.state_path)
+    preview = await resolve_planned_reference_preview(
+        store,
+        stale_reader,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+    writer.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="version-2",
+        asset_path=str(_image(tmp_path / "assets" / "alice-2.png", "green")),
+        source_attempt_id="attempt-2",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    writer.adopt_version(
+        slot_id=binding.asset_slot_id,
+        version_id="version-2",
+        actor="test",
+        reason="new current",
+        at=datetime.now(UTC),
+    )
+
+    with pytest.raises(StaleReferenceBinding):
+        await build_planned_reference_snapshot(
+            store,
+            stale_reader,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(binding.binding_id,),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+        )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_holds_workflow_lock_through_version_validation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import threading
+
+    from novelvideo.narrative_groups import planned_binding_service as service
+    from novelvideo.production_workflow.store import production_workflow_project_lock
+
+    binding = _binding()
+    store = _BindingStore([binding])
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+    attempted = threading.Event()
+    acquired = threading.Event()
+    writer: threading.Thread | None = None
+    original = service._preview_from_bindings
+
+    def competing_writer() -> None:
+        attempted.set()
+        with production_workflow_project_lock(workflow.state_path.parent):
+            acquired.set()
+
+    def observed(*args, **kwargs):
+        nonlocal writer
+        writer = threading.Thread(target=competing_writer)
+        writer.start()
+        assert attempted.wait(1)
+        assert not acquired.wait(0.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_preview_from_bindings", observed)
+    await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        selected_binding_ids=(binding.binding_id,),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+    )
+    assert acquired.wait(1)
+    assert writer is not None
+    writer.join(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None:
     binding = _binding()
     store = _BindingStore([binding])
@@ -270,3 +419,90 @@ async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None
     assert image.group_ids == ("group-01",)
     assert image.beat_ids == ("beat-07",)
     assert image.shot_ids == ("shot-07",)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_requires_every_ready_required_binding_to_be_selected(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    store = _BindingStore([binding])
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+
+    with pytest.raises(PlannedReferencesRequired):
+        await build_planned_reference_snapshot(
+            store,
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+        )
+
+
+def test_runner_rejects_missing_snapshot_instead_of_legacy_name_fallback(
+    tmp_path: Path,
+) -> None:
+    from novelvideo.task_backend.runners.narrative_group import (
+        ReferenceSnapshotInvalid,
+        _generation_input,
+    )
+
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input({"project_dir": str(tmp_path), "beats": []})
+
+
+def test_runner_rejects_tampered_planned_snapshot_digest(tmp_path: Path) -> None:
+    from novelvideo.task_backend.runners.narrative_group import (
+        ReferenceSnapshotInvalid,
+        _generation_input,
+    )
+
+    image = _image(tmp_path / "assets" / "alice.png")
+    payload = _planned_runner_payload(tmp_path, image, sha256="0" * 64)
+
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(payload)
+
+
+def test_runner_validates_planned_scope_and_applies_use_style(tmp_path: Path) -> None:
+    import hashlib
+
+    from novelvideo.task_backend.runners.narrative_group import (
+        ReferenceSnapshotInvalid,
+        _generation_input,
+    )
+
+    image = _image(tmp_path / "assets" / "alice.png")
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    without_style = _generation_input(
+        _planned_runner_payload(tmp_path, image, sha256=digest, use_style=False)
+    )
+    with_style = _generation_input(
+        _planned_runner_payload(tmp_path, image, sha256=digest, use_style=True)
+    )
+    assert "STYLE_PROJECTION" not in without_style.prompt
+    assert "STYLE_PROJECTION" in with_style.prompt
+
+    wrong_scope = _planned_runner_payload(tmp_path, image, sha256=digest)
+    wrong_scope["group_id"] = "foreign-group"
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(wrong_scope)
+
+    absolute_path = _planned_runner_payload(tmp_path, image, sha256=digest)
+    absolute_path["reference_resolution"]["images"][0]["relative_path"] = str(
+        image
+    )
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(absolute_path)

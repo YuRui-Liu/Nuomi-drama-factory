@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
@@ -54,6 +54,7 @@ from novelvideo.narrative_groups.models import NarrativeGroup, StageName
 from novelvideo.narrative_groups.planned_binding_service import (
     PlannedReferenceError,
     PlannedReferencesRequired,
+    ReadOnlyPlannedBindingStore,
     StaleReferenceBinding,
     UnresolvedPlannedReference,
     build_planned_reference_snapshot,
@@ -62,9 +63,8 @@ from novelvideo.narrative_groups.planned_binding_service import (
 from novelvideo.narrative_groups.references import (
     MAX_GROUP_IMAGE_REFERENCES,
     GroupReferencePreview,
-    UnknownGroupReferenceIds,
     apply_group_reference_selection,
-    resolve_group_reference_preview,
+    resolve_group_reference_preview,  # noqa: F401 - legacy monkeypatch surface
 )
 from novelvideo.narrative_groups.reference_requirements import (
     reference_requirements_for_shots,
@@ -212,10 +212,10 @@ def _reference_enqueue_ownership(
 
 
 class NarrativeGroupGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     use_style: bool = True
-    selected_character_reference_ids: list[str] | None = None
-    selected_scene_reference_ids: list[str] | None = None
     provider_id: str | None = None
     model: str | None = None
     image_size: Literal["1K", "2K", "4K"] | None = None
@@ -1685,48 +1685,39 @@ async def preview_group_references(
     stage_name: Literal["sketch", "render"],
     user: dict = Depends(get_api_user),
 ):
-    resolved, groups, beats = await _resolve_groups(project, episode, user)
+    # Preview is deliberately read-only: opening the normal project store would
+    # initialize/migrate SQLite and materializing groups can rewrite sidecars.
+    # Persisted planned bindings carry the authoritative episode/group scope for
+    # this endpoint; submit performs the full live group revalidation.
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = ReadOnlyPlannedBindingStore(Path(resolved.ctx.state_dir) / "data.db")
+    workflow = ProductionWorkflowStore(
+        Path(resolved.ctx.state_dir) / "production_workflow.json"
+    )
     try:
-        _, selected_beats = _group_beats(groups, beats, group_id)
-        selected_beats = generation_beats_for_group(
-            resolved.project_dir, episode, group_id, selected_beats
+        planned = await resolve_planned_reference_preview(
+            store,
+            workflow,
+            project_id=str(resolved.ctx.project_id),
+            episode_number=episode,
+            group_id=group_id,
+            project_dir=resolved.project_dir,
+            max_images=MAX_GROUP_IMAGE_REFERENCES,
         )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
-    store = await make_sqlite_store_for_context(resolved.ctx)
-    if hasattr(store, "list_planned_reference_bindings"):
-        workflow = ProductionWorkflowStore(
-            Path(resolved.ctx.state_dir) / "production_workflow.json"
-        )
-        try:
-            planned = await resolve_planned_reference_preview(
-                store,
-                workflow,
-                project_id=str(resolved.ctx.project_id),
-                episode_number=episode,
-                group_id=group_id,
-                project_dir=resolved.project_dir,
-                max_images=MAX_GROUP_IMAGE_REFERENCES,
+    except PlannedReferenceError as exc:
+        raise _planned_reference_http_error(exc) from exc
+    data = planned.model_dump(mode="json")
+    for binding in data["bindings"]:
+        thumbnail = str(binding.get("thumbnail_url") or "")
+        if thumbnail:
+            binding["thumbnail_url"] = _asset_url(
+                project, resolved.project_dir, thumbnail
             )
-        except PlannedReferenceError as exc:
-            raise _planned_reference_http_error(exc) from exc
-        data = planned.model_dump(mode="json")
-        for binding in data["bindings"]:
-            thumbnail = str(binding.get("thumbnail_url") or "")
-            if thumbnail:
-                binding["thumbnail_url"] = _asset_url(
-                    project, resolved.project_dir, thumbnail
-                )
-            binding.pop("relative_path", None)
-            binding.pop("sha256", None)
-            binding.pop("entity_id", None)
-            binding.pop("group_ids", None)
-            binding.pop("shot_ids", None)
-    else:  # compatibility for legacy/test stores; production SQLite always uses bindings
-        preview = resolve_group_reference_preview(
-            resolved.project_dir, selected_beats, stage=stage_name
-        )
-        data = _serialize_reference_preview(project, resolved.project_dir, preview)
+        binding.pop("relative_path", None)
+        binding.pop("sha256", None)
+        binding.pop("entity_id", None)
+        binding.pop("group_ids", None)
+        binding.pop("shot_ids", None)
     return {
         "ok": True,
         "data": data,
@@ -1774,12 +1765,23 @@ async def upload_group_reference(
     episode: int,
     group_id: str,
     stage_name: Literal["sketch", "render"],
+    request: Request,
     file: UploadFile = File(...),
     user: dict = Depends(get_api_user),
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     if not any(item.id == group_id for item in groups):
         raise HTTPException(status_code=404, detail="Narrative group not found")
+    submitted_fields = set((await request.form()).keys())
+    unknown_fields = submitted_fields - {"file"}
+    if unknown_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "INVALID_REFERENCE_UPLOAD",
+                "message": "reference uploads accept only the file field",
+            },
+        )
     try:
         upload = save_reference_upload(
             resolved.project_dir,
@@ -1789,7 +1791,10 @@ async def upload_group_reference(
             persist=False,
         )
     except InvalidReferenceUpload as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "INVALID_REFERENCE_UPLOAD", "message": str(exc)},
+        ) from exc
     data = asdict(upload)
     data.pop("image_path", None)
     data["url"] = (
@@ -1906,7 +1911,6 @@ async def _enqueue_group_action(
         ) from exc
 
     request = generation_request or NarrativeGroupGenerationRequest()
-    reference_selection = None
     reference_snapshot = None
     if not split_only:
         if request.reference_resolution is not None:
@@ -1940,30 +1944,10 @@ async def _enqueue_group_action(
             except PlannedReferenceError as exc:
                 raise _planned_reference_http_error(exc) from exc
         else:
-            preview = resolve_group_reference_preview(
-                resolved.project_dir, selected_beats, stage=stage
-            )
-            try:
-                apply_group_reference_selection(
-                    preview,
-                    use_style=request.use_style,
-                    selected_character_reference_ids=request.selected_character_reference_ids,
-                    selected_scene_reference_ids=request.selected_scene_reference_ids,
+            raise _planned_reference_http_error(
+                PlannedReferencesRequired(
+                    "请选择本组已规划引用后再生成"
                 )
-            except UnknownGroupReferenceIds as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"unknown_reference_ids": list(exc.unknown_ids)},
-                ) from exc
-            reference_selection = request.model_dump(
-                exclude={
-                    "aspect_ratio",
-                    "provider_id",
-                    "model",
-                    "image_size",
-                    "allow_unconstrained",
-                    "reference_resolution",
-                }
             )
     provider_id = model = ""
     image_size = "1K"
@@ -2022,21 +2006,14 @@ async def _enqueue_group_action(
         "beats": selected_beats,
         "split_only": split_only,
     }
-    if reference_selection is not None:
-        payload["reference_selection"] = reference_selection
-        payload.update(
-            {
-                "provider_id": provider_id,
-                "model": model,
-                "image_size": image_size,
-                "constraint_mode": constraint_mode,
-                "source_sketch_revision": source_sketch_revision,
-                "source_sketch_asset": source_sketch_asset,
-            }
-        )
     if reference_snapshot is not None:
         payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
         payload["use_style"] = request.use_style
+        payload["project_id"] = str(resolved.ctx.project_id)
+        payload["reference_scope"] = {
+            "beat_ids": list(source_group.beat_ids),
+            "shot_ids": list(source_group.shot_ids),
+        }
         payload.update({
             "provider_id": provider_id,
             "model": model,

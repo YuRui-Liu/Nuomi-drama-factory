@@ -100,15 +100,8 @@ async def test_invalid_snapshot_fails_before_transport_client_is_created(
         )
 
 
-def test_reference_snapshot_wins_over_legacy_selection(tmp_path, monkeypatch):
+def test_reference_snapshot_wins_over_legacy_selection(tmp_path):
     formal = _png(tmp_path / "assets" / "props" / "letter.png")
-    monkeypatch.setattr(
-        narrative_group,
-        "resolve_group_reference_preview",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy reference resolver must not run")
-        ),
-    )
     payload = _payload(
         tmp_path,
         _snapshot(_image("prop:letter", formal, resolution="project_asset"), ignored=("prop:key",)),
@@ -120,13 +113,17 @@ def test_reference_snapshot_wins_over_legacy_selection(tmp_path, monkeypatch):
     value = narrative_group._generation_input(payload)
 
     assert value.references == (formal,)
-    assert value.warnings == ("snapshot warning",)
+    assert value.warnings == (
+        "snapshot warning",
+        "legacy reference snapshot missing semantic mapping; references remain usable without prompt labels",
+    )
     assert value.reference_audit == {
         "snapshot_id": "refsnap_test",
         "formal": 1,
         "temporary": 0,
         "fallback": 0,
         "ignored": 1,
+        "mapping_missing": 1,
     }
 
 
@@ -151,19 +148,10 @@ def test_reference_snapshot_audit_counts_each_resolution(tmp_path):
         "temporary": 1,
         "fallback": 1,
         "ignored": 1,
+        "mapping_missing": 3,
     }
 
 
-def test_generation_without_snapshot_keeps_legacy_behavior(tmp_path, monkeypatch):
-    legacy = _png(tmp_path / "assets" / "legacy.png")
-    selection = type("Selection", (), {
-        "image_paths": (legacy,), "selected": (), "warnings": (), "style_prompt": "legacy style"
-    })()
-    monkeypatch.setattr(narrative_group, "resolve_group_reference_preview", lambda *args, **kwargs: object())
-    monkeypatch.setattr(narrative_group, "apply_group_reference_selection", lambda *args, **kwargs: selection)
-
-    value = narrative_group._generation_input(_payload(tmp_path))
-
-    assert value.references == (legacy,)
-    assert value.reference_audit == {}
-    assert "legacy style" in value.prompt
+def test_generation_without_snapshot_rejects_legacy_runtime_resolution(tmp_path):
+    with pytest.raises(narrative_group.ReferenceSnapshotInvalid):
+        narrative_group._generation_input(_payload(tmp_path))

@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from novelvideo.narrative_groups.service import (
@@ -21,8 +21,7 @@ from novelvideo.narrative_groups.service import (
 )
 from novelvideo.narrative_groups.references import (
     GroupImageReference,
-    apply_group_reference_selection,
-    resolve_group_reference_preview,
+    resolve_group_reference_preview,  # noqa: F401 - legacy monkeypatch surface
 )
 from novelvideo.narrative_groups.reference_uploads import (
     InvalidReferenceUpload,
@@ -118,6 +117,49 @@ def _snapshot_generation_input(
             validated = validate_reference_image(
                 str(raw["image_path"]), allowed_roots=(assets_root, uploads_root)
             )
+            binding_id = str(raw.get("binding_id") or "").strip()
+            if binding_id:
+                asset_slot_id = str(raw.get("asset_slot_id") or "").strip()
+                version_id = str(raw.get("version_id") or "").strip()
+                relative_path = str(raw.get("relative_path") or "").strip()
+                expected_sha256 = str(raw.get("sha256") or "").strip()
+                project_id = str(raw.get("project_id") or "").strip()
+                episode_number = raw.get("episode_number")
+                group_ids = raw.get("group_ids")
+                beat_ids = raw.get("beat_ids")
+                shot_scope_ids = raw.get("shot_ids")
+                reference_scope = payload.get("reference_scope") or {}
+                allowed_beat_ids = {
+                    str(item) for item in reference_scope.get("beat_ids", ())
+                }
+                allowed_shot_ids = {
+                    str(item) for item in reference_scope.get("shot_ids", ())
+                }
+                relative = PurePosixPath(relative_path)
+                expected_path = (project_dir / relative_path).resolve(strict=False)
+                if (
+                    not asset_slot_id
+                    or not version_id
+                    or not relative_path
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                    or "\\" in relative_path
+                    or str(raw.get("source_id") or "") != version_id
+                    or len(expected_sha256) != 64
+                    or validated.sha256 != expected_sha256
+                    or expected_path != Path(validated.image_path).resolve(strict=False)
+                    or project_id != str(payload.get("project_id") or "")
+                    or episode_number != payload.get("episode")
+                    or not isinstance(group_ids, (list, tuple))
+                    or str(payload.get("group_id") or "") not in group_ids
+                    or not isinstance(beat_ids, (list, tuple))
+                    or not isinstance(shot_scope_ids, (list, tuple))
+                    or not {str(item) for item in beat_ids}.issubset(allowed_beat_ids)
+                    or not {str(item) for item in shot_scope_ids}.issubset(
+                        allowed_shot_ids
+                    )
+                ):
+                    raise ValueError
             references.append(validated.image_path)
 
         style_reference = str(snapshot.get("style_reference") or "")
@@ -134,6 +176,9 @@ def _snapshot_generation_input(
     except (KeyError, TypeError, ValueError, InvalidReferenceUpload):
         raise ReferenceSnapshotInvalid() from None
 
+    prompt_payload = payload
+    if not bool(payload.get("use_style", True)):
+        prompt_payload = {**payload, "image_projection": "", "panel_tag": ""}
     return GroupGenerationInput(
         prompt=_grid_prompt(payload),
         references=tuple(references),
@@ -273,23 +318,7 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         style_prompt = ""
         reference_audit = generation_input.reference_audit
     else:
-        preview = resolve_group_reference_preview(
-            Path(str(payload["project_dir"])),
-            list(payload.get("beats") or []),
-            stage=str(payload.get("stage") or "render"),
-        )
-        options = payload.get("reference_selection") or {}
-        selection = apply_group_reference_selection(
-            preview,
-            use_style=bool(options.get("use_style", True)),
-            selected_character_reference_ids=options.get("selected_character_reference_ids"),
-            selected_scene_reference_ids=options.get("selected_scene_reference_ids"),
-        )
-        references = selection.image_paths
-        prompt_references = selection.selected
-        warnings = list(selection.warnings)
-        style_prompt = selection.style_prompt
-        reference_audit = {}
+        raise ReferenceSnapshotInvalid()
     if str(payload.get("constraint_mode") or "") == "strong_sketch":
         group = next(
             (

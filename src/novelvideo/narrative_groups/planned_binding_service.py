@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +21,7 @@ from novelvideo.narrative_groups.reference_uploads import (
     validate_reference_image,
 )
 from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
+from novelvideo.production_workflow.store import production_workflow_project_lock
 
 from novelvideo.production_workflow.slot_ids import (
     character_state_slot_id,
@@ -58,6 +60,54 @@ class PlannedBindingStore(Protocol):
     async def list_planned_reference_bindings(
         self, episode_number: int, group_id: str | None = None
     ) -> list[PlannedReferenceBinding]: ...
+
+
+class ReadOnlyPlannedBindingStore:
+    """Read bindings without opening SQLite in migration/write mode."""
+
+    def __init__(self, database_path: str | Path) -> None:
+        self.database_path = Path(database_path).resolve(strict=False)
+
+    async def list_planned_reference_bindings(
+        self, episode_number: int, group_id: str | None = None
+    ) -> list[PlannedReferenceBinding]:
+        if not self.database_path.is_file():
+            return []
+        uri = f"{self.database_path.as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    "SELECT * FROM planned_reference_bindings "
+                    "WHERE episode_number = ? ORDER BY binding_id",
+                    (episode_number,),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        bindings = [
+            PlannedReferenceBinding(
+                binding_id=row["binding_id"],
+                project_id=row["project_id"],
+                episode_number=row["episode_number"],
+                source_plan_revision_id=row["source_plan_revision_id"],
+                asset_kind=row["asset_kind"],
+                entity_id=row["entity_id"],
+                base_entity_id=row["base_entity_id"],
+                variant_id=row["variant_id"],
+                asset_slot_id=row["asset_slot_id"],
+                group_ids=tuple(json.loads(row["group_ids_json"])),
+                beat_ids=tuple(json.loads(row["beat_ids_json"])),
+                shot_ids=tuple(json.loads(row["shot_ids_json"])),
+                required=bool(row["required"]),
+                status=row["status"],
+                resolution=row["resolution"],
+                display_label=row["display_label"],
+            )
+            for row in rows
+        ]
+        if group_id is None:
+            return bindings
+        return [item for item in bindings if group_id in item.group_ids]
 
 
 class ResolvedPlannedReference(BaseModel):
@@ -108,6 +158,8 @@ class PlannedSnapshotReferenceImage:
     sha256: str = ""
     group_ids: tuple[str, ...] = ()
     beat_ids: tuple[str, ...] = ()
+    project_id: str = ""
+    episode_number: int = 0
 
 
 def _get(value: Any, name: str, default: Any = "") -> Any:
@@ -490,14 +542,6 @@ def _asset_path(project_dir: Path, value: str) -> Path:
     return path.absolute()
 
 
-def _file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _unavailable(
     binding: PlannedReferenceBinding, warning: str
 ) -> ResolvedPlannedReference:
@@ -549,7 +593,7 @@ def _resolve_binding(
         relative_path = Path(validated.image_path).resolve().relative_to(
             project_dir.resolve()
         ).as_posix()
-        sha256 = _file_sha256(validated.image_path)
+        sha256 = validated.sha256
     except (InvalidReferenceUpload, OSError, ValueError):
         return _unavailable(binding, "current version is not a safe valid image")
     return ResolvedPlannedReference(
@@ -605,6 +649,27 @@ async def resolve_planned_reference_preview(
     bindings = await store.list_planned_reference_bindings(
         episode_number, group_id=group_id
     )
+    return _preview_from_bindings(
+        bindings,
+        workflow_store,
+        project_id=project_id,
+        episode_number=episode_number,
+        group_id=group_id,
+        project_dir=project_dir,
+        max_images=max_images,
+    )
+
+
+def _preview_from_bindings(
+    bindings: Sequence[PlannedReferenceBinding],
+    workflow_store: ProductionWorkflowStore,
+    *,
+    project_id: str,
+    episode_number: int,
+    group_id: str,
+    project_dir: Path,
+    max_images: int,
+) -> PlannedReferencePreview:
     if not bindings:
         raise PlannedReferencesRequired(
             "请先重新规划本集身份、场景和道具引用"
@@ -626,7 +691,11 @@ async def resolve_planned_reference_preview(
 
 
 def _planned_snapshot_image(
-    item: ResolvedPlannedReference, project_dir: Path
+    item: ResolvedPlannedReference,
+    project_dir: Path,
+    *,
+    project_id: str,
+    episode_number: int,
 ) -> PlannedSnapshotReferenceImage:
     return PlannedSnapshotReferenceImage(
         requirement_id=item.binding_id,
@@ -644,6 +713,8 @@ def _planned_snapshot_image(
         sha256=item.sha256,
         group_ids=item.group_ids,
         beat_ids=item.beat_ids,
+        project_id=project_id,
+        episode_number=episode_number,
     )
 
 
@@ -666,15 +737,20 @@ async def build_planned_reference_snapshot(
         raise InvalidPlannedReference("duplicate selected binding IDs")
     if len(set(upload_ids)) != len(upload_ids):
         raise InvalidPlannedReference("duplicate upload IDs")
-    preview = await resolve_planned_reference_preview(
-        store,
-        workflow_store,
-        project_id=project_id,
-        episode_number=episode_number,
-        group_id=group_id,
-        project_dir=project_dir,
-        max_images=max_images,
+    bindings = await store.list_planned_reference_bindings(
+        episode_number, group_id=group_id
     )
+    with production_workflow_project_lock(workflow_store.state_path.parent):
+        current_workflow = ProductionWorkflowStore(workflow_store.state_path)
+        preview = _preview_from_bindings(
+            bindings,
+            current_workflow,
+            project_id=project_id,
+            episode_number=episode_number,
+            group_id=group_id,
+            project_dir=project_dir,
+            max_images=max_images,
+        )
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")
     by_id = {item.binding_id: item for item in preview.bindings}
@@ -690,6 +766,16 @@ async def build_planned_reference_snapshot(
         raise UnresolvedPlannedReference(
             "unresolved planned references: " + ", ".join(unresolved)
         )
+    omitted_required = [
+        item.binding_id
+        for item in preview.bindings
+        if item.required and item.binding_id not in selected_binding_ids
+    ]
+    if omitted_required:
+        raise PlannedReferencesRequired(
+            "required planned references were not selected: "
+            + ", ".join(omitted_required)
+        )
     chosen = [by_id[item] for item in selected_binding_ids]
     if any(not item.version_id for item in chosen):
         raise UnresolvedPlannedReference("selected planned reference is unresolved")
@@ -699,7 +785,15 @@ async def build_planned_reference_snapshot(
             f"limit is {max_images}"
         )
     root = Path(project_dir).resolve(strict=False)
-    images = [_planned_snapshot_image(item, root) for item in chosen]
+    images = [
+        _planned_snapshot_image(
+            item,
+            root,
+            project_id=project_id,
+            episode_number=episode_number,
+        )
+        for item in chosen
+    ]
     upload_lookup = uploads or {}
     upload_root = root / ".runtime" / "reference_uploads"
     for upload_id in upload_ids:
@@ -727,8 +821,10 @@ async def build_planned_reference_snapshot(
                 resolution="temporary",
                 entity_id=upload_id,
                 relative_path=relative_path,
-                sha256=_file_sha256(validated.image_path),
+                sha256=validated.sha256,
                 group_ids=(group_id,),
+                project_id=project_id,
+                episode_number=episode_number,
             )
         )
     return ReferenceDecisionSnapshot(
@@ -742,6 +838,7 @@ async def build_planned_reference_snapshot(
 __all__ = [
     "InvalidPlannedReference",
     "PlannedReferencePreview",
+    "ReadOnlyPlannedBindingStore",
     "PlannedSnapshotReferenceImage",
     "PlannedReferencesRequired",
     "ResolvedPlannedReference",

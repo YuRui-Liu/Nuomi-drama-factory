@@ -300,6 +300,29 @@ def install_reference_resolver(monkeypatch, preview, calls):
     monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", resolve)
 
 
+def install_empty_planned_snapshot(monkeypatch, tmp_path: Path) -> dict:
+    async def build(*args, **kwargs):
+        from novelvideo.narrative_groups.reference_decisions import (
+            ReferenceDecisionSnapshot,
+        )
+
+        return ReferenceDecisionSnapshot(
+            id="refsnap-empty",
+            schema_version="narrative-reference-decision/v1",
+            images=(),
+            ignored_requirement_ids=(),
+        )
+
+    monkeypatch.setattr(narrative_groups, "build_planned_reference_snapshot", build)
+    return {
+        "reference_resolution": {
+            "selected_binding_ids": [],
+            "upload_ids": [],
+            "reference_revision": "planned-r1",
+        }
+    }
+
+
 def test_get_migrates_old_episode_to_stable_groups(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
 
@@ -349,10 +372,12 @@ def test_rebuild_rejects_when_director_plan_is_active(monkeypatch, tmp_path):
 
 def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     response = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate",
+        json=planned,
     )
 
     assert response.status_code == 202
@@ -376,14 +401,16 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
 
 def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     blocked = client.post(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json=planned,
     )
     allowed = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json={"allow_unconstrained": True},
+        json={**planned, "allow_unconstrained": True},
     )
 
     assert blocked.status_code == 409
@@ -397,6 +424,7 @@ def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkey
 
 def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     advance_revision(tmp_path, 1, "ng-01", "sketch")
     sketch = tmp_path / "grids" / "sketch.png"
@@ -410,6 +438,7 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatc
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
         json={
+            **planned,
             "provider_id": "grsai-alt",
             "model": "gpt-image-2-vip",
             "image_size": "4K",
@@ -421,7 +450,7 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatc
     assert payload["provider_id"] == "grsai-alt"
     assert payload["model"] == "gpt-image-2-vip"
     assert payload["image_size"] == "4K"
-    assert "image_size" not in payload["reference_selection"]
+    assert "image_size" not in payload["reference_resolution"]
     assert payload["constraint_mode"] == "strong_sketch"
     assert payload["source_sketch_revision"] == 1
     assert payload["source_sketch_asset"] == str(sketch)
@@ -429,11 +458,13 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatc
 
 def test_render_rejects_resolution_unsupported_by_model(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
         json={
+            **planned,
             "allow_unconstrained": True,
             "model": "gpt-image-2",
             "image_size": "2K",
@@ -446,19 +477,20 @@ def test_render_rejects_resolution_unsupported_by_model(monkeypatch, tmp_path):
 
 def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
 
     first = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json={"allow_unconstrained": True},
+        json={**planned, "allow_unconstrained": True},
     ).json()["data"]
     repeated = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json={"allow_unconstrained": True},
+        json={**planned, "allow_unconstrained": True},
     ).json()["data"]
     regenerated = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
-        json={"allow_unconstrained": True},
+        json={**planned, "allow_unconstrained": True},
     ).json()["data"]
 
     assert first["scope"] == repeated["scope"] == "group_ng-01_render_r1"
@@ -1657,27 +1689,14 @@ def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch,
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-02/render/references"
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["style"] == {
-        "id": "style-opaque", "label": "cinematic", "prompt": "moody",
-        "enabled_by_default": True, "warning": "",
-    }
-    assert data["character_references"][0]["thumbnail_url"] == (
-        "/api/v1/projects/demo/media/assets/characters/hero.png"
-    )
-    assert data["scene_references"][0]["thumbnail_url"] == (
-        "/api/v1/projects/demo/media/assets/scenes/room.png"
-    )
-    assert "path" not in str(data).lower()
-    assert [beat["id"] for beat in calls[0][1]] == ["beat-10"]
-    assert calls[0][2] == "render"
-    assert data["limits"] == {
-        "max_images": 9, "selected_images": 2, "omitted_reference_ids": [],
-    }
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
+    assert calls == []
 
 
-def test_reference_preview_unknown_group_returns_404_without_resolving(monkeypatch, tmp_path):
+def test_reference_preview_unknown_group_is_resolved_only_from_planned_bindings(
+    monkeypatch, tmp_path
+):
     client, _ = make_client(monkeypatch, tmp_path)
     calls = []
     install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
@@ -1686,7 +1705,8 @@ def test_reference_preview_unknown_group_returns_404_without_resolving(monkeypat
         "/api/v1/projects/demo/episodes/1/narrative-groups/missing/sketch/references"
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
     assert calls == []
 
 
@@ -1778,6 +1798,29 @@ def test_reference_preview_returns_structured_planning_required_error(
     assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
 
 
+def test_reference_preview_missing_bindings_does_not_initialize_storage(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        narrative_groups,
+        "make_sqlite_store_for_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("preview must not initialize the project store")
+        ),
+    )
+    database = tmp_path / "data.db"
+    workflow = tmp_path / "production_workflow.json"
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
+    )
+
+    assert response.status_code == 409
+    assert not database.exists()
+    assert not workflow.exists()
+
+
 def test_reference_upload_returns_opaque_id_and_serves_by_id(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     buffer = BytesIO()
@@ -1801,7 +1844,7 @@ def test_reference_upload_returns_opaque_id_and_serves_by_id(monkeypatch, tmp_pa
     assert image.content == buffer.getvalue()
 
 
-def test_reference_upload_ignores_legacy_persistence_fields_and_stays_temporary(
+def test_reference_upload_rejects_legacy_persistence_fields(
     monkeypatch, tmp_path
 ):
     client, _ = make_client(monkeypatch, tmp_path)
@@ -1820,10 +1863,8 @@ def test_reference_upload_ignores_legacy_persistence_fields_and_stays_temporary(
         },
     )
 
-    assert response.status_code == 201
-    data = response.json()["data"]
-    assert data["temporary"] is True
-    assert data["persisted"] is False
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_REFERENCE_UPLOAD"
     target = tmp_path / "assets" / "props" / "letter" / "reference_3view.png"
     assert not target.exists()
 
@@ -1997,14 +2038,9 @@ def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypa
         },
     )
 
-    assert response.status_code == 202
-    assert backend.calls[0][1]["payload"]["reference_selection"] == {
-        "use_style": False,
-        "selected_character_reference_ids": ["char-opaque"],
-        "selected_scene_reference_ids": [],
-    }
-    assert backend.calls[0][1]["payload"]["aspect_ratio"] == "16:9"
-    assert len(calls) == 1
+    assert response.status_code == 422
+    assert backend.calls == []
+    assert calls == []
 
 
 def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path):
@@ -2016,13 +2052,10 @@ def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path)
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate"
     )
 
-    assert response.status_code == 202
-    assert backend.calls[0][1]["payload"]["reference_selection"] == {
-        "use_style": True,
-        "selected_character_reference_ids": None,
-        "selected_scene_reference_ids": None,
-    }
-    assert backend.calls[0][1]["payload"]["aspect_ratio"] == "9:16"
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
+    assert backend.calls == []
+    assert calls == []
 
 
 def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp_path):
@@ -2055,10 +2088,8 @@ def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_
         json={"selected_scene_reference_ids": ["foreign-id"], "allow_unconstrained": True},
     )
 
-    assert valid.status_code == 202
-    assert backend.calls[0][1]["payload"]["reference_selection"]["selected_scene_reference_ids"] == ["scene-opaque"]
-    assert invalid.status_code == 422
-    assert len(backend.calls) == 1
+    assert valid.status_code == invalid.status_code == 422
+    assert backend.calls == []
 
 
 def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
@@ -2091,9 +2122,12 @@ def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):
         json={"allow_unconstrained": True},
     )
 
-    assert sketch.status_code == render.status_code == 202
-    assert [call[1]["payload"]["stage"] for call in backend.calls] == ["sketch", "render"]
-    assert all("reference_selection" in call[1]["payload"] for call in backend.calls)
+    assert sketch.status_code == render.status_code == 409
+    assert all(
+        response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
+        for response in (sketch, render)
+    )
+    assert backend.calls == []
 
 
 def test_unknown_revision_rollback_returns_404(monkeypatch, tmp_path):
