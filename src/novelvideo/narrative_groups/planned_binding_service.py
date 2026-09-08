@@ -1,9 +1,25 @@
-"""Pure projection of DirectorPlan asset requirements into stable bindings."""
+"""Plan-time binding projection and read-only generation resolution."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from dataclasses import dataclass, replace
-from typing import Any, Iterable, Mapping
+from pathlib import Path
+from typing import Any, Iterable, Literal, Mapping, Protocol, Sequence
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from novelvideo.narrative_groups.reference_decisions import (
+    ReferenceDecisionSnapshot,
+)
+from novelvideo.narrative_groups.reference_uploads import (
+    InvalidReferenceUpload,
+    ReferenceUpload,
+    validate_reference_image,
+)
+from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
 
 from novelvideo.production_workflow.slot_ids import (
     character_state_slot_id,
@@ -12,8 +28,86 @@ from novelvideo.production_workflow.slot_ids import (
     scene_state_slot_id,
 )
 
-from .planned_bindings import AssetKind, PlannedReferenceBinding
+from .planned_bindings import AssetKind, BindingStatus, PlannedReferenceBinding
 from .reference_requirements import structured_scene_requirement
+
+
+class PlannedReferenceError(ValueError):
+    """Base class for stable, API-safe planned-reference failures."""
+
+    error_code = "INVALID_PLANNED_REFERENCE"
+
+
+class PlannedReferencesRequired(PlannedReferenceError):
+    error_code = "PLANNED_REFERENCES_REQUIRED"
+
+
+class UnresolvedPlannedReference(PlannedReferenceError):
+    error_code = "UNRESOLVED_PLANNED_REFERENCE"
+
+
+class StaleReferenceBinding(PlannedReferenceError):
+    error_code = "STALE_REFERENCE_BINDING"
+
+
+class InvalidPlannedReference(PlannedReferenceError):
+    error_code = "INVALID_PLANNED_REFERENCE"
+
+
+class PlannedBindingStore(Protocol):
+    async def list_planned_reference_bindings(
+        self, episode_number: int, group_id: str | None = None
+    ) -> list[PlannedReferenceBinding]: ...
+
+
+class ResolvedPlannedReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    binding_id: str
+    asset_kind: AssetKind
+    entity_id: str
+    display_label: str
+    variant_id: str = ""
+    beat_ids: tuple[str, ...] = ()
+    required: bool
+    status: BindingStatus
+    selected_by_default: bool
+    asset_slot_id: str
+    version_id: str = ""
+    adoption_status: str = ""
+    thumbnail_url: str = ""
+    warning: str = ""
+    relative_path: str = ""
+    sha256: str = ""
+    group_ids: tuple[str, ...] = ()
+    shot_ids: tuple[str, ...] = ()
+
+
+class PlannedReferencePreview(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reference_revision: str = Field(min_length=1)
+    bindings: tuple[ResolvedPlannedReference, ...]
+    max_images: int = Field(gt=0)
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedSnapshotReferenceImage:
+    requirement_id: str
+    source: Literal["matched", "upload"]
+    source_id: str
+    asset_kind: str
+    image_path: str
+    resolution: Literal["matched", "temporary"]
+    entity_id: str = ""
+    shot_ids: tuple[str, ...] = ()
+    binding_id: str = ""
+    asset_slot_id: str = ""
+    version_id: str = ""
+    relative_path: str = ""
+    sha256: str = ""
+    group_ids: tuple[str, ...] = ()
+    beat_ids: tuple[str, ...] = ()
 
 
 def _get(value: Any, name: str, default: Any = "") -> Any:
@@ -389,4 +483,272 @@ def bindings_by_kind(
     return {kind: tuple(values) for kind, values in grouped.items()}
 
 
-__all__ = ["bindings_by_kind", "bindings_for_director_plan"]
+def _asset_path(project_dir: Path, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = project_dir / path
+    return path.absolute()
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _unavailable(
+    binding: PlannedReferenceBinding, warning: str
+) -> ResolvedPlannedReference:
+    return ResolvedPlannedReference(
+        binding_id=binding.binding_id,
+        asset_kind=binding.asset_kind,
+        entity_id=binding.entity_id,
+        display_label=binding.display_label,
+        variant_id=binding.variant_id,
+        beat_ids=binding.beat_ids,
+        required=binding.required,
+        status=binding.status,
+        selected_by_default=False,
+        asset_slot_id=binding.asset_slot_id,
+        warning=warning,
+        group_ids=binding.group_ids,
+        shot_ids=binding.shot_ids,
+    )
+
+
+def _resolve_binding(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+    project_dir: Path,
+) -> ResolvedPlannedReference:
+    if binding.status != "ready":
+        return _unavailable(binding, f"planned binding status is {binding.status}")
+    try:
+        slot, versions = workflow_store.get_slot(binding.asset_slot_id)
+    except KeyError:
+        return _unavailable(binding, "asset slot is unavailable")
+    version_id = str(slot.current_version_id or "")
+    version = versions.get(version_id)
+    if version is None or version.slot_id != binding.asset_slot_id:
+        return _unavailable(binding, "asset slot has no valid current version")
+    adoption_status = version.adoption_status.value
+    if adoption_status not in {
+        AdoptionStatus.PROVISIONAL.value,
+        AdoptionStatus.ADOPTED.value,
+    }:
+        return _unavailable(
+            binding, f"current version status is {adoption_status}"
+        )
+    try:
+        validated = validate_reference_image(
+            _asset_path(project_dir, version.asset_path),
+            allowed_roots=(project_dir / "assets",),
+        )
+        relative_path = Path(validated.image_path).resolve().relative_to(
+            project_dir.resolve()
+        ).as_posix()
+        sha256 = _file_sha256(validated.image_path)
+    except (InvalidReferenceUpload, OSError, ValueError):
+        return _unavailable(binding, "current version is not a safe valid image")
+    return ResolvedPlannedReference(
+        binding_id=binding.binding_id,
+        asset_kind=binding.asset_kind,
+        entity_id=binding.entity_id,
+        display_label=binding.display_label,
+        variant_id=binding.variant_id,
+        beat_ids=binding.beat_ids,
+        required=binding.required,
+        status=binding.status,
+        selected_by_default=True,
+        asset_slot_id=binding.asset_slot_id,
+        version_id=version.version_id,
+        adoption_status=adoption_status,
+        thumbnail_url=validated.image_path,
+        relative_path=relative_path,
+        sha256=sha256,
+        group_ids=binding.group_ids,
+        shot_ids=binding.shot_ids,
+    )
+
+
+def _reference_revision(
+    bindings: Sequence[PlannedReferenceBinding],
+    resolved: Sequence[ResolvedPlannedReference],
+) -> str:
+    canonical = json.dumps(
+        {
+            "bindings": [item.model_dump(mode="json") for item in bindings],
+            "versions": [item.model_dump(mode="json") for item in resolved],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def resolve_planned_reference_preview(
+    store: PlannedBindingStore,
+    workflow_store: ProductionWorkflowStore,
+    *,
+    project_id: str,
+    episode_number: int,
+    group_id: str,
+    project_dir: Path,
+    max_images: int = 9,
+) -> PlannedReferencePreview:
+    """Resolve only persisted bindings and current versions without mutation."""
+    if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
+        raise InvalidPlannedReference("max_images must be a positive integer")
+    bindings = await store.list_planned_reference_bindings(
+        episode_number, group_id=group_id
+    )
+    if not bindings:
+        raise PlannedReferencesRequired(
+            "请先重新规划本集身份、场景和道具引用"
+        )
+    if any(
+        item.project_id != project_id
+        or item.episode_number != episode_number
+        or group_id not in item.group_ids
+        for item in bindings
+    ):
+        raise InvalidPlannedReference("planned binding scope does not match request")
+    root = Path(project_dir).resolve(strict=False)
+    resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
+    return PlannedReferencePreview(
+        reference_revision=_reference_revision(bindings, resolved),
+        bindings=resolved,
+        max_images=max_images,
+    )
+
+
+def _planned_snapshot_image(
+    item: ResolvedPlannedReference, project_dir: Path
+) -> PlannedSnapshotReferenceImage:
+    return PlannedSnapshotReferenceImage(
+        requirement_id=item.binding_id,
+        source="matched",
+        source_id=item.version_id,
+        asset_kind=item.asset_kind,
+        image_path=str(project_dir / item.relative_path),
+        resolution="matched",
+        entity_id=item.entity_id,
+        shot_ids=item.shot_ids,
+        binding_id=item.binding_id,
+        asset_slot_id=item.asset_slot_id,
+        version_id=item.version_id,
+        relative_path=item.relative_path,
+        sha256=item.sha256,
+        group_ids=item.group_ids,
+        beat_ids=item.beat_ids,
+    )
+
+
+async def build_planned_reference_snapshot(
+    store: PlannedBindingStore,
+    workflow_store: ProductionWorkflowStore,
+    *,
+    project_id: str,
+    episode_number: int,
+    group_id: str,
+    project_dir: Path,
+    selected_binding_ids: Sequence[str],
+    upload_ids: Sequence[str],
+    reference_revision: str,
+    uploads: Mapping[str, ReferenceUpload] | None = None,
+    max_images: int = 9,
+) -> ReferenceDecisionSnapshot:
+    """Re-resolve and freeze exactly selected bindings and temporary uploads."""
+    if len(set(selected_binding_ids)) != len(selected_binding_ids):
+        raise InvalidPlannedReference("duplicate selected binding IDs")
+    if len(set(upload_ids)) != len(upload_ids):
+        raise InvalidPlannedReference("duplicate upload IDs")
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow_store,
+        project_id=project_id,
+        episode_number=episode_number,
+        group_id=group_id,
+        project_dir=project_dir,
+        max_images=max_images,
+    )
+    if preview.reference_revision != reference_revision:
+        raise StaleReferenceBinding("planned reference binding revision changed")
+    by_id = {item.binding_id: item for item in preview.bindings}
+    unknown = [item for item in selected_binding_ids if item not in by_id]
+    if unknown:
+        raise InvalidPlannedReference("binding does not belong to requested group")
+    unresolved = [
+        item.binding_id
+        for item in preview.bindings
+        if item.required and not item.version_id
+    ]
+    if unresolved:
+        raise UnresolvedPlannedReference(
+            "unresolved planned references: " + ", ".join(unresolved)
+        )
+    chosen = [by_id[item] for item in selected_binding_ids]
+    if any(not item.version_id for item in chosen):
+        raise UnresolvedPlannedReference("selected planned reference is unresolved")
+    if len(chosen) + len(upload_ids) > max_images:
+        raise InvalidPlannedReference(
+            f"reference snapshot contains {len(chosen) + len(upload_ids)} images; "
+            f"limit is {max_images}"
+        )
+    root = Path(project_dir).resolve(strict=False)
+    images = [_planned_snapshot_image(item, root) for item in chosen]
+    upload_lookup = uploads or {}
+    upload_root = root / ".runtime" / "reference_uploads"
+    for upload_id in upload_ids:
+        upload = upload_lookup.get(upload_id)
+        if upload is None or upload.upload_id != upload_id or not upload.temporary:
+            raise InvalidPlannedReference("unknown temporary upload")
+        try:
+            validated = validate_reference_image(
+                upload.image_path,
+                allowed_roots=(upload_root,),
+                expected_mime=upload.mime_type,
+            )
+            relative_path = Path(validated.image_path).resolve().relative_to(
+                root
+            ).as_posix()
+        except (InvalidReferenceUpload, OSError, ValueError):
+            raise InvalidPlannedReference("temporary upload is not a safe valid image") from None
+        images.append(
+            PlannedSnapshotReferenceImage(
+                requirement_id="",
+                source="upload",
+                source_id=upload_id,
+                asset_kind="additional",
+                image_path=validated.image_path,
+                resolution="temporary",
+                entity_id=upload_id,
+                relative_path=relative_path,
+                sha256=_file_sha256(validated.image_path),
+                group_ids=(group_id,),
+            )
+        )
+    return ReferenceDecisionSnapshot(
+        id=f"refsnap_{uuid.uuid4().hex}",
+        schema_version="narrative-reference-decision/v1",
+        images=tuple(images),
+        ignored_requirement_ids=(),
+    )
+
+
+__all__ = [
+    "InvalidPlannedReference",
+    "PlannedReferencePreview",
+    "PlannedSnapshotReferenceImage",
+    "PlannedReferencesRequired",
+    "ResolvedPlannedReference",
+    "StaleReferenceBinding",
+    "UnresolvedPlannedReference",
+    "bindings_by_kind",
+    "bindings_for_director_plan",
+    "build_planned_reference_snapshot",
+    "resolve_planned_reference_preview",
+]

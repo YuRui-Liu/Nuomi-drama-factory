@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
@@ -51,28 +51,31 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     build_video_workflow_registry,
 )
 from novelvideo.narrative_groups.models import NarrativeGroup, StageName
+from novelvideo.narrative_groups.planned_binding_service import (
+    PlannedReferenceError,
+    PlannedReferencesRequired,
+    StaleReferenceBinding,
+    UnresolvedPlannedReference,
+    build_planned_reference_snapshot,
+    resolve_planned_reference_preview,
+)
 from novelvideo.narrative_groups.references import (
     MAX_GROUP_IMAGE_REFERENCES,
     GroupReferencePreview,
     UnknownGroupReferenceIds,
     apply_group_reference_selection,
     resolve_group_reference_preview,
-    resolve_requirement_reference_preview,
 )
 from novelvideo.narrative_groups.reference_requirements import (
     reference_requirements_for_shots,
 )
-from novelvideo.narrative_groups.reference_decisions import (
-    InvalidReferenceDecisions,
-    ResolvedProjectAsset,
-    build_reference_snapshot,
-)
-from novelvideo.narrative_groups.reference_matching import ReferenceMatchPreview
+from novelvideo.narrative_groups.reference_decisions import ResolvedProjectAsset
 from novelvideo.narrative_groups.reference_uploads import (
     InvalidReferenceUpload,
     load_reference_upload,
     save_reference_upload,
 )
+from novelvideo.production_workflow import ProductionWorkflowStore
 from novelvideo.utils.path_resolver import (
     canonical_identity_path,
     canonical_portrait_path,
@@ -129,6 +132,25 @@ from novelvideo.task_state import (
 from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES
 
 router = APIRouter()
+
+
+def _planned_reference_http_error(exc: PlannedReferenceError) -> HTTPException:
+    status_code = (
+        status.HTTP_409_CONFLICT
+        if isinstance(
+            exc,
+            (
+                PlannedReferencesRequired,
+                StaleReferenceBinding,
+                UnresolvedPlannedReference,
+            ),
+        )
+        else status.HTTP_422_UNPROCESSABLE_CONTENT
+    )
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.error_code, "message": str(exc)},
+    )
 
 
 def _reference_enqueue_ownership(
@@ -1671,18 +1693,36 @@ async def preview_group_references(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group not found") from exc
-    requirements = _active_reference_requirements(
-        resolved.project_dir, episode, group_id
-    )
-    if requirements:
-        store = await make_sqlite_store_for_context(resolved.ctx)
-        preview = await resolve_requirement_reference_preview(
-            store, requirements, stage=stage_name
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    if hasattr(store, "list_planned_reference_bindings"):
+        workflow = ProductionWorkflowStore(
+            Path(resolved.ctx.state_dir) / "production_workflow.json"
         )
-        data = _serialize_requirement_reference_preview(
-            project, resolved.project_dir, preview
-        )
-    else:
+        try:
+            planned = await resolve_planned_reference_preview(
+                store,
+                workflow,
+                project_id=str(resolved.ctx.project_id),
+                episode_number=episode,
+                group_id=group_id,
+                project_dir=resolved.project_dir,
+                max_images=MAX_GROUP_IMAGE_REFERENCES,
+            )
+        except PlannedReferenceError as exc:
+            raise _planned_reference_http_error(exc) from exc
+        data = planned.model_dump(mode="json")
+        for binding in data["bindings"]:
+            thumbnail = str(binding.get("thumbnail_url") or "")
+            if thumbnail:
+                binding["thumbnail_url"] = _asset_url(
+                    project, resolved.project_dir, thumbnail
+                )
+            binding.pop("relative_path", None)
+            binding.pop("sha256", None)
+            binding.pop("entity_id", None)
+            binding.pop("group_ids", None)
+            binding.pop("shot_ids", None)
+    else:  # compatibility for legacy/test stores; production SQLite always uses bindings
         preview = resolve_group_reference_preview(
             resolved.project_dir, selected_beats, stage=stage_name
         )
@@ -1735,44 +1775,18 @@ async def upload_group_reference(
     group_id: str,
     stage_name: Literal["sketch", "render"],
     file: UploadFile = File(...),
-    persist: bool = Form(False),
-    requirement_id: str = Form(""),
-    asset_kind: str = Form(""),
-    target_entity_id: str = Form(""),
-    base_entity_id: str = Form(""),
-    variant_id: str = Form(""),
     user: dict = Depends(get_api_user),
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     if not any(item.id == group_id for item in groups):
         raise HTTPException(status_code=404, detail="Narrative group not found")
-    persist_resolver = None
-    if persist:
-        store = await make_sqlite_store_for_context(resolved.ctx)
-        target = await _reference_persistence_target(
-            store,
-            resolved.project_dir,
-            requirement_id=requirement_id,
-            asset_kind=asset_kind,
-            target_entity_id=target_entity_id,
-            base_entity_id=base_entity_id,
-            variant_id=variant_id,
-        )
-        def persist_resolver(_project_dir: Path, _request: Any) -> Path:
-            return target
     try:
         upload = save_reference_upload(
             resolved.project_dir,
             await file.read(),
             file.content_type or "",
             file.filename or "",
-            persist=persist,
-            requirement_id=requirement_id,
-            asset_kind=asset_kind,
-            target_entity_id=target_entity_id,
-            base_entity_id=base_entity_id,
-            variant_id=variant_id,
-            persist_resolver=persist_resolver,
+            persist=False,
         )
     except InvalidReferenceUpload as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1895,55 +1909,36 @@ async def _enqueue_group_action(
     reference_selection = None
     reference_snapshot = None
     if not split_only:
-        requirements = _active_reference_requirements(
-            resolved.project_dir, episode, group_id
-        )
         if request.reference_resolution is not None:
-            if not requirements:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Reference resolution requires director asset requirements",
-                )
             store = await make_sqlite_store_for_context(resolved.ctx)
-            preview = await resolve_requirement_reference_preview(
-                store, requirements, stage=stage
+            workflow = ProductionWorkflowStore(
+                Path(resolved.ctx.state_dir) / "production_workflow.json"
             )
-            assets = await _project_reference_assets(store, resolved.project_dir)
-            decisions = request.reference_resolution.decisions
-            additional_upload_ids = request.reference_resolution.additional_upload_ids
-            requested_upload_ids = [
-                *(item.upload_id for item in decisions if item.upload_id),
-                *additional_upload_ids,
-            ]
             uploads = {}
-            for upload_id in requested_upload_ids:
+            for upload_id in request.reference_resolution.upload_ids:
                 upload = load_reference_upload(resolved.project_dir, upload_id)
                 if upload is not None:
                     uploads[upload_id] = upload
-            style_asset_id = request.reference_resolution.style_asset_id
-            if style_asset_id and style_asset_id not in assets:
-                raise HTTPException(status_code=422, detail="Unknown style asset ID")
             try:
-                reference_snapshot = build_reference_snapshot(
-                    ReferenceMatchPreview(
-                        requirements=preview.requirements,
-                        bindings=preview.bindings,
-                        warnings=preview.warnings,
-                    ),
-                    [item.model_dump() for item in decisions],
+                reference_snapshot = await build_planned_reference_snapshot(
+                    store,
+                    workflow,
+                    project_id=str(resolved.ctx.project_id),
+                    episode_number=episode,
+                    group_id=group_id,
                     project_dir=resolved.project_dir,
-                    project_assets=assets,
-                    uploads=uploads,
-                    additional_asset_ids=request.reference_resolution.additional_asset_ids,
-                    additional_upload_ids=additional_upload_ids,
-                    style_reference=(
-                        assets[style_asset_id].image_path
-                        if style_asset_id in assets else None
+                    selected_binding_ids=(
+                        request.reference_resolution.selected_binding_ids
                     ),
+                    upload_ids=request.reference_resolution.upload_ids,
+                    reference_revision=(
+                        request.reference_resolution.reference_revision
+                    ),
+                    uploads=uploads,
                     max_images=MAX_GROUP_IMAGE_REFERENCES,
                 )
-            except InvalidReferenceDecisions as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except PlannedReferenceError as exc:
+                raise _planned_reference_http_error(exc) from exc
         else:
             preview = resolve_group_reference_preview(
                 resolved.project_dir, selected_beats, stage=stage
@@ -2041,6 +2036,7 @@ async def _enqueue_group_action(
         )
     if reference_snapshot is not None:
         payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
+        payload["use_style"] = request.use_style
         payload.update({
             "provider_id": provider_id,
             "model": model,

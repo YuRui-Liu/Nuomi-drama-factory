@@ -31,26 +31,12 @@ class TaskResponse(BaseModel):
     message: str = ""
 
 
-class NarrativeReferenceDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    requirement_id: str = Field(min_length=1)
-    action: Literal[
-        "keep", "accept_fallback", "use_base", "confirm_draft",
-        "choose_identity", "choose_scene", "choose_variant", "choose_prop",
-        "upload", "ignore",
-    ]
-    asset_id: str = ""
-    upload_id: str = ""
-
-
 class NarrativeReferenceResolutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decisions: list[NarrativeReferenceDecisionRequest] = Field(default_factory=list)
-    style_asset_id: str = ""
-    additional_asset_ids: list[str] = Field(default_factory=list)
-    additional_upload_ids: list[str] = Field(default_factory=list)
+    selected_binding_ids: list[str] = Field(default_factory=list)
+    upload_ids: list[str] = Field(default_factory=list)
+    reference_revision: str = Field(min_length=1)
 
 
 class ErrorResponse(BaseModel):

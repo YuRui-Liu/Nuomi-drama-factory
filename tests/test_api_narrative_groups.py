@@ -1690,62 +1690,92 @@ def test_reference_preview_unknown_group_returns_404_without_resolving(monkeypat
     assert calls == []
 
 
-def test_reference_preview_uses_active_director_requirements(monkeypatch, tmp_path):
+def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
+    monkeypatch, tmp_path
+):
     client, _ = make_client(monkeypatch, tmp_path)
-    activate_director_plan(tmp_path)
-    calls = []
 
-    async def resolve(store, requirements, stage="render"):
-        calls.append((store, requirements, stage))
-        from novelvideo.narrative_groups.reference_matching import (
-            MatchedReferenceRequirement,
+    class PlannedStore(FakeStore):
+        async def list_planned_reference_bindings(self, episode, group_id=None):
+            return []
+
+    async def store(*args, **kwargs):
+        return PlannedStore()
+
+    async def resolve(store, workflow, **kwargs):
+        from novelvideo.narrative_groups.planned_binding_service import (
+            PlannedReferencePreview,
+            ResolvedPlannedReference,
         )
-        from novelvideo.narrative_groups.references import RequirementReferencePreview
-
-        return RequirementReferencePreview(
-            style=GroupStyleReference(
-                id="style-opaque", name="cinematic", prompt="moody"
-            ),
-            requirements=(
-                MatchedReferenceRequirement(
-                    id="prop:letter",
-                    kind="prop",
-                    entity_id="letter",
-                    base_entity_id="",
-                    variant_id="",
-                    shot_ids=("shot-1",),
-                    required=True,
-                    label="Letter",
-                    status="missing_asset",
-                    candidate_asset_ids=(),
-                    available_actions=("choose_prop", "upload", "ignore"),
-                    bindings=(),
-                    warning="missing prop",
-                ),
-            ),
-            bindings=(),
-            warnings=("missing prop",),
-            asset_root=str(tmp_path / "assets"),
+        assert kwargs["project_id"] == "demo"
+        assert kwargs["episode_number"] == 1
+        assert kwargs["group_id"] == "ng-01"
+        return PlannedReferencePreview(
+            reference_revision="planned-r1",
+            max_images=9,
+            bindings=(ResolvedPlannedReference(
+                binding_id="planned-ref-hero",
+                asset_kind="character_identity",
+                entity_id="Hero_casual",
+                display_label="Hero / casual",
+                required=True,
+                status="ready",
+                selected_by_default=True,
+                asset_slot_id="character:Hero:state:Hero_casual",
+                version_id="hero-v1",
+                adoption_status="adopted",
+                thumbnail_url=str(tmp_path / "assets" / "hero.png"),
+                relative_path="assets/hero.png",
+                sha256="a" * 64,
+                group_ids=("ng-01",),
+            ),),
         )
 
-    monkeypatch.setattr(
-        narrative_groups, "resolve_requirement_reference_preview", resolve
-    )
-
+    monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
+    monkeypatch.setattr(narrative_groups, "resolve_planned_reference_preview", resolve)
     response = client.get(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/"
-        "director-group/render/references"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
     )
 
     assert response.status_code == 200
-    assert [item.id for item in calls[0][1]] == ["prop:letter"]
     data = response.json()["data"]
-    assert data["requirements"][0]["status"] == "missing_asset"
-    assert data["requirements"][0]["bindings"] == []
-    assert data["bindings"] == []
-    assert data["character_references"] == []
-    assert data["scene_references"] == []
-    assert "image_path" not in str(data)
+    assert data["reference_revision"] == "planned-r1"
+    assert data["bindings"][0]["thumbnail_url"].endswith(
+        "/media/assets/hero.png"
+    )
+    assert "relative_path" not in data["bindings"][0]
+    assert "sha256" not in data["bindings"][0]
+    assert data["bindings"][0]["asset_slot_id"] == (
+        "character:Hero:state:Hero_casual"
+    )
+
+
+def test_reference_preview_returns_structured_planning_required_error(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+
+    class PlannedStore(FakeStore):
+        async def list_planned_reference_bindings(self, episode, group_id=None):
+            return []
+
+    async def store(*args, **kwargs):
+        return PlannedStore()
+
+    async def resolve(*args, **kwargs):
+        from novelvideo.narrative_groups.planned_binding_service import (
+            PlannedReferencesRequired,
+        )
+        raise PlannedReferencesRequired("请先重新规划本集身份、场景和道具引用")
+
+    monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
+    monkeypatch.setattr(narrative_groups, "resolve_planned_reference_preview", resolve)
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
 
 
 def test_reference_upload_returns_opaque_id_and_serves_by_id(monkeypatch, tmp_path):
@@ -1771,7 +1801,9 @@ def test_reference_upload_returns_opaque_id_and_serves_by_id(monkeypatch, tmp_pa
     assert image.content == buffer.getvalue()
 
 
-def test_reference_upload_can_persist_to_existing_prop(monkeypatch, tmp_path):
+def test_reference_upload_ignores_legacy_persistence_fields_and_stays_temporary(
+    monkeypatch, tmp_path
+):
     client, _ = make_client(monkeypatch, tmp_path)
     buffer = BytesIO()
     Image.new("RGB", (2, 2), "blue").save(buffer, format="PNG")
@@ -1790,10 +1822,10 @@ def test_reference_upload_can_persist_to_existing_prop(monkeypatch, tmp_path):
 
     assert response.status_code == 201
     data = response.json()["data"]
-    assert data["temporary"] is False
-    assert data["persisted"] is True
+    assert data["temporary"] is True
+    assert data["persisted"] is False
     target = tmp_path / "assets" / "props" / "letter" / "reference_3view.png"
-    assert target.read_bytes() == buffer.getvalue()
+    assert not target.exists()
 
 
 def test_reference_candidates_return_opaque_project_scoped_ids(monkeypatch, tmp_path):
@@ -1879,41 +1911,74 @@ async def test_reference_candidate_catalog_closes_all_decision_kinds(tmp_path):
     ]
 
 
-def test_generate_builds_reference_resolution_snapshot(monkeypatch, tmp_path):
+def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     activate_director_plan(tmp_path)
 
-    async def resolve(store, requirements, stage="render"):
-        from novelvideo.narrative_groups.reference_matching import (
-            MatchedReferenceRequirement,
+    async def build(store, workflow, **kwargs):
+        from novelvideo.narrative_groups.planned_binding_service import (
+            PlannedSnapshotReferenceImage,
         )
-        from novelvideo.narrative_groups.references import RequirementReferencePreview
-        return RequirementReferencePreview(
-            style=GroupStyleReference(id="style", name="default", prompt=""),
-            requirements=(MatchedReferenceRequirement(
-                id="prop:letter", kind="prop", entity_id="letter",
-                base_entity_id="", variant_id="", shot_ids=("shot-1",),
-                required=True, label="Letter", status="missing_asset",
-                candidate_asset_ids=(), available_actions=("upload", "ignore"),
-                bindings=(), warning="missing",
+        from novelvideo.narrative_groups.reference_decisions import ReferenceDecisionSnapshot
+        assert kwargs["selected_binding_ids"] == ["planned-ref-letter"]
+        assert kwargs["upload_ids"] == []
+        assert kwargs["reference_revision"] == "revision-1"
+        return ReferenceDecisionSnapshot(
+            id="refsnap-1",
+            schema_version="narrative-reference-decision/v1",
+            images=(PlannedSnapshotReferenceImage(
+                requirement_id="planned-ref-letter",
+                source="matched",
+                source_id="prop-version-1",
+                asset_kind="prop",
+                image_path=str(tmp_path / "assets" / "letter.png"),
+                resolution="matched",
+                binding_id="planned-ref-letter",
+                asset_slot_id="prop:letter:reference",
+                version_id="prop-version-1",
+                relative_path="assets/letter.png",
+                sha256="a" * 64,
+                group_ids=("director-group",),
+                shot_ids=("shot-1",),
             ),),
-            bindings=(), warnings=("missing",), asset_root=str(tmp_path / "assets"),
+            ignored_requirement_ids=(),
         )
 
-    monkeypatch.setattr(narrative_groups, "resolve_requirement_reference_preview", resolve)
+    monkeypatch.setattr(narrative_groups, "build_planned_reference_snapshot", build)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/"
         "director-group/sketch/generate",
-        json={"reference_resolution": {"decisions": [
-            {"requirement_id": "prop:letter", "action": "ignore"}
-        ]}},
+        json={
+            "use_style": False,
+            "reference_resolution": {
+                "selected_binding_ids": ["planned-ref-letter"],
+                "upload_ids": [],
+                "reference_revision": "revision-1",
+            },
+        },
     )
 
     assert response.status_code == 202
     snapshot = backend.calls[0][1]["payload"]["reference_resolution"]
     assert snapshot["schema_version"] == "narrative-reference-decision/v1"
-    assert snapshot["ignored_requirement_ids"] == ["prop:letter"]
+    assert snapshot["images"][0]["binding_id"] == "planned-ref-letter"
+    assert backend.calls[0][1]["payload"]["use_style"] is False
     assert "image_path" not in str(response.json())
+
+
+def test_generate_rejects_legacy_generation_time_reference_decisions(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate",
+        json={"reference_resolution": {
+            "decisions": [{"requirement_id": "prop:letter", "action": "ignore"}],
+            "reference_revision": "revision-1",
+        }},
+    )
+    assert response.status_code == 422
+    assert backend.calls == []
 
 
 def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypatch, tmp_path):
