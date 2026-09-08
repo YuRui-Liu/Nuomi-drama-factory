@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HTTPError } from "ky";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import enTranslation from "../../../../../public/locales/en/translation.json";
 import zhTranslation from "../../../../../public/locales/zh/translation.json";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
-import type { NarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
+import type { PlannedNarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
 
 const m = vi.hoisted(() => ({
  mutate: vi.fn(),
@@ -23,8 +24,10 @@ const m = vi.hoisted(() => ({
  updateDefaults: vi.fn(),
  updateProject: vi.fn(),
  setOrientation: vi.fn(),
+ uploadReference: vi.fn(),
+ navigate: vi.fn(),
  orientation: "landscape" as "portrait" | "landscape",
- dialogSelection: {useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"} as NarrativeGroupGenerationSelection,
+ dialogSelection: {useStyle:true,selectedBindingIds:["binding-1"],uploadIds:[],referenceRevision:"planned-r1",imageSize:"1K"} as PlannedNarrativeGroupGenerationSelection,
  mediaDefaults: {video_model:"newapi_seedance-1.0-pro-fast",h3_mode:"auto",narrative_sketch_provider:"grsai-main",narrative_sketch_model:"nano-banana-2",narrative_render_provider:"grsai-main",narrative_render_model:"gpt-image-2",narrative_render_image_size:"1K"},
  videoModels: [{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["auto","i2va","fl2va"],default_mode:"auto"}] as any[],
  groupsLoading: false,
@@ -35,6 +38,7 @@ const group2 = { ...group, id: "g2", ordinal: 2, title: "G2" };
 vi.mock("@/lib/queries/narrative-groups",()=>({
  useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:m.groupsLoading,refetch:m.groupsRefetch}),
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
+ useUploadNarrativeReference:()=>({mutateAsync:m.uploadReference,isPending:false}),
  useNarrativeGroupReferences:()=>({data:{ok:true,data:{style:{id:"s",label:"动漫",prompt:"anime",enabled_by_default:true},character_references:[],scene_references:[],limits:{max_images:9,selected_images:0,omitted_reference_ids:[]},warnings:[]}},isLoading:false,error:null,refetch:m.refetch}),
  useGenerateNarrativeGroupVideo:()=>({mutateAsync:m.generateVideo}),
  useNarrativeGroupVideoReferencePreview:(...args:any[])=>m.referencePreviewQuery(...args),
@@ -48,6 +52,7 @@ vi.mock("@/lib/queries/narrative-groups",()=>({
  narrativeGroupVideoTaskScope:()=>"video-scope",
  narrativeGroupVideoPromptUnitKey:(_:any,index:number)=>String(index),
 }));
+vi.mock("@tanstack/react-router", async (importOriginal) => ({ ...(await importOriginal<typeof import("@tanstack/react-router")>()), useNavigate: () => m.navigate }));
 vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}));
 vi.mock("@/hooks/use-task-controller",()=>({useTaskController:()=>({start:m.start})}));
 vi.mock("sonner",()=>({toast:{success:m.success,error:m.error}}));
@@ -82,7 +87,7 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.groups=[group];
   m.groupsLoading=false;
   m.orientation="landscape";
-  m.dialogSelection={useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"};
+  m.dialogSelection={useStyle:true,selectedBindingIds:["binding-1"],uploadIds:[],referenceRevision:"planned-r1",imageSize:"1K"};
   m.mutate.mockResolvedValue({scope:"x"});
   m.generateVideo.mockResolvedValue({scope:"video-x"});
   m.generateVideoSegment.mockResolvedValue({scope:"segment-x"});
@@ -92,6 +97,7 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});
   m.updateDefaults.mockResolvedValue({ok:true});
   m.updateProject.mockResolvedValue({ok:true});
+  m.uploadReference.mockResolvedValue({ok:true,data:{upload_id:"upload-1",url:"/upload-1.png"}});
   m.setOrientation.mockImplementation((next: "portrait" | "landscape")=>{m.orientation=next;});
  });
  it("passes the real route identifiers to prompt review only after opening",async()=>{
@@ -107,13 +113,24 @@ describe("NarrativeGroupWorkbench references",()=>{
  it.each(["生成","重生成"])("confirms references before %s",async(label)=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>); fireEvent.click(screen.getByText(label));
   expect(screen.getByRole("dialog")).toBeInTheDocument(); expect(m.mutate).not.toHaveBeenCalled(); fireEvent.click(screen.getByText("确认"));
-  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",aspectRatio:"16:9",selection:{useStyle:true,selectedCharacterReferenceIds:["c1"],selectedSceneReferenceIds:[],imageSize:"1K"}}));
+  await waitFor(()=>expect(m.mutate).toHaveBeenCalledWith({groupId:"g1",stage:"render",action:label==="生成"?"generate":"regenerate",aspectRatio:"16:9",selection:{useStyle:true,selectedBindingIds:["binding-1"],uploadIds:[],referenceRevision:"planned-r1",imageSize:"1K"}}));
   expect(m.start).toHaveBeenCalledWith({scope:"x"});
   expect(m.success).toHaveBeenCalledWith("任务已进入队列");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
  });
+ it("refetches stale planned bindings and keeps the confirmation dialog open",async()=>{
+  const response = new Response(JSON.stringify({detail:{code:"STALE_REFERENCE_BINDING",message:"引用版本已更新"}}),{status:409,headers:{"content-type":"application/json"}});
+  m.mutate.mockRejectedValueOnce(new HTTPError(response,new Request("http://localhost/generate"),{} as never));
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByText("生成"));
+  fireEvent.click(screen.getByText("确认"));
+  await waitFor(()=>expect(m.refetch).toHaveBeenCalled());
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(m.start).not.toHaveBeenCalled();
+  expect(m.error).toHaveBeenCalledWith("引用版本已更新");
+ });
  it("persists render model and resolution when requested",async()=>{
-  m.dialogSelection={useStyle:true,selectedCharacterReferenceIds:[],selectedSceneReferenceIds:[],providerId:"grsai-main",model:"gpt-image-2-vip",imageSize:"4K",saveAsProjectDefault:true};
+  m.dialogSelection={useStyle:true,selectedBindingIds:[],uploadIds:[],referenceRevision:"planned-r1",providerId:"grsai-main",model:"gpt-image-2-vip",imageSize:"4K",saveAsProjectDefault:true};
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByText("生成"));
   fireEvent.click(screen.getByText("确认"));

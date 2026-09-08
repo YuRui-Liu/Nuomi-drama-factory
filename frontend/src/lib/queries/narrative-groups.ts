@@ -131,7 +131,7 @@ export interface NarrativeGroupReferencePreview {
   warnings: string[];
 }
 
-export interface PlannedNarrativeGroupReferencePreview extends Omit<NarrativeGroupReferencePreview, "bindings"> {
+export interface PlannedNarrativeGroupReferencePreview {
   reference_revision: string;
   bindings: PlannedReferenceBinding[];
   max_images: number;
@@ -579,25 +579,28 @@ export function narrativeGroupActionPayload(input: {
     revision?: number;
     aspect_ratio?: "9:16" | "16:9";
     use_style?: boolean;
-    selected_binding_ids?: string[];
-    upload_ids?: string[];
-    reference_revision?: string;
+    reference_resolution?: NarrativeReferenceResolution | {
+      selected_binding_ids: string[];
+      upload_ids: string[];
+      reference_revision: string;
+    };
     selected_character_reference_ids?: string[];
     selected_scene_reference_ids?: string[];
     provider_id?: string;
     model?: string;
     image_size?: NarrativeImageSize;
     allow_unconstrained?: boolean;
-    reference_resolution?: NarrativeReferenceResolution;
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
     if ("selectedBindingIds" in input.selection) {
-      payload.selected_binding_ids = input.selection.selectedBindingIds;
-      payload.upload_ids = input.selection.uploadIds;
-      payload.reference_revision = input.selection.referenceRevision;
+      payload.reference_resolution = {
+        selected_binding_ids: input.selection.selectedBindingIds,
+        upload_ids: input.selection.uploadIds,
+        reference_revision: input.selection.referenceRevision,
+      };
     } else {
       payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
       payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
@@ -644,34 +647,19 @@ export function useUploadNarrativeReference(
 ) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      file, persist = false, requirementId = "", assetKind,
-      targetEntityId = "", baseEntityId = "", variantId = "",
-    }: {
+    mutationFn: ({ file }: {
       file: File;
-      persist?: boolean;
-      requirementId?: string;
-      assetKind?: NarrativeReferenceRequirement["kind"];
-      targetEntityId?: string;
-      baseEntityId?: string;
-      variantId?: string;
     }) => {
       const body = new FormData();
       body.append("file", file, file.name);
-      body.append("persist", String(persist));
-      body.append("requirement_id", requirementId);
-      if (assetKind) body.append("asset_kind", assetKind);
-      body.append("target_entity_id", targetEntityId);
-      body.append("base_entity_id", baseEntityId);
-      body.append("variant_id", variantId);
       return api.post(
         narrativeGroupReferenceUploadPath(project, episode, groupId, stage),
         { body },
       ).json<ApiResponse<NarrativeReferenceUpload>>();
     },
-    onSuccess: () => qc.invalidateQueries({
-      queryKey: ["narrative-reference-candidates", project, episode, groupId, stage],
-    }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [
+      ...queryKeys.narrativeGroups(project, episode), groupId, stage, "references",
+    ] }),
   });
 }
 
@@ -828,7 +816,7 @@ export function useNarrativeGroupReferences(
     queryKey: [...queryKeys.narrativeGroups(project, episode), groupId, stage, "references"],
     queryFn: ({ signal }) => api.get(
       narrativeGroupReferencePath(project, episode, groupId, stage), { signal },
-    ).json<ApiResponse<NarrativeGroupReferencePreview>>(),
+    ).json<ApiResponse<PlannedNarrativeGroupReferencePreview>>(),
     enabled: enabled && !!project && episode > 0 && !!groupId,
   });
 }

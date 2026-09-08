@@ -1,260 +1,103 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GroupReferenceDialog } from "@/components/episode/narrative-workbench/group-reference-dialog";
-import {
-  defaultNarrativeImageSize,
-  supportedNarrativeImageSizes,
-} from "@/lib/narrative-image-resolution";
-import type { NarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
+import type { PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
 
-const preview: NarrativeGroupReferencePreview = {
-  style: { id: "style-1", label: "水墨电影感", prompt: "ink", enabled_by_default: true },
-  character_references: [
-    {
-      id: "char-1", kind: "character", source_kind: "identity", label: "苏清晏（少女）",
-      thumbnail_url: "/char-1.png", beat_numbers: [1, 3], enabled_by_default: true,
-      character_name: "苏清晏", identity_id: "young", warning: null,
-    },
-    {
-      id: "char-2", kind: "character", source_kind: "portrait_fallback", label: "沈砚",
-      thumbnail_url: null, beat_numbers: [2], enabled_by_default: true,
-      warning: "身份图缺失，已回退角色肖像",
-    },
+const preview: PlannedNarrativeGroupReferencePreview = {
+  reference_revision: "director-plan-r7",
+  max_images: 3,
+  bindings: [
+    { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hero.png" },
+    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png" },
+    { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: true, status: "missing_image", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
   ],
-  scene_references: [
-    {
-      id: "scene-1", kind: "scene", source_kind: "scene_master", label: "雨夜长街",
-      thumbnail_url: "/scene-1.png", beat_numbers: [1, 2], enabled_by_default: false,
-      scene_id: "street", warning: null,
-    },
-  ],
-  limits: { max_images: 2, selected_images: 2, omitted_reference_ids: ["scene-1"] },
-  warnings: ["最多使用 2 张参考图，超限项目将省略"],
 };
 
 function renderDialog(overrides: Partial<React.ComponentProps<typeof GroupReferenceDialog>> = {}) {
   const onSubmit = vi.fn();
   const onOpenChange = vi.fn();
-  const props = {
-    open: true,
-    preview,
-    loading: false,
-    error: null,
-    onSubmit,
-    onOpenChange,
-    ...overrides,
-  };
-  return { ...render(<GroupReferenceDialog {...props} />), onSubmit, onOpenChange, props };
+  const onResolvePlanning = vi.fn();
+  const onUploadReference = vi.fn().mockResolvedValue({ upload_id: "upload-1", mime_type: "image/png", size_bytes: 10, temporary: true, persisted: false, persistence_warning: "", url: "/temporary/upload-1" });
+  const props = { open: true, preview, loading: false, error: null, onSubmit, onOpenChange, onResolvePlanning, onUploadReference, ...overrides };
+  return { ...render(<GroupReferenceDialog {...props} />), props, onSubmit, onOpenChange, onResolvePlanning, onUploadReference };
 }
 
-describe("GroupReferenceDialog", () => {
-  it("exposes model-aware render resolutions and defaults VIP to 2K", () => {
-    expect(supportedNarrativeImageSizes("gpt-image-2")).toEqual(["1K"]);
-    expect(supportedNarrativeImageSizes("gpt-image-2-vip")).toEqual(["1K", "2K", "4K"]);
-    expect(defaultNarrativeImageSize("gpt-image-2-vip")).toBe("2K");
-
-    const { onSubmit } = renderDialog({ stage: "render", defaultModel: "gpt-image-2-vip" });
-    expect(screen.getByRole("combobox", { name: "本次输出分辨率" })).toHaveValue("2K");
-    fireEvent.change(screen.getByRole("combobox", { name: "本次输出分辨率" }), {
-      target: { value: "4K" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      model: "gpt-image-2-vip",
-      imageSize: "4K",
-    }));
-  });
-
-  it("coerces an unsupported resolution when switching away from VIP", () => {
-    const { onSubmit } = renderDialog({
-      stage: "render",
-      defaultModel: "gpt-image-2-vip",
-      defaultImageSize: "4K",
-    });
-    fireEvent.change(screen.getByRole("combobox", { name: "本次真实模型" }), {
-      target: { value: "gpt-image-2" },
-    });
-    expect(screen.getByRole("combobox", { name: "本次输出分辨率" })).toHaveValue("1K");
-    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      model: "gpt-image-2",
-      imageSize: "1K",
-    }));
-  });
-
-  it("selects backend defaults and shows fallback, missing-image, beat, and limit details", () => {
-    renderDialog();
-    expect(screen.getByRole("dialog", { name: "生成前引用确认" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeInTheDocument();
-    expect(screen.getByText("身份图")).toBeInTheDocument();
-    expect(screen.getByText("肖像回退")).toBeInTheDocument();
-    expect(screen.getByText("覆盖 beats 1、3")).toBeInTheDocument();
-    expect(screen.getByText("缺少预览图")).toBeInTheDocument();
-    expect(screen.getByText("身份图缺失，已回退角色肖像")).toBeInTheDocument();
-    expect(screen.getByText("最多使用 2 张参考图，超限项目将省略")).toBeInTheDocument();
-  });
-
-  it("supports category switches and individual deselection", () => {
-    renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "角色参考" }));
-    expect(screen.getByRole("button", { name: "使用 0 张参考图生成" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "角色参考" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
-  });
-
-  it("submits only the current local selection", () => {
+describe("GroupReferenceDialog planned references", () => {
+  it("initializes ready defaults, groups bindings, and submits stable IDs", () => {
     const { onSubmit } = renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "使用风格 水墨电影感" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 沈砚" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "场景参考" }));
+    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /深灰功德碑/ })).toBeDisabled();
+    expect(screen.getAllByText("已选择")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
-    expect(onSubmit).toHaveBeenCalledWith({
-      useStyle: false,
-      selectedCharacterReferenceIds: ["char-1"],
-      selectedSceneReferenceIds: ["scene-1"],
-      providerId: "grsai-main",
-      model: "gpt-image-2",
-      imageSize: "1K",
-      allowUnconstrained: true,
-      saveAsProjectDefault: false,
-    });
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: ["identity:hero:young", "scene:hall:rain"], uploadIds: [], referenceRevision: "director-plan-r7", useStyle: true }));
   });
 
-  it("prevents submitting more references than the backend limit", () => {
+  it("toggles a whole asset card with visible selected state and supports cancellation", () => {
     renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "场景参考" }));
-    expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("已选择 3 张，超过最多 2 张限制");
+    const hero = screen.getByRole("button", { name: /石九 \/ 青年时期/ });
+    fireEvent.click(hero);
+    expect(hero).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeEnabled();
+    fireEvent.click(hero);
+    expect(hero).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("offers retry when preview loading fails", () => {
-    const onRetry = vi.fn();
-    const { onSubmit } = renderDialog({ preview: null, error: new Error("预览失败"), onRetry });
-    const submit = screen.getByRole("button", { name: "使用 0 张参考图生成" });
-    expect(submit).toBeDisabled();
-    fireEvent.click(submit);
-    expect(onSubmit).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
-  it("does not submit while the preview is loading", () => {
-    const { onSubmit } = renderDialog({ preview: null, loading: true });
-    const submit = screen.getByRole("button", { name: "使用 0 张参考图生成" });
-    expect(submit).toBeDisabled();
-    fireEvent.click(submit);
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("restores backend defaults after closing and reopening", () => {
-    const { rerender, props } = renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
-    rerender(<GroupReferenceDialog {...props} open={false} />);
-    rerender(<GroupReferenceDialog {...props} open />);
-    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeInTheDocument();
-  });
-
-  it("restores the new backend defaults when the preview changes while open", () => {
-    const { rerender, onSubmit, props } = renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
-
-    const nextPreview: NarrativeGroupReferencePreview = {
-      ...preview,
-      style: { ...preview.style, id: "style-2", enabled_by_default: false },
-      character_references: [
-        {
-          ...preview.character_references[0],
-          id: "char-3",
-          label: "苏清晏（成年）",
-          enabled_by_default: false,
-        },
-        {
-          ...preview.character_references[1],
-          id: "char-4",
-          enabled_by_default: true,
-        },
-      ],
-      scene_references: [
-        { ...preview.scene_references[0], id: "scene-2", enabled_by_default: true },
-      ],
-    };
-    rerender(<GroupReferenceDialog {...props} preview={nextPreview} />);
-
-    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "使用风格 水墨电影感" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "添加引用 苏清晏（成年）" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "取消引用 沈砚" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "取消引用 雨夜长街" })).toBeChecked();
-
+  it("keeps style independent from the image count", () => {
+    const { onSubmit } = renderDialog();
+    fireEvent.click(screen.getByRole("checkbox", { name: "使用项目风格" }));
     fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
-    expect(onSubmit).toHaveBeenCalledWith({
-      useStyle: false,
-      selectedCharacterReferenceIds: ["char-4"],
-      selectedSceneReferenceIds: ["scene-2"],
-      providerId: "grsai-main",
-      model: "gpt-image-2",
-      imageSize: "1K",
-      allowUnconstrained: true,
-      saveAsProjectDefault: false,
-    });
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ useStyle: false }));
   });
 
-  it("preserves local choices across equivalent preview refetches", () => {
+  it("uploads temporary images and counts them against the limit", async () => {
+    const { onSubmit, onUploadReference } = renderDialog();
+    const file = new File(["image"], "临时构图.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
+    await waitFor(() => expect(onUploadReference).toHaveBeenCalledWith(file));
+    expect(screen.getByText("临时构图.png")).toBeInTheDocument();
+    expect(screen.getByText("仅本次生成")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeEnabled();
+    expect(screen.getByLabelText("上传临时参考图")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "使用 3 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ uploadIds: ["upload-1"] }));
+  });
+
+  it("returns unresolved bindings to planning instead of resolving them during generation", () => {
+    const { onResolvePlanning } = renderDialog();
+    expect(screen.queryByText("待处理问题")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
+    expect(onResolvePlanning).toHaveBeenCalledOnce();
+  });
+
+  it("preserves choices across equivalent refetches and resets on a new revision", () => {
     const { rerender, props } = renderDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "取消引用 苏清晏（少女）" }));
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
-
+    fireEvent.click(screen.getByRole("button", { name: /石九 \/ 青年时期/ }));
     rerender(<GroupReferenceDialog {...props} preview={structuredClone(preview)} />);
-
-    expect(screen.getByRole("checkbox", { name: "添加引用 苏清晏（少女）" })).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "false");
+    rerender(<GroupReferenceDialog {...props} preview={{ ...preview, reference_revision: "director-plan-r8" }} />);
+    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("blocks unresolved draft references and confirms missing references as ignored", () => {
-    const unresolvedPreview: NarrativeGroupReferencePreview = {
-      ...preview,
-      requirements: [
-        {
-          id: "scene_variant:hall:rain", kind: "scene_variant", entity_id: "hall",
-          variant_id: "rain", shot_ids: ["shot-1"], required: true, label: "大厅 / 雨夜",
-          status: "draft_variant", candidate_asset_ids: ["hall-rain"],
-          available_actions: ["confirm_draft"], bindings: [],
-        },
-        {
-          id: "prop:letter", kind: "prop", entity_id: "letter", shot_ids: ["shot-2"],
-          required: true, label: "密信", status: "missing_asset", candidate_asset_ids: [],
-          available_actions: ["choose_prop", "upload", "ignore"], bindings: [],
-        },
-      ],
-    };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const { onSubmit } = renderDialog({ preview: unresolvedPreview });
-
-    expect(screen.getByText("待处理问题")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /生成/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "确认使用草稿 大厅 / 雨夜" }));
-    fireEvent.click(screen.getByRole("button", { name: "忽略 密信" }));
-    expect(confirm).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成（忽略 1 项）" }));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      referenceResolution: { decisions: [
-        { requirement_id: "scene_variant:hall:rain", action: "confirm_draft", asset_id: "hall-rain" },
-        { requirement_id: "prop:letter", action: "ignore" },
-      ] },
-    }));
-    confirm.mockRestore();
-  });
-
-  it("defaults unconstrained rendering to allowed while still honoring deselection", () => {
-    renderDialog({ stage: "render", sketchReady: false });
+  it("defaults unconstrained render generation on and restores it when reopened", () => {
+    const { rerender, props } = renderDialog({ stage: "render", sketchReady: false });
     const checkbox = screen.getByRole("checkbox", { name: /允许无草图约束生成/ });
     expect(checkbox).toBeChecked();
-    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeEnabled();
     fireEvent.click(checkbox);
     expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeDisabled();
+    rerender(<GroupReferenceDialog {...props} open={false} />);
+    rerender(<GroupReferenceDialog {...props} open />);
+    expect(screen.getByRole("checkbox", { name: /允许无草图约束生成/ })).toBeChecked();
+  });
+
+  it("offers retry while keeping the dialog open when preview loading fails", () => {
+    const onRetry = vi.fn();
+    const { onOpenChange, onResolvePlanning } = renderDialog({ preview: null, error: new Error("引用已过期"), onRetry });
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划" }));
+    expect(onResolvePlanning).toHaveBeenCalledOnce();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

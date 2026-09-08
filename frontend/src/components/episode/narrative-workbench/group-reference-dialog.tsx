@@ -1,61 +1,26 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { AlertTriangle, ImageOff, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import type {
-  NarrativeGroupGenerationSelection,
-  NarrativeGroupImageReference,
-  NarrativeGroupReferencePreview,
-  NarrativeReferenceCandidate,
-  NarrativeReferenceUpload,
-} from "@/lib/queries/narrative-groups";
-import {
-  coerceNarrativeImageSize,
-  defaultNarrativeImageSize,
-  supportedNarrativeImageSizes,
-  type NarrativeImageSize,
-} from "@/lib/narrative-image-resolution";
-import { ReferenceResolutionDialog } from "./reference-resolution-dialog";
-import { FreeReferencePicker, type ReferenceUploadOptions } from "./free-reference-picker";
-import { useNarrativeReferenceCandidates, useUploadNarrativeReference } from "@/lib/queries/narrative-groups";
-
-function ConnectedFreeReferencePicker({ project, episode, groupId, stage, onAdded }: {
-  project: string; episode: number; groupId: string; stage: "sketch" | "render";
-  onAdded: (id: string, source: "asset" | "upload") => void;
-}) {
-  const candidates = useNarrativeReferenceCandidates(project, episode, groupId, stage);
-  const upload = useUploadNarrativeReference(project, episode, groupId, stage);
-  return <FreeReferencePicker
-    candidates={candidates.data?.ok ? candidates.data.data : []}
-    uploading={upload.isPending}
-    onAdd={(id) => onAdded(id, "asset")}
-    onUpload={async (file, options) => {
-      const response = await upload.mutateAsync({ file, ...options });
-      if (response.ok) onAdded(response.data.upload_id, "upload");
-    }}
-  />;
-}
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { coerceNarrativeImageSize, defaultNarrativeImageSize, supportedNarrativeImageSizes, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
+import type { NarrativeReferenceUpload, PlannedNarrativeGroupGenerationSelection, PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
+import { PlannedReferencePicker } from "./planned-reference-picker";
+import { TemporaryReferencePicker, type TemporaryReferenceSelection } from "./temporary-reference-picker";
 
 export interface GroupReferenceDialogProps {
   open: boolean;
-  preview?: NarrativeGroupReferencePreview | null;
+  preview?: PlannedNarrativeGroupReferencePreview | null;
   loading?: boolean;
   error?: Error | string | null;
   submitting?: boolean;
-  onSubmit: (selection: NarrativeGroupGenerationSelection) => void;
+  onSubmit: (selection: PlannedNarrativeGroupGenerationSelection) => void;
   onOpenChange: (open: boolean) => void;
   onRetry?: () => void;
+  onResolvePlanning?: () => void;
   stage?: "sketch" | "render";
   defaultProvider?: string;
   defaultModel?: string;
@@ -64,108 +29,19 @@ export interface GroupReferenceDialogProps {
   project?: string;
   episode?: number;
   groupId?: string;
-  onCreateProp?: (entityId: string) => void;
-  candidates?: NarrativeReferenceCandidate[];
   uploadingReference?: boolean;
-  onUploadReference?: (file: File, options: ReferenceUploadOptions) => Promise<NarrativeReferenceUpload | null>;
+  onUploadReference?: (file: File) => Promise<NarrativeReferenceUpload | null>;
 }
 
-function defaultSelection(
-  preview?: NarrativeGroupReferencePreview | null,
-  providerId = "grsai-main",
-  model = "gpt-image-2",
-  imageSize?: NarrativeImageSize,
-) {
-  return {
-    useStyle: preview?.style.enabled_by_default ?? false,
-    selectedCharacterReferenceIds: preview?.character_references
-      .filter((item) => item.enabled_by_default).map((item) => item.id) ?? [],
-    selectedSceneReferenceIds: preview?.scene_references
-      .filter((item) => item.enabled_by_default).map((item) => item.id) ?? [],
-    providerId,
-    model,
-    imageSize: coerceNarrativeImageSize(model, imageSize),
-    allowUnconstrained: true,
-    saveAsProjectDefault: false,
-  } satisfies NarrativeGroupGenerationSelection;
-}
-
-function previewSelectionKey(preview?: NarrativeGroupReferencePreview | null) {
-  if (!preview) return "none";
-  const referenceDefaults = (references: NarrativeGroupImageReference[]) => references
-    .map(({ id, enabled_by_default }) => `${id}:${enabled_by_default}`)
-    .sort();
-  return JSON.stringify({
-    style: [preview.style.id, preview.style.enabled_by_default],
-    characters: referenceDefaults(preview.character_references),
-    scenes: referenceDefaults(preview.scene_references),
-  });
-}
-
-const sourceLabels: Record<NarrativeGroupImageReference["source_kind"], string> = {
-  identity: "身份图",
-  portrait_fallback: "肖像回退",
-  scene_master: "场景主图",
+type ReferenceSelectionState = {
+  selectedBindingIds: string[];
+  temporaryUploads: TemporaryReferenceSelection[];
 };
 
-function ReferenceSection({
-  title,
-  references,
-  selectedIds,
-  onSelectedIdsChange,
-}: {
-  title: string;
-  references: NarrativeGroupImageReference[];
-  selectedIds: string[];
-  onSelectedIdsChange: (ids: string[]) => void;
-}) {
-  const allSelected = references.length > 0 && references.every((item) => selectedIds.includes(item.id));
-  return <section className="space-y-2 rounded-lg border border-white/10 p-3">
-    <div className="flex items-center justify-between gap-3 font-medium">
-      <span>{title}</span>
-      <Checkbox
-        aria-label={title}
-        checked={allSelected}
-        onCheckedChange={(checked) => onSelectedIdsChange(
-          checked === true ? references.map((item) => item.id) : [],
-        )}
-      />
-    </div>
-    {references.length === 0 ? <p className="text-xs text-muted-foreground">暂无可用引用</p> : null}
-    <div className="grid gap-2 sm:grid-cols-2">
-      {references.map((item) => {
-        const selected = selectedIds.includes(item.id);
-        return <article key={item.id} className="flex gap-2 rounded-md bg-white/[0.035] p-2">
-          {item.thumbnail_url
-            ? <img className="size-14 rounded-md object-cover" src={item.thumbnail_url} alt={`${item.label} 预览`} />
-            : <div className="flex size-14 shrink-0 flex-col items-center justify-center rounded-md bg-white/5 text-[10px] text-muted-foreground">
-                <ImageOff className="mb-1 size-4" />缺少预览图
-              </div>}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="truncate text-xs font-medium">{item.label}</p>
-                <p className="text-[11px] text-muted-foreground">{sourceLabels[item.source_kind]}</p>
-              </div>
-              <Checkbox
-                aria-label={`${selected ? "取消" : "添加"}引用 ${item.label}`}
-                checked={selected}
-                onCheckedChange={(checked) => onSelectedIdsChange(
-                  checked === true
-                    ? [...selectedIds, item.id]
-                    : selectedIds.filter((id) => id !== item.id),
-                )}
-              />
-            </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              覆盖 beats {item.beat_numbers.join("、") || "无"}
-            </p>
-            {item.warning ? <p className="mt-1 text-[11px] text-amber-400">{item.warning}</p> : null}
-          </div>
-        </article>;
-      })}
-    </div>
-  </section>;
+function readyDefaults(preview?: PlannedNarrativeGroupReferencePreview | null) {
+  if (!preview) return [];
+  return [...new Set(preview.bindings.filter((item) => item.status === "ready" && item.selected_by_default).map((item) => item.binding_id))]
+    .slice(0, preview.max_images);
 }
 
 export function GroupReferenceDialog({
@@ -177,175 +53,86 @@ export function GroupReferenceDialog({
   onSubmit,
   onOpenChange,
   onRetry,
+  onResolvePlanning = () => undefined,
   stage = "render",
   defaultProvider = "grsai-main",
   defaultModel = stage === "sketch" ? "nano-banana-2" : "gpt-image-2",
   defaultImageSize,
   sketchReady = true,
-  project = "",
-  episode = 0,
-  groupId = "",
-  onCreateProp,
-  candidates = [],
   uploadingReference = false,
   onUploadReference,
 }: GroupReferenceDialogProps) {
-  const [selection, setSelection] = useState<NarrativeGroupGenerationSelection>(() => defaultSelection(preview, defaultProvider, defaultModel, defaultImageSize));
+  const [references, setReferences] = useState<ReferenceSelectionState>({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
+  const [useStyle, setUseStyle] = useState(true);
+  const [providerId, setProviderId] = useState(defaultProvider);
+  const [model, setModel] = useState(defaultModel);
+  const [imageSize, setImageSize] = useState(() => coerceNarrativeImageSize(defaultModel, defaultImageSize));
+  const [allowUnconstrained, setAllowUnconstrained] = useState(true);
+  const [saveAsProjectDefault, setSaveAsProjectDefault] = useState(false);
   const wasOpen = useRef(false);
-  const previousPreviewKey = useRef<string | null>(null);
-  const previewKey = previewSelectionKey(preview);
-  const [unresolvedCount, setUnresolvedCount] = useState(0);
-  const [ignoredCount, setIgnoredCount] = useState(0);
-  const [freeAssetIds, setFreeAssetIds] = useState<string[]>([]);
-  const [freeUploadIds, setFreeUploadIds] = useState<string[]>([]);
+  const previousRevision = useRef<string | null>(null);
 
   useEffect(() => {
     const justOpened = open && !wasOpen.current;
-    const defaultsChanged = previewKey !== previousPreviewKey.current;
-    if (justOpened || defaultsChanged) {
-      setSelection(defaultSelection(preview, defaultProvider, defaultModel, defaultImageSize));
-      setUnresolvedCount(preview?.requirements?.filter((item) => !["matched", "fallback", "temporary", "ignored"].includes(item.status)).length ?? 0);
-      setIgnoredCount(0);
-      setFreeAssetIds([]);
-      setFreeUploadIds([]);
+    const revisionChanged = !!preview && preview.reference_revision !== previousRevision.current;
+    if (justOpened || revisionChanged) {
+      setReferences({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
+      setUseStyle(true);
+      setProviderId(defaultProvider);
+      setModel(defaultModel);
+      setImageSize(coerceNarrativeImageSize(defaultModel, defaultImageSize));
+      setAllowUnconstrained(true);
+      setSaveAsProjectDefault(false);
     }
     wasOpen.current = open;
-    previousPreviewKey.current = previewKey;
-  }, [open, preview, previewKey, defaultProvider, defaultModel, defaultImageSize]);
+    if (preview) previousRevision.current = preview.reference_revision;
+  }, [open, preview, defaultProvider, defaultModel, defaultImageSize]);
 
-  const imageCount = selection.selectedCharacterReferenceIds.length
-    + selection.selectedSceneReferenceIds.length + freeAssetIds.length + freeUploadIds.length;
+  const imageCount = references.selectedBindingIds.length + references.temporaryUploads.length;
+  const maxImages = preview?.max_images ?? 0;
   const errorMessage = typeof error === "string" ? error : error?.message;
+  const uploading = uploadingReference;
+
+  const uploadTemporary = async (file: File): Promise<TemporaryReferenceSelection | null> => {
+    const response = onUploadReference ? await onUploadReference(file) : null;
+    if (!response) return null;
+    const selected = { uploadId: response.upload_id, fileName: file.name, previewUrl: response.url };
+    setReferences((current) => current.temporaryUploads.some((item) => item.uploadId === selected.uploadId)
+      ? current
+      : { ...current, temporaryUploads: [...current.temporaryUploads, selected] });
+    return selected;
+  };
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+    <DialogContent className="max-h-[88vh] overflow-y-auto border-white/20 bg-zinc-950 text-white sm:max-w-4xl">
       <DialogHeader>
         <DialogTitle>生成前引用确认</DialogTitle>
-        <DialogDescription>本次选择仅用于当前生成任务，关闭后不会保存。</DialogDescription>
+        <DialogDescription className="text-zinc-200">引用关系来自规划结果；这里仅选择本次使用的已绑定资产或临时图片。</DialogDescription>
       </DialogHeader>
 
-      {loading ? <div role="status" className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />正在加载引用预览
-      </div> : null}
-      {errorMessage ? <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-destructive">
-        <span>{errorMessage}</span>
-        {onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}
-      </div> : null}
+      {loading ? <div role="status" className="flex items-center justify-center gap-2 py-12 text-zinc-200"><Loader2 className="size-4 animate-spin" />正在加载引用预览</div> : null}
+      {errorMessage ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-950/70 p-3 text-red-100"><span>{errorMessage}</span><span className="flex gap-2">{onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}<Button variant="outline" size="sm" onClick={onResolvePlanning}>返回规划</Button></span></div> : null}
 
-      {!loading && preview ? <div className="space-y-3">
-        {preview.requirements?.length ? <ReferenceResolutionDialog
-          key={previewKey}
-          requirements={preview.requirements}
-          onChange={(decisions, nextUnresolvedCount) => {
-            setUnresolvedCount(nextUnresolvedCount);
-            setIgnoredCount(decisions.filter((item) => item.action === "ignore").length);
-            setSelection((current) => ({ ...current, referenceResolution: {
-              ...current.referenceResolution,
-              decisions,
-            } }));
-          }}
-          onCreateProp={onCreateProp ? (requirement) => onCreateProp(requirement.entity_id) : undefined}
-        /> : null}
-        <section className="grid gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-2">
-          <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={selection.providerId ?? ""} onChange={(event) => setSelection((current) => ({ ...current, providerId: event.target.value }))} /></label>
-          <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-input bg-background px-3" value={selection.model ?? ""} onChange={(event) => setSelection((current) => ({ ...current, model: event.target.value, imageSize: coerceNarrativeImageSize(event.target.value, current.imageSize) }))}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
-          {stage === "render" ? <label className="space-y-1 text-xs"><span className="font-medium">本次输出分辨率</span><select aria-label="本次输出分辨率" className="h-9 w-full rounded-md border border-input bg-background px-3" value={selection.imageSize ?? defaultNarrativeImageSize(selection.model)} onChange={(event) => setSelection((current) => ({ ...current, imageSize: event.target.value as NarrativeImageSize }))}>{supportedNarrativeImageSizes(selection.model).map((size) => <option key={size} value={size}>{size}</option>)}</select></label> : null}
-          <label className="flex items-center gap-2 text-xs sm:col-span-2"><Checkbox checked={selection.saveAsProjectDefault} onCheckedChange={(checked) => setSelection((current) => ({ ...current, saveAsProjectDefault: checked === true }))} />保存为本项目{stage === "sketch" ? "草图" : "实图"}默认模型</label>
+      {!loading && preview ? <div className="space-y-4">
+        <section className="grid gap-3 rounded-xl border border-lime-300/40 bg-lime-300/10 p-4 sm:grid-cols-2">
+          <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={providerId} onChange={(event) => setProviderId(event.target.value)} /></label>
+          <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={model} onChange={(event) => { setModel(event.target.value); setImageSize(coerceNarrativeImageSize(event.target.value, imageSize)); }}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+          {stage === "render" ? <label className="space-y-1 text-xs"><span className="font-medium">本次输出分辨率</span><select aria-label="本次输出分辨率" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={imageSize ?? defaultNarrativeImageSize(model)} onChange={(event) => setImageSize(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(model).map((size) => <option key={size} value={size}>{size}</option>)}</select></label> : null}
+          <label className="flex items-center gap-2 text-xs sm:col-span-2"><Checkbox checked={saveAsProjectDefault} onCheckedChange={(checked) => setSaveAsProjectDefault(checked === true)} />保存为本项目{stage === "sketch" ? "草图" : "实图"}默认模型</label>
         </section>
-        {stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-xs text-amber-200"><Checkbox aria-label="允许无草图约束生成" checked={selection.allowUnconstrained} onCheckedChange={(checked) => setSelection((current) => ({ ...current, allowUnconstrained: checked === true }))} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；只有明确勾选后才允许提交。</span></label> : null}
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 p-3">
-          <span>
-            <span className="block font-medium">风格参考</span>
-            <span className="text-xs text-muted-foreground">{preview.style.label}</span>
-            {preview.style.warning ? <span className="mt-1 block text-xs text-amber-400">{preview.style.warning}</span> : null}
-          </span>
-          <Checkbox
-            aria-label={`使用风格 ${preview.style.label}`}
-            checked={selection.useStyle}
-            onCheckedChange={(checked) => setSelection((current) => ({
-              ...current, useStyle: checked === true,
-            }))}
-          />
+        {stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-300 bg-amber-950/70 p-3 text-xs text-amber-100"><Checkbox aria-label="允许无草图约束生成" checked={allowUnconstrained} onCheckedChange={(checked) => setAllowUnconstrained(checked === true)} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；默认允许提交，取消勾选可阻止本次生成。</span></label> : null}
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-white/20 bg-black/25 p-4">
+          <span><span className="block font-semibold">项目风格</span><span className="text-xs text-zinc-200">作为独立风格约束，不计入参考图数量。</span></span>
+          <Checkbox aria-label="使用项目风格" checked={useStyle} onCheckedChange={(checked) => setUseStyle(checked === true)} />
         </div>
-
-        <ReferenceSection
-          title="角色参考"
-          references={preview.character_references}
-          selectedIds={selection.selectedCharacterReferenceIds}
-          onSelectedIdsChange={(ids) => setSelection((current) => ({
-            ...current, selectedCharacterReferenceIds: ids,
-          }))}
-        />
-
-        {project && groupId && onUploadReference ? <FreeReferencePicker
-          candidates={candidates}
-          uploading={uploadingReference}
-          onAdd={(assetId) => {
-            setFreeAssetIds((current) => current.includes(assetId) ? current : [...current, assetId]);
-            setSelection((current) => ({ ...current, referenceResolution: {
-              decisions: current.referenceResolution?.decisions ?? [],
-              additional_asset_ids: [...new Set([...(current.referenceResolution?.additional_asset_ids ?? []), assetId])],
-              additional_upload_ids: current.referenceResolution?.additional_upload_ids ?? [],
-            } }));
-          }}
-          onUpload={async (file, options) => {
-            const response = await onUploadReference(file, options);
-            if (response) {
-              setFreeUploadIds((current) => current.includes(response.upload_id) ? current : [...current, response.upload_id]);
-              setSelection((current) => ({
-                ...current,
-                referenceResolution: {
-                  decisions: current.referenceResolution?.decisions ?? [],
-                  additional_asset_ids: current.referenceResolution?.additional_asset_ids ?? [],
-                  additional_upload_ids: [...new Set([...(current.referenceResolution?.additional_upload_ids ?? []), response.upload_id])],
-                },
-              }));
-            }
-          }}
-        /> : project && groupId ? <ConnectedFreeReferencePicker project={project} episode={episode} groupId={groupId} stage={stage} onAdded={(id, source) => {
-          if (source === "asset") setFreeAssetIds((current) => current.includes(id) ? current : [...current, id]);
-          else setFreeUploadIds((current) => current.includes(id) ? current : [...current, id]);
-          setSelection((current) => ({ ...current, referenceResolution: {
-            decisions: current.referenceResolution?.decisions ?? [],
-            additional_asset_ids: source === "asset"
-              ? [...new Set([...(current.referenceResolution?.additional_asset_ids ?? []), id])]
-              : current.referenceResolution?.additional_asset_ids ?? [],
-            additional_upload_ids: source === "upload"
-              ? [...new Set([...(current.referenceResolution?.additional_upload_ids ?? []), id])]
-              : current.referenceResolution?.additional_upload_ids ?? [],
-          } }));
-        }} /> : null}
-        <ReferenceSection
-          title="场景参考"
-          references={preview.scene_references}
-          selectedIds={selection.selectedSceneReferenceIds}
-          onSelectedIdsChange={(ids) => setSelection((current) => ({
-            ...current, selectedSceneReferenceIds: ids,
-          }))}
-        />
-
-        {preview.warnings.map((warning) => <p key={warning} className="flex gap-2 text-xs text-amber-400">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{warning}
-        </p>)}
-        {imageCount > preview.limits.max_images ? <p role="alert" className="text-xs text-destructive">
-          已选择 {imageCount} 张，超过最多 {preview.limits.max_images} 张限制。
-        </p> : null}
+        <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={onResolvePlanning} />
+        <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} />
       </div> : null}
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button
-          disabled={
-            loading || !!errorMessage || !preview || submitting
-            || imageCount > preview.limits.max_images
-            || unresolvedCount > 0
-            || !selection.providerId?.trim() || !selection.model?.trim()
-            || (stage === "render" && !sketchReady && !selection.allowUnconstrained)
-          }
-          onClick={() => onSubmit(selection)}
-        >
-          {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
-          使用 {imageCount} 张参考图生成{ignoredCount ? `（忽略 ${ignoredCount} 项）` : ""}
+        <Button disabled={loading || !!errorMessage || !preview || submitting || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+          {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>
     </DialogContent>

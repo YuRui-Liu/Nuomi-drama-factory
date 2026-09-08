@@ -36,6 +36,7 @@ import {
   useUpdateNarrativeGroupVideoReferences,
   useUpdateNarrativeGroupVideoPlan,
   useUploadNarrativeGroupVideoReference,
+  useUploadNarrativeReference,
 } from "@/lib/queries/narrative-groups";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -74,11 +75,6 @@ const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
     selected_by_default: true,
   }],
   max_images: 9,
-  style: legacyReferencePreview.style,
-  character_references: [],
-  scene_references: [],
-  limits: legacyReferencePreview.limits,
-  warnings: [],
 };
 
 describe("narrative group query contract", () => {
@@ -210,9 +206,11 @@ describe("narrative group query contract", () => {
     } as never)).toEqual({
       revision: 8,
       aspect_ratio: "16:9",
-      selected_binding_ids: ["binding-2", "binding-1"],
-      upload_ids: ["upload-1"],
-      reference_revision: "plan-revision-7",
+      reference_resolution: {
+        selected_binding_ids: ["binding-2", "binding-1"],
+        upload_ids: ["upload-1"],
+        reference_revision: "plan-revision-7",
+      },
       use_style: true,
       provider_id: "grsai-main",
       model: "gpt-image-2",
@@ -460,6 +458,26 @@ describe("narrative group reference hooks", () => {
     );
     await waitFor(() => expect(enabled.result.current.data).toBeDefined());
     expect(requests).toBeGreaterThan(0);
+  });
+
+  it("uploads generation-only references as file-only form data", async () => {
+    const fields: string[] = [];
+    server.use(http.post(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/render/references/upload",
+      async ({ request }) => {
+        const form = await request.formData();
+        fields.push(...form.keys());
+        return HttpResponse.json({ ok: true, data: { upload_id: "upload-1", temporary: true, persisted: false, url: "/upload-1" } });
+      },
+    ));
+    const upload = renderHook(
+      () => useUploadNarrativeReference("demo", 2, "ng-1", "render"),
+      { wrapper },
+    );
+
+    await upload.result.current.mutateAsync({ file: new File(["image"], "reference.png", { type: "image/png" }) });
+
+    expect(fields).toEqual(["file"]);
   });
 
   it("drops selection for split and sends it for generate", async () => {
