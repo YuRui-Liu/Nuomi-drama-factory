@@ -736,7 +736,8 @@ class SQLiteStore:
         identity_baseline_digests: dict[str, str],
         episode_identity_baseline_digest: str,
         bindings: tuple[PlannedReferenceBinding, ...]
-        | list[PlannedReferenceBinding],
+        | list[PlannedReferenceBinding]
+        | None,
     ) -> None:
         """Publish identity catalogue, episode mapping, and bindings together."""
         character_items = tuple(
@@ -745,9 +746,13 @@ class SQLiteStore:
         )
         identity_ids = tuple(episode_identity_ids)
         identity_default_map = dict(identity_default_map)
-        binding_items = tuple(
-            PlannedReferenceBinding.model_validate(binding.model_dump())
-            for binding in bindings
+        binding_items = (
+            None
+            if bindings is None
+            else tuple(
+                PlannedReferenceBinding.model_validate(binding.model_dump())
+                for binding in bindings
+            )
         )
         baseline_digests = dict(identity_baseline_digests)
         if episode_number <= 0:
@@ -757,9 +762,13 @@ class SQLiteStore:
         character_names = {character.name for character in character_items}
         if set(baseline_digests) - character_names:
             raise ValueError("identity baselines contain characters outside the draft")
-        if any(binding.episode_number != episode_number for binding in binding_items):
+        if binding_items is not None and any(
+            binding.episode_number != episode_number for binding in binding_items
+        ):
             raise ValueError("binding episode_number does not match publish episode")
-        if any(binding.asset_kind != "character_identity" for binding in binding_items):
+        if binding_items is not None and any(
+            binding.asset_kind != "character_identity" for binding in binding_items
+        ):
             raise ValueError("identity publish only accepts character_identity bindings")
 
         await self._ensure_db()
@@ -857,13 +866,15 @@ class SQLiteStore:
                 )
                 if (cursor.rowcount or 0) != 1:
                     raise ValueError(f"Episode {episode_number} not found")
-                await db.execute(
-                    "DELETE FROM planned_reference_bindings "
-                    "WHERE episode_number = ? AND asset_kind = 'character_identity'",
-                    (episode_number,),
-                )
-                for binding in binding_items:
-                    await self._insert_planned_reference_binding(db, binding)
+                if binding_items is not None:
+                    await db.execute(
+                        "DELETE FROM planned_reference_bindings "
+                        "WHERE episode_number = ? "
+                        "AND asset_kind = 'character_identity'",
+                        (episode_number,),
+                    )
+                    for binding in binding_items:
+                        await self._insert_planned_reference_binding(db, binding)
                 await db.commit()
             except BaseException:
                 await asyncio.shield(db.rollback())

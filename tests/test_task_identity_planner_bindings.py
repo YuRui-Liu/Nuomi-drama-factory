@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from novelvideo.agents.identity_planner import IdentityPlanDraft
+from novelvideo.agents.identity_planner import IdentityPlanDraft, IdentityPlanner
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
@@ -447,3 +447,115 @@ async def test_publisher_captures_deep_snapshot_before_first_await(tmp_path, mon
     ]
     assert persisted_episode.identity_ids == [planned_identity.identity_id]
     assert persisted_episode.identity_default_map == {"陆辰": planned_identity.identity_id}
+
+
+@pytest.mark.asyncio
+async def test_atomic_legacy_publish_with_none_bindings_preserves_existing_bindings(tmp_path):
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store.initialize()
+    old_identity = _identity("陆辰_默认")
+    old_binding = _binding(old_identity.identity_id, revision="director-r1")
+    await store.add_character(_character("陆辰", old_identity))
+    await store.add_episode(
+        NovelEpisode(
+            number=1,
+            title="第一集",
+            identity_ids=[old_identity.identity_id],
+            identity_default_map={"陆辰": old_identity.identity_id},
+        )
+    )
+    await store.replace_planned_reference_bindings_atomic(
+        1, ("character_identity",), (old_binding,)
+    )
+
+    await store.publish_identity_plan_atomic(
+        episode_number=1,
+        characters=(),
+        episode_identity_ids=(old_identity.identity_id,),
+        identity_default_map={"陆辰": old_identity.identity_id},
+        identity_baseline_digests={},
+        episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+            [old_identity.identity_id], {"陆辰": old_identity.identity_id}
+        ),
+        bindings=None,
+    )
+
+    assert await store.list_planned_reference_bindings(1) == [old_binding]
+
+
+class DraftReturningPlanner(IdentityPlanner):
+    def __init__(self, store, draft):
+        super().__init__(store)
+        self.draft = draft
+        self.built = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _build_identity_plan_draft_unlocked(self, episode, on_log=None):
+        self.built.set()
+        await self.release.wait()
+        return self.draft
+
+
+@pytest.mark.asyncio
+async def test_legacy_sqlite_planner_conflict_rolls_back_without_touching_bindings(tmp_path):
+    store_one = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    store_two = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store_one.initialize()
+    await store_two.initialize()
+    old_identity = _identity("陆辰_默认")
+    planned_identity = _identity("陆辰_战斗装")
+    original = _character("陆辰", old_identity)
+    old_binding = _binding(old_identity.identity_id, revision="director-r1")
+    episode = NovelEpisode(
+        number=1,
+        title="第一集",
+        identity_ids=[old_identity.identity_id],
+        identity_default_map={"陆辰": old_identity.identity_id},
+    )
+    await store_one.add_character(original)
+    await store_one.add_episode(episode)
+    await store_one.replace_planned_reference_bindings_atomic(
+        1, ("character_identity",), (old_binding,)
+    )
+    await store_one.load_graph_state()
+    await store_two.load_graph_state()
+    draft = IdentityPlanDraft(
+        new_count=1,
+        resolved_count=1,
+        characters=(_character("陆辰", old_identity, planned_identity),),
+        episode_identity_ids=(planned_identity.identity_id,),
+        identity_default_map={"陆辰": planned_identity.identity_id},
+        identity_baseline_digests={
+            "陆辰": hashlib.sha256(original.identities_json.encode()).hexdigest()
+        },
+        episode_identity_baseline_digest=store_one.identity_episode_baseline_digest(
+            episode.identity_ids, episode.identity_default_map
+        ),
+    )
+    first = DraftReturningPlanner(store_one, draft)
+    second = IdentityPlanner(store_two)
+
+    publication = asyncio.create_task(first.plan_single_episode(episode))
+    await first.built.wait()
+    await second.cognee_store.update_episode(
+        1,
+        identity_ids=["陆辰_并发身份"],
+        identity_default_map={"陆辰": "陆辰_并发身份"},
+    )
+    first.release.set()
+    with pytest.raises(ValueError, match="identity plan episode conflict"):
+        await publication
+
+    persisted_character = (await store_one.list_characters())[0]
+    persisted_episode = (await store_one.list_episodes())[0]
+    assert [item.identity_id for item in persisted_character.identities] == [
+        old_identity.identity_id
+    ]
+    assert persisted_episode.identity_ids == ["陆辰_并发身份"]
+    assert await store_one.list_planned_reference_bindings(1) == [old_binding]

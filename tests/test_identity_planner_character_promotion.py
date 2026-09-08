@@ -256,3 +256,29 @@ async def test_concurrent_drafts_on_same_planner_serialize_store_swap():
 
     assert planner.cognee_store is store
     assert store.updated_episode is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_plan_single_calls_hold_lock_through_legacy_publish():
+    store = FakeIdentityStore("陆辰在地下室。")
+    await store.add_character(NovelCharacter(name="陆辰", gender="男"))
+    planner = ConcurrentDraftPlanner(store)
+
+    first = asyncio.create_task(
+        planner.plan_single_episode(NovelEpisode(number=1, title="一"))
+    )
+    await planner.entered[0].wait()
+    second = asyncio.create_task(
+        planner.plan_single_episode(NovelEpisode(number=2, title="二"))
+    )
+    await asyncio.sleep(0)
+    assert not planner.entered[1].is_set()
+    planner.releases[0].set()
+    await planner.entered[1].wait()
+    assert store.updated_episode is not None
+    assert store.updated_episode[0] == 1
+    planner.releases[1].set()
+    await asyncio.gather(first, second)
+
+    assert planner.cognee_store is store
+    assert store.updated_episode[0] == 2
