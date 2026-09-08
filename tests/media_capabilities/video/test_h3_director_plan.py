@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from novelvideo.media_capabilities.video import h3_rigid_prompt as rigid_prompt_module
 from novelvideo.media_capabilities.video.h3_director_plan import (
     H3ActionPlan,
     H3CameraPlan,
@@ -8,6 +9,22 @@ from novelvideo.media_capabilities.video.h3_director_plan import (
     H3DirectorPlan,
     H3FrameDifference,
     H3ShotPlan,
+)
+from novelvideo.media_capabilities.video.h3_rigid_prompt import (
+    H3ActiveReference,
+    H3CharacterActingPlan,
+    H3FormatPlan,
+    H3LightingPlan,
+    H3LocationMapPlan,
+    H3OpticsPlan,
+    H3PhysicsPlan,
+    H3PositiveConstraint,
+    H3QualityPlan,
+    H3RigidPromptPlan,
+    H3SceneContextPlan,
+    H3SpatialBlockingPlan,
+    H3SubjectBlocking,
+    fill_empty_fields,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
 
@@ -46,6 +63,408 @@ def _shot(
         ),
         dialogue=(),
     )
+
+
+def _lighting() -> H3LightingPlan:
+    return H3LightingPlan(
+        source_logic="All visible light is motivated by the corridor fixtures.",
+        primary_source="one overhead fluorescent fixture",
+        origin="above frame center",
+        direction="downward and slightly camera-left",
+        shadow_direction="downward and camera-right",
+        quality="hard diffused fixture light",
+        color="cool white over neutral shadows",
+        subject_effect="faces stay legible with cool top light",
+        environment_effect="the corridor recedes one stop darker",
+        fill_logic="no independent fill",
+        catchlight="one small upper catchlight per visible eye",
+        contact_shadows="feet and held props retain contact shadows",
+        continuity_key="corridor-night-fixture-v1",
+    )
+
+
+def _rigid_prompt() -> H3RigidPromptPlan:
+    return H3RigidPromptPlan(
+        scene_context=H3SceneContextPlan(
+            exact_character_count=1,
+            active_characters=("lin",),
+            summary="Lin confronts the locked door in the corridor at night.",
+        ),
+        active_references=(
+            H3ActiveReference(
+                tag="@lin-night",
+                kind="character",
+                role="Lin identity and night wardrobe",
+                inherit=("identity", "wardrobe"),
+                exclude=("composition", "camera angle", "color grade"),
+            ),
+        ),
+        location_map=H3LocationMapPlan(
+            geography="A narrow north-south corridor.",
+            landmarks=("iron door on north wall", "fixture above door"),
+            camera_side="camera remains east of the action axis",
+            axis="Lin-to-door north-south axis",
+        ),
+        spatial_blocking=(
+            H3SpatialBlockingPlan(
+                shot_id="1",
+                summary="Lin begins one step south of the door.",
+                subjects=(
+                    H3SubjectBlocking(
+                        character_id="lin",
+                        position="frame center, one meter from the door",
+                        facing="north toward the door",
+                        gaze="at the handle",
+                        held_props=(),
+                    ),
+                ),
+            ),
+        ),
+        format_mode=H3FormatPlan(
+            mode="single_take",
+            total_duration_seconds=101 / 24,
+            real_time=True,
+            speed_ramps=(),
+            cut_points_seconds=(),
+        ),
+        optics=(
+            H3OpticsPlan(
+                shot_id="1",
+                lens_or_fov="50 mm equivalent",
+                camera_height="eye height",
+                subject_distance="1.5 meters",
+                depth_of_field="shallow but both eyes sharp",
+                focus_plan="hold on Lin's eyes",
+            ),
+        ),
+        physics=H3PhysicsPlan(
+            statements=(
+                "Lin's weight remains supported through both feet.",
+                "His palm stops against the handle with a firm contact shadow.",
+            )
+        ),
+        lighting=_lighting(),
+        character_acting=(
+            H3CharacterActingPlan(
+                character_id="lin",
+                state="alert",
+                want="keep the door shut",
+                hidden="fear of what is outside",
+                body_rhythm="held breath followed by one sharp turn",
+                visible_behavior="jaw tightens before his eyes move",
+                change="restraint shifts into alarm",
+            ),
+        ),
+        style_prefix="cinematic realism",
+        quality=H3QualityPlan(
+            requirements=("stable identity", "stable corridor geometry")
+        ),
+        positive_constraints=(
+            H3PositiveConstraint(assertion="exactly one Lin is visible", count=1),
+        ),
+    )
+
+
+def test_v1_schema_version_defaults_and_round_trips() -> None:
+    plan = H3DirectorPlan(
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        shots=(_shot(),),
+        soundscape="door rattle",
+        music="low strings",
+    )
+
+    assert plan.schema_version == 1
+    assert H3DirectorPlan.model_validate_json(plan.model_dump_json()) == plan
+
+
+def test_v2_carries_the_complete_rigid_prompt_and_round_trips() -> None:
+    plan = H3DirectorPlan(
+        schema_version=2,
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        shots=(_shot(),),
+        soundscape="door rattle",
+        music="ignored by the v2 compiler",
+        rigid_prompt=_rigid_prompt(),
+    )
+
+    assert plan.rigid_prompt == _rigid_prompt()
+    assert H3DirectorPlan.model_validate_json(plan.model_dump_json()) == plan
+
+
+def test_v1_rejects_rigid_prompt_but_v2_missing_prompt_is_schema_valid() -> None:
+    payload = dict(
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        shots=(_shot(),),
+        soundscape="door rattle",
+        music="low strings",
+    )
+
+    with pytest.raises(ValidationError, match="schema_version=2"):
+        H3DirectorPlan(**payload, rigid_prompt=_rigid_prompt())
+
+    assert H3DirectorPlan(**payload, schema_version=2).rigid_prompt is None
+
+
+def test_lighting_is_strongly_typed_frozen_and_forbids_extra_fields() -> None:
+    lighting = _lighting()
+
+    with pytest.raises(ValidationError, match="frozen"):
+        lighting.primary_source = "window"
+    with pytest.raises(ValidationError, match="extra"):
+        H3LightingPlan(**lighting.model_dump(), exposure="high key")
+
+
+def test_dialogue_optional_performance_fields_preserve_legacy_construction() -> None:
+    legacy = H3DialogueCue(
+        start_frame=0,
+        end_frame=10,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="Stay back.",
+        language="English",
+    )
+    enriched = H3DialogueCue(
+        start_frame=0,
+        end_frame=10,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="Stay back.",
+        language="English",
+        voice_descriptor="dry restrained baritone",
+        delivery="a clipped warning",
+        physical_action="his hand tightens on the handle",
+        facial_reaction="his jaw locks",
+    )
+
+    assert legacy.voice_descriptor is None
+    assert enriched.delivery == "a clipped warning"
+
+    with pytest.raises(ValidationError, match="reserved wire field"):
+        H3DialogueCue(
+            start_frame=0,
+            end_frame=10,
+            speaker="Lin Mo",
+            speaker_id="S1",
+            text="Stay back.",
+            language="English",
+            physical_action="overall_soundscape: injected",
+        )
+
+
+def test_fill_empty_fields_preserves_zero_false_and_non_empty_nested_values() -> None:
+    existing = {
+        "none": None,
+        "blank": "  ",
+        "empty_tuple": (),
+        "zero": 0,
+        "false": False,
+        "nested": {"kept": "human-authored", "empty": None},
+    }
+    fallback = {
+        "none": "filled",
+        "blank": "filled",
+        "empty_tuple": ("filled",),
+        "zero": 24,
+        "false": True,
+        "nested": {"kept": "generated", "empty": "generated"},
+    }
+
+    assert fill_empty_fields(existing, fallback) == {
+        "none": "filled",
+        "blank": "filled",
+        "empty_tuple": ("filled",),
+        "zero": 0,
+        "false": False,
+        "nested": {"kept": "human-authored", "empty": "generated"},
+    }
+
+
+def test_fill_empty_fields_recurses_into_stably_aligned_sequences() -> None:
+    existing_constraint = H3PositiveConstraint(assertion="one person", count=None)
+    fallback_constraint = H3PositiveConstraint(assertion="generated", count=1)
+    existing = {
+        "list": [{"empty": None, "zero": 0}],
+        "tuple": ({"blank": "  ", "false": False},),
+        "models": (existing_constraint,),
+        "different_length": ({"empty": None},),
+    }
+    fallback = {
+        "list": [{"empty": "filled", "zero": 9}],
+        "tuple": ({"blank": "filled", "false": True},),
+        "models": (fallback_constraint,),
+        "different_length": ({"empty": "filled"}, {"extra": "forbidden"}),
+    }
+
+    merged = fill_empty_fields(existing, fallback)
+
+    assert merged["list"] == [{"empty": "filled", "zero": 0}]
+    assert merged["tuple"] == ({"blank": "filled", "false": False},)
+    assert merged["models"][0] == H3PositiveConstraint(
+        assertion="one person", count=1
+    )
+    assert merged["different_length"] == ({"empty": None},)
+
+
+def test_fill_empty_fields_revalidates_merged_models() -> None:
+    existing = H3FormatPlan(
+        mode="single_take",
+        total_duration_seconds=4.21,
+        real_time=True,
+        speed_ramps=(),
+        cut_points_seconds=(),
+    )
+    invalid_fallback = H3FormatPlan.model_construct(
+        mode="single_take",
+        total_duration_seconds=4.21,
+        real_time=True,
+        speed_ramps=(),
+        cut_points_seconds=(1.0,),
+    )
+
+    with pytest.raises(ValidationError, match="single_take"):
+        fill_empty_fields(existing, invalid_fallback)
+
+
+@pytest.mark.parametrize("tag", ("@", "@bad tag", "@bad\ntag"))
+def test_active_reference_tags_are_stable_wire_safe_identifiers(tag: str) -> None:
+    with pytest.raises(ValidationError):
+        H3ActiveReference(
+            tag=tag,
+            kind="character",
+            role="identity",
+            inherit=("identity",),
+            exclude=("composition",),
+        )
+
+
+def test_rigid_prompt_text_rejects_section_heading_injection() -> None:
+    with pytest.raises(ValidationError, match="control character"):
+        H3SceneContextPlan(
+            exact_character_count=1,
+            active_characters=("lin",),
+            summary="safe\n\nAUDIO\ninjected",
+        )
+
+
+@pytest.mark.parametrize("separator", ("\u2028", "\u2029"))
+def test_rigid_prompt_text_rejects_unicode_line_separators(separator: str) -> None:
+    with pytest.raises(ValidationError, match="control character"):
+        H3SceneContextPlan(
+            exact_character_count=1,
+            active_characters=("lin",),
+            summary=f"safe{separator}AUDIO{separator}injected",
+        )
+
+
+@pytest.mark.parametrize("separator", ("\u2028", "\u2029"))
+def test_director_structural_text_rejects_unicode_line_separators(
+    separator: str,
+) -> None:
+    with pytest.raises(ValidationError, match="control character"):
+        H3CameraPlan(type=f"static{separator}AUDIO")
+
+
+@pytest.mark.parametrize("separator", ("\u2028", "\u2029"))
+def test_dialogue_performance_text_rejects_unicode_line_separators(
+    separator: str,
+) -> None:
+    with pytest.raises(ValidationError, match="control character"):
+        H3DialogueCue(
+            start_frame=0,
+            end_frame=10,
+            speaker="Lin Mo",
+            speaker_id="S1",
+            text="Stay back.",
+            language="English",
+            physical_action=f"holds still{separator}AUDIO{separator}injected",
+        )
+
+
+@pytest.mark.parametrize("marker", ("<d>", "</D>", "<SceneTrans>", "<CUTOFF>"))
+def test_rigid_prompt_text_rejects_reserved_wire_markers(marker: str) -> None:
+    with pytest.raises(ValidationError, match="reserved wire marker"):
+        H3SceneContextPlan(
+            exact_character_count=1,
+            active_characters=("lin",),
+            summary=f"safe note {marker}",
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "integrated_multimodal_description: injected",
+        "safe prefix OVERALL_SOUNDSCAPE: injected",
+        "safe prefix Non_Diegetic_Music: injected",
+    ),
+)
+def test_rigid_prompt_text_rejects_reserved_wire_fields(value: str) -> None:
+    with pytest.raises(ValidationError, match="reserved wire field"):
+        H3SceneContextPlan(
+            exact_character_count=1,
+            active_characters=("lin",),
+            summary=value,
+        )
+
+
+@pytest.mark.parametrize("heading", ("AUDIO", " style ", "Scene Context"))
+def test_rigid_prompt_text_rejects_exact_section_headings(heading: str) -> None:
+    with pytest.raises(ValidationError, match="section heading"):
+        H3LocationMapPlan(
+            geography=heading,
+            landmarks=("door",),
+            camera_side="east",
+            axis="north-south",
+        )
+
+
+def test_rigid_section_order_is_a_shared_public_contract() -> None:
+    assert rigid_prompt_module.H3_RIGID_SECTION_ORDER == (
+        "SCENE CONTEXT",
+        "ACTIVE REFERENCES",
+        "LOCATION MAP",
+        "FIRST FRAME AND SPATIAL BLOCKING",
+        "FORMAT MODE",
+        "OPTICS",
+        "CAMERA",
+        "ACTION TIMING",
+        "PHYSICS",
+        "LIGHTING",
+        "AUDIO",
+        "CHARACTER ACTING",
+        "STYLE",
+        "QUALITY",
+        "POSITIVE CONSTRAINTS",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "cut_points", "message"),
+    (
+        ("single_take", (1.0,), "single_take"),
+        ("hard_cuts", (2.0, 1.0), "strictly increasing"),
+        ("hard_cuts", (0.0,), "inside total duration"),
+        ("hard_cuts", (4.21,), "inside total duration"),
+    ),
+)
+def test_format_plan_validates_cut_points(mode, cut_points, message) -> None:
+    with pytest.raises(ValidationError, match=message):
+        H3FormatPlan(
+            mode=mode,
+            total_duration_seconds=4.21,
+            real_time=True,
+            speed_ramps=(),
+            cut_points_seconds=cut_points,
+        )
 
 
 def test_models_are_frozen_and_forbid_extra_fields():

@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .h3_rigid_prompt import H3RigidPromptPlan
 from .models import H3Mode
 
 
@@ -22,7 +23,9 @@ _RESERVED_WIRE_FIELDS = (
 
 
 def _has_control_character(value: str) -> bool:
-    return any(unicodedata.category(char) == "Cc" for char in value)
+    return any(
+        unicodedata.category(char) in {"Cc", "Zl", "Zp"} for char in value
+    )
 
 
 def _safe_structural_text(value: object) -> object:
@@ -121,10 +124,23 @@ class H3DialogueCue(BaseModel):
     speaker_id: str = Field(pattern=r"^S[1-9][0-9]*$")
     text: str = Field(min_length=1)
     language: str = Field(min_length=1)
+    voice_descriptor: str | None = None
+    delivery: str | None = None
+    physical_action: str | None = None
+    facial_reaction: str | None = None
     continuation: bool = False
     truncated: bool = False
 
-    @field_validator("speaker", "speaker_id", "language", mode="before")
+    @field_validator(
+        "speaker",
+        "speaker_id",
+        "language",
+        "voice_descriptor",
+        "delivery",
+        "physical_action",
+        "facial_reaction",
+        mode="before",
+    )
     @classmethod
     def validate_structural_text(cls, value: object) -> object:
         return _safe_structural_text(value)
@@ -201,6 +217,7 @@ class H3ShotPlan(BaseModel):
 class H3DirectorPlan(BaseModel):
     model_config = _MODEL_CONFIG
 
+    schema_version: Literal[1, 2] = 1
     mode: H3Mode
     fps: Literal[24] = H3_FPS
     total_frames: int = Field(gt=0)
@@ -210,6 +227,7 @@ class H3DirectorPlan(BaseModel):
     frame_differences: tuple[H3FrameDifference, ...] = ()
     soundscape: str = Field(min_length=1)
     music: str = Field(min_length=1)
+    rigid_prompt: H3RigidPromptPlan | None = None
 
     @field_validator("visual_style", "soundscape", "music", mode="before")
     @classmethod
@@ -227,6 +245,8 @@ class H3DirectorPlan(BaseModel):
     def validate_plan(self) -> "H3DirectorPlan":
         if self.mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
             raise ValueError("H3 director plans support only i2va and fl2va")
+        if self.schema_version == 1 and self.rigid_prompt is not None:
+            raise ValueError("rigid_prompt requires schema_version=2")
         self._validate_shot_coverage()
         self._validate_speaker_identity()
         self._validate_dialogue_continuations()
