@@ -31,6 +31,7 @@ export interface GroupReferenceDialogProps {
   groupId?: string;
   uploadingReference?: boolean;
   onUploadReference?: (file: File) => Promise<NarrativeReferenceUpload | null>;
+  onResetUploadError?: () => void;
 }
 
 type ReferenceSelectionState = {
@@ -40,7 +41,7 @@ type ReferenceSelectionState = {
 
 function readyDefaults(preview?: PlannedNarrativeGroupReferencePreview | null) {
   if (!preview) return [];
-  return [...new Set(preview.bindings.filter((item) => item.status === "ready" && item.selected_by_default).map((item) => item.binding_id))]
+  return [...new Set(preview.bindings.filter((item) => item.status === "ready" && (item.required || item.selected_by_default)).map((item) => item.binding_id))]
     .slice(0, preview.max_images);
 }
 
@@ -61,6 +62,7 @@ export function GroupReferenceDialog({
   sketchReady = true,
   uploadingReference = false,
   onUploadReference,
+  onResetUploadError,
 }: GroupReferenceDialogProps) {
   const [references, setReferences] = useState<ReferenceSelectionState>({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
   const [useStyle, setUseStyle] = useState(true);
@@ -69,6 +71,7 @@ export function GroupReferenceDialog({
   const [imageSize, setImageSize] = useState(() => coerceNarrativeImageSize(defaultModel, defaultImageSize));
   const [allowUnconstrained, setAllowUnconstrained] = useState(true);
   const [saveAsProjectDefault, setSaveAsProjectDefault] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const wasOpen = useRef(false);
   const previousRevision = useRef<string | null>(null);
 
@@ -83,6 +86,7 @@ export function GroupReferenceDialog({
       setImageSize(coerceNarrativeImageSize(defaultModel, defaultImageSize));
       setAllowUnconstrained(true);
       setSaveAsProjectDefault(false);
+      setUploadError(null);
     }
     wasOpen.current = open;
     if (preview) previousRevision.current = preview.reference_revision;
@@ -94,13 +98,20 @@ export function GroupReferenceDialog({
   const uploading = uploadingReference;
 
   const uploadTemporary = async (file: File): Promise<TemporaryReferenceSelection | null> => {
-    const response = onUploadReference ? await onUploadReference(file) : null;
-    if (!response) return null;
-    const selected = { uploadId: response.upload_id, fileName: file.name, previewUrl: response.url };
-    setReferences((current) => current.temporaryUploads.some((item) => item.uploadId === selected.uploadId)
-      ? current
-      : { ...current, temporaryUploads: [...current.temporaryUploads, selected] });
-    return selected;
+    setUploadError(null);
+    onResetUploadError?.();
+    try {
+      const response = onUploadReference ? await onUploadReference(file) : null;
+      if (!response) throw new Error("临时参考图上传失败，请重新选择");
+      const selected = { uploadId: response.upload_id, fileName: file.name, previewUrl: response.url };
+      setReferences((current) => current.temporaryUploads.some((item) => item.uploadId === selected.uploadId)
+        ? current
+        : { ...current, temporaryUploads: [...current.temporaryUploads, selected] });
+      return selected;
+    } catch (caught) {
+      setUploadError(caught instanceof Error ? caught.message : "临时参考图上传失败，请重试");
+      return null;
+    }
   };
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
@@ -126,7 +137,7 @@ export function GroupReferenceDialog({
           <Checkbox aria-label="使用项目风格" checked={useStyle} onCheckedChange={(checked) => setUseStyle(checked === true)} />
         </div>
         <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={onResolvePlanning} />
-        <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} />
+        <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} error={uploadError} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} />
       </div> : null}
 
       <DialogFooter className="px-0 pb-0">

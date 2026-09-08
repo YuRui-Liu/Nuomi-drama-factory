@@ -41,27 +41,9 @@ import {
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type {
-  NarrativeGroupGenerationSelection,
-  NarrativeGroupReferencePreview,
   PlannedNarrativeGroupGenerationSelection,
   PlannedNarrativeGroupReferencePreview,
 } from "@/lib/queries/narrative-groups";
-
-const legacyReferencePreview: NarrativeGroupReferencePreview = {
-  requirements: [],
-  bindings: [{
-    requirement_id: "character:hero",
-    decision: "project_asset",
-    asset_id: "asset-hero",
-    asset_kind: "character_identity",
-    thumbnail_url: "/hero.png",
-  }],
-  style: { id: "style-1", label: "电影感", prompt: "cinematic", enabled_by_default: true },
-  character_references: [],
-  scene_references: [],
-  limits: { max_images: 9, selected_images: 1, omitted_reference_ids: [] },
-  warnings: [],
-};
 
 const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
   reference_revision: "director-plan-r7",
@@ -78,11 +60,7 @@ const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
 };
 
 describe("narrative group query contract", () => {
-  it("keeps legacy and planned reference preview contracts distinct", () => {
-    expect(legacyReferencePreview.bindings?.[0]).toMatchObject({
-      requirement_id: "character:hero",
-      asset_id: "asset-hero",
-    });
+  it("uses only the planned reference preview contract", () => {
     expect(plannedReferencePreview).toMatchObject({
       reference_revision: "director-plan-r7",
       max_images: 9,
@@ -152,31 +130,7 @@ describe("narrative group query contract", () => {
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/%E7%BB%84%20%E4%B8%80/render/references");
   });
 
-  it("serializes only generation selection fields and preserves empty arrays", () => {
-    expect(narrativeGroupActionPayload({
-      revision: 7,
-      aspectRatio: "9:16",
-      selection: {
-        useStyle: false,
-        selectedCharacterReferenceIds: [],
-        selectedSceneReferenceIds: ["scene-1"],
-      },
-      apiKey: "must-not-leak",
-    } as never)).toEqual({
-      revision: 7,
-      aspect_ratio: "9:16",
-      use_style: false,
-      selected_character_reference_ids: [],
-      selected_scene_reference_ids: ["scene-1"],
-    });
-  });
-
-  it("serializes planned binding IDs without leaking legacy names or paths", () => {
-    const legacySelection: NarrativeGroupGenerationSelection = {
-      useStyle: false,
-      selectedCharacterReferenceIds: [],
-      selectedSceneReferenceIds: [],
-    };
+  it("serializes only the planned binding contract", () => {
     const plannedSelection: PlannedNarrativeGroupGenerationSelection = {
       selectedBindingIds: ["binding-2", "binding-1"],
       uploadIds: ["upload-1"],
@@ -187,8 +141,6 @@ describe("narrative group query contract", () => {
       imageSize: "2K",
       allowUnconstrained: false,
     };
-    expect(legacySelection.selectedCharacterReferenceIds).toEqual([]);
-
     expect(narrativeGroupActionPayload({
       revision: 8,
       aspectRatio: "16:9",
@@ -196,12 +148,6 @@ describe("narrative group query contract", () => {
         ...plannedSelection,
         displayName: "must-not-leak",
         localPath: "/private/must-not-leak.png",
-        selectedCharacterReferenceIds: ["legacy-character"],
-        selectedSceneReferenceIds: ["legacy-scene"],
-        referenceResolution: {
-          decisions: [{ requirement_id: "legacy", action: "ignore" }],
-          additional_asset_ids: ["legacy-path-like-asset"],
-        },
       },
     } as never)).toEqual({
       revision: 8,
@@ -490,10 +436,11 @@ describe("narrative group reference hooks", () => {
       },
     ));
     const { result } = renderHook(() => useNarrativeGroupAction("demo", 2), { wrapper });
-    const selection = {
+    const selection: PlannedNarrativeGroupGenerationSelection = {
       useStyle: true,
-      selectedCharacterReferenceIds: [],
-      selectedSceneReferenceIds: ["scene-1"],
+      selectedBindingIds: [],
+      uploadIds: ["upload-1"],
+      referenceRevision: "planned-r1",
     };
 
     await result.current.mutateAsync({ groupId: "ng-1", stage: "render", action: "split", selection, aspectRatio: "16:9" });
@@ -504,8 +451,11 @@ describe("narrative group reference hooks", () => {
       {
         aspect_ratio: "16:9",
         use_style: true,
-        selected_character_reference_ids: [],
-        selected_scene_reference_ids: ["scene-1"],
+        reference_resolution: {
+          selected_binding_ids: [],
+          upload_ids: ["upload-1"],
+          reference_revision: "planned-r1",
+        },
       },
     ]);
   });

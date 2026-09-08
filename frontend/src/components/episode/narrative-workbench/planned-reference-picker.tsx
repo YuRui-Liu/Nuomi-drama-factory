@@ -38,7 +38,8 @@ function unavailableReason(status: PlannedReferenceStatus) {
 
 function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
   const ready = new Set(bindings.filter((item) => item.status === "ready").map((item) => item.binding_id));
-  return [...new Set(selectedIds)].filter((id) => ready.has(id));
+  const required = bindings.filter((item) => item.required && item.status === "ready").map((item) => item.binding_id);
+  return [...new Set([...required, ...selectedIds])].filter((id) => ready.has(id));
 }
 
 function uniqueBindingsById(bindings: PlannedReferenceBinding[]) {
@@ -80,7 +81,7 @@ export function PlannedReferencePicker({
   };
 
   const clearGroups = (groups: BindingGroup[]) => {
-    const removed = new Set(visibleBindings.filter((item) => groups.some((group) => group.includes(item)))
+    const removed = new Set(visibleBindings.filter((item) => !item.required && groups.some((group) => group.includes(item)))
       .map((item) => item.binding_id));
     onChange(selected.filter((id) => !removed.has(id)));
   };
@@ -95,7 +96,7 @@ export function PlannedReferencePicker({
       </div>
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" variant="outline" aria-label="全选全部规划参考" onClick={() => selectGroups(bindingGroups)}>全选</Button>
-        <Button type="button" size="sm" variant="outline" aria-label="清空全部规划参考" onClick={() => onChange([])}>清空</Button>
+        <Button type="button" size="sm" variant="outline" aria-label="清空全部规划参考" onClick={() => clearGroups(bindingGroups)}>清空</Button>
       </div>
     </header>
 
@@ -120,7 +121,8 @@ export function PlannedReferencePicker({
           {items.map((binding) => {
             const available = binding.status === "ready";
             const isSelected = available && selectedSet.has(binding.binding_id);
-            const disabled = !available || (!isSelected && atLimit);
+            const lockedRequired = available && binding.required;
+            const disabled = !available || lockedRequired || (!isSelected && atLimit);
             const warning = binding.warning || unavailableReason(binding.status);
             return <button
               key={binding.binding_id}
@@ -153,6 +155,7 @@ export function PlannedReferencePicker({
               <span className={cn("mt-2 block text-xs font-semibold", isSelected ? "text-cyan-100" : "text-zinc-200")}>
                 {isSelected ? "已选择" : "未选择"}
               </span>
+              {lockedRequired ? <span className="mt-1 block text-xs font-semibold text-lime-200">必选</span> : null}
               {warning ? <span className="mt-2 flex gap-1.5 text-xs text-amber-200"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{warning}</span> : null}
               {!available && binding.required ? <span className="mt-2 block text-xs font-semibold text-amber-100">必需引用</span> : null}
             </button>;

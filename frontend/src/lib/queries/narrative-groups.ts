@@ -13,18 +13,6 @@ export type NarrativeStageStatus =
   | "partial_failure" | "failed";
 export type NarrativeGridStage = "sketch" | "render";
 export type NarrativeGroupAction = "generate" | "split" | "regenerate";
-export type NarrativeReferenceStatus =
-  | "matched" | "fallback" | "draft_variant" | "missing_asset"
-  | "missing_image" | "temporary" | "ignored" | "invalid";
-
-export interface NarrativeReferenceBinding {
-  requirement_id: string;
-  decision: "project_asset" | "fallback";
-  asset_id: string;
-  asset_kind: string;
-  thumbnail_url?: string | null;
-}
-
 export type PlannedReferenceStatus =
   | "ready"
   | "pending_confirmation"
@@ -47,46 +35,6 @@ export interface PlannedReferenceBinding {
   warning?: string | null;
 }
 
-export interface NarrativeReferenceRequirement {
-  id: string;
-  kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
-  entity_id: string;
-  base_entity_id?: string | null;
-  variant_id?: string | null;
-  shot_ids: string[];
-  required: boolean;
-  label: string;
-  status: NarrativeReferenceStatus;
-  candidate_asset_ids: string[];
-  available_actions: string[];
-  bindings: NarrativeReferenceBinding[];
-  warning?: string | null;
-}
-
-export interface NarrativeReferenceDecision {
-  requirement_id: string;
-  action: "keep" | "accept_fallback" | "use_base" | "confirm_draft"
-    | "choose_identity" | "choose_scene" | "choose_variant" | "choose_prop"
-    | "upload" | "ignore";
-  asset_id?: string;
-  upload_id?: string;
-}
-
-export interface NarrativeReferenceResolution {
-  decisions: NarrativeReferenceDecision[];
-  style_asset_id?: string;
-  additional_asset_ids?: string[];
-  additional_upload_ids?: string[];
-}
-
-export interface NarrativeReferenceCandidate {
-  id: string;
-  kind: "character_identity" | "scene_base" | "scene_variant" | "prop";
-  label: string;
-  available: boolean;
-  thumbnail_url?: string | null;
-}
-
 export interface NarrativeReferenceUpload {
   upload_id: string;
   mime_type: string;
@@ -95,40 +43,6 @@ export interface NarrativeReferenceUpload {
   persisted: boolean;
   persistence_warning: string;
   url: string;
-}
-
-export interface NarrativeGroupImageReference {
-  id: string;
-  kind: "character" | "scene";
-  source_kind: "identity" | "portrait_fallback" | "scene_master";
-  label: string;
-  thumbnail_url?: string | null;
-  beat_numbers: number[];
-  enabled_by_default: boolean;
-  warning?: string | null;
-  character_name?: string;
-  identity_id?: string;
-  scene_id?: string;
-}
-
-export interface NarrativeGroupReferencePreview {
-  requirements?: NarrativeReferenceRequirement[];
-  bindings?: NarrativeReferenceBinding[];
-  style: {
-    id: string;
-    label: string;
-    prompt: string;
-    enabled_by_default: boolean;
-    warning?: string | null;
-  };
-  character_references: NarrativeGroupImageReference[];
-  scene_references: NarrativeGroupImageReference[];
-  limits: {
-    max_images: number;
-    selected_images: number;
-    omitted_reference_ids: string[];
-  };
-  warnings: string[];
 }
 
 export interface PlannedNarrativeGroupReferencePreview {
@@ -173,22 +87,11 @@ interface NarrativeGroupGenerationConfiguration {
   saveAsProjectDefault?: boolean;
 }
 
-/** Legacy dialog selection retained until GroupReferenceDialog is switched over. */
-export interface NarrativeGroupGenerationSelection extends NarrativeGroupGenerationConfiguration {
-  selectedCharacterReferenceIds: string[];
-  selectedSceneReferenceIds: string[];
-  referenceResolution?: NarrativeReferenceResolution;
-}
-
 export interface PlannedNarrativeGroupGenerationSelection extends NarrativeGroupGenerationConfiguration {
   selectedBindingIds: string[];
   uploadIds: string[];
   referenceRevision: string;
 }
-
-type NarrativeGroupActionSelection =
-  | NarrativeGroupGenerationSelection
-  | PlannedNarrativeGroupGenerationSelection;
 
 export interface NarrativeStageState {
   status: NarrativeStageStatus;
@@ -552,12 +455,6 @@ export function narrativeGroupReferencePath(
   return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references`;
 }
 
-export function narrativeGroupReferenceCandidatesPath(
-  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
-) {
-  return p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/${stage}/references/candidates`;
-}
-
 export function narrativeGroupReferenceUploadPath(
   project: string, episode: number, groupId: string, stage: NarrativeGridStage,
 ) {
@@ -573,19 +470,17 @@ export function narrativeGroupRollbackPath(
 export function narrativeGroupActionPayload(input: {
   revision?: number;
   aspectRatio?: "9:16" | "16:9";
-  selection?: NarrativeGroupActionSelection;
+  selection?: PlannedNarrativeGroupGenerationSelection;
 } = {}) {
   const payload: {
     revision?: number;
     aspect_ratio?: "9:16" | "16:9";
     use_style?: boolean;
-    reference_resolution?: NarrativeReferenceResolution | {
+    reference_resolution?: {
       selected_binding_ids: string[];
       upload_ids: string[];
       reference_revision: string;
     };
-    selected_character_reference_ids?: string[];
-    selected_scene_reference_ids?: string[];
     provider_id?: string;
     model?: string;
     image_size?: NarrativeImageSize;
@@ -595,30 +490,11 @@ export function narrativeGroupActionPayload(input: {
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
-    if ("selectedBindingIds" in input.selection) {
-      payload.reference_resolution = {
-        selected_binding_ids: input.selection.selectedBindingIds,
-        upload_ids: input.selection.uploadIds,
-        reference_revision: input.selection.referenceRevision,
-      };
-    } else {
-      payload.selected_character_reference_ids = input.selection.selectedCharacterReferenceIds;
-      payload.selected_scene_reference_ids = input.selection.selectedSceneReferenceIds;
-      if (input.selection.referenceResolution) {
-        payload.reference_resolution = {
-          decisions: input.selection.referenceResolution.decisions,
-          ...(input.selection.referenceResolution.additional_asset_ids?.length
-            ? { additional_asset_ids: input.selection.referenceResolution.additional_asset_ids }
-            : {}),
-          ...(input.selection.referenceResolution.additional_upload_ids?.length
-            ? { additional_upload_ids: input.selection.referenceResolution.additional_upload_ids }
-            : {}),
-          ...(input.selection.referenceResolution.style_asset_id
-            ? { style_asset_id: input.selection.referenceResolution.style_asset_id }
-            : {}),
-        };
-      }
-    }
+    payload.reference_resolution = {
+      selected_binding_ids: input.selection.selectedBindingIds,
+      upload_ids: input.selection.uploadIds,
+      reference_revision: input.selection.referenceRevision,
+    };
     if (input.selection.providerId) payload.provider_id = input.selection.providerId;
     if (input.selection.model) payload.model = input.selection.model;
     if (input.selection.imageSize) payload.image_size = input.selection.imageSize;
@@ -629,18 +505,6 @@ export function narrativeGroupActionPayload(input: {
   return payload;
 }
 
-
-export function useNarrativeReferenceCandidates(
-  project: string, episode: number, groupId: string, stage: NarrativeGridStage,
-) {
-  return useQuery({
-    queryKey: ["narrative-reference-candidates", project, episode, groupId, stage],
-    queryFn: ({ signal }) => api.get(
-      narrativeGroupReferenceCandidatesPath(project, episode, groupId, stage), { signal },
-    ).json<ApiResponse<NarrativeReferenceCandidate[]>>(),
-    enabled: !!project && episode > 0 && !!groupId,
-  });
-}
 
 export function useUploadNarrativeReference(
   project: string, episode: number, groupId: string, stage: NarrativeGridStage,
@@ -681,7 +545,7 @@ export function useNarrativeGroupAction(project: string, episode: number) {
       stage: NarrativeGridStage;
       action: NarrativeGroupAction;
       revision?: number;
-      selection?: NarrativeGroupActionSelection;
+      selection?: PlannedNarrativeGroupGenerationSelection;
       aspectRatio?: "9:16" | "16:9";
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
       json: narrativeGroupActionPayload({

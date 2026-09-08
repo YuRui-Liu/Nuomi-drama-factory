@@ -67,7 +67,7 @@ vi.mock("@/lib/queries/media-models",()=>({
 vi.mock("@/lib/queries/projects",()=>({useUpdateProject:()=>({isPending:false,mutateAsync:m.updateProject})}));
 vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}));
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
-vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button></div>:null}));
+vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange,onResolvePlanning}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button><button onClick={onResolvePlanning}>返回规划</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
  GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.models?.map((model:any)=><button key={model.id} aria-label={`卡片切换至 ${model.label}`} disabled={!model.available} onClick={()=>props.onModelChange(model.id)}>{model.id}</button>)}{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode==="auto"?"i2va":props.mode})}>生成组合视频</button></>},
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
@@ -128,6 +128,12 @@ describe("NarrativeGroupWorkbench references",()=>{
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   expect(m.start).not.toHaveBeenCalled();
   expect(m.error).toHaveBeenCalledWith("引用版本已更新");
+ });
+ it("returns the current episode to its script planning page",()=>{
+  render(<NarrativeGroupWorkbench project="p" episode={3} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByText("生成"));
+  fireEvent.click(screen.getByText("返回规划"));
+  expect(m.navigate).toHaveBeenCalledWith({to:"/projects/$project/episodes/$episode/script",params:{project:"p",episode:"3"}});
  });
  it("persists render model and resolution when requested",async()=>{
   m.dialogSelection={useStyle:true,selectedBindingIds:[],uploadIds:[],referenceRevision:"planned-r1",providerId:"grsai-main",model:"gpt-image-2-vip",imageSize:"4K",saveAsProjectDefault:true};

@@ -50,10 +50,15 @@ function ControlledPicker({
 }
 
 describe("PlannedReferencePicker", () => {
-  it("uses the whole card as an accessible mouse and keyboard toggle", async () => {
+  it("locks required ready bindings and uses optional whole cards as accessible toggles", async () => {
     const user = userEvent.setup();
     render(<ControlledPicker />);
-    const card = screen.getByRole("button", { name: /苏清晏/ });
+    const required = screen.getByRole("button", { name: /苏清晏/ });
+    const card = screen.getByRole("button", { name: /旧宅/ });
+
+    expect(required).toBeDisabled();
+    expect(required).toHaveAttribute("aria-pressed", "true");
+    expect(within(required).getByText("必选", { selector: "span" })).toBeInTheDocument();
 
     expect(card).toHaveAttribute("type", "button");
     expect(card).toHaveAttribute("aria-pressed", "false");
@@ -90,11 +95,11 @@ describe("PlannedReferencePicker", () => {
     expect(screen.getByText("已选 3 张 / 上限 3 张")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "清空场景与变体" }));
-    expect(onChange).toHaveBeenLastCalledWith(["character-1"]);
+    expect(onChange).toHaveBeenLastCalledWith(["character-1", "scene-variant-1"]);
     fireEvent.click(screen.getByRole("button", { name: "全选道具" }));
-    expect(onChange).toHaveBeenLastCalledWith(["character-1", "prop-1"]);
+    expect(onChange).toHaveBeenLastCalledWith(["character-1", "scene-variant-1", "prop-1"]);
     fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
-    expect(onChange).toHaveBeenLastCalledWith([]);
+    expect(onChange).toHaveBeenLastCalledWith(["character-1", "scene-variant-1"]);
   });
 
   it("uses instance-unique heading relationships", () => {
@@ -115,15 +120,11 @@ describe("PlannedReferencePicker", () => {
     expect(screen.queryByText("不应出现的重复角色")).not.toBeInTheDocument();
   });
 
-  it("counts temporary images, disables additions at the limit, and restores them after deselection", () => {
-    render(<ControlledPicker initial={["character-1"]} maxImages={2} temporaryCount={1} />);
-    expect(screen.getByText("已选 2 张 / 上限 2 张")).toBeInTheDocument();
+  it("counts temporary images and disables optional additions at the limit", () => {
+    render(<ControlledPicker initial={["character-1", "scene-variant-1"]} maxImages={3} temporaryCount={1} />);
+    expect(screen.getByText("已选 3 张 / 上限 3 张")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /雨夜长街/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /旧灯笼/ })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: /苏清晏/ }));
-    expect(screen.getByText("已选 1 张 / 上限 2 张")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /雨夜长街/ })).toBeEnabled();
   });
 
   it("reserves temporary image slots for both global and category select-all", () => {
@@ -136,7 +137,7 @@ describe("PlannedReferencePicker", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
     fireEvent.click(screen.getByRole("button", { name: "全选场景与变体" }));
-    expect(onChange).toHaveBeenLastCalledWith(["scene-variant-1", "scene-base-1"]);
+    expect(onChange).toHaveBeenLastCalledWith(["character-1", "scene-variant-1"]);
     expect(screen.getByText("已选 3 张 / 上限 3 张")).toBeInTheDocument();
   });
 
@@ -149,7 +150,7 @@ describe("PlannedReferencePicker", () => {
       initial={["character-1", "character-1", "unknown", "missing-1"]}
       items={[...bindings, unavailable]}
     />);
-    expect(screen.getByText("已选 1 张 / 上限 5 张")).toBeInTheDocument();
+    expect(screen.getByText("已选 2 张 / 上限 5 张")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /失落印章/ })).toHaveAttribute("aria-pressed", "false");
   });
 

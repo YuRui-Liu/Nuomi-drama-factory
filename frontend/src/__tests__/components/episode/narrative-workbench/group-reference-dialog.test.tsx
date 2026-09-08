@@ -9,7 +9,7 @@ const preview: PlannedNarrativeGroupReferencePreview = {
   max_images: 3,
   bindings: [
     { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hero.png" },
-    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png" },
+    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: false, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png" },
     { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: true, status: "missing_image", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
   ],
 };
@@ -34,14 +34,13 @@ describe("GroupReferenceDialog planned references", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: ["identity:hero:young", "scene:hall:rain"], uploadIds: [], referenceRevision: "director-plan-r7", useStyle: true }));
   });
 
-  it("toggles a whole asset card with visible selected state and supports cancellation", () => {
+  it("keeps required bindings selected while optional whole cards support cancellation", () => {
     renderDialog();
     const hero = screen.getByRole("button", { name: /石九 \/ 青年时期/ });
     fireEvent.click(hero);
-    expect(hero).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeEnabled();
-    fireEvent.click(hero);
     expect(hero).toHaveAttribute("aria-pressed", "true");
+    expect(hero).toBeDisabled();
+    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeEnabled();
   });
 
   it("keeps style independent from the image count", () => {
@@ -64,6 +63,19 @@ describe("GroupReferenceDialog planned references", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ uploadIds: ["upload-1"] }));
   });
 
+  it("shows a retryable inline error when a temporary upload fails", async () => {
+    const onUploadReference = vi.fn().mockRejectedValue(new Error("文件格式不支持"));
+    const onResetUploadError = vi.fn();
+    renderDialog({ onUploadReference, onResetUploadError });
+    const file = new File(["bad"], "坏图.gif", { type: "image/gif" });
+
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("文件格式不支持");
+    expect(onResetUploadError).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "重新选择临时参考图" })).toBeEnabled();
+  });
+
   it("returns unresolved bindings to planning instead of resolving them during generation", () => {
     const { onResolvePlanning } = renderDialog();
     expect(screen.queryByText("待处理问题")).not.toBeInTheDocument();
@@ -73,11 +85,11 @@ describe("GroupReferenceDialog planned references", () => {
 
   it("preserves choices across equivalent refetches and resets on a new revision", () => {
     const { rerender, props } = renderDialog();
-    fireEvent.click(screen.getByRole("button", { name: /石九 \/ 青年时期/ }));
+    fireEvent.click(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }));
     rerender(<GroupReferenceDialog {...props} preview={structuredClone(preview)} />);
-    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ })).toHaveAttribute("aria-pressed", "false");
     rerender(<GroupReferenceDialog {...props} preview={{ ...preview, reference_revision: "director-plan-r8" }} />);
-    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("defaults unconstrained render generation on and restores it when reopened", () => {
