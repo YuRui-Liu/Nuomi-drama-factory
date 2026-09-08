@@ -10,20 +10,22 @@ const bindings: PlannedReferenceBinding[] = [
   {
     binding_id: "character-1", asset_kind: "character_identity", display_label: "苏清晏",
     beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true,
-    thumbnail_url: "/character.png",
+    thumbnail_url: "/character.png", version_id: "character-v1",
   },
   {
     binding_id: "scene-variant-1", asset_kind: "scene_variant", display_label: "雨夜长街",
     variant_id: "rain", beat_ids: ["beat-1", "beat-2"], required: true,
-    status: "ready", selected_by_default: true,
+    status: "ready", selected_by_default: true, version_id: "scene-variant-v1",
   },
   {
     binding_id: "scene-base-1", asset_kind: "scene_base", display_label: "旧宅",
     beat_ids: ["beat-3"], required: false, status: "ready", selected_by_default: false,
+    version_id: "scene-base-v1",
   },
   {
     binding_id: "prop-1", asset_kind: "prop", display_label: "旧灯笼",
     beat_ids: ["beat-2"], required: false, status: "ready", selected_by_default: false,
+    version_id: "prop-v1",
   },
 ];
 
@@ -179,6 +181,21 @@ describe("PlannedReferencePicker", () => {
     expect(screen.getByRole("button", { name: /大厅雨夜版/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /密信/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /沈砚/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
+    expect(onResolvePlanning).toHaveBeenCalledOnce();
+  });
+
+  it("treats a ready binding without a concrete version as unresolved", () => {
+    const onResolvePlanning = vi.fn();
+    render(<ControlledPicker items={[{
+      ...bindings[0], version_id: "",
+    }]} initial={["character-1"]} onResolvePlanning={onResolvePlanning} />);
+
+    const binding = screen.getByRole("button", { name: /苏清晏/ });
+    expect(binding).toBeDisabled();
+    expect(binding).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("必需引用尚未就绪，请先返回规划处理。")).toBeInTheDocument();
+    expect(within(binding).getByText("缺少有效资产版本")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });

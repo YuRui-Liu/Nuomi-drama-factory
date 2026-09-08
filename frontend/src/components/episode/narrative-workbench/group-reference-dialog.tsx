@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { coerceNarrativeImageSize, defaultNarrativeImageSize, supportedNarrativeImageSizes, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 import type { NarrativeReferenceUpload, PlannedNarrativeGroupGenerationSelection, PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
-import { PlannedReferencePicker } from "./planned-reference-picker";
+import { isPlannedReferenceAvailable, PlannedReferencePicker } from "./planned-reference-picker";
 import { TemporaryReferencePicker, type TemporaryReferenceSelection } from "./temporary-reference-picker";
 
 export interface GroupReferenceDialogProps {
@@ -41,7 +41,7 @@ type ReferenceSelectionState = {
 
 function readyDefaults(preview?: PlannedNarrativeGroupReferencePreview | null) {
   if (!preview) return [];
-  return [...new Set(preview.bindings.filter((item) => item.status === "ready" && (item.required || item.selected_by_default)).map((item) => item.binding_id))]
+  return [...new Set(preview.bindings.filter((item) => isPlannedReferenceAvailable(item) && (item.required || item.selected_by_default)).map((item) => item.binding_id))]
     .slice(0, preview.max_images);
 }
 
@@ -96,6 +96,9 @@ export function GroupReferenceDialog({
   const maxImages = preview?.max_images ?? 0;
   const errorMessage = typeof error === "string" ? error : error?.message;
   const uploading = uploadingReference;
+  const hasRequiredUnavailable = preview?.bindings.some(
+    (item) => item.required && !isPlannedReferenceAvailable(item),
+  ) ?? false;
 
   const uploadTemporary = async (file: File): Promise<TemporaryReferenceSelection | null> => {
     setUploadError(null);
@@ -142,7 +145,7 @@ export function GroupReferenceDialog({
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={loading || !!errorMessage || !preview || submitting || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+        <Button disabled={loading || !!errorMessage || !preview || submitting || hasRequiredUnavailable || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>

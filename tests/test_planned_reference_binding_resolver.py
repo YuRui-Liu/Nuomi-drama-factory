@@ -228,10 +228,83 @@ async def test_preview_does_not_fall_back_to_named_asset_for_candidate_version(
     )
 
     resolved = preview.bindings[0]
+    assert resolved.status == "pending_confirmation"
     assert resolved.selected_by_default is False
     assert resolved.version_id == ""
     assert resolved.relative_path == ""
     assert "candidate" in resolved.warning
+
+
+@pytest.mark.asyncio
+async def test_preview_derives_unavailable_status_from_live_workflow_state(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    missing_slot = ProductionWorkflowStore(tmp_path / "missing" / "workflow.json")
+    missing_slot_preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        missing_slot,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+    assert missing_slot_preview.bindings[0].status == "missing_asset"
+
+    missing_current = _workflow(tmp_path / "missing-current", binding)
+    slot, _ = missing_current.get_slot(binding.asset_slot_id)
+    missing_current._slots[binding.asset_slot_id] = slot.model_copy(  # noqa: SLF001
+        update={"current_version_id": "deleted-version"}
+    )
+    missing_current_preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        missing_current,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path / "missing-current",
+    )
+    assert missing_current_preview.bindings[0].status == "missing_image"
+
+    missing_image_root = tmp_path / "missing-image"
+    missing_image = _workflow(missing_image_root, binding)
+    (missing_image_root / "assets" / "alice.png").unlink()
+    missing_image_preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        missing_image,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=missing_image_root,
+    )
+    assert missing_image_preview.bindings[0].status == "missing_image"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bindings,active_revision",
+    [
+        ((_binding(), _binding().model_copy(update={"binding_id": "planned-ref-other", "source_plan_revision_id": "director-r4"})), "director-r3"),
+        ((_binding(),), "director-r4"),
+    ],
+)
+async def test_preview_rejects_mixed_or_inactive_plan_revisions(
+    tmp_path: Path,
+    bindings: tuple[PlannedReferenceBinding, ...],
+    active_revision: str,
+) -> None:
+    workflow = _workflow(tmp_path, bindings[0])
+
+    with pytest.raises(StaleReferenceBinding):
+        await resolve_planned_reference_preview(
+            _BindingStore(list(bindings)),
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            active_plan_revision_id=active_revision,
+        )
 
 
 @pytest.mark.asyncio

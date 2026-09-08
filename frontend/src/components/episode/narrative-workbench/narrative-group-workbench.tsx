@@ -209,11 +209,15 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
       setPendingAction(null);
     }
     catch (error) {
-      if (error instanceof HTTPError && error.response.status === 409) {
+      if (error instanceof HTTPError) {
         const body = await error.response.clone().json().catch(() => null) as { detail?: { code?: string; message?: string } } | null;
         if (body?.detail?.code === "STALE_REFERENCE_BINDING") {
           await referencesQuery.refetch();
           toast.error(body.detail.message || "规划引用已更新，请确认最新选择后重试");
+          return;
+        }
+        if (body?.detail?.message) {
+          toast.error(body.detail.message);
           return;
         }
       }

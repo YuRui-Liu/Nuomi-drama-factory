@@ -129,6 +129,17 @@ describe("NarrativeGroupWorkbench references",()=>{
   expect(m.start).not.toHaveBeenCalled();
   expect(m.error).toHaveBeenCalledWith("引用版本已更新");
  });
+ it("shows the structured message for unresolved planned references",async()=>{
+  const response = new Response(JSON.stringify({detail:{code:"UNRESOLVED_PLANNED_REFERENCE",message:"必需道具尚未绑定有效版本，请返回规划处理"}}),{status:409,headers:{"content-type":"application/json"}});
+  m.mutate.mockRejectedValueOnce(new HTTPError(response,new Request("http://localhost/generate"),{} as never));
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  fireEvent.click(screen.getByText("生成"));
+  fireEvent.click(screen.getByText("确认"));
+  await waitFor(()=>expect(m.error).toHaveBeenCalledWith("必需道具尚未绑定有效版本，请返回规划处理"));
+  expect(m.refetch).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(m.start).not.toHaveBeenCalled();
+ });
  it("returns the current episode to its script planning page",()=>{
   render(<NarrativeGroupWorkbench project="p" episode={3} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByText("生成"));

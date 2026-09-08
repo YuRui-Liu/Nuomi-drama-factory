@@ -1459,6 +1459,11 @@ async def preview_group_references(
         Path(resolved.ctx.state_dir) / "production_workflow.json"
     )
     try:
+        active_plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
+        if active_plan is None:
+            raise PlannedReferencesRequired(
+                "请先激活本集导演方案并重新规划身份、场景和道具引用"
+            )
         planned = await resolve_planned_reference_preview(
             store,
             workflow,
@@ -1466,6 +1471,7 @@ async def preview_group_references(
             episode_number=episode,
             group_id=group_id,
             project_dir=resolved.project_dir,
+            active_plan_revision_id=active_plan.revision_id,
             max_images=MAX_GROUP_IMAGE_REFERENCES,
         )
     except PlannedReferenceError as exc:
@@ -1657,23 +1663,30 @@ async def _enqueue_group_action(
                 if upload is not None:
                     uploads[upload_id] = upload
             try:
-                reference_snapshot = await build_planned_reference_snapshot(
-                    store,
-                    workflow,
-                    project_id=str(resolved.ctx.project_id),
-                    episode_number=episode,
-                    group_id=group_id,
-                    project_dir=resolved.project_dir,
-                    selected_binding_ids=(
-                        request.reference_resolution.selected_binding_ids
-                    ),
-                    upload_ids=request.reference_resolution.upload_ids,
-                    reference_revision=(
-                        request.reference_resolution.reference_revision
-                    ),
-                    uploads=uploads,
-                    max_images=MAX_GROUP_IMAGE_REFERENCES,
-                )
+                plan_store = DirectorPlanStore(resolved.project_dir)
+                with plan_store.lock_active_revision(episode) as active_plan:
+                    if active_plan is None:
+                        raise PlannedReferencesRequired(
+                            "请先激活本集导演方案并重新规划身份、场景和道具引用"
+                        )
+                    reference_snapshot = await build_planned_reference_snapshot(
+                        store,
+                        workflow,
+                        project_id=str(resolved.ctx.project_id),
+                        episode_number=episode,
+                        group_id=group_id,
+                        project_dir=resolved.project_dir,
+                        selected_binding_ids=(
+                            request.reference_resolution.selected_binding_ids
+                        ),
+                        upload_ids=request.reference_resolution.upload_ids,
+                        reference_revision=(
+                            request.reference_resolution.reference_revision
+                        ),
+                        uploads=uploads,
+                        active_plan_revision_id=active_plan.revision_id,
+                        max_images=MAX_GROUP_IMAGE_REFERENCES,
+                    )
             except PlannedReferenceError as exc:
                 raise _planned_reference_http_error(exc) from exc
         else:

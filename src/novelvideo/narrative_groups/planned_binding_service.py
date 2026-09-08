@@ -543,7 +543,10 @@ def _asset_path(project_dir: Path, value: str) -> Path:
 
 
 def _unavailable(
-    binding: PlannedReferenceBinding, warning: str
+    binding: PlannedReferenceBinding,
+    warning: str,
+    *,
+    status: BindingStatus | None = None,
 ) -> ResolvedPlannedReference:
     return ResolvedPlannedReference(
         binding_id=binding.binding_id,
@@ -553,7 +556,7 @@ def _unavailable(
         variant_id=binding.variant_id,
         beat_ids=binding.beat_ids,
         required=binding.required,
-        status=binding.status,
+        status=status or binding.status,
         selected_by_default=False,
         asset_slot_id=binding.asset_slot_id,
         warning=warning,
@@ -572,18 +575,22 @@ def _resolve_binding(
     try:
         slot, versions = workflow_store.get_slot(binding.asset_slot_id)
     except KeyError:
-        return _unavailable(binding, "asset slot is unavailable")
+        return _unavailable(binding, "asset slot is unavailable", status="missing_asset")
     version_id = str(slot.current_version_id or "")
     version = versions.get(version_id)
     if version is None or version.slot_id != binding.asset_slot_id:
-        return _unavailable(binding, "asset slot has no valid current version")
+        return _unavailable(
+            binding, "asset slot has no valid current version", status="missing_image"
+        )
     adoption_status = version.adoption_status.value
     if adoption_status not in {
         AdoptionStatus.PROVISIONAL.value,
         AdoptionStatus.ADOPTED.value,
     }:
         return _unavailable(
-            binding, f"current version status is {adoption_status}"
+            binding,
+            f"current version status is {adoption_status}",
+            status="pending_confirmation",
         )
     try:
         validated = validate_reference_image(
@@ -595,7 +602,9 @@ def _resolve_binding(
         ).as_posix()
         sha256 = validated.sha256
     except (InvalidReferenceUpload, OSError, ValueError):
-        return _unavailable(binding, "current version is not a safe valid image")
+        return _unavailable(
+            binding, "current version is not a safe valid image", status="missing_image"
+        )
     return ResolvedPlannedReference(
         binding_id=binding.binding_id,
         asset_kind=binding.asset_kind,
@@ -642,6 +651,7 @@ async def resolve_planned_reference_preview(
     group_id: str,
     project_dir: Path,
     max_images: int = 9,
+    active_plan_revision_id: str | None = None,
 ) -> PlannedReferencePreview:
     """Resolve only persisted bindings and current versions without mutation."""
     if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
@@ -657,6 +667,7 @@ async def resolve_planned_reference_preview(
         group_id=group_id,
         project_dir=project_dir,
         max_images=max_images,
+        active_plan_revision_id=active_plan_revision_id,
     )
 
 
@@ -669,6 +680,7 @@ def _preview_from_bindings(
     group_id: str,
     project_dir: Path,
     max_images: int,
+    active_plan_revision_id: str | None = None,
 ) -> PlannedReferencePreview:
     if not bindings:
         raise PlannedReferencesRequired(
@@ -681,6 +693,12 @@ def _preview_from_bindings(
         for item in bindings
     ):
         raise InvalidPlannedReference("planned binding scope does not match request")
+    revisions = {item.source_plan_revision_id for item in bindings}
+    if len(revisions) != 1 or (
+        active_plan_revision_id is not None
+        and revisions != {active_plan_revision_id}
+    ):
+        raise StaleReferenceBinding("planned references do not match active director plan")
     root = Path(project_dir).resolve(strict=False)
     resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
     return PlannedReferencePreview(
@@ -731,6 +749,7 @@ async def build_planned_reference_snapshot(
     reference_revision: str,
     uploads: Mapping[str, ReferenceUpload] | None = None,
     max_images: int = 9,
+    active_plan_revision_id: str | None = None,
 ) -> ReferenceDecisionSnapshot:
     """Re-resolve and freeze exactly selected bindings and temporary uploads."""
     if len(set(selected_binding_ids)) != len(selected_binding_ids):
@@ -750,6 +769,7 @@ async def build_planned_reference_snapshot(
             group_id=group_id,
             project_dir=project_dir,
             max_images=max_images,
+            active_plan_revision_id=active_plan_revision_id,
         )
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")

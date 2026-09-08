@@ -8,9 +8,9 @@ const preview: PlannedNarrativeGroupReferencePreview = {
   reference_revision: "director-plan-r7",
   max_images: 3,
   bindings: [
-    { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hero.png" },
-    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: false, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png" },
-    { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: true, status: "missing_image", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
+    { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hero.png", version_id: "hero-v1" },
+    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: false, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png", version_id: "hall-rain-v1" },
+    { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: false, status: "missing_image", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
   ],
 };
 
@@ -77,10 +77,28 @@ describe("GroupReferenceDialog planned references", () => {
   });
 
   it("returns unresolved bindings to planning instead of resolving them during generation", () => {
-    const { onResolvePlanning } = renderDialog();
+    const unresolved = {
+      ...preview,
+      bindings: [{ ...preview.bindings[0], status: "pending_confirmation" as const }],
+    };
+    const { onResolvePlanning } = renderDialog({ preview: unresolved });
     expect(screen.queryByText("待处理问题")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
+  });
+
+  it("blocks submission when a required ready binding has no version", () => {
+    const unresolved = {
+      ...preview,
+      bindings: [{ ...preview.bindings[0], version_id: "" }],
+    };
+    const { onSubmit, onResolvePlanning } = renderDialog({ preview: unresolved });
+
+    expect(screen.getByRole("button", { name: "使用 0 张参考图生成" })).toBeDisabled();
+    expect(screen.getByText("必需引用尚未就绪，请先返回规划处理。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
+    expect(onResolvePlanning).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("preserves choices across equivalent refetches and resets on a new revision", () => {

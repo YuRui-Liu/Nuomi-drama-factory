@@ -36,9 +36,13 @@ function unavailableReason(status: PlannedReferenceStatus) {
   }
 }
 
+export function isPlannedReferenceAvailable(binding: PlannedReferenceBinding) {
+  return binding.status === "ready" && Boolean(binding.version_id?.trim());
+}
+
 function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
-  const ready = new Set(bindings.filter((item) => item.status === "ready").map((item) => item.binding_id));
-  const required = bindings.filter((item) => item.required && item.status === "ready").map((item) => item.binding_id);
+  const ready = new Set(bindings.filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
+  const required = bindings.filter((item) => item.required && isPlannedReferenceAvailable(item)).map((item) => item.binding_id);
   return [...new Set([...required, ...selectedIds])].filter((id) => ready.has(id));
 }
 
@@ -67,11 +71,11 @@ export function PlannedReferencePicker({
   const totalCount = selected.length + safeTemporaryCount;
   const remainingSlots = Math.max(0, maxImages - safeTemporaryCount);
   const atLimit = totalCount >= maxImages;
-  const hasRequiredUnavailable = visibleBindings.some((item) => item.required && item.status !== "ready");
+  const hasRequiredUnavailable = visibleBindings.some((item) => item.required && !isPlannedReferenceAvailable(item));
 
   const selectGroups = (groups: BindingGroup[]) => {
     const orderedCandidates = groups.flatMap((group) => visibleBindings.filter(
-      (item) => group.includes(item) && item.status === "ready",
+      (item) => group.includes(item) && isPlannedReferenceAvailable(item),
     ));
     const ids = [...new Set([
       ...selected,
@@ -119,11 +123,13 @@ export function PlannedReferencePicker({
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((binding) => {
-            const available = binding.status === "ready";
+            const available = isPlannedReferenceAvailable(binding);
             const isSelected = available && selectedSet.has(binding.binding_id);
             const lockedRequired = available && binding.required;
             const disabled = !available || lockedRequired || (!isSelected && atLimit);
-            const warning = binding.warning || unavailableReason(binding.status);
+            const warning = binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
+              ? "缺少有效资产版本"
+              : unavailableReason(binding.status));
             return <button
               key={binding.binding_id}
               type="button"

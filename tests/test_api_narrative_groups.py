@@ -219,9 +219,14 @@ def prepare_render_frames(tmp_path: Path):
     )
 
 
-def activate_director_plan(tmp_path: Path) -> None:
+def activate_director_plan(
+    tmp_path: Path,
+    *,
+    group_id: str = "director-group",
+    shot_id: str = "shot-1",
+) -> None:
     group = NarrativeGroupPlan(
-        id="director-group",
+        id=group_id,
         ordinal=1,
         source_span_ids=("span-1", "span-2"),
         scene_anchor="hallway",
@@ -231,7 +236,7 @@ def activate_director_plan(tmp_path: Path) -> None:
         relation_to_previous="single",
         shots=(
             ShotPlan(
-                id="shot-1",
+                id=shot_id,
                 source_span_ids=("span-1",),
                 subject="hero",
                 action="opens the door",
@@ -335,6 +340,7 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate",
@@ -364,6 +370,7 @@ def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkey
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
 
     blocked = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
@@ -387,6 +394,7 @@ def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatc
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
     advance_revision(tmp_path, 1, "ng-01", "sketch")
     sketch = tmp_path / "grids" / "sketch.png"
     sketch.parent.mkdir(parents=True)
@@ -421,6 +429,7 @@ def test_render_rejects_resolution_unsupported_by_model(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
@@ -440,6 +449,7 @@ def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkey
     client, _ = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
 
     first = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
@@ -1668,6 +1678,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
     monkeypatch, tmp_path
 ):
     client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
 
     class PlannedStore(FakeStore):
         async def list_planned_reference_bindings(self, episode, group_id=None):
@@ -1684,6 +1695,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
         assert kwargs["project_id"] == "demo"
         assert kwargs["episode_number"] == 1
         assert kwargs["group_id"] == "ng-01"
+        assert kwargs["active_plan_revision_id"] == "rev-api-active"
         return PlannedReferencePreview(
             reference_revision="planned-r1",
             max_images=9,
@@ -1859,6 +1871,7 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
         assert kwargs["selected_binding_ids"] == ["planned-ref-letter"]
         assert kwargs["upload_ids"] == []
         assert kwargs["reference_revision"] == "revision-1"
+        assert kwargs["active_plan_revision_id"] == "rev-api-active"
         return ReferenceDecisionSnapshot(
             id="refsnap-1",
             schema_version="narrative-reference-decision/v2",
