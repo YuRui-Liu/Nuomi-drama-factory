@@ -26,11 +26,14 @@ const bindingGroups: BindingGroup[] = [
   { key: "props", title: "道具", includes: (item) => item.asset_kind === "prop" },
 ];
 
-const unavailableReasons: Record<Exclude<PlannedReferenceStatus, "ready">, string> = {
-  pending_confirmation: "待确认规划引用",
-  missing_asset: "缺少项目资产",
-  missing_image: "缺少资产图片",
-};
+function unavailableReason(status: PlannedReferenceStatus) {
+  switch (status) {
+    case "pending_confirmation": return "待确认规划引用";
+    case "missing_asset": return "缺少项目资产";
+    case "missing_image": return "缺少资产图片";
+    case "ready": return "";
+  }
+}
 
 function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
   const ready = new Set(bindings.filter((item) => item.status === "ready").map((item) => item.binding_id));
@@ -105,11 +108,12 @@ export function PlannedReferencePicker({
             const available = binding.status === "ready";
             const isSelected = available && selectedSet.has(binding.binding_id);
             const disabled = !available || (!isSelected && atLimit);
-            const warning = binding.warning || (available ? "" : unavailableReasons[binding.status]);
+            const warning = binding.warning || unavailableReason(binding.status);
             return <button
               key={binding.binding_id}
               type="button"
               aria-pressed={isSelected}
+              data-selection-state={isSelected ? "selected" : "unselected"}
               disabled={disabled}
               onClick={() => onChange(isSelected
                 ? selected.filter((id) => id !== binding.binding_id)

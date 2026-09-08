@@ -39,6 +39,10 @@ import {
 } from "@/lib/queries/narrative-groups";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+import type {
+  NarrativeGroupGenerationSelection,
+  PlannedNarrativeGroupGenerationSelection,
+} from "@/lib/queries/narrative-groups";
 
 describe("narrative group query contract", () => {
   it("builds a scoped stage action without client credentials", () => {
@@ -123,18 +127,28 @@ describe("narrative group query contract", () => {
   });
 
   it("serializes planned binding IDs without leaking legacy names or paths", () => {
+    const legacySelection: NarrativeGroupGenerationSelection = {
+      useStyle: false,
+      selectedCharacterReferenceIds: [],
+      selectedSceneReferenceIds: [],
+    };
+    const plannedSelection: PlannedNarrativeGroupGenerationSelection = {
+      selectedBindingIds: ["binding-2", "binding-1"],
+      uploadIds: ["upload-1"],
+      referenceRevision: "plan-revision-7",
+      useStyle: true,
+      providerId: "grsai-main",
+      model: "gpt-image-2",
+      imageSize: "2K",
+      allowUnconstrained: false,
+    };
+    expect(legacySelection.selectedCharacterReferenceIds).toEqual([]);
+
     expect(narrativeGroupActionPayload({
       revision: 8,
       aspectRatio: "16:9",
       selection: {
-        selectedBindingIds: ["binding-2", "binding-1"],
-        uploadIds: ["upload-1"],
-        referenceRevision: "plan-revision-7",
-        useStyle: true,
-        providerId: "grsai-main",
-        model: "gpt-image-2",
-        imageSize: "2K",
-        allowUnconstrained: false,
+        ...plannedSelection,
         displayName: "must-not-leak",
         localPath: "/private/must-not-leak.png",
         selectedCharacterReferenceIds: ["legacy-character"],

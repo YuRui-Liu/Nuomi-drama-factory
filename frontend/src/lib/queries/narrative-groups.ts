@@ -170,25 +170,22 @@ interface NarrativeGroupGenerationConfiguration {
   saveAsProjectDefault?: boolean;
 }
 
-export type NarrativeGroupGenerationSelection = NarrativeGroupGenerationConfiguration & (
-  | {
-    selectedBindingIds: string[];
-    uploadIds: string[];
-    referenceRevision: string;
-    selectedCharacterReferenceIds?: never;
-    selectedSceneReferenceIds?: never;
-    referenceResolution?: never;
-  }
-  | {
-    /** Compatibility branch for GroupReferenceDialog until its planned-reference cutover. */
-    selectedCharacterReferenceIds: string[];
-    selectedSceneReferenceIds: string[];
-    selectedBindingIds?: never;
-    uploadIds?: never;
-    referenceRevision?: never;
-    referenceResolution?: NarrativeReferenceResolution;
-  }
-);
+/** Legacy dialog selection retained until GroupReferenceDialog is switched over. */
+export interface NarrativeGroupGenerationSelection extends NarrativeGroupGenerationConfiguration {
+  selectedCharacterReferenceIds: string[];
+  selectedSceneReferenceIds: string[];
+  referenceResolution?: NarrativeReferenceResolution;
+}
+
+export interface PlannedNarrativeGroupGenerationSelection extends NarrativeGroupGenerationConfiguration {
+  selectedBindingIds: string[];
+  uploadIds: string[];
+  referenceRevision: string;
+}
+
+type NarrativeGroupActionSelection =
+  | NarrativeGroupGenerationSelection
+  | PlannedNarrativeGroupGenerationSelection;
 
 export interface NarrativeStageState {
   status: NarrativeStageStatus;
@@ -573,7 +570,7 @@ export function narrativeGroupRollbackPath(
 export function narrativeGroupActionPayload(input: {
   revision?: number;
   aspectRatio?: "9:16" | "16:9";
-  selection?: NarrativeGroupGenerationSelection;
+  selection?: NarrativeGroupActionSelection;
 } = {}) {
   const payload: {
     revision?: number;
@@ -594,7 +591,7 @@ export function narrativeGroupActionPayload(input: {
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
-    if (input.selection.selectedBindingIds !== undefined) {
+    if ("selectedBindingIds" in input.selection) {
       payload.selected_binding_ids = input.selection.selectedBindingIds;
       payload.upload_ids = input.selection.uploadIds;
       payload.reference_revision = input.selection.referenceRevision;
@@ -693,7 +690,7 @@ export function useNarrativeGroupAction(project: string, episode: number) {
       stage: NarrativeGridStage;
       action: NarrativeGroupAction;
       revision?: number;
-      selection?: NarrativeGroupGenerationSelection;
+      selection?: NarrativeGroupActionSelection;
       aspectRatio?: "9:16" | "16:9";
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
       json: narrativeGroupActionPayload({

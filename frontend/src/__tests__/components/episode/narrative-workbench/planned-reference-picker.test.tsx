@@ -57,11 +57,15 @@ describe("PlannedReferencePicker", () => {
 
     expect(card).toHaveAttribute("type", "button");
     expect(card).toHaveAttribute("aria-pressed", "false");
+    expect(card).toHaveAttribute("data-selection-state", "unselected");
+    expect(card).toHaveClass("border-white/30", "bg-white/[0.06]");
     expect(within(card).getByText("未选择", { selector: "span" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "苏清晏选择状态" })).toHaveAttribute("aria-checked", "false");
 
     await user.click(card);
     expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(card).toHaveAttribute("data-selection-state", "selected");
+    expect(card).toHaveClass("border-cyan-300", "bg-cyan-300/20");
     expect(within(card).getByText("已选择", { selector: "span" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "苏清晏选择状态" })).toHaveAttribute("aria-checked", "true");
 
@@ -102,6 +106,20 @@ describe("PlannedReferencePicker", () => {
     expect(screen.getByRole("button", { name: /雨夜长街/ })).toBeEnabled();
   });
 
+  it("reserves temporary image slots for both global and category select-all", () => {
+    const onChange = vi.fn();
+    render(<ControlledPicker maxImages={3} temporaryCount={1} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "全选全部规划参考" }));
+    expect(onChange).toHaveBeenLastCalledWith(["character-1", "scene-variant-1"]);
+    expect(screen.getByText("已选 3 张 / 上限 3 张")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
+    fireEvent.click(screen.getByRole("button", { name: "全选场景与变体" }));
+    expect(onChange).toHaveBeenLastCalledWith(["scene-variant-1", "scene-base-1"]);
+    expect(screen.getByText("已选 3 张 / 上限 3 张")).toBeInTheDocument();
+  });
+
   it("ignores duplicate, unknown, and unavailable selected IDs when counting", () => {
     const unavailable: PlannedReferenceBinding = {
       binding_id: "missing-1", asset_kind: "prop", display_label: "失落印章",
@@ -138,6 +156,8 @@ describe("PlannedReferencePicker", () => {
     expect(screen.getByText("缺少项目资产")).toBeInTheDocument();
     expect(screen.getByText("缺少资产图片")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /大厅雨夜版/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /密信/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /沈砚/ })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
