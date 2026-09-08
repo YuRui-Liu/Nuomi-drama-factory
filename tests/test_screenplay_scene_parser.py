@@ -80,6 +80,16 @@ def test_parse_numbered_legacy_header_with_people_line():
     ]
 
 
+def test_markdown_numbered_scene_heading_uses_only_location_as_identity():
+    blocks = parse_scene_blocks("### 1-1 谢家碑坊\n△风吹过碑坊。")
+
+    assert len(blocks) == 1
+    assert blocks[0].episode == 1
+    assert blocks[0].scene_no == "1"
+    assert blocks[0].location == "谢家碑坊"
+    assert blocks[0].header_line == "### 1-1 谢家碑坊"
+
+
 def test_parse_numbered_marker_then_location_line():
     text = """
 1-1

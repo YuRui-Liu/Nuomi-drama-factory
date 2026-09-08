@@ -144,7 +144,8 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
         collecting_header = True
 
     for source_line in lines:
-        line = source_line.text
+        line = _strip_markdown_heading_prefix(source_line.text)
+        is_markdown_heading = line != source_line.text
         if not line:
             continue
 
@@ -168,12 +169,14 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
             continue
 
         numbered = NUMBERED_SCENE_RE.match(line)
-        if numbered and _looks_like_scene_number_line(numbered):
+        if numbered and (_looks_like_scene_number_line(numbered) or is_markdown_heading):
             ep = int(numbered.group("episode"))
             if current_episode <= 0 or ep != current_episode:
                 current_episode = ep
             rest = (numbered.group("rest") or "").strip()
             start_block(source_line, scene_no=numbered.group("scene") or "", location_line=rest)
+            if is_markdown_heading and rest and not current.location:
+                current.location = rest
             continue
 
         marker = SCENE_MARKER_RE.match(line)
@@ -220,13 +223,15 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
 
 
 def is_scene_start_line(line: str) -> bool:
-    stripped = (line or "").strip()
+    original = (line or "").strip()
+    stripped = _strip_markdown_heading_prefix(original)
+    is_markdown_heading = stripped != original
     if not stripped:
         return False
     if INLINE_LABELED_SCENE_RE.match(stripped):
         return True
     numbered = NUMBERED_SCENE_RE.match(stripped)
-    if numbered and _looks_like_scene_number_line(numbered):
+    if numbered and (_looks_like_scene_number_line(numbered) or is_markdown_heading):
         return True
     if SCENE_MARKER_RE.match(stripped) and _looks_like_bare_scene_marker(stripped):
         return True
@@ -376,6 +381,10 @@ def _strip_location_prefix(line: str) -> str:
     if labeled:
         return labeled.group("location").strip()
     return text
+
+
+def _strip_markdown_heading_prefix(line: str) -> str:
+    return re.sub(r"^#{1,6}\s+", "", (line or "").strip())
 
 
 def _strip_numbered_scene_prefix(line: str) -> str:
