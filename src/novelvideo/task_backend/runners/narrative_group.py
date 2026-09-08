@@ -118,9 +118,16 @@ def _snapshot_generation_input(
                 str(raw["image_path"]), allowed_roots=(assets_root, uploads_root)
             )
             binding_id = str(raw.get("binding_id") or "").strip()
-            if binding_id:
-                asset_slot_id = str(raw.get("asset_slot_id") or "").strip()
-                version_id = str(raw.get("version_id") or "").strip()
+            frozen_metadata = any(
+                str(raw.get(field) or "").strip()
+                for field in (
+                    "binding_id",
+                    "relative_path",
+                    "sha256",
+                    "project_id",
+                )
+            )
+            if frozen_metadata:
                 relative_path = str(raw.get("relative_path") or "").strip()
                 expected_sha256 = str(raw.get("sha256") or "").strip()
                 project_id = str(raw.get("project_id") or "").strip()
@@ -138,13 +145,10 @@ def _snapshot_generation_input(
                 relative = PurePosixPath(relative_path)
                 expected_path = (project_dir / relative_path).resolve(strict=False)
                 if (
-                    not asset_slot_id
-                    or not version_id
-                    or not relative_path
+                    not relative_path
                     or relative.is_absolute()
                     or ".." in relative.parts
                     or "\\" in relative_path
-                    or str(raw.get("source_id") or "") != version_id
                     or len(expected_sha256) != 64
                     or validated.sha256 != expected_sha256
                     or expected_path != Path(validated.image_path).resolve(strict=False)
@@ -160,6 +164,15 @@ def _snapshot_generation_input(
                     )
                 ):
                     raise ValueError
+                if binding_id:
+                    asset_slot_id = str(raw.get("asset_slot_id") or "").strip()
+                    version_id = str(raw.get("version_id") or "").strip()
+                    if (
+                        not asset_slot_id
+                        or not version_id
+                        or str(raw.get("source_id") or "") != version_id
+                    ):
+                        raise ValueError
             references.append(validated.image_path)
 
         style_reference = str(snapshot.get("style_reference") or "")
@@ -180,7 +193,7 @@ def _snapshot_generation_input(
     if not bool(payload.get("use_style", True)):
         prompt_payload = {**payload, "image_projection": "", "panel_tag": ""}
     return GroupGenerationInput(
-        prompt=_grid_prompt(payload),
+        prompt=_grid_prompt(prompt_payload),
         references=tuple(references),
         warnings=tuple(str(item) for item in warnings),
         reference_audit=audit,
@@ -345,7 +358,7 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         if len(references) > 8:
             warnings.append("强构图模式为草图保留首个参考位，仅使用前 8 张其他参考图")
         references = (str(frozen_asset), *references[:8])
-        prompt_references = selection.selected[:8]
+        prompt_references = prompt_references[:8]
     return GroupGenerationInput(
         prompt=_grid_prompt(
             payload,

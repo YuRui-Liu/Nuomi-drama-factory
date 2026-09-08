@@ -476,6 +476,44 @@ def test_runner_rejects_tampered_planned_snapshot_digest(tmp_path: Path) -> None
         _generation_input(payload)
 
 
+def test_runner_rejects_tampered_temporary_upload_snapshot(tmp_path: Path) -> None:
+    import hashlib
+
+    from novelvideo.task_backend.runners.narrative_group import (
+        ReferenceSnapshotInvalid,
+        _generation_input,
+    )
+
+    image = _image(
+        tmp_path / ".runtime" / "reference_uploads" / "upload-1.png"
+    )
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    payload = _planned_runner_payload(tmp_path, image, sha256=digest)
+    frozen = payload["reference_resolution"]["images"][0]
+    frozen.update(
+        {
+            "source": "upload",
+            "source_id": "upload-1",
+            "resolution": "temporary",
+            "binding_id": "",
+            "asset_slot_id": "",
+            "version_id": "",
+            "relative_path": ".runtime/reference_uploads/upload-1.png",
+            "beat_ids": [],
+            "shot_ids": [],
+        }
+    )
+    _image(image, "blue")
+
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(payload)
+
+    frozen["sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
+    frozen["project_id"] = "foreign-project"
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(payload)
+
+
 def test_runner_validates_planned_scope_and_applies_use_style(tmp_path: Path) -> None:
     import hashlib
 
