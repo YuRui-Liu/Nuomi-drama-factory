@@ -155,6 +155,94 @@ async def test_director_plan_keeps_markdown_scene_header_out_of_base_identity():
 
 
 @pytest.mark.asyncio
+async def test_source_scene_location_creates_base_when_scene_ai_is_unavailable(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def forbidden_reconcile(*_args, **_kwargs):
+        raise AssertionError("AI reconcile 不应决定基础场景身份")
+
+    async def unavailable_enrichment(**_kwargs):
+        raise ValueError("普通文本模型未配置")
+
+    async def no_derived(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        asset_compiler.AssetCompiler,
+        "_reconcile_base_scenes_from_text",
+        forbidden_reconcile,
+    )
+    monkeypatch.setattr(
+        asset_compiler,
+        "enrich_scene_environment_from_context",
+        unavailable_enrichment,
+    )
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", no_derived)
+    store = _FakeCogneeStore()
+    compiler = asset_compiler.AssetCompiler(store)
+    logs: list[str] = []
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家碑坊\n\n谢家碑坊外，雨水沿着青石板流淌。",
+        ),
+        on_log=logs.append,
+    )
+
+    assert [scene.name for scene in draft.scenes] == ["谢家碑坊"]
+    assert draft.scenes[0].base_scene_id == ""
+    assert [item.scene_id for item in draft.scene_menu] == ["谢家碑坊"]
+    assert draft.new_count == 1
+    assert store.sqlite_store.added == []
+    assert any("场景描述补全不可用" in message for message in logs)
+
+
+@pytest.mark.asyncio
+async def test_ai_reconcile_scene_name_cannot_enter_source_scene_draft(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def hallucinated_reconcile(*_args, **_kwargs):
+        return [
+            NovelScene(
+                name="AI幻觉的碑坊后院",
+                environment_prompt="AI 生成的场景",
+            )
+        ]
+
+    async def fake_enrich(**kwargs):
+        return NovelScene(
+            name=kwargs["scene_name"],
+            scene_type=kwargs["scene_type"],
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+
+    async def no_derived(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        asset_compiler.AssetCompiler,
+        "_reconcile_base_scenes_from_text",
+        hallucinated_reconcile,
+    )
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", no_derived)
+    compiler = asset_compiler.AssetCompiler(_FakeCogneeStore())
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家碑坊\n\n谢家碑坊外，雨水沿着青石板流淌。",
+        )
+    )
+
+    assert [scene.name for scene in draft.scenes] == ["谢家碑坊"]
+    assert [item.scene_id for item in draft.scene_menu] == ["谢家碑坊"]
+
+
+@pytest.mark.asyncio
 async def test_director_scene_state_projects_known_base_variant_without_ai(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
@@ -455,7 +543,7 @@ async def test_director_unknown_scene_identity_does_not_enter_scene_draft(monkey
 
 
 @pytest.mark.asyncio
-async def test_compile_episode_scenes_reconciles_base_scene_before_planning(monkeypatch):
+async def test_compile_episode_scenes_creates_base_scene_before_planning(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
     async def fake_enrich(**kwargs):
@@ -470,27 +558,12 @@ async def test_compile_episode_scenes_reconciles_base_scene_before_planning(monk
     async def fake_derived(self, scene_name, block):
         return []
 
-    async def fake_reconcile(self, source_text, episode, log):
-        scene = await fake_enrich(
-            scene_name="咖啡馆",
-            scene_type="interior",
-            context_lines=["窗外暴雨如注。"],
-        )
-        await self.cognee_store.sqlite_store.add_scene(scene)
-        log("  AI补全基础场景: 咖啡馆")
-        return ["咖啡馆"]
-
     async def fake_load_scene_blocks(self, episode):
         return [_block()]
 
     monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
     monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
     monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
-    monkeypatch.setattr(
-        asset_compiler.AssetCompiler,
-        "_reconcile_base_scenes_from_text",
-        fake_reconcile,
-    )
 
     store = _FakeCogneeStore()
     compiler = asset_compiler.AssetCompiler(store)
@@ -501,7 +574,7 @@ async def test_compile_episode_scenes_reconciles_base_scene_before_planning(monk
     )
 
     assert scene_menu[0].scene_id == "咖啡馆"
-    assert new_count == 0
+    assert new_count == 1
     assert [scene.name for scene in store.sqlite_store.added] == ["咖啡馆"]
     assert store.sqlite_store.scenes["咖啡馆"].environment_prompt.startswith("正面：临街玻璃窗")
 
@@ -1111,23 +1184,9 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
             )
         ]
 
-    async def fake_reconcile(self, source_text, episode, log):
-        scene = await fake_enrich(
-            scene_name="咖啡馆",
-            scene_type="interior",
-            context_lines=["窗外暴雨如注。"],
-        )
-        await self.cognee_store.sqlite_store.add_scene(scene)
-        return ["咖啡馆"]
-
     monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
     monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
     monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
-    monkeypatch.setattr(
-        asset_compiler.AssetCompiler,
-        "_reconcile_base_scenes_from_text",
-        fake_reconcile,
-    )
 
     store = _FakeCogneeStore(project_dir=str(tmp_path))
     compiler = asset_compiler.AssetCompiler(store)
@@ -1136,7 +1195,7 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
         lambda _message: None,
     )
 
-    assert new_count == 1
+    assert new_count == 2
     assert [scene.name for scene in store.sqlite_store.added] == ["咖啡馆", "咖啡馆_暴雨版"]
     assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
     assert scene_menu[1].base_scene_id == "咖啡馆"

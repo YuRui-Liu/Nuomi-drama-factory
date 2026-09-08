@@ -900,17 +900,12 @@ class AssetCompiler:
         log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
 
         source_text = await self._load_source_text(episode)
-        report(0.18, "AI校对基础场景...")
-        planned_scene_writes: list[NovelScene] = []
-        if not await self._all_scene_blocks_have_existing_base(scene_blocks):
-            reconciled = await self._reconcile_base_scenes_from_text(
-                source_text, episode, log
-            )
-            planned_scene_writes.extend(
-                scene for scene in reconciled if isinstance(scene, NovelScene)
-            )
-        else:
-            log("[AssetCompiler] 基础场景均已存在，跳过 AI 校对")
+        report(0.18, "准备基础场景...")
+        planned_scene_writes = await self._prepare_source_base_scenes(
+            scene_blocks,
+            episode,
+            log,
+        )
 
         report(0.25, "编译场景资产...")
         scene_menu, pending_scenes = await self._compile_scenes(
@@ -957,6 +952,52 @@ class AssetCompiler:
                 "scene", _episode_menu_values(episode, "scene")
             ),
         )
+
+    async def _prepare_source_base_scenes(
+        self,
+        scene_blocks: list[SceneBlock],
+        episode: Any,
+        log: Callable[[str], None],
+    ) -> list[NovelScene]:
+        existing_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        existing_bases = [
+            scene
+            for scene in existing_scenes
+            if not str(getattr(scene, "base_scene_id", "") or "").strip()
+        ]
+        by_name = {
+            str(getattr(scene, "name", "") or "").strip(): scene
+            for scene in existing_bases
+        }
+        by_alias = {
+            str(alias or "").strip(): scene
+            for scene in existing_bases
+            for alias in (getattr(scene, "aliases", []) or [])
+            if str(alias or "").strip()
+        }
+        prepared: list[NovelScene] = []
+        prepared_names: set[str] = set()
+        for block in scene_blocks:
+            location = str(getattr(block, "location", "") or "").strip()
+            if not location or location in prepared_names:
+                continue
+            prepared_names.add(location)
+            if location in by_name or location in by_alias:
+                continue
+            scene_type = self._normalize_scene_type(
+                str(getattr(block, "interior_exterior", "") or "")
+            )
+            scene = NovelScene(
+                name=location,
+                scene_type=scene_type,
+                environment_prompt="",
+                description="",
+                notes=f"由 AssetCompiler 从规范场次地点创建 (ep{episode.number})",
+            )
+            prepared.append(scene)
+            by_name[location] = scene
+            log(f"  已准备规范基础场景: {location}")
+        return prepared
 
     async def _persist_scene_plan_atomic(self, scenes: list[NovelScene]) -> None:
         if not scenes:
@@ -1312,14 +1353,19 @@ class AssetCompiler:
                 needs_prompt_write = not previous_prompt or is_legacy_meta_scene_prompt(
                     previous_prompt
                 )
-                existing = await self._enrich_scene_prompt_from_block(
-                    existing,
-                    block,
-                    episode,
-                    persist=not transactional,
-                    log=log,
-                )
-                if transactional and needs_prompt_write:
+                enrichment_succeeded = True
+                try:
+                    existing = await self._enrich_scene_prompt_from_block(
+                        existing,
+                        block,
+                        episode,
+                        persist=not transactional,
+                        log=log,
+                    )
+                except ValueError as exc:
+                    enrichment_succeeded = False
+                    log(f"  场景描述补全不可用，保留确定性场景: {existing.name}（{exc}）")
+                if transactional and needs_prompt_write and enrichment_succeeded:
                     if existing.name not in pending_scene_map:
                         planned_scene_writes.append(existing)
                     pending_scene_map[existing.name] = existing
