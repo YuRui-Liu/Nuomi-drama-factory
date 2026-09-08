@@ -96,24 +96,27 @@ async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
     import novelvideo.agents.asset_compiler as asset_compiler
 
     captured: dict[str, object] = {}
+    prompts: list[str] = []
 
     class FakeRuntime:
         snapshot = SimpleNamespace(model="gpt-5.6-sol")
 
         async def run_structured(self, *, prompt, output_type, system_prompt=""):
+            prompts.append(prompt)
             captured.update(
                 prompt=prompt,
                 output_type=output_type,
                 system_prompt=system_prompt,
             )
+            prop_name = "深灰功德碑" if len(prompts) == 1 else "功德碑"
             return output_type.model_construct(
                 requirements=[
                     asset_compiler.PropRequirement(
-                        prop_name="强光手电",
+                        prop_name=prop_name,
                         prop_type="object",
                         owner="沈月白",
-                        visual_prompt="黑色金属筒身，冷白光束",
-                        description="地下室照明",
+                        visual_prompt="深灰石材碑身，表面布满雨水冲刷痕迹",
+                        description="被众人从暴雨中推入屋檐下",
                     )
                 ]
             )
@@ -129,13 +132,16 @@ async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
     )
     compiler = asset_compiler.AssetCompiler(_FakeCogneeStore())
     block = asset_compiler.SceneBlock(
-        header_line="1-1、地下室 深夜 内",
-        lines=["△昏暗地下室里尘埃翻涌。", "沈月白：把强光手电给我。"],
+        header_line="1-1、谢家碑坊 暴雨夜 外",
+        lines=["△众人合力把功德碑从暴雨中推入屋檐下。", "石九扶住碑身。"],
     )
 
     requirements = await compiler._analyze_block_props(block, [], [])
 
-    assert [item.prop_name for item in requirements] == ["强光手电"]
+    assert [item.prop_name for item in requirements] == ["功德碑"]
+    assert len(prompts) == 2
+    assert "深灰功德碑" in prompts[1]
+    assert "未在当前场景块文本中出现" in prompts[1]
     assert captured["output_type"] is asset_compiler.BlockPropRequirements
     assert captured["system_prompt"] == asset_compiler.BLOCK_PROP_PROMPT
 

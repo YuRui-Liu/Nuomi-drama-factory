@@ -75,6 +75,7 @@ def _asset_planning_agent(
             output_type=output_type,
             system_prompt=system_prompt,
             validation_context=validation_context,
+            output_retries=2,
         )
     return Agent(
         get_newapi_text_pydantic_model(model_env, default_model),
