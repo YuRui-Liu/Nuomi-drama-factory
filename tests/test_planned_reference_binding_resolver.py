@@ -174,6 +174,95 @@ async def test_preview_without_bindings_is_stable_and_usable(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_empty_preview_revision_includes_active_plan_and_required_keys(
+    tmp_path: Path,
+) -> None:
+    store = _BindingStore([])
+    workflow = ProductionWorkflowStore(tmp_path / "workflow.json")
+    kwargs = {
+        "project_id": "p1",
+        "episode_number": 1,
+        "group_id": "group-01",
+        "project_dir": tmp_path,
+    }
+
+    original = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        active_plan_revision_id="director-r1",
+        required_binding_keys=frozenset({("prop", "letter", "")}),
+        **kwargs,
+    )
+    changed_plan = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        active_plan_revision_id="director-r2",
+        required_binding_keys=frozenset({("prop", "letter", "")}),
+        **kwargs,
+    )
+    changed_requirements = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        active_plan_revision_id="director-r1",
+        required_binding_keys=frozenset({("prop", "seal", "")}),
+        **kwargs,
+    )
+    changed_group = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        active_plan_revision_id="director-r1",
+        required_binding_keys=frozenset({("prop", "letter", "")}),
+        **{**kwargs, "group_id": "group-02"},
+    )
+
+    assert original.reference_revision != changed_plan.reference_revision
+    assert original.reference_revision != changed_requirements.reference_revision
+    assert original.reference_revision != changed_group.reference_revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active_plan_revision_id", "required_binding_keys"),
+    [
+        ("director-r2", frozenset({("prop", "letter", "")})),
+        ("director-r1", frozenset({("prop", "seal", "")})),
+    ],
+)
+async def test_empty_snapshot_rejects_revision_after_plan_context_changes(
+    tmp_path: Path,
+    active_plan_revision_id: str,
+    required_binding_keys: frozenset[tuple[str, str, str]],
+) -> None:
+    store = _BindingStore([])
+    workflow = ProductionWorkflowStore(tmp_path / "workflow.json")
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        active_plan_revision_id="director-r1",
+        required_binding_keys=frozenset({("prop", "letter", "")}),
+    )
+
+    with pytest.raises(StaleReferenceBinding):
+        await build_planned_reference_snapshot(
+            store,
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+            active_plan_revision_id=active_plan_revision_id,
+            required_binding_keys=required_binding_keys,
+        )
+
+
+@pytest.mark.asyncio
 async def test_preview_resolves_exact_current_version_without_writes(tmp_path: Path) -> None:
     binding = _binding()
     binding_store = _BindingStore([binding])

@@ -161,6 +161,42 @@ def test_scene_state_without_unique_structured_match_is_pending_confirmation(
     assert binding.status == "pending_confirmation"
 
 
+def test_legacy_scene_state_uses_longest_known_base_and_matches_variant() -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {
+                    "kind": "scene_state",
+                    "entity_key": "palace_great_hall_snow",
+                    "visible_change": "",
+                },
+            )
+        ],
+        scenes=[
+            {"name": "palace", "base_scene_id": "", "variant_id": ""},
+            {
+                "name": "palace_great_hall",
+                "base_scene_id": "",
+                "variant_id": "",
+            },
+            {
+                "name": "palace-great-hall-snow",
+                "base_scene_id": "palace_great_hall",
+                "variant_id": "snow",
+            },
+        ],
+    )
+
+    assert binding.status == "ready"
+    assert binding.entity_id == "palace-great-hall-snow"
+    assert binding.base_entity_id == "palace_great_hall"
+    assert binding.variant_id == "snow"
+    assert binding.asset_slot_id == (
+        "scene:palace_great_hall:state:palace-great-hall-snow:master"
+    )
+
+
 def test_unstructured_scene_state_does_not_collide_with_scene_base_binding() -> None:
     result = _project(
         shots=[
@@ -302,10 +338,15 @@ def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:
             [],
             [
                 {
+                    "name": "hall:west",
+                    "base_scene_id": "",
+                    "variant_id": "",
+                },
+                {
                     "name": "hall-night",
                     "base_scene_id": "hall:west",
                     "variant_id": "night",
-                }
+                },
             ],
             [],
             ("scene_variant", "hall-night", "hall:west", "night"),

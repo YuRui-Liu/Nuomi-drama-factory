@@ -31,7 +31,7 @@ from novelvideo.production_workflow.slot_ids import (
 )
 
 from .planned_bindings import AssetKind, BindingStatus, PlannedReferenceBinding
-from .reference_requirements import structured_scene_requirement
+from .reference_requirements import parse_scene_requirement, structured_scene_requirement
 
 
 class PlannedReferenceError(ValueError):
@@ -292,7 +292,10 @@ def _group_scope(
 
 
 def _requirements(
-    groups: tuple[Any, ...], shots: tuple[Any, ...]
+    groups: tuple[Any, ...],
+    shots: tuple[Any, ...],
+    *,
+    known_scene_ids: set[str] | None = None,
 ) -> tuple[_ProjectedRequirement, ...]:
     scope = _group_scope(groups)
     result: list[_ProjectedRequirement] = []
@@ -317,6 +320,12 @@ def _requirements(
             elif source_kind == "scene_state":
                 kind = "scene_variant"
                 base_entity_id, variant_id = structured_scene_requirement(source)
+                if known_scene_ids is not None and not (
+                    base_entity_id in known_scene_ids and variant_id
+                ):
+                    base_entity_id, variant_id = parse_scene_requirement(
+                        entity_key, known_scene_ids
+                    )
                 malformed = not base_entity_id or not variant_id
             elif source_kind == "prop":
                 kind = "prop"
@@ -549,6 +558,13 @@ def bindings_for_director_plan(
     character_items = _items(characters)
     scene_items = _items(scenes)
     prop_items = _items(props)
+    known_scene_ids = {
+        _text(_get(scene, "name"))
+        for scene in scene_items
+        if _text(_get(scene, "name"))
+        and not _text(_get(scene, "base_scene_id"))
+        and not _text(_get(scene, "variant_id"))
+    }
     return tuple(
         _binding(
             requirement,
@@ -559,7 +575,9 @@ def bindings_for_director_plan(
             scenes=scene_items,
             props=prop_items,
         )
-        for requirement in _requirements(group_items, shot_items)
+        for requirement in _requirements(
+            group_items, shot_items, known_scene_ids=known_scene_ids
+        )
     )
 
 
@@ -667,11 +685,22 @@ def _resolve_binding(
 def _reference_revision(
     bindings: Sequence[PlannedReferenceBinding],
     resolved: Sequence[ResolvedPlannedReference],
+    *,
+    active_plan_revision_id: str | None,
+    group_id: str,
+    required_binding_keys: frozenset[BindingRequirementKey] | None,
 ) -> str:
     canonical = json.dumps(
         {
             "bindings": [item.model_dump(mode="json") for item in bindings],
             "versions": [item.model_dump(mode="json") for item in resolved],
+            "active_plan_revision_id": active_plan_revision_id,
+            "group_id": group_id,
+            "required_binding_keys": (
+                None
+                if required_binding_keys is None
+                else sorted(required_binding_keys)
+            ),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -753,7 +782,13 @@ def _preview_from_bindings(
     root = Path(project_dir).resolve(strict=False)
     resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
     return PlannedReferencePreview(
-        reference_revision=_reference_revision(bindings, resolved),
+        reference_revision=_reference_revision(
+            bindings,
+            resolved,
+            active_plan_revision_id=active_plan_revision_id,
+            group_id=group_id,
+            required_binding_keys=required_binding_keys,
+        ),
         bindings=resolved,
         max_images=max_images,
         warnings=warnings,
