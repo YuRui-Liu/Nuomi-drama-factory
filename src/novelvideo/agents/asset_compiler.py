@@ -1421,15 +1421,15 @@ class AssetCompiler:
                     visible_change = str(
                         getattr(requirement, "visible_change", "") or ""
                     ).strip()
-                    formal_requirement = entity_key in known_base_ids and bool(
-                        visible_change
-                    )
+                    formal_requirement = entity_key in known_base_ids
                     if formal_requirement:
+                        if not visible_change:
+                            continue
                         base_scene_id, variant_id = entity_key, visible_change
                     else:
                         base_scene_id, variant_id = parse_scene_requirement(
                             entity_key,
-                            known_base_ids - {entity_key},
+                            known_base_ids,
                         )
                     if not variant_id or base_scene_id not in base_scenes:
                         continue

@@ -260,6 +260,53 @@ async def test_formal_director_scene_state_uses_visible_change_as_variant_and_de
 
 
 @pytest.mark.asyncio
+async def test_formal_director_base_match_without_visible_change_never_falls_back_to_legacy(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.director_plan.models import AssetRequirement
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("无变体的正式场景需求不应调用 AI")
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", forbidden)
+    base = NovelScene(
+        name="谢家",
+        scene_type="exterior",
+        environment_prompt="完整的谢家空间描述",
+    )
+    underscored_base = NovelScene(
+        name="谢家_碑坊",
+        scene_type="exterior",
+        environment_prompt="完整的谢家碑坊空间描述",
+    )
+    compiler = asset_compiler.AssetCompiler(
+        _FakeCogneeStore([base, underscored_base]),
+        director_plan=_director_plan(
+            AssetRequirement(
+                kind="scene_state",
+                entity_key="谢家_碑坊",
+                visible_change="",
+            )
+        ),
+    )
+    logs: list[str] = []
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家\n\n谢家外，雨水沿着青石板流淌。",
+        ),
+        on_log=logs.append,
+    )
+
+    assert draft.scenes == ()
+    assert [item.scene_id for item in draft.scene_menu] == ["谢家"]
+    assert not any("导演场景变体" in message for message in logs)
+
+
+@pytest.mark.asyncio
 async def test_director_scene_state_reuses_variant_by_structural_identity(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
     from novelvideo.director_plan.models import AssetRequirement
