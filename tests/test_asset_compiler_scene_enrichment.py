@@ -953,3 +953,34 @@ def test_derived_scene_specs_keep_only_two_highest_coverage_candidates():
     )
 
     assert [item.label for item in normalized] == ["四场复用版", "三场复用版"]
+
+
+def test_derived_scene_specs_collapse_xie_memorial_arch_case_to_spatial_variant():
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    headers = {"叙事组1", "叙事组2", "叙事组3", "叙事组4"}
+    labels = [
+        "暴雨积水版",
+        "朱红姓名渗显版",
+        "封控版",
+        "暴雨朱红显碑版",
+        "残字显露封存版",
+        "封锁后油灯侧光版",
+        "朱红姓名满碑版",
+    ]
+    candidates = [
+        asset_compiler.DerivedSceneRequirement(
+            label=label,
+            evidence_scene_headers=sorted(headers),
+            affects_whole_environment=True,
+            requires_shared_plate=True,
+        )
+        for label in labels
+    ]
+
+    normalized = asset_compiler.AssetCompiler._build_derived_scene_specs(
+        candidates,
+        valid_scene_headers=headers,
+    )
+
+    assert [item.label for item in normalized] == ["封控版"]
