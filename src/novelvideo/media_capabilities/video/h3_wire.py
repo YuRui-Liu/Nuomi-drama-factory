@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -38,14 +39,20 @@ class H3BaseWire(BaseModel):
     @model_validator(mode="after")
     def validate_image_alignment(self) -> Self:
         description = self.integrated_multimodal_description
-        if not description.startswith("[Shot 1]"):
-            raise ValueError("description must start with [Shot 1]")
-        if self.mode in {H3Mode.FL2VA, H3Mode.L2VA}:
-            final_shot = f"[Shot {self.final_shot_number}]"
-            if final_shot not in description:
-                raise ValueError(
-                    f"{self.mode.value} description must include {final_shot}"
-                )
+        shot_sequence = tuple(
+            int(number) for number in re.findall(r"\[Shot (\d+)\]", description)
+        )
+        if not description.startswith("[Shot 1]") or shot_sequence[0] != 1:
+            raise ValueError("shot sequence must start with [Shot 1]")
+        if any(left >= right for left, right in zip(shot_sequence, shot_sequence[1:])):
+            raise ValueError(
+                "shot sequence must be strictly increasing without duplicates"
+            )
+        if shot_sequence[-1] != self.final_shot_number:
+            raise ValueError(
+                "final shot in shot sequence must match "
+                f"[Shot {self.final_shot_number}]"
+            )
         return self
 
 

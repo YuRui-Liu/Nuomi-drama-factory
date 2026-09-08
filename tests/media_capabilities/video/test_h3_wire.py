@@ -187,6 +187,52 @@ def test_final_frame_alignment_uses_shot_number_and_fixed_duration(
     assert compile_h3_wire(wire).splitlines()[0] == expected_instruction
 
 
+def test_declared_final_shot_must_be_last_shot_in_body() -> None:
+    with pytest.raises(ValidationError, match="final shot"):
+        _base_wire(
+            mode=H3Mode.FL2VA,
+            final_shot_number=2,
+            integrated_multimodal_description=(
+                "[Shot 1] [0-5s] The action begins. "
+                "[Shot 2] [5-10s] The action continues. "
+                "[Shot 3] [10-15s] The action ends."
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "[Shot 1] First beat. [Shot 2] Second beat. [Shot 2] Duplicate beat.",
+        "[Shot 1] First beat. [Shot 3] Third beat. [Shot 2] Second beat.",
+    ],
+)
+def test_shot_sequence_must_be_strictly_increasing_without_duplicates(
+    description: str,
+) -> None:
+    with pytest.raises(ValidationError, match="shot sequence"):
+        _base_wire(
+            final_shot_number=2,
+            integrated_multimodal_description=description,
+        )
+
+
+def test_i2va_multi_shot_body_tracks_final_shot_but_keeps_fixed_instruction() -> None:
+    wire = _base_wire(
+        mode=H3Mode.I2VA,
+        final_shot_number=2,
+        integrated_multimodal_description=(
+            "[Shot 1] [0-3s] The action begins from <Picture 1>. "
+            "[Shot 2] [3-6s] The action resolves."
+        ),
+    )
+
+    assert compile_h3_wire(wire).splitlines()[0] == (
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced."
+    )
+
+
 def test_base_description_must_start_with_shot_one() -> None:
     with pytest.raises(ValidationError, match=r"\[Shot 1\]"):
         _base_wire(integrated_multimodal_description="[0-6s] Static shot.")
