@@ -60,6 +60,8 @@ def _explicitly_missing_image(entity: Any, *, identity: bool = False) -> bool:
     if _text(_get(entity, "image_status", "")) in {"missing", "missing_image"}:
         return True
     if identity:
+        if not _has(entity, "reference_images"):
+            return False
         return not any(
             _text(path) for path in (_get(entity, "reference_images", ()) or ())
         )
@@ -229,12 +231,17 @@ def _binding(
             )
             identity_name = _text(_get(identity, "identity_name"))
             label = " / ".join(item for item in (character_name, identity_name) if item)
-            slot_id = character_state_slot_id(character_name, entity_id)
-            status = (
-                "missing_image"
-                if _explicitly_missing_image(identity, identity=True)
-                else "ready"
-            )
+            try:
+                slot_id = character_state_slot_id(character_name, entity_id)
+            except ValueError:
+                slot_id = ""
+                status = "pending_confirmation"
+            else:
+                status = (
+                    "missing_image"
+                    if _explicitly_missing_image(identity, identity=True)
+                    else "ready"
+                )
         elif len(candidates) > 1:
             slot_id = ""
             status = "pending_confirmation"
@@ -255,9 +262,14 @@ def _binding(
             status = "missing_image" if _explicitly_missing_image(scene) else "ready"
         elif len(candidates) > 1:
             status = "pending_confirmation"
-        slot_id = (
-            scene_base_slot_id(entity_id, "master") if len(candidates) == 1 else ""
-        )
+        if len(candidates) == 1:
+            try:
+                slot_id = scene_base_slot_id(entity_id, "master")
+            except ValueError:
+                slot_id = ""
+                status = "pending_confirmation"
+        else:
+            slot_id = ""
     elif requirement.kind == "scene_variant" and requirement.malformed_scene_state:
         status = "pending_confirmation"
         slot_id = ""
@@ -275,11 +287,14 @@ def _binding(
             status = "missing_image" if _explicitly_missing_image(scene) else "ready"
         elif len(candidates) > 1:
             status = "pending_confirmation"
-        slot_id = (
-            scene_state_slot_id(base_entity_id, entity_id, "master")
-            if len(candidates) == 1
-            else ""
-        )
+        if len(candidates) == 1:
+            try:
+                slot_id = scene_state_slot_id(base_entity_id, entity_id, "master")
+            except ValueError:
+                slot_id = ""
+                status = "pending_confirmation"
+        else:
+            slot_id = ""
     else:
         candidates = [
             prop
@@ -293,7 +308,14 @@ def _binding(
             status = "missing_image" if _explicitly_missing_image(prop) else "ready"
         elif len(candidates) > 1:
             status = "pending_confirmation"
-        slot_id = prop_reference_slot_id(entity_id) if len(candidates) == 1 else ""
+        if len(candidates) == 1:
+            try:
+                slot_id = prop_reference_slot_id(entity_id)
+            except ValueError:
+                slot_id = ""
+                status = "pending_confirmation"
+        else:
+            slot_id = ""
 
     return PlannedReferenceBinding.create(
         project_id=project_id,

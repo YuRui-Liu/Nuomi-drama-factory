@@ -244,6 +244,119 @@ def test_missing_asset_and_explicit_missing_image_are_distinct() -> None:
     assert result[1].resolution == "auto_matched"
 
 
+def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {"identity_id": "linmo-duty", "identity_name": "Duty"}
+                ],
+            }
+        ],
+    )
+
+    assert binding.status == "ready"
+    assert binding.asset_slot_id == "character:Lin Mo:state:linmo-duty"
+
+
+@pytest.mark.parametrize(
+    ("bad_requirement", "characters", "scenes", "props", "expected_identity"),
+    [
+        (
+            {"kind": "character_identity", "entity_key": "linmo-duty"},
+            [
+                {
+                    "name": "Lin:Mo",
+                    "identities": [
+                        {
+                            "identity_id": "linmo-duty",
+                            "reference_images": ["identity.png"],
+                        }
+                    ],
+                }
+            ],
+            [],
+            [],
+            ("character_identity", "linmo-duty", "", ""),
+        ),
+        (
+            {"kind": "scene_base", "entity_key": "hall:west"},
+            [],
+            [{"name": "hall:west", "base_scene_id": "", "variant_id": ""}],
+            [],
+            ("scene_base", "hall:west", "", ""),
+        ),
+        (
+            {
+                "kind": "scene_state",
+                "entity_key": "hall:west",
+                "visible_change": "night",
+            },
+            [],
+            [
+                {
+                    "name": "hall-night",
+                    "base_scene_id": "hall:west",
+                    "variant_id": "night",
+                }
+            ],
+            [],
+            ("scene_variant", "hall-night", "hall:west", "night"),
+        ),
+        (
+            {"kind": "prop", "entity_key": "letter\x00sealed"},
+            [],
+            [],
+            [{"name": "letter\x00sealed"}, {"name": "normal"}],
+            ("prop", "letter\x00sealed", "", ""),
+        ),
+    ],
+)
+def test_invalid_canonical_slot_isolated_as_pending_and_later_binding_survives(
+    bad_requirement: dict,
+    characters: list[dict],
+    scenes: list[dict],
+    props: list[dict],
+    expected_identity: tuple[str, str, str, str],
+) -> None:
+    if not any(prop["name"] == "normal" for prop in props):
+        props = [*props, {"name": "normal"}]
+    result = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                bad_requirement,
+                {"kind": "prop", "entity_key": "normal"},
+            )
+        ],
+        characters=characters,
+        scenes=scenes,
+        props=props,
+    )
+
+    bad, normal = result
+    assert (
+        bad.asset_kind,
+        bad.entity_id,
+        bad.base_entity_id,
+        bad.variant_id,
+    ) == expected_identity
+    assert bad.status == "pending_confirmation"
+    assert bad.asset_slot_id == ""
+    assert bad.group_ids == ("group-1",)
+    assert bad.beat_ids == ("beat-1",)
+    assert bad.shot_ids == ("shot-1",)
+    assert normal.status == "ready"
+    assert normal.asset_slot_id == "prop:normal:reference"
+
+
 def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
     result = _project(
         shots=[
