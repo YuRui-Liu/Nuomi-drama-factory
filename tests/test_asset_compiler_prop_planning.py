@@ -101,7 +101,14 @@ async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
     class FakeRuntime:
         snapshot = SimpleNamespace(model="gpt-5.6-sol")
 
-        async def run_structured(self, *, prompt, output_type, system_prompt=""):
+        async def run_structured(
+            self,
+            *,
+            prompt,
+            output_type,
+            system_prompt="",
+            validation_context=None,
+        ):
             prompts.append(prompt)
             captured.update(
                 prompt=prompt,

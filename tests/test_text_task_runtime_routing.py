@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel
@@ -119,6 +120,32 @@ async def test_structured_runtime_agent_revalidates_with_context():
     result = await agent.run("prompt")
 
     assert result.output == ContextAnswer(value="ok")
+
+
+async def test_codex_backend_retries_with_business_validation_context():
+    from novelvideo.agents.asset_compiler import BlockPropRequirements
+
+    backend = RoutedCodexCliStructuredBackend(model="gpt-5.6-sol")
+    backend._run_once = AsyncMock(
+        side_effect=[
+            '{"requirements":[{"prop_name":"深灰功德碑","visual_prompt":"深灰石碑"}]}',
+            '{"requirements":[{"prop_name":"功德碑","visual_prompt":"深灰石碑"}]}',
+        ]
+    )
+
+    result = await backend.acreate_structured_output(
+        "众人把功德碑推入屋檐下。",
+        "只提取原文道具",
+        BlockPropRequirements,
+        validation_context={
+            "block_text": "众人把功德碑推入屋檐下。",
+            "allowed_existing_names": set(),
+        },
+    )
+
+    assert [item.prop_name for item in result.requirements] == ["功德碑"]
+    assert backend._run_once.await_count == 2
+    assert "深灰功德碑" in backend._run_once.await_args_list[1].args[0]
 
 
 def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):

@@ -33,7 +33,12 @@ class StructuredTextRuntime(Protocol):
     snapshot: AgentTaskRouteSnapshot
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T: ...
 
 
@@ -94,12 +99,18 @@ class CodexStructuredRuntime:
         self._backend = backend
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T:
+        kwargs = {}
+        if validation_context is not None:
+            kwargs["validation_context"] = validation_context
         return await self._backend.acreate_structured_output(
-            prompt,
-            system_prompt,
-            output_type,
+            prompt, system_prompt, output_type, **kwargs
         )
 
 
@@ -121,7 +132,12 @@ class ModelApiStructuredRuntime:
         self._agent_factory = agent_factory
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T:
         from novelvideo.config import get_newapi_text_pydantic_model
 
@@ -140,6 +156,8 @@ class ModelApiStructuredRuntime:
             agent_kwargs["model_settings"] = {
                 "openai_reasoning_effort": self.snapshot.reasoning_effort
             }
+        if validation_context is not None:
+            agent_kwargs["validation_context"] = validation_context
         agent = self._agent_factory(**agent_kwargs)
         result = await agent.run(prompt)
         output = getattr(result, "output", result)
@@ -190,6 +208,7 @@ class StructuredRuntimeAgent:
                 prompt=attempt_prompt,
                 output_type=self.output_type,
                 system_prompt=self.system_prompt,
+                validation_context=self.validation_context,
             )
             try:
                 if self.validation_context is not None and hasattr(
