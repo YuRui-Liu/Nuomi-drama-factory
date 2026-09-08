@@ -295,5 +295,13 @@ async def _run_episode_asset_planner(
     }
 
 
-register_project_task_runner("episode_scene_planner", run_episode_asset_planner)
-register_project_task_runner("episode_prop_planner", run_episode_asset_planner)
+register_project_task_runner(
+    "episode_scene_planner",
+    run_episode_asset_planner,
+    text_task_role="episode_asset_planning",
+)
+register_project_task_runner(
+    "episode_prop_planner",
+    run_episode_asset_planner,
+    text_task_role="episode_asset_planning",
+)

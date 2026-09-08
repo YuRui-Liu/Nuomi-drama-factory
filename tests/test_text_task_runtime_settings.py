@@ -15,6 +15,7 @@ from novelvideo.text_task_runtime.settings import (
     load_global_routes,
     load_project_routes,
     resolve_agent_task_route,
+    resolve_configured_agent_task_route,
 )
 
 
@@ -148,3 +149,24 @@ def test_load_project_routes_reads_project_config_state_dir(monkeypatch, tmp_pat
     config = load_project_routes(ctx)
 
     assert config.routes["director_plan"].runtime == "model_api"
+
+
+def test_episode_asset_planning_defaults_to_codex(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_global_routes",
+        lambda: AgentTaskRoutingConfig(),
+    )
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_project_routes",
+        lambda ctx: AgentTaskRoutingConfig(),
+    )
+
+    snapshot = resolve_configured_agent_task_route(
+        ctx=type("Ctx", (), {"state_dir": tmp_path})(),
+        task_role="episode_asset_planning",
+    )
+
+    assert snapshot.runtime == "codex"
+    assert snapshot.model == "gpt-5.6-sol"
+    assert snapshot.reasoning_effort == "low"
+    assert snapshot.fallback == "stop"

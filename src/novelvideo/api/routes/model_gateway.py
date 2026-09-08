@@ -33,7 +33,11 @@ from novelvideo.text_runtime_settings import (
     text_runtime_status,
 )
 from novelvideo.text_task_runtime.models import AgentTaskRoute, AgentTaskRoutingConfig
-from novelvideo.text_task_runtime.settings import load_global_routes, save_global_routes
+from novelvideo.text_task_runtime.settings import (
+    default_agent_task_route,
+    load_global_routes,
+    save_global_routes,
+)
 from novelvideo.newapi_provisioner import (
     build_channel_payload,
     build_provisioner_status,
@@ -91,6 +95,7 @@ TEXT_TASK_ROLE_LABELS = {
     "episode_normalization": "剧本解析与规范化",
     "knowledge_extraction": "知识图谱与角色/场景/道具提取",
     "director_plan": "整集导演规划",
+    "episode_asset_planning": "场景/道具规划",
     "h3_episode_pack": "MiniMax H3 整集提示词",
     "h3_segment_repair": "MiniMax H3 局部修复",
 }
@@ -406,18 +411,17 @@ async def save_text_runtime_config(body: TextRuntimeConfigBody) -> dict[str, Any
 
 def _task_runtime_config_payload() -> dict[str, Any]:
     configured = load_global_routes()
-    defaults = AgentTaskRoute()
     return {
         "roles": [
             {
                 "id": role,
                 "label": label,
                 "route": (
-                    defaults.model_copy(
+                    default_agent_task_route(role).model_copy(
                         update=configured.routes.get(role).model_dump(exclude_none=True)
                     )
                     if configured.routes.get(role) is not None
-                    else defaults
+                    else default_agent_task_route(role)
                 ).model_dump(mode="json"),
             }
             for role, label in TEXT_TASK_ROLE_LABELS.items()

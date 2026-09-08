@@ -16,6 +16,21 @@ from novelvideo.text_task_runtime.models import (
 
 TEXT_TASK_ROUTING_KEY = "text_task_routing_v1"
 
+_ROLE_DEFAULTS = {
+    "episode_asset_planning": AgentTaskRoute(
+        runtime="codex",
+        model="gpt-5.6-sol",
+        reasoning_effort="low",
+        fallback="stop",
+    ),
+}
+
+
+def default_agent_task_route(task_role: str) -> AgentTaskRoute:
+    """Return the built-in baseline for a logical text-task role."""
+
+    return _ROLE_DEFAULTS.get(task_role, AgentTaskRoute())
+
 
 def _parse_routing_config(value: Any) -> AgentTaskRoutingConfig:
     if value in (None, ""):
@@ -103,7 +118,7 @@ def resolve_configured_agent_task_route(
     """Resolve persisted routes once, at enqueue time."""
 
     global_override = load_global_routes().routes.get(task_role)
-    global_route = AgentTaskRoute()
+    global_route = default_agent_task_route(task_role)
     if global_override is not None:
         global_route = _apply_override(global_route, global_override)
     project_override = load_project_routes(ctx).routes.get(task_role)

@@ -454,6 +454,16 @@ async def test_prop_publish_preserves_concurrent_notes(tmp_path):
     assert persisted.notes == "用户并发备注"
 
 
+def test_episode_asset_planners_use_dedicated_text_task_route():
+    import novelvideo.task_backend.runners.episode_assets  # noqa: F401
+    from novelvideo.task_backend.registry import get_project_task_runner_registration
+
+    for task_type in ("episode_scene_planner", "episode_prop_planner"):
+        registration = get_project_task_runner_registration(task_type)
+        assert registration is not None
+        assert registration.text_task_role == "episode_asset_planning"
+
+
 @pytest.mark.asyncio
 async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is_rejected(
     tmp_path, monkeypatch
