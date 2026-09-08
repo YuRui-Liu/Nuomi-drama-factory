@@ -474,6 +474,48 @@ async def test_preview_warns_for_partial_kind_publication_for_active_plan(
 
 
 @pytest.mark.asyncio
+async def test_preview_matches_legacy_scene_required_key_to_structured_binding(
+    tmp_path: Path,
+) -> None:
+    binding = _binding(
+        asset_kind="scene_variant",
+        entity_id="hall-night",
+        base_entity_id="hall",
+        variant_id="night",
+        asset_slot_id="scene:hall:state:hall-night:master",
+        display_label="Hall / night",
+    )
+    workflow = _workflow(tmp_path, binding)
+    kwargs = {
+        "store": _BindingStore([binding]),
+        "workflow_store": workflow,
+        "project_id": "p1",
+        "episode_number": 1,
+        "group_id": "group-01",
+        "project_dir": tmp_path,
+        "active_plan_revision_id": "director-r3",
+    }
+
+    matched = await resolve_planned_reference_preview(
+        required_binding_keys=frozenset(
+            {("scene_variant", "", "hall_night")}
+        ),
+        **kwargs,
+    )
+    different = await resolve_planned_reference_preview(
+        required_binding_keys=frozenset(
+            {("scene_variant", "", "hall_rain")}
+        ),
+        **kwargs,
+    )
+
+    assert matched.warnings == ()
+    assert different.warnings == (
+        "当前导演方案仍有未发布的必需引用：scene_variant:hall_rain",
+    )
+
+
+@pytest.mark.asyncio
 async def test_snapshot_rejects_revision_after_current_version_changes(tmp_path: Path) -> None:
     binding = _binding()
     store = _BindingStore([binding])

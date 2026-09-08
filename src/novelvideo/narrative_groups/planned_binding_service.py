@@ -392,6 +392,29 @@ def _binding_requirement_key(
     return binding.asset_kind, binding.entity_id, ""
 
 
+def _required_binding_is_published(
+    required_key: BindingRequirementKey,
+    bindings: Sequence[PlannedReferenceBinding],
+) -> bool:
+    published_required = {
+        _binding_requirement_key(item) for item in bindings if item.required
+    }
+    if required_key in published_required:
+        return True
+    kind, base_entity_id, raw_entity_id = required_key
+    if kind != "scene_variant" or base_entity_id or not raw_entity_id:
+        return False
+    return any(
+        item.required
+        and item.asset_kind == "scene_variant"
+        and (
+            item.entity_id == raw_entity_id
+            or f"{item.base_entity_id}_{item.variant_id}" == raw_entity_id
+        )
+        for item in bindings
+    )
+
+
 def _binding(
     requirement: _ProjectedRequirement,
     *,
@@ -770,10 +793,11 @@ def _preview_from_bindings(
         raise StaleReferenceBinding("planned references do not match active director plan")
     warnings: tuple[str, ...] = ()
     if required_binding_keys is not None:
-        published_required = {
-            _binding_requirement_key(item) for item in bindings if item.required
-        }
-        missing = sorted(required_binding_keys - published_required)
+        missing = sorted(
+            key
+            for key in required_binding_keys
+            if not _required_binding_is_published(key, bindings)
+        )
         if missing:
             labels = ", ".join(
                 ":".join(part for part in key if part) for key in missing
