@@ -66,12 +66,15 @@ describe("GroupReferenceDialog planned references", () => {
   });
 
   it("uploads temporary images and counts them against the limit", async () => {
-    const { onSubmit, onUploadReference } = renderDialog();
+    const { onSubmit, onUploadReference, props, rerender } = renderDialog();
     const file = new File(["image"], "临时构图.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
     await waitFor(() => expect(onUploadReference).toHaveBeenCalledWith(file));
     expect(screen.getByText("临时构图.png")).toBeInTheDocument();
     expect(screen.getByText("仅本次生成")).toBeInTheDocument();
+    rerender(<GroupReferenceDialog {...props} uploadingReference />);
+    expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeDisabled();
+    rerender(<GroupReferenceDialog {...props} uploadingReference={false} />);
     expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeEnabled();
     expect(screen.getByLabelText("上传临时参考图")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "使用 3 张参考图生成" }));
@@ -98,7 +101,7 @@ describe("GroupReferenceDialog planned references", () => {
     };
     const { onResolvePlanning } = renderDialog({ preview: unresolved });
     expect(screen.queryByText("待处理问题")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
+    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
 
@@ -111,8 +114,8 @@ describe("GroupReferenceDialog planned references", () => {
 
     const generate = screen.getByRole("button", { name: "使用 0 张参考图生成" });
     expect(generate).toBeEnabled();
-    expect(screen.getByText("必需引用尚未就绪，请先返回规划处理。")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
+    expect(screen.getByText("必需引用尚未就绪，本次仍可继续生成；如需补齐，可返回规划处理。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
     fireEvent.click(generate);
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: [] }));

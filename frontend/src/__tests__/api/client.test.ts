@@ -282,7 +282,7 @@ describe("apiCall backend errors", () => {
       409,
       {
         detail: {
-          error_code: "BILLING_RULE_NOT_CONFIGURED",
+          code: "BILLING_RULE_NOT_CONFIGURED",
           message: "计费规则未配置，请联系管理员设置积分规则",
           billing_kind: "feature",
           billing_key: "ingest_fast",

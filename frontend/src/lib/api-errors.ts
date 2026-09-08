@@ -126,6 +126,10 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
       : undefined;
   const apiError = (body as { error?: unknown }).error;
   const detail = (body as { detail?: unknown }).detail;
+  const detailCode =
+    detail && typeof detail === "object"
+      ? (detail as { code?: unknown }).code
+      : undefined;
   const directErrorCode =
     data && typeof data === "object"
       ? (data as { error_code?: unknown }).error_code
@@ -133,7 +137,8 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
   const errorCode =
     typeof directErrorCode === "string" && directErrorCode.trim()
       ? directErrorCode
-      : findNestedString(body, "error_code");
+      : findNestedString(body, "error_code") ??
+        (typeof detailCode === "string" && detailCode.trim() ? detailCode : undefined);
   const nestedMessage = findNestedString(body, "message");
   const message =
     typeof apiError === "string" && apiError.trim()
