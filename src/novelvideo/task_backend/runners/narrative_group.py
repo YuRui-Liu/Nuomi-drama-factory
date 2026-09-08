@@ -85,8 +85,13 @@ def _snapshot_generation_input(
 ) -> GroupGenerationInput:
     """Revalidate a frozen decision snapshot without re-resolving user intent."""
     try:
-        if snapshot.get("schema_version") != "narrative-reference-decision/v1":
+        schema_version = snapshot.get("schema_version")
+        if schema_version not in {
+            "narrative-reference-decision/v1",
+            "narrative-reference-decision/v2",
+        }:
             raise ValueError
+        planned_snapshot = schema_version == "narrative-reference-decision/v2"
         snapshot_id = str(snapshot["id"]).strip()
         images = snapshot["images"]
         ignored = snapshot["ignored_requirement_ids"]
@@ -118,16 +123,7 @@ def _snapshot_generation_input(
                 str(raw["image_path"]), allowed_roots=(assets_root, uploads_root)
             )
             binding_id = str(raw.get("binding_id") or "").strip()
-            frozen_metadata = any(
-                str(raw.get(field) or "").strip()
-                for field in (
-                    "binding_id",
-                    "relative_path",
-                    "sha256",
-                    "project_id",
-                )
-            )
-            if frozen_metadata:
+            if planned_snapshot:
                 relative_path = str(raw.get("relative_path") or "").strip()
                 expected_sha256 = str(raw.get("sha256") or "").strip()
                 project_id = str(raw.get("project_id") or "").strip()
@@ -173,10 +169,16 @@ def _snapshot_generation_input(
                         or str(raw.get("source_id") or "") != version_id
                     ):
                         raise ValueError
+                elif (
+                    str(raw.get("source") or "") != "upload"
+                    or resolution != "temporary"
+                    or not str(raw.get("source_id") or "").strip()
+                ):
+                    raise ValueError
             references.append(validated.image_path)
 
         style_reference = str(snapshot.get("style_reference") or "")
-        if style_reference:
+        if style_reference and bool(payload.get("use_style", True)):
             validated_style = validate_reference_image(
                 style_reference, allowed_roots=(assets_root,)
             )
@@ -361,7 +363,11 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         prompt_references = prompt_references[:8]
     return GroupGenerationInput(
         prompt=_grid_prompt(
-            payload,
+            (
+                payload
+                if bool(payload.get("use_style", True))
+                else {**payload, "image_projection": "", "panel_tag": ""}
+            ),
             style_prompt=style_prompt,
             selected_references=prompt_references,
         ),

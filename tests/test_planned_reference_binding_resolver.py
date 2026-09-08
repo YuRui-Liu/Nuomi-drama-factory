@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -95,7 +96,7 @@ def _planned_runner_payload(
         },
         "reference_resolution": {
             "id": "refsnap-planned",
-            "schema_version": "narrative-reference-decision/v1",
+            "schema_version": "narrative-reference-decision/v2",
             "ignored_requirement_ids": [],
             "warnings": [],
             "images": [{
@@ -410,7 +411,7 @@ async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None
     )
 
     image = snapshot.images[0]
-    assert snapshot.schema_version == "narrative-reference-decision/v1"
+    assert snapshot.schema_version == "narrative-reference-decision/v2"
     assert image.binding_id == binding.binding_id
     assert image.asset_slot_id == binding.asset_slot_id
     assert image.version_id == "version-1"
@@ -475,7 +476,6 @@ def test_runner_rejects_tampered_planned_snapshot_digest(tmp_path: Path) -> None
     with pytest.raises(ReferenceSnapshotInvalid):
         _generation_input(payload)
 
-
 def test_runner_rejects_tampered_temporary_upload_snapshot(tmp_path: Path) -> None:
     import hashlib
 
@@ -513,6 +513,73 @@ def test_runner_rejects_tampered_temporary_upload_snapshot(tmp_path: Path) -> No
     with pytest.raises(ReferenceSnapshotInvalid):
         _generation_input(payload)
 
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ("relative_path", "sha256", "project_id", "episode_number", "group_ids"),
+)
+def test_runner_rejects_planned_snapshot_with_missing_frozen_metadata(
+    tmp_path: Path, missing_field: str
+) -> None:
+    import hashlib
+
+    from novelvideo.task_backend.runners.narrative_group import (
+        ReferenceSnapshotInvalid,
+        _generation_input,
+    )
+
+    image = _image(tmp_path / "assets" / "alice.png")
+    payload = _planned_runner_payload(
+        tmp_path, image, sha256=hashlib.sha256(image.read_bytes()).hexdigest()
+    )
+    del payload["reference_resolution"]["images"][0][missing_field]
+
+    with pytest.raises(ReferenceSnapshotInvalid):
+        _generation_input(payload)
+
+
+def test_runner_disables_style_image_and_projection_under_strong_sketch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import hashlib
+
+    from novelvideo.task_backend.runners import narrative_group
+
+    image = _image(tmp_path / "assets" / "alice.png")
+    style = _image(tmp_path / "assets" / "style.png", "green")
+    sketch = _image(tmp_path / "sketch.png", "blue")
+    payload = _planned_runner_payload(
+        tmp_path, image, sha256=hashlib.sha256(image.read_bytes()).hexdigest()
+    )
+    payload.update(
+        {
+            "constraint_mode": "strong_sketch",
+            "source_sketch_revision": 2,
+            "source_sketch_asset": str(sketch),
+        }
+    )
+    payload["reference_resolution"]["style_reference"] = str(style)
+    group = SimpleNamespace(
+        id="group-01",
+        stages={
+            "sketch": SimpleNamespace(
+                status="completed", revision=2, grid_asset=str(sketch)
+            )
+        },
+    )
+    monkeypatch.setattr(
+        narrative_group, "load_materialized_groups", lambda *_: [group]
+    )
+
+    payload["use_style"] = False
+    without_style = narrative_group._generation_input(payload)
+    payload["use_style"] = True
+    with_style = narrative_group._generation_input(payload)
+
+    assert without_style.references == (str(sketch), str(image))
+    assert "STYLE_PROJECTION" not in without_style.prompt
+    assert with_style.references == (str(sketch), str(style), str(image))
+    assert "STYLE_PROJECTION" in with_style.prompt
 
 def test_runner_validates_planned_scope_and_applies_use_style(tmp_path: Path) -> None:
     import hashlib

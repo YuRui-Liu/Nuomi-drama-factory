@@ -829,7 +829,7 @@ async def build_planned_reference_snapshot(
         )
     return ReferenceDecisionSnapshot(
         id=f"refsnap_{uuid.uuid4().hex}",
-        schema_version="narrative-reference-decision/v1",
+        schema_version="narrative-reference-decision/v2",
         images=tuple(images),
         ignored_requirement_ids=(),
     )
