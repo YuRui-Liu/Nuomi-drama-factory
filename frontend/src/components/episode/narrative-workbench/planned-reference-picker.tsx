@@ -42,8 +42,7 @@ export function isPlannedReferenceAvailable(binding: PlannedReferenceBinding) {
 
 function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
   const ready = new Set(bindings.filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
-  const required = bindings.filter((item) => item.required && isPlannedReferenceAvailable(item)).map((item) => item.binding_id);
-  return [...new Set([...required, ...selectedIds])].filter((id) => ready.has(id));
+  return [...new Set(selectedIds)].filter((id) => ready.has(id));
 }
 
 function uniqueBindingsById(bindings: PlannedReferenceBinding[]) {
@@ -85,7 +84,7 @@ export function PlannedReferencePicker({
   };
 
   const clearGroups = (groups: BindingGroup[]) => {
-    const removed = new Set(visibleBindings.filter((item) => !item.required && groups.some((group) => group.includes(item)))
+    const removed = new Set(visibleBindings.filter((item) => groups.some((group) => group.includes(item)))
       .map((item) => item.binding_id));
     onChange(selected.filter((id) => !removed.has(id)));
   };
@@ -125,8 +124,7 @@ export function PlannedReferencePicker({
           {items.map((binding) => {
             const available = isPlannedReferenceAvailable(binding);
             const isSelected = available && selectedSet.has(binding.binding_id);
-            const lockedRequired = available && binding.required;
-            const disabled = !available || lockedRequired || (!isSelected && atLimit);
+            const disabled = !available || (!isSelected && atLimit);
             const warning = binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
               ? "缺少有效资产版本"
               : unavailableReason(binding.status));
@@ -161,7 +159,7 @@ export function PlannedReferencePicker({
               <span className={cn("mt-2 block text-xs font-semibold", isSelected ? "text-cyan-100" : "text-zinc-200")}>
                 {isSelected ? "已选择" : "未选择"}
               </span>
-              {lockedRequired ? <span className="mt-1 block text-xs font-semibold text-lime-200">必选</span> : null}
+              {available && binding.required ? <span className="mt-1 block text-xs font-semibold text-lime-200">必需引用</span> : null}
               {warning ? <span className="mt-2 flex gap-1.5 text-xs text-amber-200"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{warning}</span> : null}
               {!available && binding.required ? <span className="mt-2 block text-xs font-semibold text-amber-100">必需引用</span> : null}
             </button>;

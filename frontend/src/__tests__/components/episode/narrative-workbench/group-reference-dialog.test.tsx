@@ -49,13 +49,18 @@ describe("GroupReferenceDialog planned references", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: ["identity:hero:young", "scene:hall:rain"], uploadIds: [], referenceRevision: "director-plan-r7", useStyle: true }));
   });
 
-  it("keeps required bindings selected while optional whole cards support cancellation", () => {
-    renderDialog();
+  it("submits zero planned bindings after clearing ready required and optional references", () => {
+    const { onSubmit } = renderDialog();
     const hero = screen.getByRole("button", { name: /石九 \/ 青年时期/ });
     fireEvent.click(hero);
-    expect(hero).toHaveAttribute("aria-pressed", "true");
-    expect(hero).toBeDisabled();
-    expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeEnabled();
+    expect(hero).toHaveAttribute("aria-pressed", "false");
+    expect(hero).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }));
+    fireEvent.click(screen.getByRole("button", { name: "使用 0 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: [],
+      uploadIds: [],
+    }));
   });
 
   it("keeps style independent from the image count", () => {
@@ -65,20 +70,23 @@ describe("GroupReferenceDialog planned references", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ useStyle: false }));
   });
 
-  it("uploads temporary images and counts them against the limit", async () => {
+  it("submits only a temporary image after clearing all planned references", async () => {
     const { onSubmit, onUploadReference, props, rerender } = renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
     const file = new File(["image"], "临时构图.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
     await waitFor(() => expect(onUploadReference).toHaveBeenCalledWith(file));
     expect(screen.getByText("临时构图.png")).toBeInTheDocument();
     expect(screen.getByText("仅本次生成")).toBeInTheDocument();
     rerender(<GroupReferenceDialog {...props} uploadingReference />);
-    expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeDisabled();
     rerender(<GroupReferenceDialog {...props} uploadingReference={false} />);
-    expect(screen.getByRole("button", { name: "使用 3 张参考图生成" })).toBeEnabled();
-    expect(screen.getByLabelText("上传临时参考图")).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "使用 3 张参考图生成" }));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ uploadIds: ["upload-1"] }));
+    expect(screen.getByRole("button", { name: "使用 1 张参考图生成" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "使用 1 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: [],
+      uploadIds: ["upload-1"],
+    }));
   });
 
   it("shows a retryable inline error when a temporary upload fails", async () => {
