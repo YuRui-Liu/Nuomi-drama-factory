@@ -1,0 +1,8 @@
+integrated_multimodal_description:
+[0-6s] (S1) crosses the room and converges exactly into the provided last image.
+
+overall_soundscape:
+Rain taps the glass; soft footsteps cross the wooden floor.
+
+non_diegetic_music:
+N/A

@@ -1,0 +1,8 @@
+integrated_multimodal_description:
+[0-6s] Continue exactly from the provided first image: (S1) slowly turns toward camera.
+
+overall_soundscape:
+Rain taps the glass; soft footsteps cross the wooden floor.
+
+non_diegetic_music:
+N/A

@@ -1,0 +1,17 @@
+subject_definitions:
+(S1): the woman in reference image 1, preserving face, hair, coat, and proportions.
+
+summary:
+A restrained dramatic beat in a rain-dark apartment.
+
+retention_analysis:
+- (S1): identity, wardrobe, body proportions
+
+detailed_description:
+[0-6s] Static medium shot. (S1) turns from the window and says <d>[Chinese]你终于来了。</d>
+
+overall_soundscape:
+Rain taps the glass; a floorboard creaks beneath (S1).
+
+non_diegetic_music:
+N/A
