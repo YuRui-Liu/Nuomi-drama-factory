@@ -60,14 +60,16 @@ describe("PlannedReferencePicker", () => {
     expect(card).toHaveAttribute("data-selection-state", "unselected");
     expect(card).toHaveClass("border-white/30", "bg-white/[0.06]");
     expect(within(card).getByText("未选择", { selector: "span" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "苏清晏选择状态" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(card).queryByTestId("selected-check")).not.toBeInTheDocument();
 
     await user.click(card);
     expect(card).toHaveAttribute("aria-pressed", "true");
     expect(card).toHaveAttribute("data-selection-state", "selected");
     expect(card).toHaveClass("border-cyan-300", "bg-cyan-300/20");
     expect(within(card).getByText("已选择", { selector: "span" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "苏清晏选择状态" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(card).getByTestId("selected-check")).toHaveAttribute("aria-hidden", "true");
 
     card.focus();
     await user.keyboard("{Enter}");
@@ -93,6 +95,24 @@ describe("PlannedReferencePicker", () => {
     expect(onChange).toHaveBeenLastCalledWith(["character-1", "prop-1"]);
     fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
     expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+
+  it("uses instance-unique heading relationships", () => {
+    render(<><ControlledPicker /><ControlledPicker /></>);
+    const headings = screen.getAllByRole("heading", { name: "角色身份" });
+    expect(headings[0].id).not.toBe(headings[1].id);
+    expect(headings[0].closest("section")).toHaveAttribute("aria-labelledby", headings[0].id);
+    expect(headings[1].closest("section")).toHaveAttribute("aria-labelledby", headings[1].id);
+  });
+
+  it("renders only the first occurrence of a duplicate binding ID", () => {
+    render(<ControlledPicker items={[
+      bindings[0],
+      { ...bindings[0], display_label: "不应出现的重复角色" },
+      bindings[1],
+    ]} />);
+    expect(screen.getAllByRole("button", { name: /苏清晏/ })).toHaveLength(1);
+    expect(screen.queryByText("不应出现的重复角色")).not.toBeInTheDocument();
   });
 
   it("counts temporary images, disables additions at the limit, and restores them after deselection", () => {

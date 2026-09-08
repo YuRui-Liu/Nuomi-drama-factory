@@ -112,11 +112,8 @@ export interface NarrativeGroupImageReference {
 }
 
 export interface NarrativeGroupReferencePreview {
-  /** Planned-reference fields are optional until the legacy dialog is switched over. */
-  reference_revision?: string;
-  max_images?: number;
   requirements?: NarrativeReferenceRequirement[];
-  bindings?: PlannedReferenceBinding[];
+  bindings?: NarrativeReferenceBinding[];
   style: {
     id: string;
     label: string;
@@ -132,6 +129,12 @@ export interface NarrativeGroupReferencePreview {
     omitted_reference_ids: string[];
   };
   warnings: string[];
+}
+
+export interface PlannedNarrativeGroupReferencePreview extends Omit<NarrativeGroupReferencePreview, "bindings"> {
+  reference_revision: string;
+  bindings: PlannedReferenceBinding[];
+  max_images: number;
 }
 
 export type VideoReferenceSourceKind =

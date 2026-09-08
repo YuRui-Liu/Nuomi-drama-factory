@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { AlertTriangle, Check, ImageOff } from "lucide-react";
+import { useId } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,15 @@ function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string
   return [...new Set(selectedIds)].filter((id) => ready.has(id));
 }
 
+function uniqueBindingsById(bindings: PlannedReferenceBinding[]) {
+  const seen = new Set<string>();
+  return bindings.filter((binding) => {
+    if (seen.has(binding.binding_id)) return false;
+    seen.add(binding.binding_id);
+    return true;
+  });
+}
+
 export function PlannedReferencePicker({
   bindings,
   selectedIds,
@@ -48,16 +58,18 @@ export function PlannedReferencePicker({
   onChange,
   onResolvePlanning,
 }: PlannedReferencePickerProps) {
-  const selected = uniqueReadyIds(bindings, selectedIds);
+  const headingIdPrefix = useId();
+  const visibleBindings = uniqueBindingsById(bindings);
+  const selected = uniqueReadyIds(visibleBindings, selectedIds);
   const selectedSet = new Set(selected);
   const safeTemporaryCount = Math.max(0, temporaryCount);
   const totalCount = selected.length + safeTemporaryCount;
   const remainingSlots = Math.max(0, maxImages - safeTemporaryCount);
   const atLimit = totalCount >= maxImages;
-  const hasRequiredUnavailable = bindings.some((item) => item.required && item.status !== "ready");
+  const hasRequiredUnavailable = visibleBindings.some((item) => item.required && item.status !== "ready");
 
   const selectGroups = (groups: BindingGroup[]) => {
-    const orderedCandidates = groups.flatMap((group) => bindings.filter(
+    const orderedCandidates = groups.flatMap((group) => visibleBindings.filter(
       (item) => group.includes(item) && item.status === "ready",
     ));
     const ids = [...new Set([
@@ -68,7 +80,7 @@ export function PlannedReferencePicker({
   };
 
   const clearGroups = (groups: BindingGroup[]) => {
-    const removed = new Set(bindings.filter((item) => groups.some((group) => group.includes(item)))
+    const removed = new Set(visibleBindings.filter((item) => groups.some((group) => group.includes(item)))
       .map((item) => item.binding_id));
     onChange(selected.filter((id) => !removed.has(id)));
   };
@@ -93,11 +105,12 @@ export function PlannedReferencePicker({
     </div> : null}
 
     {bindingGroups.map((group) => {
-      const items = bindings.filter(group.includes);
+      const items = visibleBindings.filter(group.includes);
       if (items.length === 0) return null;
-      return <section key={group.key} aria-labelledby={`planned-reference-${group.key}`} className="space-y-3">
+      const headingId = `${headingIdPrefix}-planned-reference-${group.key}`;
+      return <section key={group.key} aria-labelledby={headingId} className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 id={`planned-reference-${group.key}`} className="text-sm font-semibold text-white">{group.title}</h3>
+          <h3 id={headingId} className="text-sm font-semibold text-white">{group.title}</h3>
           <div className="flex gap-2">
             <Button type="button" size="xs" variant="ghost" aria-label={`全选${group.title}`} onClick={() => selectGroups([group])}>全选</Button>
             <Button type="button" size="xs" variant="ghost" aria-label={`清空${group.title}`} onClick={() => clearGroups([group])}>清空</Button>
@@ -132,10 +145,10 @@ export function PlannedReferencePicker({
                   <span className="block font-semibold">{binding.display_label}</span>
                   {binding.variant_id ? <span className="mt-0.5 block text-xs text-zinc-300">变体 {binding.variant_id}</span> : null}
                 </span>
-                <span role="checkbox" aria-label={`${binding.display_label}选择状态`} aria-checked={isSelected} className={cn(
+                <span aria-hidden="true" className={cn(
                   "flex size-6 shrink-0 items-center justify-center rounded border-2",
                   isSelected ? "border-cyan-200 bg-cyan-200 text-slate-950" : "border-zinc-300 bg-black/30",
-                )}>{isSelected ? <Check className="size-4 stroke-[3]" aria-hidden="true" /> : null}</span>
+                )}>{isSelected ? <Check data-testid="selected-check" className="size-4 stroke-[3]" /> : null}</span>
               </span>
               <span className={cn("mt-2 block text-xs font-semibold", isSelected ? "text-cyan-100" : "text-zinc-200")}>
                 {isSelected ? "已选择" : "未选择"}

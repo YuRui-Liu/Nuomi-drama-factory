@@ -41,10 +41,59 @@ import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type {
   NarrativeGroupGenerationSelection,
+  NarrativeGroupReferencePreview,
   PlannedNarrativeGroupGenerationSelection,
+  PlannedNarrativeGroupReferencePreview,
 } from "@/lib/queries/narrative-groups";
 
+const legacyReferencePreview: NarrativeGroupReferencePreview = {
+  requirements: [],
+  bindings: [{
+    requirement_id: "character:hero",
+    decision: "project_asset",
+    asset_id: "asset-hero",
+    asset_kind: "character_identity",
+    thumbnail_url: "/hero.png",
+  }],
+  style: { id: "style-1", label: "电影感", prompt: "cinematic", enabled_by_default: true },
+  character_references: [],
+  scene_references: [],
+  limits: { max_images: 9, selected_images: 1, omitted_reference_ids: [] },
+  warnings: [],
+};
+
+const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
+  reference_revision: "director-plan-r7",
+  bindings: [{
+    binding_id: "planned-hero",
+    asset_kind: "character_identity",
+    display_label: "主角",
+    beat_ids: ["beat-1"],
+    required: true,
+    status: "ready",
+    selected_by_default: true,
+  }],
+  max_images: 9,
+  style: legacyReferencePreview.style,
+  character_references: [],
+  scene_references: [],
+  limits: legacyReferencePreview.limits,
+  warnings: [],
+};
+
 describe("narrative group query contract", () => {
+  it("keeps legacy and planned reference preview contracts distinct", () => {
+    expect(legacyReferencePreview.bindings?.[0]).toMatchObject({
+      requirement_id: "character:hero",
+      asset_id: "asset-hero",
+    });
+    expect(plannedReferencePreview).toMatchObject({
+      reference_revision: "director-plan-r7",
+      max_images: 9,
+      bindings: [{ binding_id: "planned-hero" }],
+    });
+  });
+
   it("builds a scoped stage action without client credentials", () => {
     expect(narrativeGroupActionPath("demo project", 2, "ng-01", "render", "regenerate"))
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/render/regenerate");
