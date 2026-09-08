@@ -184,6 +184,27 @@ def test_unstructured_scene_state_does_not_collide_with_scene_base_binding() -> 
     assert [binding.asset_slot_id for binding in result] == ["", ""]
 
 
+def test_distinct_unstructured_scene_states_remain_distinct_and_merge_own_scope() -> None:
+    result = _project(
+        groups=[
+            _group("group-1", "beat-1", "shot-1"),
+            _group("group-2", "beat-2", "shot-2"),
+            _group("group-3", "beat-3", "shot-3"),
+        ],
+        shots=[
+            _shot("shot-1", {"kind": "scene_state", "entity_key": "hall_night"}),
+            _shot("shot-2", {"kind": "scene_state", "entity_key": "street_day"}),
+            _shot("shot-3", {"kind": "scene_state", "entity_key": "hall_night"}),
+        ],
+    )
+
+    assert [binding.entity_id for binding in result] == ["hall_night", "street_day"]
+    assert result[0].group_ids == ("group-1", "group-3")
+    assert result[0].beat_ids == ("beat-1", "beat-3")
+    assert result[0].shot_ids == ("shot-1", "shot-3")
+    assert result[1].group_ids == ("group-2",)
+
+
 def test_multiple_exact_candidates_are_pending_confirmation() -> None:
     [binding] = _project(
         shots=[_shot("shot-1", {"kind": "prop", "entity_key": "letter"})],
@@ -266,6 +287,8 @@ def test_projection_does_not_mutate_inputs_or_call_legacy_or_write_entry_points(
     from pathlib import Path
 
     from novelvideo.narrative_groups import reference_requirements
+    from novelvideo.narrative_groups import reference_matching
+    from novelvideo.sqlite_store import SQLiteStore
 
     inputs = {
         "groups": [_group("group-1", "beat-1", "shot-1")],
@@ -282,6 +305,10 @@ def test_projection_does_not_mutate_inputs_or_call_legacy_or_write_entry_points(
         )
 
     monkeypatch.setattr(reference_requirements, "parse_scene_requirement", forbidden)
+    monkeypatch.setattr(reference_matching, "ensure_draft_scene_variant", forbidden)
+    monkeypatch.setattr(
+        SQLiteStore, "replace_planned_reference_bindings_atomic", forbidden
+    )
     monkeypatch.setattr(builtins, "open", forbidden)
     monkeypatch.setattr(Path, "write_text", forbidden)
     monkeypatch.setattr(Path, "write_bytes", forbidden)

@@ -97,12 +97,13 @@ class PlannedReferenceBinding(BaseModel):
         if resolved and not self.asset_slot_id:
             raise ValueError("asset_slot_id must not be blank for resolved bindings")
         if (
-            resolved
-            and self.asset_kind == "scene_variant"
+            self.asset_kind == "scene_variant"
+            and self.status != "pending_confirmation"
             and (not self.base_entity_id or not self.variant_id)
         ):
             raise ValueError(
-                "resolved scene_variant requires non-empty base_entity_id and variant_id"
+                "scene_variant requires non-empty base_entity_id and variant_id "
+                "unless pending confirmation"
             )
         identity = _PlannedReferenceIdentity(
             project_id=self.project_id,

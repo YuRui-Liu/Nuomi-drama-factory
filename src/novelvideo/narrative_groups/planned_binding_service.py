@@ -96,6 +96,8 @@ class _ProjectedRequirement:
 
     @property
     def key(self) -> tuple[str, str, str]:
+        if self.kind == "scene_variant" and self.malformed_scene_state:
+            return self.kind, "", self.entity_key
         if self.kind == "scene_variant":
             return self.kind, self.base_entity_id, self.variant_id
         return self.kind, self.entity_key, ""

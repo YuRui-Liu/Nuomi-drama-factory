@@ -171,10 +171,7 @@ def test_scene_variant_requires_base_and_variant_ids(
         )
 
 
-@pytest.mark.parametrize("status", ["pending_confirmation", "missing_asset"])
-def test_unresolved_bindings_allow_empty_slot_and_scene_variant_structure(
-    status: str,
-) -> None:
+def test_pending_binding_allows_empty_slot_and_scene_variant_structure() -> None:
     from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 
     binding = PlannedReferenceBinding.create(
@@ -184,7 +181,7 @@ def test_unresolved_bindings_allow_empty_slot_and_scene_variant_structure(
         asset_kind="scene_variant",
         entity_id="legacy-scene-state",
         asset_slot_id="",
-        status=status,
+        status="pending_confirmation",
         resolution="auto_matched",
         display_label="Legacy scene state",
     )
@@ -193,6 +190,40 @@ def test_unresolved_bindings_allow_empty_slot_and_scene_variant_structure(
     assert binding.asset_slot_id == ""
     assert binding.base_entity_id == ""
     assert binding.variant_id == ""
+
+
+def test_missing_asset_scene_variant_requires_structured_identity() -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    with pytest.raises(ValidationError, match="scene_variant"):
+        PlannedReferenceBinding.create(
+            project_id="project-1",
+            episode_number=1,
+            source_plan_revision_id="plan-r1",
+            asset_kind="scene_variant",
+            entity_id="hall",
+            asset_slot_id="",
+            status="missing_asset",
+            resolution="auto_matched",
+            display_label="Hall night",
+        )
+
+    binding = PlannedReferenceBinding.create(
+        project_id="project-1",
+        episode_number=1,
+        source_plan_revision_id="plan-r1",
+        asset_kind="scene_variant",
+        entity_id="hall",
+        base_entity_id="hall",
+        variant_id="night",
+        asset_slot_id="",
+        status="missing_asset",
+        resolution="auto_matched",
+        display_label="Hall night",
+    )
+    assert binding.asset_slot_id == ""
 
 
 @pytest.mark.parametrize("status", ["ready", "missing_image"])
