@@ -97,3 +97,38 @@ async def test_load_graph_state_reports_normalization_failure_and_preserves_old_
         assert store._cache_refresh_pending is False
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_refresh_preserves_last_valid_shared_cache_on_cognee_failure(
+    tmp_path, monkeypatch
+):
+    from novelvideo.task_backend.runners.episode_assets import _refresh_asset_caches
+
+    output_dir = tmp_path / "output" / "admin" / "runner-refresh"
+    state_dir = tmp_path / "state" / "admin" / "runner-refresh"
+    output_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    store = CogneeStore(
+        "admin/runner-refresh",
+        output_dir=str(output_dir),
+        state_dir=str(state_dir),
+    )
+    try:
+        await store.sqlite_store.initialize()
+        await store.add_episodes([NovelEpisode(number=1, title="持久化剧集")])
+        cached = NovelEpisode(number=99, title="上次有效缓存")
+        store._episodes.clear()
+        store._episodes[cached.number] = cached
+
+        async def fail_normalization(_items):
+            raise RuntimeError("normalization unavailable")
+
+        monkeypatch.setattr(store, "_normalize_scene_menu_items", fail_normalization)
+
+        assert await _refresh_asset_caches(store.sqlite_store, store) is False
+        assert store.get_episode(99) is cached
+        assert store.get_episode(1) is None
+        assert store.sqlite_store._episodes is store._episodes
+    finally:
+        await store.close()

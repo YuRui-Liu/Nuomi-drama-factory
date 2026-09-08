@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
@@ -673,6 +674,17 @@ class AssetCompiler:
                 return False
         return True
 
+    @staticmethod
+    def _deferred_refresh_kwargs(publisher: Callable[..., Any]) -> dict[str, bool]:
+        parameters = inspect.signature(publisher).parameters.values()
+        if any(
+            parameter.name == "refresh_cache"
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        ):
+            return {"refresh_cache": False}
+        return {}
+
     def _director_scene_blocks(self) -> list[SceneBlock]:
         if self.director_plan is None:
             return []
@@ -745,6 +757,7 @@ class AssetCompiler:
                 scene_draft.episode_scene_menu_baseline_digest
             ),
             bindings=None,
+            **self._deferred_refresh_kwargs(scene_publisher),
         )
         await self._refresh_after_asset_publish()
         await prop_publisher(
@@ -756,6 +769,7 @@ class AssetCompiler:
                 prop_draft.episode_prop_menu_baseline_digest
             ),
             bindings=None,
+            **self._deferred_refresh_kwargs(prop_publisher),
         )
         await self._refresh_after_asset_publish()
         if on_progress:
@@ -789,6 +803,7 @@ class AssetCompiler:
                 draft.episode_scene_menu_baseline_digest
             ),
             bindings=None,
+            **self._deferred_refresh_kwargs(publisher),
         )
         await self._refresh_after_asset_publish()
         return list(draft.scene_menu), draft.new_count
@@ -950,6 +965,7 @@ class AssetCompiler:
                 draft.episode_prop_menu_baseline_digest
             ),
             bindings=None,
+            **self._deferred_refresh_kwargs(publisher),
         )
         await self._refresh_after_asset_publish()
         return list(draft.prop_menu)

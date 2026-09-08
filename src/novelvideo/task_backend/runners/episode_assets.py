@@ -24,9 +24,12 @@ logger = logging.getLogger(__name__)
 async def _refresh_asset_caches(sqlite_store: Any, cognee_store: Any) -> bool:
     """Refresh post-commit caches while honoring Cognee's explicit status."""
     try:
-        await sqlite_store.load_graph_state()
         return await cognee_store.load_graph_state() is not False
     except Exception:
+        logger.warning(
+            "asset plan committed but cache refresh raised an exception",
+            exc_info=True,
+        )
         return False
 
 

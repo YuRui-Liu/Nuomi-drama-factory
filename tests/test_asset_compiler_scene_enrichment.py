@@ -24,6 +24,7 @@ class _FakeSQLiteStore:
         self.updated: list[tuple[str, dict]] = []
         self.atomic_calls: list[tuple[list[str], bool]] = []
         self.published_menus: list[tuple[int, list, object]] = []
+        self.publish_refresh_cache: list[bool] = []
 
     async def get_scene(self, name: str):
         return self.scenes.get(name)
@@ -53,9 +54,11 @@ class _FakeSQLiteStore:
         scene_baseline_digests,
         episode_scene_menu_baseline_digest,
         bindings,
+        refresh_cache=True,
     ):
         await self.add_scenes_atomic(list(scenes), skip_existing=False)
         self.published_menus.append((episode_number, list(scene_menu), bindings))
+        self.publish_refresh_cache.append(refresh_cache)
 
     async def update_scene(self, name: str, **updates):
         self.updated.append((name, updates))
@@ -870,6 +873,30 @@ async def test_legacy_asset_compiler_recognizes_swallowed_cognee_refresh_failure
 
     assert await compiler._refresh_after_asset_publish() is False
     assert "cache refresh is pending" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_legacy_scene_publication_defers_shared_cache_refresh(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    store = _FakeCogneeStore()
+    compiler = asset_compiler.AssetCompiler(store)
+    draft = asset_compiler.ScenePlanDraft(
+        scenes=(),
+        scene_menu=(),
+        new_count=0,
+        scene_baseline_digests={},
+        episode_scene_menu_baseline_digest="baseline",
+    )
+
+    async def build_draft(*_args, **_kwargs):
+        return draft
+
+    monkeypatch.setattr(compiler, "build_scene_plan_draft", build_draft)
+
+    await compiler.compile_episode_scenes(SimpleNamespace(number=1))
+
+    assert store.sqlite_store.publish_refresh_cache == [False]
 
 
 def test_derived_scene_normalization_filters_plain_time_but_keeps_stable_light_plate():

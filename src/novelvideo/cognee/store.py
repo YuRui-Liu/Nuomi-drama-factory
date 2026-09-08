@@ -1463,15 +1463,33 @@ class CogneeStore:
                 return candidate
         return None
 
-    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
+    def _normalize_prop_menu_items(
+        self,
+        prop_menu: Iterable[Any] | None,
+        *,
+        props: Iterable[NovelProp] | None = None,
+    ) -> list[PropMenuItem]:
         """将 episode prop_menu 规范化为资产库标准 prop_id。"""
         normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
+        prop_catalog = tuple(props) if props is not None else tuple(self._props.values())
         canonical_items: list[PropMenuItem] = []
         for item in normalized_items:
             prop_id = str(item.prop_id or "").strip()
             if not prop_id:
                 continue
-            cached = self.get_cached_prop(prop_id)
+            lookup = self._normalize_alias_lookup(prop_id)
+            cached = next(
+                (
+                    candidate
+                    for candidate in prop_catalog
+                    if self._normalize_alias_lookup(candidate.name) == lookup
+                    or any(
+                        self._normalize_alias_lookup(alias) == lookup
+                        for alias in (getattr(candidate, "aliases", []) or [])
+                    )
+                ),
+                None,
+            )
             canonical_id = cached.name if cached else prop_id
             canonical_items.append(
                 PropMenuItem(
@@ -1494,12 +1512,15 @@ class CogneeStore:
         return build_prop_menu(prop_menu=canonical_items)
 
     async def _normalize_scene_menu_items(
-        self, scene_menu: Iterable[Any] | None
+        self,
+        scene_menu: Iterable[Any] | None,
+        *,
+        scenes: Iterable[NovelScene] | None = None,
     ) -> list[SceneMenuItem]:
         """将 episode scene_menu 规范化为资产库标准 scene_id。"""
         normalized_items = build_scene_menu(scene_menu=list(scene_menu or []))
         canonical_items: list[SceneMenuItem] = []
-        all_scenes = await self.sqlite_store.list_scenes()
+        all_scenes = list(scenes) if scenes is not None else await self.sqlite_store.list_scenes()
         for item in normalized_items:
             scene_id = str(item.scene_id or "").strip()
             if not scene_id:
@@ -1614,15 +1635,36 @@ class CogneeStore:
         previous_props = dict(self._props)
         previous_aliases = dict(self._alias_index)
         try:
-            await self.sqlite_store.load_graph_state()
-            self._sync_sqlite_caches()
+            characters = await self.sqlite_store.list_characters()
+            episodes = await self.sqlite_store.list_episodes()
             props = await self.sqlite_store.list_props()
+            scenes = await self.sqlite_store.list_scenes()
 
-            self._props = {prop.name: prop for prop in props}
+            for episode in episodes:
+                episode.scene_menu = await self._normalize_scene_menu_items(
+                    episode.scene_menu, scenes=scenes
+                )
+                episode.prop_menu = self._normalize_prop_menu_items(
+                    episode.prop_menu, props=props
+                )
 
-            for episode in self._episodes.values():
-                episode.scene_menu = await self._normalize_scene_menu_items(episode.scene_menu)
-                episode.prop_menu = self._normalize_prop_menu_items(episode.prop_menu)
+            characters_by_name = {character.name: character for character in characters}
+            episodes_by_number = {episode.number: episode for episode in episodes}
+            props_by_name = {prop.name: prop for prop in props}
+            aliases = {
+                alias: character.name
+                for character in characters
+                for alias in character.aliases
+            }
+            self._characters.clear()
+            self._characters.update(characters_by_name)
+            self._episodes.clear()
+            self._episodes.update(episodes_by_number)
+            self._props.clear()
+            self._props.update(props_by_name)
+            self._alias_index.clear()
+            self._alias_index.update(aliases)
+            self._share_sqlite_caches()
 
             self._cache_refresh_pending = False
             self.sqlite_store._cache_refresh_pending = False
