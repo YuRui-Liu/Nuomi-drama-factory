@@ -57,6 +57,7 @@ from novelvideo.narrative_groups.planned_binding_service import (
     StaleReferenceBinding,
     UnresolvedPlannedReference,
     build_planned_reference_snapshot,
+    required_binding_keys_for_director_group,
     resolve_planned_reference_preview,
 )
 from novelvideo.narrative_groups.reference_uploads import (
@@ -143,6 +144,35 @@ def _planned_reference_http_error(exc: PlannedReferenceError) -> HTTPException:
         status_code=status_code,
         detail={"code": exc.error_code, "message": str(exc)},
     )
+
+
+def _active_plan_reference_context(
+    plan_store: DirectorPlanStore,
+    episode: int,
+    group_id: str,
+):
+    active_plan = plan_store.load_active(episode)
+    if active_plan is None:
+        raise PlannedReferencesRequired(
+            "请先激活本集导演方案并重新规划身份、场景和道具引用"
+        )
+    return (
+        active_plan.revision_id,
+        required_binding_keys_for_director_group(active_plan, group_id),
+    )
+
+
+def _confirm_active_plan_revision(
+    plan_store: DirectorPlanStore,
+    episode: int,
+    expected_revision_id: str,
+) -> None:
+    """Perform the final active-plan CAS without holding a lock across await."""
+    with plan_store.lock_active_revision(episode) as current:
+        if current is None or current.revision_id != expected_revision_id:
+            raise StaleReferenceBinding(
+                "planned references do not match active director plan"
+            )
 
 
 def _reference_enqueue_ownership(
@@ -1459,11 +1489,10 @@ async def preview_group_references(
         Path(resolved.ctx.state_dir) / "production_workflow.json"
     )
     try:
-        active_plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
-        if active_plan is None:
-            raise PlannedReferencesRequired(
-                "请先激活本集导演方案并重新规划身份、场景和道具引用"
-            )
+        plan_store = DirectorPlanStore(resolved.project_dir)
+        active_revision_id, required_binding_keys = _active_plan_reference_context(
+            plan_store, episode, group_id
+        )
         planned = await resolve_planned_reference_preview(
             store,
             workflow,
@@ -1471,9 +1500,11 @@ async def preview_group_references(
             episode_number=episode,
             group_id=group_id,
             project_dir=resolved.project_dir,
-            active_plan_revision_id=active_plan.revision_id,
+            active_plan_revision_id=active_revision_id,
+            required_binding_keys=required_binding_keys,
             max_images=MAX_GROUP_IMAGE_REFERENCES,
         )
+        _confirm_active_plan_revision(plan_store, episode, active_revision_id)
     except PlannedReferenceError as exc:
         raise _planned_reference_http_error(exc) from exc
     data = planned.model_dump(mode="json")
@@ -1664,29 +1695,31 @@ async def _enqueue_group_action(
                     uploads[upload_id] = upload
             try:
                 plan_store = DirectorPlanStore(resolved.project_dir)
-                with plan_store.lock_active_revision(episode) as active_plan:
-                    if active_plan is None:
-                        raise PlannedReferencesRequired(
-                            "请先激活本集导演方案并重新规划身份、场景和道具引用"
-                        )
-                    reference_snapshot = await build_planned_reference_snapshot(
-                        store,
-                        workflow,
-                        project_id=str(resolved.ctx.project_id),
-                        episode_number=episode,
-                        group_id=group_id,
-                        project_dir=resolved.project_dir,
-                        selected_binding_ids=(
-                            request.reference_resolution.selected_binding_ids
-                        ),
-                        upload_ids=request.reference_resolution.upload_ids,
-                        reference_revision=(
-                            request.reference_resolution.reference_revision
-                        ),
-                        uploads=uploads,
-                        active_plan_revision_id=active_plan.revision_id,
-                        max_images=MAX_GROUP_IMAGE_REFERENCES,
-                    )
+                active_revision_id, required_binding_keys = (
+                    _active_plan_reference_context(plan_store, episode, group_id)
+                )
+                reference_snapshot = await build_planned_reference_snapshot(
+                    store,
+                    workflow,
+                    project_id=str(resolved.ctx.project_id),
+                    episode_number=episode,
+                    group_id=group_id,
+                    project_dir=resolved.project_dir,
+                    selected_binding_ids=(
+                        request.reference_resolution.selected_binding_ids
+                    ),
+                    upload_ids=request.reference_resolution.upload_ids,
+                    reference_revision=(
+                        request.reference_resolution.reference_revision
+                    ),
+                    uploads=uploads,
+                    active_plan_revision_id=active_revision_id,
+                    required_binding_keys=required_binding_keys,
+                    max_images=MAX_GROUP_IMAGE_REFERENCES,
+                )
+                _confirm_active_plan_revision(
+                    plan_store, episode, active_revision_id
+                )
             except PlannedReferenceError as exc:
                 raise _planned_reference_http_error(exc) from exc
         else:

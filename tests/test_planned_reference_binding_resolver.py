@@ -11,6 +11,7 @@ from novelvideo.narrative_groups.planned_binding_service import (
     PlannedReferencesRequired,
     StaleReferenceBinding,
     build_planned_reference_snapshot,
+    required_binding_keys_for_director_group,
     resolve_planned_reference_preview,
 )
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
@@ -304,6 +305,48 @@ async def test_preview_rejects_mixed_or_inactive_plan_revisions(
             group_id="group-01",
             project_dir=tmp_path,
             active_plan_revision_id=active_revision,
+        )
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_partial_kind_publication_for_active_plan(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    group = SimpleNamespace(
+        id="group-01",
+        dramatic_beat_ids=("beat-07",),
+        shots=(
+            SimpleNamespace(
+                id="shot-07",
+                dramatic_beat_ids=("beat-07",),
+                asset_requirements=(
+                    SimpleNamespace(
+                        kind="character_identity",
+                        entity_key="alice-youth",
+                        required=True,
+                    ),
+                    SimpleNamespace(
+                        kind="prop", entity_key="new-required-prop", required=True
+                    ),
+                ),
+            ),
+        ),
+    )
+    active_plan = SimpleNamespace(revision_id="director-r3", groups=(group,))
+
+    with pytest.raises(PlannedReferencesRequired, match="new-required-prop"):
+        await resolve_planned_reference_preview(
+            _BindingStore([binding]),
+            _workflow(tmp_path, binding),
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            active_plan_revision_id="director-r3",
+            required_binding_keys=required_binding_keys_for_director_group(
+                active_plan, "group-01"
+            ),
         )
 
 

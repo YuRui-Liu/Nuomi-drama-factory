@@ -1,5 +1,8 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import threading
 from dataclasses import replace
 from io import BytesIO
 from datetime import datetime, timezone
@@ -1694,8 +1697,11 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
         )
         assert kwargs["project_id"] == "demo"
         assert kwargs["episode_number"] == 1
-        assert kwargs["group_id"] == "ng-01"
+        assert kwargs["group_id"] == "director-group"
         assert kwargs["active_plan_revision_id"] == "rev-api-active"
+        assert kwargs["required_binding_keys"] == frozenset(
+            {("prop", "letter", "")}
+        )
         return PlannedReferencePreview(
             reference_revision="planned-r1",
             max_images=9,
@@ -1713,14 +1719,15 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
                 thumbnail_url=str(tmp_path / "assets" / "hero.png"),
                 relative_path="assets/hero.png",
                 sha256="a" * 64,
-                group_ids=("ng-01",),
+                group_ids=("director-group",),
             ),),
         )
 
     monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
     monkeypatch.setattr(narrative_groups, "resolve_planned_reference_preview", resolve)
     response = client.get(
-        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/references"
+        "/api/v1/projects/demo/episodes/1/narrative-groups/"
+        "director-group/render/references"
     )
 
     assert response.status_code == 200
@@ -1734,6 +1741,50 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
     assert data["bindings"][0]["asset_slot_id"] == (
         "character:Hero:state:Hero_casual"
     )
+
+
+def test_reference_preview_rejects_activation_during_async_resolution(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    async def resolve(*args, **kwargs):
+        from novelvideo.narrative_groups.planned_binding_service import (
+            PlannedReferencePreview,
+        )
+
+        assert kwargs["active_plan_revision_id"] == "rev-api-active"
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return PlannedReferencePreview(
+            reference_revision="planned-r1", max_images=9, bindings=()
+        )
+
+    monkeypatch.setattr(narrative_groups, "resolve_planned_reference_preview", resolve)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        response_future = pool.submit(
+            client.get,
+            "/api/v1/projects/demo/episodes/1/narrative-groups/"
+            "director-group/render/references",
+        )
+        assert started.wait(2)
+        store = DirectorPlanStore(tmp_path)
+        current = store.load_active(1)
+        assert current is not None
+        next_revision = current.model_copy(
+            update={"revision_id": "rev-api-preview-new", "status": "review_required"}
+        )
+        store.save(next_revision)
+        store.activate(1, next_revision.revision_id)
+        release.set()
+        response = response_future.result(timeout=2)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "STALE_REFERENCE_BINDING"
 
 
 def test_reference_preview_returns_structured_planning_required_error(
@@ -1872,6 +1923,9 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
         assert kwargs["upload_ids"] == []
         assert kwargs["reference_revision"] == "revision-1"
         assert kwargs["active_plan_revision_id"] == "rev-api-active"
+        assert kwargs["required_binding_keys"] == frozenset(
+            {("prop", "letter", "")}
+        )
         return ReferenceDecisionSnapshot(
             id="refsnap-1",
             schema_version="narrative-reference-decision/v2",
@@ -1913,6 +1967,69 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
     assert snapshot["images"][0]["binding_id"] == "planned-ref-letter"
     assert backend.calls[0][1]["payload"]["use_style"] is False
     assert "image_path" not in str(response.json())
+
+
+def test_generate_snapshot_wait_does_not_block_activation_and_rejects_race(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
+    started = threading.Event()
+    release = threading.Event()
+    activation_finished = threading.Event()
+
+    async def build(*args, **kwargs):
+        from novelvideo.narrative_groups.reference_decisions import (
+            ReferenceDecisionSnapshot,
+        )
+
+        assert kwargs["active_plan_revision_id"] == "rev-api-active"
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return ReferenceDecisionSnapshot(
+            id="refsnap-race",
+            schema_version="narrative-reference-decision/v2",
+            images=(),
+            ignored_requirement_ids=(),
+        )
+
+    monkeypatch.setattr(narrative_groups, "build_planned_reference_snapshot", build)
+
+    def activate_new_revision() -> None:
+        store = DirectorPlanStore(tmp_path)
+        current = store.load_active(1)
+        assert current is not None
+        next_revision = current.model_copy(
+            update={"revision_id": "rev-api-new", "status": "review_required"}
+        )
+        store.save(next_revision)
+        store.activate(1, next_revision.revision_id)
+        activation_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        response_future = pool.submit(
+            client.post,
+            "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate",
+            json={
+                "reference_resolution": {
+                    "selected_binding_ids": [],
+                    "upload_ids": [],
+                    "reference_revision": "planned-r1",
+                }
+            },
+        )
+        assert started.wait(2)
+        activation_future = pool.submit(activate_new_revision)
+        activation_was_not_blocked = activation_finished.wait(0.5)
+        release.set()
+        activation_future.result(timeout=2)
+        response = response_future.result(timeout=2)
+
+    assert activation_was_not_blocked is True
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "STALE_REFERENCE_BINDING"
+    assert backend.calls == []
 
 
 def test_generate_rejects_legacy_generation_time_reference_decisions(

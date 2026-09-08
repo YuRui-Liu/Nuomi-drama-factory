@@ -251,6 +251,9 @@ class _ProjectedRequirement:
         return self.kind, self.entity_key, ""
 
 
+BindingRequirementKey = tuple[str, str, str]
+
+
 def _group_scope(
     groups: tuple[Any, ...],
 ) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
@@ -343,6 +346,40 @@ def _requirements(
                 required=current.required or requirement.required,
             )
     return tuple(result)
+
+
+def required_binding_keys_for_director_group(
+    director_plan: Any,
+    group_id: str,
+) -> frozenset[BindingRequirementKey]:
+    """Return required structural reference identities for one active plan group."""
+    groups = tuple(
+        group
+        for group in _items(_get(director_plan, "groups", ()) or ())
+        if _text(_get(group, "id")) == group_id
+    )
+    if len(groups) != 1:
+        raise PlannedReferencesRequired(
+            f"当前导演方案不存在叙事组 {group_id}，请返回规划处理"
+        )
+    shots = tuple(
+        shot for group in groups for shot in _items(_get(group, "shots", ()) or ())
+    )
+    return frozenset(
+        requirement.key
+        for requirement in _requirements(groups, shots)
+        if requirement.required
+    )
+
+
+def _binding_requirement_key(
+    binding: PlannedReferenceBinding,
+) -> BindingRequirementKey:
+    if binding.asset_kind == "scene_variant":
+        if binding.base_entity_id and binding.variant_id:
+            return binding.asset_kind, binding.base_entity_id, binding.variant_id
+        return binding.asset_kind, "", binding.entity_id
+    return binding.asset_kind, binding.entity_id, ""
 
 
 def _binding(
@@ -652,6 +689,7 @@ async def resolve_planned_reference_preview(
     project_dir: Path,
     max_images: int = 9,
     active_plan_revision_id: str | None = None,
+    required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
     """Resolve only persisted bindings and current versions without mutation."""
     if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
@@ -668,6 +706,7 @@ async def resolve_planned_reference_preview(
         project_dir=project_dir,
         max_images=max_images,
         active_plan_revision_id=active_plan_revision_id,
+        required_binding_keys=required_binding_keys,
     )
 
 
@@ -681,6 +720,7 @@ def _preview_from_bindings(
     project_dir: Path,
     max_images: int,
     active_plan_revision_id: str | None = None,
+    required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
     if not bindings:
         raise PlannedReferencesRequired(
@@ -699,6 +739,18 @@ def _preview_from_bindings(
         and revisions != {active_plan_revision_id}
     ):
         raise StaleReferenceBinding("planned references do not match active director plan")
+    if required_binding_keys is not None:
+        published_required = {
+            _binding_requirement_key(item) for item in bindings if item.required
+        }
+        missing = sorted(required_binding_keys - published_required)
+        if missing:
+            labels = ", ".join(
+                ":".join(part for part in key if part) for key in missing
+            )
+            raise PlannedReferencesRequired(
+                f"当前导演方案仍有未规划的必需引用: {labels}"
+            )
     root = Path(project_dir).resolve(strict=False)
     resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
     return PlannedReferencePreview(
@@ -750,6 +802,7 @@ async def build_planned_reference_snapshot(
     uploads: Mapping[str, ReferenceUpload] | None = None,
     max_images: int = 9,
     active_plan_revision_id: str | None = None,
+    required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> ReferenceDecisionSnapshot:
     """Re-resolve and freeze exactly selected bindings and temporary uploads."""
     if len(set(selected_binding_ids)) != len(selected_binding_ids):
@@ -770,6 +823,7 @@ async def build_planned_reference_snapshot(
             project_dir=project_dir,
             max_images=max_images,
             active_plan_revision_id=active_plan_revision_id,
+            required_binding_keys=required_binding_keys,
         )
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")
@@ -867,5 +921,6 @@ __all__ = [
     "bindings_by_kind",
     "bindings_for_director_plan",
     "build_planned_reference_snapshot",
+    "required_binding_keys_for_director_group",
     "resolve_planned_reference_preview",
 ]
