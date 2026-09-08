@@ -19,10 +19,6 @@ from novelvideo.narrative_groups.service import (
     stage_payload,
     load_materialized_groups,
 )
-from novelvideo.narrative_groups.references import (
-    GroupImageReference,
-    resolve_group_reference_preview,  # noqa: F401 - legacy monkeypatch surface
-)
 from novelvideo.narrative_groups.reference_uploads import (
     InvalidReferenceUpload,
     validate_reference_image,
@@ -202,25 +198,10 @@ def _snapshot_generation_input(
     )
 
 
-def _reference_mapping(
-    references: tuple[GroupImageReference, ...], *, start: int = 1
-) -> str:
-    lines = []
-    for index, ref in enumerate(references, start=start):
-        beats = ", ".join(str(number) for number in ref.beat_numbers)
-        if ref.kind == "character":
-            subject = f"character {ref.character_name}, identity {ref.identity_id}"
-        else:
-            subject = f"scene {ref.scene_id}"
-        lines.append(f"Reference {index}: {subject}; use for panels {beats}.")
-    return "\n".join(lines)
-
-
 def _grid_prompt(
     payload: Mapping[str, Any],
     *,
     style_prompt: str = "",
-    selected_references: tuple[GroupImageReference, ...] = (),
 ) -> str:
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
@@ -261,9 +242,6 @@ def _grid_prompt(
         for part in (image_projection, style_prompt, grid_rules, "\n".join(panels))
         if part
     ]
-    mapping = _reference_mapping(selected_references, start=2 if strong_lock else 1)
-    if mapping:
-        parts.append(mapping)
     return "\n".join(parts)
 
 
@@ -328,7 +306,6 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
             return generation_input
         # Strong-lock processing below is shared with legacy selections.
         references = generation_input.references
-        prompt_references: tuple[GroupImageReference, ...] = ()
         warnings = list(generation_input.warnings)
         style_prompt = ""
         reference_audit = generation_input.reference_audit
@@ -360,7 +337,6 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         if len(references) > 8:
             warnings.append("强构图模式为草图保留首个参考位，仅使用前 8 张其他参考图")
         references = (str(frozen_asset), *references[:8])
-        prompt_references = prompt_references[:8]
     return GroupGenerationInput(
         prompt=_grid_prompt(
             (
@@ -369,7 +345,6 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
                 else {**payload, "image_projection": "", "panel_tag": ""}
             ),
             style_prompt=style_prompt,
-            selected_references=prompt_references,
         ),
         references=tuple(references),
         warnings=tuple(warnings),

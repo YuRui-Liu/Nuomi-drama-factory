@@ -39,11 +39,6 @@ from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterDefinition,
     VideoWorkflowParameterOption,
 )
-from novelvideo.narrative_groups.references import (
-    GroupImageReference,
-    GroupReferencePreview,
-    GroupStyleReference,
-)
 from novelvideo.narrative_groups import service as narrative_group_service
 from novelvideo.narrative_groups.service import advance_revision, record_stage_result, sidecar_path
 from novelvideo.shot_continuity import (
@@ -266,40 +261,6 @@ def activate_director_plan(tmp_path: Path) -> None:
     store.activate(1, revision.revision_id)
 
 
-def make_reference_preview(tmp_path: Path):
-    character = tmp_path / "assets" / "characters" / "hero.png"
-    scene = tmp_path / "assets" / "scenes" / "room.png"
-    character.parent.mkdir(parents=True)
-    scene.parent.mkdir(parents=True)
-    character.write_bytes(b"character")
-    scene.write_bytes(b"scene")
-    return GroupReferencePreview(
-        style=GroupStyleReference(id="style-opaque", name="cinematic", prompt="moody"),
-        image_references=(
-            GroupImageReference(
-                id="char-opaque", kind="character", source_kind="identity",
-                label="Hero", path=str(character), beat_numbers=(1,), first_appearance=1,
-                character_name="Hero", identity_id="hero_casual",
-            ),
-            GroupImageReference(
-                id="scene-opaque", kind="scene", source_kind="scene_master",
-                label="Room", path=str(scene), beat_numbers=(2,), first_appearance=2,
-                scene_id="scene_room",
-            ),
-        ),
-        warnings=("preview warning",),
-        asset_root=str(tmp_path / "assets"),
-    )
-
-
-def install_reference_resolver(monkeypatch, preview, calls):
-    def resolve(project_dir, beats, stage="render"):
-        calls.append((project_dir, beats, stage))
-        return preview
-
-    monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", resolve)
-
-
 def install_empty_planned_snapshot(monkeypatch, tmp_path: Path) -> dict:
     async def build(*args, **kwargs):
         from novelvideo.narrative_groups.reference_decisions import (
@@ -308,7 +269,7 @@ def install_empty_planned_snapshot(monkeypatch, tmp_path: Path) -> dict:
 
         return ReferenceDecisionSnapshot(
             id="refsnap-empty",
-            schema_version="narrative-reference-decision/v1",
+            schema_version="narrative-reference-decision/v2",
             images=(),
             ignored_requirement_ids=(),
         )
@@ -1681,9 +1642,6 @@ def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
 
 def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path, beat_count=10)
-    preview = make_reference_preview(tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, preview, calls)
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-02/render/references"
@@ -1691,15 +1649,12 @@ def test_reference_preview_is_safe_project_scoped_and_group_bounded(monkeypatch,
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
-    assert calls == []
 
 
 def test_reference_preview_unknown_group_is_resolved_only_from_planned_bindings(
     monkeypatch, tmp_path
 ):
     client, _ = make_client(monkeypatch, tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
 
     response = client.get(
         "/api/v1/projects/demo/episodes/1/narrative-groups/missing/sketch/references"
@@ -1707,7 +1662,6 @@ def test_reference_preview_unknown_group_is_resolved_only_from_planned_bindings(
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
-    assert calls == []
 
 
 def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
@@ -1869,7 +1823,7 @@ def test_reference_upload_rejects_legacy_persistence_fields(
     assert not target.exists()
 
 
-def test_reference_candidates_return_opaque_project_scoped_ids(monkeypatch, tmp_path):
+def test_generation_time_reference_candidate_catalog_is_retired(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     image_path = tmp_path / "assets" / "props" / "letter" / "reference_3view.png"
     image_path.parent.mkdir(parents=True)
@@ -1880,76 +1834,17 @@ def test_reference_candidates_return_opaque_project_scoped_ids(monkeypatch, tmp_
         "render/references/candidates"
     )
 
-    assert response.status_code == 200
-    [candidate] = response.json()["data"]
-    assert candidate["kind"] == "prop"
-    assert candidate["available"] is True
-    assert candidate["id"] != str(image_path)
-    assert candidate["thumbnail_url"].endswith(
-        "/media/assets/props/letter/reference_3view.png"
-    )
-    assert str(tmp_path) not in str(candidate)
+    assert response.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_reference_candidate_catalog_closes_all_decision_kinds(tmp_path):
-    from novelvideo.narrative_groups.reference_decisions import build_reference_snapshot
-    from novelvideo.narrative_groups.reference_matching import (
-        MatchedReferenceRequirement,
-        ReferenceMatchPreview,
-    )
-    from novelvideo.utils.path_resolver import (
-        canonical_identity_path,
-        canonical_prop_reference_path,
-        canonical_scene_master_path,
-    )
+def test_generation_time_reference_matching_helpers_are_not_public_api():
+    from novelvideo.narrative_groups import reference_decisions
 
-    store = FakeStore()
-    paths = (
-        canonical_identity_path(tmp_path, "Hero", "Hero_casual"),
-        canonical_scene_master_path(tmp_path, "hall"),
-        canonical_scene_master_path(tmp_path, "hall_rain"),
-        canonical_prop_reference_path(tmp_path, "letter"),
-    )
-    for path in paths:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (2, 2), "green").save(path, format="PNG")
-
-    catalog = await narrative_groups._project_reference_assets(store, tmp_path)
-    by_entity = {asset.entity_id: asset for asset in catalog.values()}
-    specs = (
-        ("character_identity:Hero_casual", "character_identity", "Hero_casual", "", "", "choose_identity"),
-        ("scene_base:hall", "scene_base", "hall", "", "", "choose_scene"),
-        ("scene_variant:hall:rain", "scene_variant", "hall_rain", "hall", "rain", "choose_variant"),
-        ("prop:letter", "prop", "letter", "", "", "choose_prop"),
-    )
-    requirements = tuple(
-        MatchedReferenceRequirement(
-            id=requirement_id, kind=kind, entity_id=entity_id,
-            base_entity_id=base, variant_id=variant, shot_ids=("shot-1",),
-            required=True, label=entity_id, status="missing_image",
-            candidate_asset_ids=(by_entity[entity_id].asset_id,),
-            available_actions=(action,), bindings=(),
-        )
-        for requirement_id, kind, entity_id, base, variant, action in specs
-    )
-    snapshot = build_reference_snapshot(
-        ReferenceMatchPreview(requirements=requirements, bindings=()),
-        [
-            {
-                "requirement_id": requirement.id,
-                "action": requirement.available_actions[0],
-                "asset_id": requirement.candidate_asset_ids[0],
-            }
-            for requirement in requirements
-        ],
-        project_dir=tmp_path,
-        project_assets=catalog,
-    )
-
-    assert [item.asset_kind for item in snapshot.images] == [
-        "character_identity", "scene_base", "scene_variant", "prop"
-    ]
+    assert not hasattr(narrative_groups, "_active_reference_requirements")
+    assert not hasattr(narrative_groups, "_project_reference_assets")
+    assert not hasattr(narrative_groups, "_reference_persistence_target")
+    assert not hasattr(reference_decisions, "build_reference_snapshot")
+    assert not hasattr(reference_decisions, "ResolvedProjectAsset")
 
 
 def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_path):
@@ -1966,7 +1861,7 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
         assert kwargs["reference_revision"] == "revision-1"
         return ReferenceDecisionSnapshot(
             id="refsnap-1",
-            schema_version="narrative-reference-decision/v1",
+            schema_version="narrative-reference-decision/v2",
             images=(PlannedSnapshotReferenceImage(
                 requirement_id="planned-ref-letter",
                 source="matched",
@@ -2001,7 +1896,7 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
 
     assert response.status_code == 202
     snapshot = backend.calls[0][1]["payload"]["reference_resolution"]
-    assert snapshot["schema_version"] == "narrative-reference-decision/v1"
+    assert snapshot["schema_version"] == "narrative-reference-decision/v2"
     assert snapshot["images"][0]["binding_id"] == "planned-ref-letter"
     assert backend.calls[0][1]["payload"]["use_style"] is False
     assert "image_path" not in str(response.json())
@@ -2024,8 +1919,6 @@ def test_generate_rejects_legacy_generation_time_reference_decisions(
 
 def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
@@ -2040,13 +1933,10 @@ def test_generate_preserves_explicit_reference_selection_and_empty_list(monkeypa
 
     assert response.status_code == 422
     assert backend.calls == []
-    assert calls == []
 
 
 def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch/generate"
@@ -2055,13 +1945,10 @@ def test_generate_without_body_defaults_to_all_references(monkeypatch, tmp_path)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PLANNED_REFERENCES_REQUIRED"
     assert backend.calls == []
-    assert calls == []
 
 
 def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
@@ -2076,8 +1963,6 @@ def test_unknown_generate_reference_returns_422_without_enqueue(monkeypatch, tmp
 
 def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-    calls = []
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), calls)
 
     valid = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
@@ -2094,11 +1979,6 @@ def test_regenerate_validates_and_forwards_reference_selection(monkeypatch, tmp_
 
 def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-
-    def fail_resolver(*args, **kwargs):
-        raise AssertionError("split must not resolve references")
-
-    monkeypatch.setattr(narrative_groups, "resolve_group_reference_preview", fail_resolver)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/split",
         json={"aspect_ratio": "16:9", "use_style": False},
@@ -2112,7 +1992,6 @@ def test_split_keeps_aspect_but_does_not_resolve_or_include_reference_selection(
 
 def test_legacy_grid_aliases_keep_generation_contract(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
-    install_reference_resolver(monkeypatch, make_reference_preview(tmp_path), [])
 
     sketch = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/sketch-grid/generate"

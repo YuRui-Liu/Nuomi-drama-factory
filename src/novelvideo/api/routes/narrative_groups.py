@@ -7,7 +7,6 @@ grid.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 import uuid
@@ -60,16 +59,6 @@ from novelvideo.narrative_groups.planned_binding_service import (
     build_planned_reference_snapshot,
     resolve_planned_reference_preview,
 )
-from novelvideo.narrative_groups.references import (
-    MAX_GROUP_IMAGE_REFERENCES,
-    GroupReferencePreview,
-    apply_group_reference_selection,
-    resolve_group_reference_preview,  # noqa: F401 - legacy monkeypatch surface
-)
-from novelvideo.narrative_groups.reference_requirements import (
-    reference_requirements_for_shots,
-)
-from novelvideo.narrative_groups.reference_decisions import ResolvedProjectAsset
 from novelvideo.narrative_groups.reference_uploads import (
     InvalidReferenceUpload,
     load_reference_upload,
@@ -111,6 +100,7 @@ from novelvideo.narrative_groups.video_references import (
     temporary_upload_path,
     write_temporary_video_reference,
 )
+
 from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorOutputManifest,
     H3ObservedBoundary,
@@ -130,6 +120,8 @@ from novelvideo.task_state import (
     get_task_manager,
 )
 from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES
+
+MAX_GROUP_IMAGE_REFERENCES = 9
 
 router = APIRouter()
 
@@ -608,234 +600,6 @@ def _group_beats(
         for beat in beats
     }
     return group, [beat_by_id[beat_id] for beat_id in group.beat_ids if beat_id in beat_by_id]
-
-
-def _serialize_reference_preview(
-    project: str, project_dir: Path, preview: GroupReferencePreview
-) -> dict:
-    selection = apply_group_reference_selection(preview)
-    selected_ids = {reference.id for reference in selection.selected}
-    omitted_ids = [reference.id for reference in selection.omitted]
-
-    def image_item(reference) -> dict:
-        return {
-            "id": reference.id,
-            "kind": reference.kind,
-            "source_kind": reference.source_kind,
-            "label": reference.label,
-            "thumbnail_url": _asset_url(project, project_dir, reference.path),
-            "beat_numbers": list(reference.beat_numbers),
-            "enabled_by_default": reference.id in selected_ids,
-            "character_name": reference.character_name or None,
-            "identity_id": reference.identity_id or None,
-            "scene_id": reference.scene_id or None,
-            "warning": reference.warning,
-        }
-
-    return {
-        "style": {
-            "id": preview.style.id,
-            "label": preview.style.name,
-            "prompt": preview.style.prompt,
-            "enabled_by_default": True,
-            "warning": preview.style.warning,
-        },
-        "character_references": [
-            image_item(reference)
-            for reference in preview.image_references
-            if reference.kind == "character"
-        ],
-        "scene_references": [
-            image_item(reference)
-            for reference in preview.image_references
-            if reference.kind == "scene"
-        ],
-        "limits": {
-            "max_images": MAX_GROUP_IMAGE_REFERENCES,
-            "selected_images": len(selection.selected),
-            "omitted_reference_ids": omitted_ids,
-        },
-        "warnings": list(selection.warnings),
-    }
-
-
-def _serialize_requirement_reference_preview(
-    project: str, project_dir: Path, preview: Any
-) -> dict[str, Any]:
-    def binding_item(binding: Any) -> dict[str, Any]:
-        return {
-            "requirement_id": binding.requirement_id,
-            "decision": binding.decision,
-            "asset_id": binding.asset_id,
-            "asset_kind": binding.asset_kind,
-            "thumbnail_url": _asset_url(project, project_dir, binding.image_path),
-        }
-
-    requirements = []
-    for requirement in preview.requirements:
-        requirements.append({
-            "id": requirement.id,
-            "kind": requirement.kind,
-            "entity_id": requirement.entity_id,
-            "base_entity_id": requirement.base_entity_id or None,
-            "variant_id": requirement.variant_id or None,
-            "shot_ids": list(requirement.shot_ids),
-            "required": requirement.required,
-            "label": requirement.label,
-            "status": requirement.status,
-            "candidate_asset_ids": list(requirement.candidate_asset_ids),
-            "available_actions": list(requirement.available_actions),
-            "bindings": [binding_item(item) for item in requirement.bindings],
-            "warning": requirement.warning or None,
-        })
-    bindings = [binding_item(item) for item in preview.bindings]
-    selected = [item for item in bindings if item["thumbnail_url"]]
-    legacy = {"character_references": [], "scene_references": []}
-    by_requirement = {item["id"]: item for item in requirements}
-    for item in selected:
-        requirement = by_requirement.get(item["requirement_id"], {})
-        kind = str(requirement.get("kind") or "")
-        legacy_kind = "character" if kind == "character_identity" else "scene" if kind.startswith("scene_") else ""
-        if not legacy_kind:
-            continue
-        legacy[f"{legacy_kind}_references"].append({
-            "id": item["asset_id"],
-            "kind": legacy_kind,
-            "source_kind": item["asset_kind"],
-            "label": requirement.get("label") or item["asset_id"],
-            "thumbnail_url": item["thumbnail_url"],
-            "beat_numbers": [],
-            "enabled_by_default": True,
-            "warning": requirement.get("warning"),
-        })
-    return {
-        "requirements": requirements,
-        "bindings": bindings,
-        "style": {
-            "id": preview.style.id,
-            "label": preview.style.name,
-            "prompt": preview.style.prompt,
-            "enabled_by_default": True,
-            "warning": preview.style.warning,
-        },
-        **legacy,
-        "limits": {
-            "max_images": MAX_GROUP_IMAGE_REFERENCES,
-            "selected_images": len(selected),
-            "omitted_reference_ids": [],
-        },
-        "warnings": list(preview.warnings),
-    }
-
-
-def _active_reference_requirements(
-    project_dir: Path, episode: int, group_id: str
-) -> tuple[Any, ...]:
-    active = DirectorPlanStore(project_dir).load_active(episode)
-    group = next(
-        (item for item in active.groups if item.id == group_id), None
-    ) if active is not None else None
-    return reference_requirements_for_shots(group.shots) if group is not None else ()
-
-
-async def _project_reference_assets(
-    store: Any, project_dir: Path
-) -> dict[str, ResolvedProjectAsset]:
-    """Return opaque project-scoped candidate IDs mapped to safe image assets."""
-    result: dict[str, ResolvedProjectAsset] = {}
-    def add(
-        kind: str, entity_id: str, path: Path, *, base: str = "", variant: str = ""
-    ) -> None:
-        if not path.is_file():
-            return
-        asset_id = hashlib.sha256(
-            f"{kind}\0{entity_id}\0{base}\0{variant}".encode("utf-8")
-        ).hexdigest()
-        result[asset_id] = ResolvedProjectAsset(
-            asset_id=asset_id, image_path=str(path.resolve()), asset_kind=kind,
-            entity_id=entity_id, base_entity_id=base, variant_id=variant,
-        )
-
-    for character in await store.list_characters():
-        for identity in getattr(character, "identities", ()) or ():
-            identity_id = str(getattr(identity, "identity_id", "") or "").strip()
-            if identity_id:
-                add(
-                    "character_identity", identity_id,
-                    canonical_identity_path(project_dir, character.name, identity_id),
-                )
-    for scene in await store.list_scenes():
-        name = str(getattr(scene, "name", "") or "").strip()
-        base = str(getattr(scene, "base_scene_id", "") or "").strip()
-        variant = str(getattr(scene, "variant_id", "") or "").strip()
-        if name:
-            add(
-                "scene_variant" if base else "scene_base", name,
-                canonical_scene_master_path(project_dir, name),
-                base=base, variant=variant,
-            )
-    for prop in await store.list_props():
-        name = str(getattr(prop, "name", "") or "").strip()
-        if name:
-            add("prop", name, canonical_prop_reference_path(project_dir, name))
-    return result
-
-
-async def _reference_persistence_target(
-    store: Any,
-    project_dir: Path,
-    *,
-    requirement_id: str,
-    asset_kind: str,
-    target_entity_id: str,
-    base_entity_id: str,
-    variant_id: str,
-) -> Path:
-    target = target_entity_id.strip()
-    if asset_kind == "prop":
-        if (requirement_id and requirement_id != f"prop:{target}") or not target:
-            raise HTTPException(status_code=422, detail="Invalid prop persistence target")
-        if await store.get_prop(target) is None:
-            raise HTTPException(status_code=422, detail="Target prop does not exist")
-        return canonical_prop_reference_path(project_dir, target)
-    if asset_kind == "scene_base":
-        if (requirement_id and requirement_id != f"scene_base:{target}") or not target:
-            raise HTTPException(status_code=422, detail="Invalid scene persistence target")
-        scene = await store.get_scene_exact(target)
-        if scene is None or str(getattr(scene, "base_scene_id", "") or "").strip():
-            raise HTTPException(status_code=422, detail="Target base scene does not exist")
-        return canonical_scene_master_path(project_dir, target)
-    if asset_kind == "scene_variant":
-        base = base_entity_id.strip()
-        variant = variant_id.strip()
-        if (
-            not target or not base or not variant
-            or (requirement_id and requirement_id != f"scene_variant:{base}:{variant}")
-        ):
-            raise HTTPException(status_code=422, detail="Invalid scene variant target")
-        scene = await store.get_scene_exact(target)
-        if (
-            scene is None
-            or str(getattr(scene, "base_scene_id", "") or "").strip() != base
-            or str(getattr(scene, "variant_id", "") or "").strip() != variant
-        ):
-            raise HTTPException(status_code=422, detail="Target scene variant does not exist")
-        return canonical_scene_master_path(project_dir, target)
-    if asset_kind == "character_identity":
-        if (requirement_id and requirement_id != f"character_identity:{target}") or not target:
-            raise HTTPException(status_code=422, detail="Invalid identity persistence target")
-        characters = await store.list_characters()
-        character = next((
-            item for item in characters
-            if any(
-                str(getattr(identity, "identity_id", "") or "").strip() == target
-                for identity in (getattr(item, "identities", ()) or ())
-            )
-        ), None)
-        if character is None:
-            raise HTTPException(status_code=422, detail="Target identity does not exist")
-        return canonical_identity_path(project_dir, character.name, target)
-    raise HTTPException(status_code=422, detail="Unsupported persistence asset kind")
 
 
 _REJECTED_REVIEW_VALUE = object()
@@ -1722,37 +1486,6 @@ async def preview_group_references(
         "ok": True,
         "data": data,
     }
-
-
-@router.get(
-    "/projects/{project}/episodes/{episode}/narrative-groups/"
-    "{group_id}/{stage_name}/references/candidates"
-)
-async def list_reference_candidates(
-    project: str,
-    episode: int,
-    group_id: str,
-    stage_name: Literal["sketch", "render"],
-    user: dict = Depends(get_api_user),
-):
-    resolved, groups, _ = await _resolve_groups(project, episode, user)
-    if not any(item.id == group_id for item in groups):
-        raise HTTPException(status_code=404, detail="Narrative group not found")
-    store = await make_sqlite_store_for_context(resolved.ctx)
-    candidates = await _project_reference_assets(store, resolved.project_dir)
-    return {"ok": True, "data": [
-        {
-            "id": asset_id,
-            "kind": kind,
-            "label": label,
-            "available": True,
-            "thumbnail_url": _asset_url(project, resolved.project_dir, path),
-        }
-        for asset_id, asset in candidates.items()
-        for kind, label, path in [
-            (asset.asset_kind, asset.entity_id, asset.image_path)
-        ]
-    ]}
 
 
 @router.post(

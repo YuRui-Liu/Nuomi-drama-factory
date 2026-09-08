@@ -454,14 +454,13 @@ def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
     assert result[1].asset_slot_id == "scene:hall:state:hall-night:master"
 
 
-def test_projection_does_not_mutate_inputs_or_call_legacy_or_write_entry_points(
+def test_projection_does_not_mutate_inputs_or_call_write_entry_points(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import builtins
     from pathlib import Path
 
     from novelvideo.narrative_groups import reference_requirements
-    from novelvideo.narrative_groups import reference_matching
     from novelvideo.sqlite_store import SQLiteStore
 
     inputs = {
@@ -479,7 +478,6 @@ def test_projection_does_not_mutate_inputs_or_call_legacy_or_write_entry_points(
         )
 
     monkeypatch.setattr(reference_requirements, "parse_scene_requirement", forbidden)
-    monkeypatch.setattr(reference_matching, "ensure_draft_scene_variant", forbidden)
     monkeypatch.setattr(
         SQLiteStore, "replace_planned_reference_bindings_atomic", forbidden
     )
