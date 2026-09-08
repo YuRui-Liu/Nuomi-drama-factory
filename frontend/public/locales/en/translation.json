@@ -1147,6 +1147,26 @@
     "emptyHint": "Click the button above to create a new project"
   },
   "assets": {
+    "import": {
+      "button": { "character": "Import character sheet", "scene": "Import scene sheet", "prop": "Import prop sheet" },
+      "title": { "character": "Import character sheet", "scene": "Import scene sheet", "prop": "Import prop sheet" },
+      "help": "Choose a .md or .txt file. Previewing makes no changes; confirmation only fills empty fields.",
+      "fileLabel": "Asset table file",
+      "invalidFileType": "Choose a .md or .txt file.",
+      "preview": "Preview",
+      "confirm": "Confirm import",
+      "success": "Import complete",
+      "actualResult": "Import complete: {{created}} created, {{supplemented}} filled, {{skipped}} skipped, {{warnings}} warnings",
+      "reparseRequired": "The preview is no longer valid. Parse the file again before confirming.",
+      "created": "Created",
+      "supplemented": "Filled",
+      "skipped": "Skipped",
+      "preserved": "existing value preserved",
+      "warnings": "Warnings",
+      "ignored": "Other sections ignored",
+      "fieldDisposition": { "fill": "Fill", "preserve": "Preserve existing", "conflict": "Conflict" },
+      "disposition": { "create": "Create", "supplement": "Fill empty fields", "skip": "Skipped", "conflict": "Conflict" }
+    },
     "common": {
       "edit": "Edit",
       "delete": "Delete",
