@@ -171,6 +171,52 @@ def test_scene_variant_requires_base_and_variant_ids(
         )
 
 
+@pytest.mark.parametrize("status", ["pending_confirmation", "missing_asset"])
+def test_unresolved_bindings_allow_empty_slot_and_scene_variant_structure(
+    status: str,
+) -> None:
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    binding = PlannedReferenceBinding.create(
+        project_id="project-1",
+        episode_number=1,
+        source_plan_revision_id="plan-r1",
+        asset_kind="scene_variant",
+        entity_id="legacy-scene-state",
+        asset_slot_id="",
+        status=status,
+        resolution="auto_matched",
+        display_label="Legacy scene state",
+    )
+
+    assert binding.asset_kind == "scene_variant"
+    assert binding.asset_slot_id == ""
+    assert binding.base_entity_id == ""
+    assert binding.variant_id == ""
+
+
+@pytest.mark.parametrize("status", ["ready", "missing_image"])
+def test_resolved_bindings_require_slot_and_scene_variant_structure(
+    status: str,
+) -> None:
+    from pydantic import ValidationError
+
+    from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+
+    with pytest.raises(ValidationError, match="asset_slot_id"):
+        PlannedReferenceBinding.create(
+            project_id="project-1",
+            episode_number=1,
+            source_plan_revision_id="plan-r1",
+            asset_kind="scene_variant",
+            entity_id="hall-night",
+            asset_slot_id="",
+            status=status,
+            resolution="auto_matched",
+            display_label="Hall night",
+        )
+
+
 def test_binding_is_frozen_forbids_extra_and_requires_positive_episode() -> None:
     from pydantic import ValidationError
 

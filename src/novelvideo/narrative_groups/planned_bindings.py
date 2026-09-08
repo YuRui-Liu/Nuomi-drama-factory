@@ -35,25 +35,15 @@ class _PlannedReferenceIdentity(BaseModel):
     variant_id: str = ""
     asset_slot_id: str
 
-    @field_validator("project_id", "entity_id", "asset_slot_id")
+    @field_validator("project_id", "entity_id")
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return _strip_required(value)
 
-    @field_validator("base_entity_id", "variant_id")
+    @field_validator("base_entity_id", "variant_id", "asset_slot_id")
     @classmethod
     def normalize_optional_text(cls, value: str) -> str:
         return value.strip()
-
-    @model_validator(mode="after")
-    def require_scene_variant_identity(self) -> "_PlannedReferenceIdentity":
-        if self.asset_kind == "scene_variant" and (
-            not self.base_entity_id or not self.variant_id
-        ):
-            raise ValueError(
-                "scene_variant requires non-empty base_entity_id and variant_id"
-            )
-        return self
 
 
 def _stable_binding_id(identity: _PlannedReferenceIdentity) -> str:
@@ -90,20 +80,30 @@ class PlannedReferenceBinding(BaseModel):
         "project_id",
         "source_plan_revision_id",
         "entity_id",
-        "asset_slot_id",
         "display_label",
     )
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return _strip_required(value)
 
-    @field_validator("base_entity_id", "variant_id")
+    @field_validator("base_entity_id", "variant_id", "asset_slot_id")
     @classmethod
     def normalize_optional_text(cls, value: str) -> str:
         return value.strip()
 
     @model_validator(mode="after")
     def validate_stable_identity(self) -> Self:
+        resolved = self.status in {"ready", "missing_image"}
+        if resolved and not self.asset_slot_id:
+            raise ValueError("asset_slot_id must not be blank for resolved bindings")
+        if (
+            resolved
+            and self.asset_kind == "scene_variant"
+            and (not self.base_entity_id or not self.variant_id)
+        ):
+            raise ValueError(
+                "resolved scene_variant requires non-empty base_entity_id and variant_id"
+            )
         identity = _PlannedReferenceIdentity(
             project_id=self.project_id,
             episode_number=self.episode_number,

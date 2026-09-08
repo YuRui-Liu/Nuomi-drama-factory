@@ -2,6 +2,7 @@ from novelvideo.narrative_groups.reference_requirements import (
     ReferenceRequirement,
     reference_requirements_for_shots,
     parse_scene_requirement,
+    structured_scene_requirement,
 )
 
 
@@ -65,7 +66,9 @@ def test_reference_requirements_merge_shot_ids_but_keep_variants_separate() -> N
         shots, known_scene_ids={"palace", "palace_great_hall"}
     )
 
-    assert [(item.kind, item.entity_id, item.variant_id, item.shot_ids) for item in result] == [
+    assert [
+        (item.kind, item.entity_id, item.variant_id, item.shot_ids) for item in result
+    ] == [
         ("character_identity", "hero", "", ("shot-1", "shot-2")),
         ("scene_variant", "palace_great_hall_snow", "snow", ("shot-1",)),
         ("scene_variant", "palace_great_hall_rain", "rain", ("shot-2",)),
@@ -171,3 +174,12 @@ def test_scene_requirement_does_not_split_unknown_flat_name() -> None:
     assert requirement.entity_id == "unknown_snow"
     assert requirement.base_entity_id == "unknown_snow"
     assert requirement.variant_id == ""
+
+
+def test_structured_scene_requirement_never_parses_flat_names() -> None:
+    assert structured_scene_requirement(
+        {"entity_key": "palace_snow", "visible_change": ""}
+    ) == ("palace_snow", "")
+    assert structured_scene_requirement(
+        {"entity_key": "palace", "visible_change": "snow"}
+    ) == ("palace", "snow")

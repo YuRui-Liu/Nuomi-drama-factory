@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Literal, Mapping
 
-ReferenceKind = Literal[
-    "character_identity", "scene_base", "scene_variant", "prop"
-]
+ReferenceKind = Literal["character_identity", "scene_base", "scene_variant", "prop"]
 ReferenceStatus = Literal[
     "matched",
     "fallback",
@@ -54,6 +52,18 @@ def _get(value: Any, name: str, default: Any = "") -> Any:
     return getattr(value, name, default)
 
 
+def structured_scene_requirement(value: Any) -> tuple[str, str]:
+    """Return DirectorPlan's explicit scene base and visible variant keys.
+
+    This intentionally does not inspect delimiters in ``entity_key``.  New
+    planning projections must never turn a legacy display name into identity.
+    """
+    return (
+        str(_get(value, "entity_key") or "").strip(),
+        str(_get(value, "visible_change") or "").strip(),
+    )
+
+
 def reference_requirements_for_shots(
     shots: Iterable[Any], *, known_scene_ids: set[str] | None = None
 ) -> tuple[ReferenceRequirement, ...]:
@@ -83,9 +93,7 @@ def reference_requirements_for_shots(
                     variant_id = str(_get(source, "visible_change") or "").strip()
                 kind = "scene_variant" if variant_id else "scene_base"
                 entity_id = (
-                    f"{base_entity_id}_{variant_id}"
-                    if variant_id
-                    else base_entity_id
+                    f"{base_entity_id}_{variant_id}" if variant_id else base_entity_id
                 )
             elif source_kind == "prop":
                 kind = "prop"
@@ -135,4 +143,5 @@ __all__ = [
     "ReferenceStatus",
     "parse_scene_requirement",
     "reference_requirements_for_shots",
+    "structured_scene_requirement",
 ]
