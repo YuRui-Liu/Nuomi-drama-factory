@@ -487,6 +487,12 @@ def _binding(
             prop
             for prop in props
             if _text(_get(prop, "name")) == requirement.entity_key
+            or requirement.entity_key
+            in {
+                _text(alias)
+                for alias in (_get(prop, "aliases", ()) or ())
+                if _text(alias)
+            }
         ]
         if len(candidates) == 1:
             prop = candidates[0]

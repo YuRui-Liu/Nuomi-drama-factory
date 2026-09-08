@@ -1629,7 +1629,6 @@ class AssetCompiler:
         prop_menu: list[PropMenuItem] = []
         seen_prop_ids: set[str] = set()
         existing_props = await self.cognee_store.sqlite_store.list_props()
-        episode_selected_props: dict[str, str] = {}
 
         for block_index, block in enumerate(scene_blocks):
             block_text = "\n".join(
@@ -1638,46 +1637,14 @@ class AssetCompiler:
             if not block_text.strip():
                 continue
 
-            preselected = self._preselect_existing_props(block_text, existing_props)
-            prior_reuse = self._prior_selected_props_in_block(block, episode_selected_props)
-            if prior_reuse and self._is_short_prior_prop_reuse_block(block, preselected):
-                requirements = prior_reuse
-            else:
-                try:
-                    requirements = await self._analyze_block_props(
-                        block,
-                        preselected,
-                        sorted(set(episode_selected_props.values())),
-                    )
-                except ValueError as exc:
-                    log(f"  道具[{block_index + 1}]: {exc}")
-                    raise
-            requirements = self._filter_background_props(requirements, block_text)
-            for req in requirements:
-                existing = await self._find_matching_prop(req.prop_name)
-                if existing:
-                    prop_id = existing.name
-                    source = "复用"
-                else:
-                    prop_id = self._match_selected_prop(req.prop_name, episode_selected_props)
-                    source = "本集复用" if prop_id else "本集局部"
-                prop_id = prop_id or str(req.prop_name or "").strip()
-                if not prop_id:
-                    continue
-                if existing is None and planned_prop_writes is not None:
-                    existing = NovelProp(
-                        name=prop_id,
-                        prop_type=str(req.prop_type or "").strip() or "object",
-                        visual_prompt=str(req.visual_prompt or "").strip(),
-                        description=str(req.description or "").strip(),
-                        owner=str(req.owner or "").strip(),
-                    )
-                    await self.cognee_store.sqlite_store.add_prop(existing)
-                    planned_prop_writes.append(existing)
-                episode_selected_props[str(req.prop_name or "").strip()] = prop_id
-                episode_selected_props[prop_id] = prop_id
-                self._add_to_prop_menu(prop_id, prop_menu, seen_prop_ids, existing, req)
-                log(f"  道具[{block_index + 1}]: {prop_id} [{source}]")
+            for existing in self._preselect_existing_props(block_text, existing_props):
+                self._add_to_prop_menu(
+                    existing.name,
+                    prop_menu,
+                    seen_prop_ids,
+                    existing=existing,
+                )
+                log(f"  道具[{block_index + 1}]: {existing.name} [已有资产]")
 
         return prop_menu
 

@@ -85,11 +85,21 @@ def _episode_asset_bindings(
         props=tuple(prop_map.values()),
     )
     grouped = bindings_by_kind(projected)
-    return tuple(
+    bindings = tuple(
         binding
         for kind in selected_kinds
         for binding in grouped.get(kind, ())
     )
+    if asset_kind == "prop":
+        selected_prop_ids = {
+            str(getattr(item, "name", "") or "").strip()
+            for item in changed_entities
+            if str(getattr(item, "name", "") or "").strip()
+        }
+        bindings = tuple(
+            binding for binding in bindings if binding.entity_id in selected_prop_ids
+        )
+    return bindings
 
 
 def run_episode_asset_planner(
@@ -112,7 +122,6 @@ async def _run_episode_asset_planner(
     from novelvideo.agents.asset_compiler import AssetCompiler
     from novelvideo.cognee import CogneeStore
     from novelvideo.director_plan.store import DirectorPlanStore
-    from novelvideo.services.prop_promotion_service import promote_episode_props_to_global
     from novelvideo.sqlite_store import (
         SQLiteStore,
         prop_catalog_baseline_digest,
@@ -205,12 +214,22 @@ async def _run_episode_asset_planner(
     props = tuple(await sqlite_store.list_props())
     scene_catalog_digest = scene_catalog_baseline_digest(scenes)
     prop_catalog_digest = prop_catalog_baseline_digest(props)
+    selected_prop_ids = {
+        str(getattr(item, "prop_id", "") or "").strip()
+        for item in getattr(draft, "prop_menu", ())
+        if str(getattr(item, "prop_id", "") or "").strip()
+    }
+    selected_props = tuple(
+        prop
+        for prop in props
+        if str(getattr(prop, "name", "") or "").strip() in selected_prop_ids
+    )
     bindings = _episode_asset_bindings(
         asset_kind=asset_kind,
         project_id=ctx.project_id,
         episode_number=episode,
         director_plan=active_snapshot,
-        changed_entities=draft.scenes if asset_kind == "scene" else draft.props,
+        changed_entities=draft.scenes if asset_kind == "scene" else selected_props,
         characters=characters,
         scenes=scenes,
         props=props,
@@ -280,14 +299,13 @@ async def _run_episode_asset_planner(
             "cache_refresh_pending": cache_refresh_pending,
         }
 
-    promoted_props = await promote_episode_props_to_global(cognee_store, list(draft.prop_menu))
     prop_menu_data = _dump_items(list(draft.prop_menu))
     update(0.95, "道具规划完成", f"道具 {len(prop_menu_data)} 总计")
     return {
         "episode": episode,
         "kind": "prop",
         "total_count": len(prop_menu_data),
-        "auto_promoted_props": promoted_props,
+        "auto_promoted_props": [],
         "prop_menu": prop_menu_data,
         "binding_count": len(bindings),
         "binding_statuses": binding_statuses,
@@ -303,5 +321,4 @@ register_project_task_runner(
 register_project_task_runner(
     "episode_prop_planner",
     run_episode_asset_planner,
-    text_task_role="episode_asset_planning",
 )
