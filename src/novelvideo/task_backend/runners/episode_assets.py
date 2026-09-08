@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import logging
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
@@ -16,6 +17,8 @@ _TASK_ASSET_KIND = {
     "episode_scene_planner": "scene",
     "episode_prop_planner": "prop",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _dump_items(items: list[Any]) -> list[dict]:
@@ -98,7 +101,11 @@ async def _run_episode_asset_planner(
     from novelvideo.cognee import CogneeStore
     from novelvideo.director_plan.store import DirectorPlanStore
     from novelvideo.services.prop_promotion_service import promote_episode_props_to_global
-    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.sqlite_store import (
+        SQLiteStore,
+        prop_catalog_baseline_digest,
+        scene_catalog_baseline_digest,
+    )
 
     task_type = str(envelope.get("task_type") or "")
     scope = envelope.get("scope")
@@ -165,37 +172,45 @@ async def _run_episode_asset_planner(
         update(log=message)
 
     director_plan_store = DirectorPlanStore(ctx.output_dir)
-    with director_plan_store.lock_active_revision(episode) as director_plan:
-        if director_plan is None:
+    with director_plan_store.lock_active_revision(episode) as active_snapshot:
+        if active_snapshot is None:
             raise ValueError("DIRECTOR_PLAN_REQUIRED: 请先完成并激活导演镜头方案")
-        compiler = AssetCompiler(cognee_store, director_plan=director_plan)
-        if asset_kind == "scene":
-            draft = await compiler.build_scene_plan_draft(
-                episode_obj,
-                on_log=on_log,
-                on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
-            )
-        else:
-            draft = await compiler.build_prop_plan_draft(
-                episode_obj,
-                on_log=on_log,
-                on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
-            )
-        characters = tuple(cognee_store.get_all_characters())
-        scenes = tuple(await sqlite_store.list_scenes())
-        props = tuple(await sqlite_store.list_props())
-        bindings = _episode_asset_bindings(
-            asset_kind=asset_kind,
-            project_id=ctx.project_id,
-            episode_number=episode,
-            director_plan=director_plan,
-            changed_entities=draft.scenes if asset_kind == "scene" else draft.props,
-            characters=characters,
-            scenes=scenes,
-            props=props,
+    compiler = AssetCompiler(cognee_store, director_plan=active_snapshot)
+    if asset_kind == "scene":
+        draft = await compiler.build_scene_plan_draft(
+            episode_obj,
+            on_log=on_log,
+            on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
         )
+    else:
+        draft = await compiler.build_prop_plan_draft(
+            episode_obj,
+            on_log=on_log,
+            on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
+        )
+    characters = tuple(cognee_store.get_all_characters())
+    scenes = tuple(await sqlite_store.list_scenes())
+    props = tuple(await sqlite_store.list_props())
+    scene_catalog_digest = scene_catalog_baseline_digest(scenes)
+    prop_catalog_digest = prop_catalog_baseline_digest(props)
+    bindings = _episode_asset_bindings(
+        asset_kind=asset_kind,
+        project_id=ctx.project_id,
+        episode_number=episode,
+        director_plan=active_snapshot,
+        changed_entities=draft.scenes if asset_kind == "scene" else draft.props,
+        characters=characters,
+        scenes=scenes,
+        props=props,
+    )
+    with director_plan_store.lock_active_revision(episode) as final_active:
+        if (
+            final_active is None
+            or final_active.revision_id != active_snapshot.revision_id
+        ):
+            raise ValueError("ACTIVE_DIRECTOR_PLAN_STALE")
         if asset_kind == "scene":
-            await sqlite_store.publish_scene_plan_atomic(
+            publication = await sqlite_store.publish_scene_plan_atomic(
                 episode_number=episode,
                 scenes=draft.scenes,
                 scene_menu=draft.scene_menu,
@@ -203,10 +218,13 @@ async def _run_episode_asset_planner(
                 episode_scene_menu_baseline_digest=(
                     draft.episode_scene_menu_baseline_digest
                 ),
+                scene_catalog_baseline_digest=scene_catalog_digest,
+                prop_catalog_baseline_digest=prop_catalog_digest,
                 bindings=bindings,
+                refresh_cache=False,
             )
         else:
-            await sqlite_store.publish_prop_plan_atomic(
+            publication = await sqlite_store.publish_prop_plan_atomic(
                 episode_number=episode,
                 props=draft.props,
                 prop_menu=draft.prop_menu,
@@ -214,10 +232,28 @@ async def _run_episode_asset_planner(
                 episode_prop_menu_baseline_digest=(
                     draft.episode_prop_menu_baseline_digest
                 ),
+                scene_catalog_baseline_digest=scene_catalog_digest,
+                prop_catalog_baseline_digest=prop_catalog_digest,
                 bindings=bindings,
+                refresh_cache=False,
             )
 
-    await cognee_store.load_graph_state()
+    cache_refresh_pending = bool(
+        isinstance(publication, dict)
+        and publication.get("cache_refresh_pending", False)
+    )
+    try:
+        await sqlite_store.load_graph_state()
+        await cognee_store.load_graph_state()
+        cache_refresh_pending = False
+    except Exception:
+        cache_refresh_pending = True
+        logger.warning(
+            "%s plan committed but runner cache refresh is pending",
+            asset_kind,
+            exc_info=True,
+        )
+        update(log=f"{label}规划已提交，缓存刷新待重试")
     binding_statuses = dict(Counter(binding.status for binding in bindings))
     if asset_kind == "scene":
         scene_menu_data = _dump_items(list(draft.scene_menu))
@@ -232,6 +268,7 @@ async def _run_episode_asset_planner(
             "scene_menu": scene_menu_data,
             "binding_count": len(bindings),
             "binding_statuses": binding_statuses,
+            "cache_refresh_pending": cache_refresh_pending,
         }
 
     promoted_props = await promote_episode_props_to_global(cognee_store, list(draft.prop_menu))
@@ -245,6 +282,7 @@ async def _run_episode_asset_planner(
         "prop_menu": prop_menu_data,
         "binding_count": len(bindings),
         "binding_statuses": binding_statuses,
+        "cache_refresh_pending": cache_refresh_pending,
     }
 
 

@@ -263,7 +263,8 @@ async def test_asset_menu_baseline_canonicalizes_legacy_json(
     else:
         episode.prop_menu_json = json.dumps(raw_menu, ensure_ascii=False)
     await store.add_episode(episode)
-    baseline = store.asset_menu_baseline_digest(canonical_menu, asset_kind=kind)
+    baseline_items = raw_menu if raw_menu and isinstance(raw_menu[0], str) else canonical_menu
+    baseline = store.asset_menu_baseline_digest(baseline_items, asset_kind=kind)
 
     if kind == "scene":
         await store.publish_scene_plan_atomic(
@@ -454,7 +455,7 @@ async def test_prop_publish_preserves_concurrent_notes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_guard_keeps_projection_and_publish_on_one_active_revision(
+async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is_rejected(
     tmp_path, monkeypatch
 ):
     import novelvideo.agents.asset_compiler as compiler_module
@@ -476,6 +477,9 @@ async def test_runner_guard_keeps_projection_and_publish_on_one_active_revision(
     release_draft = asyncio.Event()
     activation_finished = threading.Event()
     published_revision_ids: list[str] = []
+    block_publish = False
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
 
     class FakeDirectorPlanStore:
         lock = threading.Lock()
@@ -511,9 +515,13 @@ async def test_runner_guard_keeps_projection_and_publish_on_one_active_revision(
             return []
 
         async def publish_scene_plan_atomic(self, **kwargs):
+            nonlocal block_publish
             published_revision_ids.extend(
                 binding.source_plan_revision_id for binding in kwargs["bindings"]
             )
+            if block_publish:
+                publish_started.set()
+                await release_publish.wait()
 
     class FakeCogneeStore:
         def __init__(self, *args, sqlite_store, **kwargs):
@@ -580,8 +588,24 @@ async def test_runner_guard_keeps_projection_and_publish_on_one_active_revision(
     activator = threading.Thread(target=FakeDirectorPlanStore(tmp_path).activate_new)
     activator.start()
     await asyncio.sleep(0.05)
-    assert not activation_finished.is_set()
+    assert activation_finished.is_set()
     release_draft.set()
+    with pytest.raises(ValueError, match="ACTIVE_DIRECTOR_PLAN_STALE"):
+        await task
+    await asyncio.to_thread(activator.join, 5)
+
+    assert published_revision_ids == []
+
+    FakeDirectorPlanStore.active = old_plan
+    activation_finished.clear()
+    block_publish = True
+    task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
+    await publish_started.wait()
+    activator = threading.Thread(target=FakeDirectorPlanStore(tmp_path).activate_new)
+    activator.start()
+    await asyncio.sleep(0.05)
+    assert not activation_finished.is_set()
+    release_publish.set()
     result = await task
     await asyncio.to_thread(activator.join, 5)
 
@@ -589,3 +613,111 @@ async def test_runner_guard_keeps_projection_and_publish_on_one_active_revision(
     assert activation_finished.is_set()
     assert result["binding_count"] == 1
     assert result["binding_statuses"] == {"ready": 1}
+
+
+@pytest.mark.asyncio
+async def test_scene_commit_reports_cache_refresh_pending_without_rolling_back(
+    tmp_path, monkeypatch
+):
+    store = SQLiteStore("owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path))
+    await store.initialize()
+    await store.add_episode(NovelEpisode(number=1, title="第一集"))
+
+    original_refresh = store.load_graph_state
+
+    async def fail_refresh():
+        raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(store, "load_graph_state", fail_refresh)
+    result = await store.publish_scene_plan_atomic(
+        episode_number=1,
+        scenes=(NovelScene(name="咖啡馆"),),
+        scene_menu=(SceneMenuItem(scene_id="咖啡馆"),),
+        scene_baseline_digests={},
+        episode_scene_menu_baseline_digest=store.asset_menu_baseline_digest(
+            [], asset_kind="scene"
+        ),
+        bindings=(_binding("scene_base", "咖啡馆"),),
+    )
+
+    assert result == {"committed": True, "cache_refresh_pending": True}
+    assert await store.get_scene("咖啡馆") is not None
+    assert (await store.list_episodes())[0].scene_menu == [SceneMenuItem(scene_id="咖啡馆")]
+    assert await store.list_planned_reference_bindings(1) == [
+        _binding("scene_base", "咖啡馆")
+    ]
+    assert store._cache_refresh_pending is True
+
+    monkeypatch.setattr(store, "load_graph_state", original_refresh)
+    await store.load_graph_state()
+    assert store._cache_refresh_pending is False
+
+
+@pytest.mark.asyncio
+async def test_scene_publish_rejects_stale_unchanged_catalog_used_for_projection(tmp_path):
+    store = SQLiteStore("owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path))
+    await store.initialize()
+    unchanged = NovelScene(name="旧车站", environment_prompt="投影时描述")
+    await store.add_scene(unchanged)
+    await store.add_episode(NovelEpisode(number=1, title="第一集"))
+    scene_catalog_baseline = store.scene_catalog_baseline_digest([unchanged])
+    prop_catalog_baseline = store.prop_catalog_baseline_digest([])
+    await store.update_scene("旧车站", environment_prompt="并发修改")
+
+    with pytest.raises(ValueError, match="scene catalog conflict"):
+        await store.publish_scene_plan_atomic(
+            episode_number=1,
+            scenes=(NovelScene(name="咖啡馆"),),
+            scene_menu=(SceneMenuItem(scene_id="咖啡馆"),),
+            scene_baseline_digests={},
+            episode_scene_menu_baseline_digest=store.asset_menu_baseline_digest(
+                [], asset_kind="scene"
+            ),
+            scene_catalog_baseline_digest=scene_catalog_baseline,
+            prop_catalog_baseline_digest=prop_catalog_baseline,
+            bindings=(_binding("scene_base", "咖啡馆"),),
+        )
+
+    assert await store.get_scene("咖啡馆") is None
+    assert await store.list_planned_reference_bindings(1) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["create", "delete"])
+async def test_scene_publish_rejects_created_or_deleted_projection_catalog_entity(
+    tmp_path, mutation
+):
+    store = SQLiteStore("owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path))
+    await store.initialize()
+    existing_prop = NovelProp(name="旧钥匙", visual_prompt="铜钥匙")
+    await store.add_prop(existing_prop)
+    await store.add_episode(NovelEpisode(number=1, title="第一集"))
+    scene_catalog_baseline = store.scene_catalog_baseline_digest([])
+    prop_catalog_baseline = store.prop_catalog_baseline_digest([existing_prop])
+    if mutation == "create":
+        await store.add_prop(NovelProp(name="新钥匙", visual_prompt="银钥匙"))
+    else:
+        assert await store.delete_prop("旧钥匙") is True
+
+    with pytest.raises(ValueError, match="prop catalog conflict"):
+        await store.publish_scene_plan_atomic(
+            episode_number=1,
+            scenes=(NovelScene(name="咖啡馆"),),
+            scene_menu=(SceneMenuItem(scene_id="咖啡馆"),),
+            scene_baseline_digests={},
+            episode_scene_menu_baseline_digest=store.asset_menu_baseline_digest(
+                [], asset_kind="scene"
+            ),
+            scene_catalog_baseline_digest=scene_catalog_baseline,
+            prop_catalog_baseline_digest=prop_catalog_baseline,
+            bindings=(_binding("scene_base", "咖啡馆"),),
+        )
+
+    assert await store.get_scene("咖啡馆") is None
+    assert await store.list_planned_reference_bindings(1) == []
+
+
+def test_legacy_string_menu_digest_preserves_string_identity():
+    assert SQLiteStore.asset_menu_baseline_digest(
+        ["场景甲"], asset_kind="scene"
+    ) != SQLiteStore.asset_menu_baseline_digest(["场景乙"], asset_kind="scene")

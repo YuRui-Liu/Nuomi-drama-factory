@@ -24,8 +24,6 @@ from novelvideo.models import (
     NovelScene,
     PropMenuItem,
     SceneMenuItem,
-    build_prop_menu,
-    build_scene_menu,
 )
 from novelvideo.cognee.screenplay_normalizer import normalize_time_of_day
 from novelvideo.director_world import stage_manifest
@@ -63,11 +61,21 @@ def _asset_digest(payload: dict[str, Any]) -> str:
 
 
 def _asset_menu_digest(asset_kind: str, items: Any) -> str:
-    builder = build_scene_menu if asset_kind == "scene" else build_prop_menu
-    normalized = builder(scene_menu=list(items or [])) if asset_kind == "scene" else builder(
-        prop_menu=list(items or [])
-    )
-    return _asset_digest({"items": [item.model_dump() for item in normalized]})
+    from novelvideo.sqlite_store import asset_menu_baseline_digest
+
+    return asset_menu_baseline_digest(items, asset_kind=asset_kind)
+
+
+def _episode_menu_values(episode: Any, asset_kind: str) -> Any:
+    raw = getattr(episode, f"{asset_kind}_menu_json", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+    return getattr(episode, f"{asset_kind}_menu", []) or []
 
 
 def _scene_planning_payload(scene: NovelScene) -> dict[str, Any]:
@@ -643,10 +651,20 @@ class AssetCompiler:
                 return publisher
         raise ValueError("ATOMIC_ASSET_PLAN_PUBLICATION_REQUIRED")
 
-    async def _refresh_after_asset_publish(self) -> None:
+    async def _refresh_after_asset_publish(self) -> bool:
         refresher = getattr(self.cognee_store, "load_graph_state", None)
         if callable(refresher):
-            await refresher()
+            try:
+                await refresher()
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "asset plan committed but Cognee cache refresh is pending",
+                    exc_info=True,
+                )
+                return False
+        return True
 
     def _director_scene_blocks(self) -> list[SceneBlock]:
         if self.director_plan is None:
@@ -874,7 +892,7 @@ class AssetCompiler:
             new_count=len(planned_new_names),
             scene_baseline_digests=draft_sqlite.scene_baselines(changed_scenes),
             episode_scene_menu_baseline_digest=_asset_menu_digest(
-                "scene", getattr(episode, "scene_menu", []) or []
+                "scene", _episode_menu_values(episode, "scene")
             ),
         )
 
@@ -999,7 +1017,7 @@ class AssetCompiler:
             ),
             prop_baseline_digests=draft_sqlite.prop_baselines(changed_props),
             episode_prop_menu_baseline_digest=_asset_menu_digest(
-                "prop", getattr(episode, "prop_menu", []) or []
+                "prop", _episode_menu_values(episode, "prop")
             ),
         )
 

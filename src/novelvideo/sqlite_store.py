@@ -52,6 +52,72 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def asset_menu_baseline_digest(items: Any, *, asset_kind: str) -> str:
+    """Hash normalized menu items while retaining unsupported legacy strings."""
+    values = list(items or [])
+    normalized_items = (
+        build_scene_menu(scene_menu=values)
+        if asset_kind == "scene"
+        else build_prop_menu(prop_menu=values)
+    )
+    legacy_strings = [item for item in values if isinstance(item, str)]
+    canonical = json.dumps(
+        {
+            "items": [item.model_dump() for item in normalized_items],
+            "legacy_strings": legacy_strings,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def scene_catalog_baseline_digest(scenes: Any) -> str:
+    canonical = json.dumps(
+        [
+            {
+                "name": scene.name,
+                "aliases": list(scene.aliases),
+                "scene_type": scene.scene_type,
+                "base_scene_id": scene.base_scene_id,
+                "variant_id": scene.variant_id,
+                "time_of_day": scene.time_of_day,
+                "environment_prompt": scene.environment_prompt,
+                "variant_prompt": scene.variant_prompt,
+                "description": scene.description,
+                "spatial_layout_image": scene.spatial_layout_image,
+                "stale_reference_kinds": list(scene.stale_reference_kinds),
+            }
+            for scene in sorted(scenes or (), key=lambda item: item.name)
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def prop_catalog_baseline_digest(props: Any) -> str:
+    canonical = json.dumps(
+        [
+            {
+                "name": prop.name,
+                "aliases": list(prop.aliases),
+                "prop_type": prop.prop_type,
+                "visual_prompt": prop.visual_prompt,
+                "description": prop.description,
+                "owner": prop.owner,
+            }
+            for prop in sorted(props or (), key=lambda item: item.name)
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class StoreClosedError(RuntimeError):
     """Raised when a SQLiteStore is used after its lifecycle has ended."""
 
@@ -443,6 +509,7 @@ class SQLiteStore:
         self._characters: Dict[str, NovelCharacter] = {}
         self._episodes: Dict[int, NovelEpisode] = {}
         self._props: Dict[str, NovelProp] = {}
+        self._cache_refresh_pending = False
         self._alias_index: Dict[str, str] = {}
         self._closing = False
         self._closed = False
@@ -898,19 +965,15 @@ class SQLiteStore:
                 asset_kind = "scene"
         if asset_kind not in {"scene", "prop"}:
             raise ValueError("asset_kind must be scene or prop")
-        normalized_items = (
-            build_scene_menu(scene_menu=values)
-            if asset_kind == "scene"
-            else build_prop_menu(prop_menu=values)
-        )
-        normalized = [item.model_dump() for item in normalized_items]
-        canonical = json.dumps(
-            {"items": normalized},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return asset_menu_baseline_digest(values, asset_kind=asset_kind)
+
+    @staticmethod
+    def scene_catalog_baseline_digest(scenes: Any) -> str:
+        return scene_catalog_baseline_digest(scenes)
+
+    @staticmethod
+    def prop_catalog_baseline_digest(props: Any) -> str:
+        return prop_catalog_baseline_digest(props)
 
     @staticmethod
     def scene_plan_baseline_digest(scene: NovelScene) -> str:
@@ -956,10 +1019,13 @@ class SQLiteStore:
         scene_menu: tuple[SceneMenuItem, ...] | list[SceneMenuItem],
         scene_baseline_digests: dict[str, str],
         episode_scene_menu_baseline_digest: str,
+        scene_catalog_baseline_digest: str | None = None,
+        prop_catalog_baseline_digest: str | None = None,
         bindings: tuple[PlannedReferenceBinding, ...]
         | list[PlannedReferenceBinding]
-        | None,
-    ) -> None:
+        | None = None,
+        refresh_cache: bool = True,
+    ) -> dict[str, bool]:
         scene_items = tuple(
             NovelScene.model_validate(scene.model_dump()) for scene in scenes
         )
@@ -1011,6 +1077,22 @@ class SQLiteStore:
                     current_menu, asset_kind="scene"
                 ) != episode_scene_menu_baseline_digest:
                     raise ValueError(f"scene menu conflict for episode {episode_number}")
+                if scene_catalog_baseline_digest is not None:
+                    async with db.execute("SELECT * FROM scenes") as cursor:
+                        current_scene_rows = await cursor.fetchall()
+                    current_scenes = [self._row_to_scene(row) for row in current_scene_rows]
+                    if self.scene_catalog_baseline_digest(
+                        current_scenes
+                    ) != scene_catalog_baseline_digest:
+                        raise ValueError("scene catalog conflict")
+                if prop_catalog_baseline_digest is not None:
+                    async with db.execute("SELECT * FROM props") as cursor:
+                        current_prop_rows = await cursor.fetchall()
+                    current_props = [self._row_to_prop(row) for row in current_prop_rows]
+                    if self.prop_catalog_baseline_digest(
+                        current_props
+                    ) != prop_catalog_baseline_digest:
+                        raise ValueError("prop catalog conflict")
 
                 for scene in scene_items:
                     async with db.execute(
@@ -1096,7 +1178,17 @@ class SQLiteStore:
             except BaseException:
                 await asyncio.shield(db.rollback())
                 raise
-        await self.load_graph_state()
+        refresh_pending = not refresh_cache
+        self._cache_refresh_pending = refresh_pending
+        if refresh_cache:
+            try:
+                await self.load_graph_state()
+                self._cache_refresh_pending = False
+            except Exception:
+                refresh_pending = True
+                self._cache_refresh_pending = True
+                logger.warning("scene plan committed but cache refresh is pending", exc_info=True)
+        return {"committed": True, "cache_refresh_pending": refresh_pending}
 
     async def publish_prop_plan_atomic(
         self,
@@ -1106,10 +1198,13 @@ class SQLiteStore:
         prop_menu: tuple[PropMenuItem, ...] | list[PropMenuItem],
         prop_baseline_digests: dict[str, str],
         episode_prop_menu_baseline_digest: str,
+        scene_catalog_baseline_digest: str | None = None,
+        prop_catalog_baseline_digest: str | None = None,
         bindings: tuple[PlannedReferenceBinding, ...]
         | list[PlannedReferenceBinding]
-        | None,
-    ) -> None:
+        | None = None,
+        refresh_cache: bool = True,
+    ) -> dict[str, bool]:
         prop_items = tuple(NovelProp.model_validate(prop.model_dump()) for prop in props)
         menu_items = tuple(
             PropMenuItem.model_validate(item.model_dump()) for item in prop_menu
@@ -1158,6 +1253,22 @@ class SQLiteStore:
                     current_menu, asset_kind="prop"
                 ) != episode_prop_menu_baseline_digest:
                     raise ValueError(f"prop menu conflict for episode {episode_number}")
+                if scene_catalog_baseline_digest is not None:
+                    async with db.execute("SELECT * FROM scenes") as cursor:
+                        current_scene_rows = await cursor.fetchall()
+                    current_scenes = [self._row_to_scene(row) for row in current_scene_rows]
+                    if self.scene_catalog_baseline_digest(
+                        current_scenes
+                    ) != scene_catalog_baseline_digest:
+                        raise ValueError("scene catalog conflict")
+                if prop_catalog_baseline_digest is not None:
+                    async with db.execute("SELECT * FROM props") as cursor:
+                        current_prop_rows = await cursor.fetchall()
+                    current_props = [self._row_to_prop(row) for row in current_prop_rows]
+                    if self.prop_catalog_baseline_digest(
+                        current_props
+                    ) != prop_catalog_baseline_digest:
+                        raise ValueError("prop catalog conflict")
 
                 for prop in prop_items:
                     async with db.execute(
@@ -1227,7 +1338,17 @@ class SQLiteStore:
             except BaseException:
                 await asyncio.shield(db.rollback())
                 raise
-        await self.load_graph_state()
+        refresh_pending = not refresh_cache
+        self._cache_refresh_pending = refresh_pending
+        if refresh_cache:
+            try:
+                await self.load_graph_state()
+                self._cache_refresh_pending = False
+            except Exception:
+                refresh_pending = True
+                self._cache_refresh_pending = True
+                logger.warning("prop plan committed but cache refresh is pending", exc_info=True)
+        return {"committed": True, "cache_refresh_pending": refresh_pending}
 
     @staticmethod
     def identity_episode_baseline_digest(
@@ -2138,6 +2259,7 @@ class SQLiteStore:
         for char in characters:
             for alias in char.aliases:
                 self._alias_index[alias] = char.name
+        self._cache_refresh_pending = False
 
     def resolve_name(self, name: str) -> str:
         return self._alias_index.get(name, name)
