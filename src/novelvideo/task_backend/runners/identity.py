@@ -134,26 +134,30 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
 
     from novelvideo.director_plan.store import DirectorPlanStore
 
-    director_plan = DirectorPlanStore(ctx.output_dir).load_active(episode)
-    if director_plan is None:
-        raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
-    bindings = _character_identity_bindings(
-        project_id=ctx.project_id,
-        episode_number=episode,
-        director_plan=director_plan,
-        draft=draft,
-        characters=tuple(cognee_store.get_all_characters()),
-        scenes=tuple(await sqlite_store.list_scenes()),
-        props=tuple(await sqlite_store.list_props()),
-    )
-    await sqlite_store.publish_identity_plan_atomic(
-        episode_number=episode,
-        characters=draft.characters,
-        episode_identity_ids=draft.episode_identity_ids,
-        identity_default_map=draft.identity_default_map,
-        identity_baseline_digests=draft.identity_baseline_digests,
-        bindings=bindings,
-    )
+    director_plan_store = DirectorPlanStore(ctx.output_dir)
+    with director_plan_store.lock_active_revision(episode) as director_plan:
+        if director_plan is None:
+            raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
+        bindings = _character_identity_bindings(
+            project_id=ctx.project_id,
+            episode_number=episode,
+            director_plan=director_plan,
+            draft=draft,
+            characters=tuple(cognee_store.get_all_characters()),
+            scenes=tuple(await sqlite_store.list_scenes()),
+            props=tuple(await sqlite_store.list_props()),
+        )
+        await sqlite_store.publish_identity_plan_atomic(
+            episode_number=episode,
+            characters=draft.characters,
+            episode_identity_ids=draft.episode_identity_ids,
+            identity_default_map=draft.identity_default_map,
+            identity_baseline_digests=draft.identity_baseline_digests,
+            episode_identity_baseline_digest=(
+                draft.episode_identity_baseline_digest
+            ),
+            bindings=bindings,
+        )
     await cognee_store.load_graph_state()
     refreshed = cognee_store.get_episode(episode) or episode_obj
 

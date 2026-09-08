@@ -734,13 +734,21 @@ class SQLiteStore:
         episode_identity_ids: tuple[str, ...] | list[str],
         identity_default_map: dict[str, str],
         identity_baseline_digests: dict[str, str],
+        episode_identity_baseline_digest: str,
         bindings: tuple[PlannedReferenceBinding, ...]
         | list[PlannedReferenceBinding],
     ) -> None:
         """Publish identity catalogue, episode mapping, and bindings together."""
-        character_items = tuple(characters)
+        character_items = tuple(
+            NovelCharacter.model_validate(character.model_dump())
+            for character in characters
+        )
         identity_ids = tuple(episode_identity_ids)
-        binding_items = tuple(bindings)
+        identity_default_map = dict(identity_default_map)
+        binding_items = tuple(
+            PlannedReferenceBinding.model_validate(binding.model_dump())
+            for binding in bindings
+        )
         baseline_digests = dict(identity_baseline_digests)
         if episode_number <= 0:
             raise ValueError("episode_number must be greater than zero")
@@ -759,6 +767,27 @@ class SQLiteStore:
             await configure_sqlite_connection_async(db)
             try:
                 await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT identity_ids, identity_default_map_json "
+                    "FROM episodes WHERE number = ?",
+                    (episode_number,),
+                ) as cursor:
+                    episode_row = await cursor.fetchone()
+                if episode_row is None:
+                    raise ValueError(f"Episode {episode_number} not found")
+                try:
+                    current_episode_digest = self.identity_episode_baseline_digest(
+                        json.loads(episode_row[0] or "[]"),
+                        json.loads(episode_row[1] or "{}"),
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"identity plan episode conflict for episode {episode_number}"
+                    ) from exc
+                if current_episode_digest != episode_identity_baseline_digest:
+                    raise ValueError(
+                        f"identity plan episode conflict for episode {episode_number}"
+                    )
                 for character in character_items:
                     async with db.execute(
                         "SELECT identities_json FROM characters WHERE name = ?",
@@ -840,6 +869,22 @@ class SQLiteStore:
                 await asyncio.shield(db.rollback())
                 raise
         await self.load_graph_state()
+
+    @staticmethod
+    def identity_episode_baseline_digest(
+        identity_ids: tuple[str, ...] | list[str],
+        identity_default_map: dict[str, str],
+    ) -> str:
+        canonical = json.dumps(
+            {
+                "identity_ids": list(identity_ids),
+                "identity_default_map": identity_default_map,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def is_closed(self) -> bool:
         return self._closing or self._closed

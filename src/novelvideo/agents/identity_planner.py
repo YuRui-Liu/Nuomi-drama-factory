@@ -9,7 +9,9 @@
 4. resolve / create 并写回 episode.identity_ids + episode.identity_default_map
 """
 
+import asyncio
 import hashlib
+import json
 import re
 from typing import Optional, Callable, TYPE_CHECKING
 
@@ -96,6 +98,22 @@ def _merge_age_group_values(existing: str, incoming: str) -> str:
     if existing_norm and incoming_norm and existing_norm != incoming_norm:
         raise ValueError(f"冲突 age_group: {existing_norm!r} vs {incoming_norm!r}")
     return existing_norm or incoming_norm
+
+
+def _identity_episode_baseline_digest(
+    identity_ids: list[str] | tuple[str, ...],
+    identity_default_map: dict[str, str],
+) -> str:
+    canonical = json.dumps(
+        {
+            "identity_ids": list(identity_ids),
+            "identity_default_map": identity_default_map,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class IdentityRequirement(BaseModel):
@@ -263,6 +281,7 @@ class IdentityPlanDraft(BaseModel):
     episode_identity_ids: tuple[str, ...]
     identity_default_map: dict[str, str]
     identity_baseline_digests: dict[str, str]
+    episode_identity_baseline_digest: str
 
 
 class _IdentityPlanDraftStore:
@@ -453,6 +472,7 @@ class IdentityPlanner:
     def __init__(self, cognee_store: "CogneeStore"):
         self.cognee_store = cognee_store
         self.auto_promoted_characters: list[str] = []
+        self._draft_store_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_visual_state_for_char(char_name: str, visual_state: str) -> str:
@@ -534,6 +554,14 @@ class IdentityPlanner:
             for character in self.cognee_store.get_all_characters()
         }
         draft = await self.build_identity_plan_draft(episode, on_log=on_log)
+        get_episode = getattr(self.cognee_store, "get_episode", None)
+        current_episode = get_episode(episode.number) if get_episode else None
+        if current_episode is not None and _identity_episode_baseline_digest(
+            current_episode.identity_ids, current_episode.identity_default_map
+        ) != draft.episode_identity_baseline_digest:
+            raise ValueError(
+                f"identity plan episode conflict for episode {episode.number}"
+            )
         for character in draft.characters:
             source = source_characters.get(character.name)
             if source is None:
@@ -698,31 +726,38 @@ class IdentityPlanner:
         on_log: Optional[Callable] = None,
     ) -> IdentityPlanDraft:
         """Plan against deep-copied characters and return a zero-write draft."""
-        source_store = self.cognee_store
-        draft_store = _IdentityPlanDraftStore(source_store, episode)
-        self.cognee_store = draft_store
-        try:
-            new_count, resolved_count = await self._plan_single_episode_in_current_store(
-                episode.model_copy(deep=True), on_log=on_log
+        async with self._draft_store_lock:
+            source_store = self.cognee_store
+            episode_baseline_digest = _identity_episode_baseline_digest(
+                episode.identity_ids, episode.identity_default_map
             )
-        finally:
-            self.cognee_store = source_store
+            draft_store = _IdentityPlanDraftStore(source_store, episode)
+            self.cognee_store = draft_store
+            try:
+                new_count, resolved_count = (
+                    await self._plan_single_episode_in_current_store(
+                        episode.model_copy(deep=True), on_log=on_log
+                    )
+                )
+            finally:
+                self.cognee_store = source_store
 
-        identity_ids = tuple(draft_store.episode_updates.get("identity_ids", ()))
-        identity_default_map = dict(
-            draft_store.episode_updates.get("identity_default_map", {})
-        )
-        changed_characters = draft_store.changed_characters()
-        return IdentityPlanDraft(
-            new_count=new_count,
-            resolved_count=resolved_count,
-            characters=changed_characters,
-            episode_identity_ids=identity_ids,
-            identity_default_map=identity_default_map,
-            identity_baseline_digests=draft_store.identity_baseline_digests(
-                changed_characters
-            ),
-        )
+            identity_ids = tuple(draft_store.episode_updates.get("identity_ids", ()))
+            identity_default_map = dict(
+                draft_store.episode_updates.get("identity_default_map", {})
+            )
+            changed_characters = draft_store.changed_characters()
+            return IdentityPlanDraft(
+                new_count=new_count,
+                resolved_count=resolved_count,
+                characters=changed_characters,
+                episode_identity_ids=identity_ids,
+                identity_default_map=identity_default_map,
+                identity_baseline_digests=draft_store.identity_baseline_digests(
+                    changed_characters
+                ),
+                episode_identity_baseline_digest=episode_baseline_digest,
+            )
 
     async def plan_all_episodes(
         self,

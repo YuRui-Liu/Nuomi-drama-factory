@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 
 from novelvideo.agents.identity_planner import (
     AppearanceDescription,
@@ -215,4 +216,43 @@ async def test_identity_draft_real_resolve_adds_and_repairs_only_in_memory():
         "陆辰_战斗装",
     ]
     assert all(item.appearance_details for item in planned.identities)
+    assert store.updated_episode is None
+
+
+class ConcurrentDraftPlanner(ExistingCharacterIdentityPlanner):
+    def __init__(self, store):
+        super().__init__(store)
+        self.entered = [asyncio.Event(), asyncio.Event()]
+        self.releases = [asyncio.Event(), asyncio.Event()]
+        self.call_count = 0
+
+    async def _filter_cast(self, all_names, content_text, episode, on_log=None):
+        index = self.call_count
+        self.call_count += 1
+        self.entered[index].set()
+        await self.releases[index].wait()
+        return ["陆辰"], ""
+
+
+@pytest.mark.asyncio
+async def test_concurrent_drafts_on_same_planner_serialize_store_swap():
+    store = FakeIdentityStore("陆辰在地下室。")
+    await store.add_character(NovelCharacter(name="陆辰", gender="男"))
+    planner = ConcurrentDraftPlanner(store)
+
+    first = asyncio.create_task(
+        planner.build_identity_plan_draft(NovelEpisode(number=1, title="一"))
+    )
+    await planner.entered[0].wait()
+    second = asyncio.create_task(
+        planner.build_identity_plan_draft(NovelEpisode(number=2, title="二"))
+    )
+    await asyncio.sleep(0)
+    assert not planner.entered[1].is_set()
+    planner.releases[0].set()
+    await planner.entered[1].wait()
+    planner.releases[1].set()
+    await asyncio.gather(first, second)
+
+    assert planner.cognee_store is store
     assert store.updated_episode is None

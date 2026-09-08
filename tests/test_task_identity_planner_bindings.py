@@ -1,9 +1,13 @@
+import asyncio
 import hashlib
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from novelvideo.agents.identity_planner import IdentityPlanDraft
+from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
@@ -12,6 +16,7 @@ from novelvideo.task_backend.runners.identity import (
     _build_identity_planner_result,
     _character_identity_bindings,
 )
+from tests.director_plan.test_store import make_revision
 
 
 def _character(name: str, *identities: CharacterIdentity) -> NovelCharacter:
@@ -54,6 +59,7 @@ def test_character_binding_projection_uses_new_identity_from_draft():
         episode_identity_ids=(new_identity.identity_id,),
         identity_default_map={"陆辰": new_identity.identity_id},
         identity_baseline_digests={"陆辰": "baseline"},
+        episode_identity_baseline_digest="episode-baseline",
     )
     shot = SimpleNamespace(
         id="shot-1",
@@ -138,6 +144,9 @@ async def test_publish_identity_plan_atomic_exposes_identity_and_binding_togethe
                 _character("陆辰", old_identity).identities_json.encode()
             ).hexdigest()
         },
+        episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+            [old_identity.identity_id], {"陆辰": old_identity.identity_id}
+        ),
         bindings=(_binding(new_identity.identity_id, revision="director-r2"),),
     )
 
@@ -193,6 +202,9 @@ async def test_publish_identity_plan_atomic_rolls_back_all_state_on_binding_inse
                     _character("陆辰", old_identity).identities_json.encode()
                 ).hexdigest()
             },
+            episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+                [old_identity.identity_id], {"陆辰": old_identity.identity_id}
+            ),
             bindings=(_binding(new_identity.identity_id, revision="director-r2"),),
         )
 
@@ -228,6 +240,7 @@ async def test_publish_preserves_concurrent_non_identity_character_fields(tmp_pa
         identity_baseline_digests={
             "陆辰": hashlib.sha256(original.identities_json.encode()).hexdigest()
         },
+        episode_identity_baseline_digest=store.identity_episode_baseline_digest([], {}),
         bindings=(_binding(new_identity.identity_id, revision="director-r2"),),
     )
 
@@ -272,6 +285,9 @@ async def test_publish_rejects_concurrent_identity_change_and_rolls_back_scope(t
             episode_identity_ids=(planned_identity.identity_id,),
             identity_default_map={"陆辰": planned_identity.identity_id},
             identity_baseline_digests={"陆辰": baseline_digest},
+            episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+                [old_identity.identity_id], {"陆辰": old_identity.identity_id}
+            ),
             bindings=(_binding(planned_identity.identity_id, revision="director-r2"),),
         )
 
@@ -284,3 +300,150 @@ async def test_publish_rejects_concurrent_identity_change_and_rolls_back_scope(t
     assert persisted_episode.identity_ids == [old_identity.identity_id]
     assert persisted_episode.identity_default_map == {"陆辰": old_identity.identity_id}
     assert await store.list_planned_reference_bindings(1) == [old_binding]
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_concurrent_episode_identity_mapping_change(tmp_path):
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store.initialize()
+    old_identity = _identity("陆辰_默认")
+    planned_identity = _identity("陆辰_战斗装")
+    original = _character("陆辰", old_identity)
+    old_binding = _binding(old_identity.identity_id, revision="director-r1")
+    episode = NovelEpisode(
+        number=1,
+        title="第一集",
+        identity_ids=[old_identity.identity_id],
+        identity_default_map={"陆辰": old_identity.identity_id},
+    )
+    await store.add_character(original)
+    await store.add_episode(episode)
+    await store.replace_planned_reference_bindings_atomic(
+        1, ("character_identity",), (old_binding,)
+    )
+    baseline = store.identity_episode_baseline_digest(
+        episode.identity_ids, episode.identity_default_map
+    )
+    await store.update_episode(
+        1,
+        identity_ids=["陆辰_人工身份"],
+        identity_default_map={"陆辰": "陆辰_人工身份"},
+    )
+
+    with pytest.raises(ValueError, match="identity plan episode conflict"):
+        await store.publish_identity_plan_atomic(
+            episode_number=1,
+            characters=(_character("陆辰", old_identity, planned_identity),),
+            episode_identity_ids=(planned_identity.identity_id,),
+            identity_default_map={"陆辰": planned_identity.identity_id},
+            identity_baseline_digests={
+                "陆辰": hashlib.sha256(original.identities_json.encode()).hexdigest()
+            },
+            episode_identity_baseline_digest=baseline,
+            bindings=(_binding(planned_identity.identity_id, revision="director-r2"),),
+        )
+
+    persisted = (await store.list_episodes())[0]
+    assert persisted.identity_ids == ["陆辰_人工身份"]
+    assert persisted.identity_default_map == {"陆辰": "陆辰_人工身份"}
+    assert [item.identity_id for item in (await store.list_characters())[0].identities] == [
+        old_identity.identity_id
+    ]
+    assert await store.list_planned_reference_bindings(1) == [old_binding]
+
+
+def test_director_plan_publication_guard_serializes_activation(tmp_path):
+    store = DirectorPlanStore(tmp_path)
+    store.save(make_revision("rev-old"))
+    store.save(make_revision("rev-new"))
+    store.activate(1, "rev-old")
+    publication_entered = threading.Event()
+    release_publication = threading.Event()
+    activation_finished = threading.Event()
+    published_revision_ids = []
+
+    def publish_under_guard():
+        with store.lock_active_revision(1) as revision:
+            published_revision_ids.append(revision.revision_id)
+            publication_entered.set()
+            release_publication.wait(timeout=5)
+
+    def activate_new_revision():
+        publication_entered.wait(timeout=5)
+        store.activate(1, "rev-new")
+        activation_finished.set()
+
+    publisher = threading.Thread(target=publish_under_guard)
+    activator = threading.Thread(target=activate_new_revision)
+    publisher.start()
+    activator.start()
+    assert publication_entered.wait(timeout=5)
+    time.sleep(0.05)
+    assert not activation_finished.is_set()
+    release_publication.set()
+    publisher.join(timeout=5)
+    activator.join(timeout=5)
+
+    assert not publisher.is_alive()
+    assert not activator.is_alive()
+    assert published_revision_ids == ["rev-old"]
+    assert activation_finished.is_set()
+    assert store.load_active(1).revision_id == "rev-new"
+
+
+@pytest.mark.asyncio
+async def test_publisher_captures_deep_snapshot_before_first_await(tmp_path, monkeypatch):
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store.initialize()
+    old_identity = _identity("陆辰_默认")
+    planned_identity = _identity("陆辰_战斗装")
+    character = _character("陆辰", old_identity, planned_identity)
+    original = _character("陆辰", old_identity)
+    await store.add_character(original)
+    await store.add_episode(NovelEpisode(number=1, title="第一集"))
+    identity_ids = [planned_identity.identity_id]
+    default_map = {"陆辰": planned_identity.identity_id}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_ensure_db = store._ensure_db
+
+    async def gated_ensure_db():
+        entered.set()
+        await release.wait()
+        return await original_ensure_db()
+
+    monkeypatch.setattr(store, "_ensure_db", gated_ensure_db)
+    publication = asyncio.create_task(
+        store.publish_identity_plan_atomic(
+            episode_number=1,
+            characters=(character,),
+            episode_identity_ids=identity_ids,
+            identity_default_map=default_map,
+            identity_baseline_digests={
+                "陆辰": hashlib.sha256(original.identities_json.encode()).hexdigest()
+            },
+            episode_identity_baseline_digest=store.identity_episode_baseline_digest(
+                [], {}
+            ),
+            bindings=(_binding(planned_identity.identity_id, revision="director-r2"),),
+        )
+    )
+    await entered.wait()
+    character.identities = [old_identity, _identity("陆辰_外部篡改")]
+    identity_ids[:] = ["陆辰_外部篡改"]
+    default_map["陆辰"] = "陆辰_外部篡改"
+    release.set()
+    await publication
+
+    persisted_character = (await store.list_characters())[0]
+    persisted_episode = (await store.list_episodes())[0]
+    assert [item.identity_id for item in persisted_character.identities] == [
+        old_identity.identity_id,
+        planned_identity.identity_id,
+    ]
+    assert persisted_episode.identity_ids == [planned_identity.identity_id]
+    assert persisted_episode.identity_default_map == {"陆辰": planned_identity.identity_id}

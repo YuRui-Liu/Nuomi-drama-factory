@@ -76,6 +76,14 @@ class DirectorPlanStore:
         with self._guard(episode):
             return self._load_active(episode)
 
+    @contextmanager
+    def lock_active_revision(
+        self, episode: int
+    ) -> Iterator[DirectorPlanRevision | None]:
+        """Hold the activation guard while a consumer publishes derived state."""
+        with self._guard(episode):
+            yield self._load_active(episode)
+
     def activate(self, episode: int, revision_id: str) -> DirectorPlanRevision:
         with self._guard(episode):
             target = self._load(episode, revision_id)
