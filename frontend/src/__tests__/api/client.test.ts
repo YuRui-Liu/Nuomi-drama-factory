@@ -6,6 +6,7 @@ import type { TFunction } from "i18next";
 import { apiCall } from "@/api/client";
 import {
   backendErrorToastMessage,
+  BackendStatusError,
   BillingRuleNotConfiguredError,
   errorFromBackendBody,
   InsufficientCreditsError,
@@ -17,6 +18,24 @@ afterEach(() => {
 });
 
 describe("apiCall backend errors", () => {
+  it("uses the message from a FastAPI detail object for generic backend errors", () => {
+    const body = {
+      detail: {
+        code: "REFERENCE_REVISION_CONFLICT",
+        message: "引用预览已过期，请刷新后重试",
+      },
+    };
+
+    const error = errorFromBackendBody(409, body, "Conflict");
+
+    expect(error).toBeInstanceOf(BackendStatusError);
+    expect(error).toMatchObject({
+      status: 409,
+      message: "引用预览已过期，请刷新后重试",
+      body,
+    });
+  });
+
   it("keeps status on string detail backend errors", () => {
     const error = errorFromBackendBody(
       409,

@@ -39,6 +39,7 @@ import {
   useUploadNarrativeReference,
 } from "@/lib/queries/narrative-groups";
 import { api } from "@/lib/api";
+import { BackendStatusError } from "@/lib/api-errors";
 import { queryKeys } from "@/lib/query-keys";
 import type {
   PlannedNarrativeGroupGenerationSelection,
@@ -191,6 +192,30 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("narrative group reference hooks", () => {
+  it("surfaces the backend message when reference planning returns a FastAPI conflict", async () => {
+    server.use(http.get(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/render/references",
+      () => HttpResponse.json({
+        detail: {
+          code: "REFERENCE_REVISION_CONFLICT",
+          message: "引用预览已过期，请刷新后重试",
+        },
+      }, { status: 409 }),
+    ));
+
+    const { result } = renderHook(
+      () => useNarrativeGroupReferences("demo", 2, "ng-1", "render", true),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(BackendStatusError);
+    expect(result.current.error).toMatchObject({
+      status: 409,
+      message: "引用预览已过期，请刷新后重试",
+    });
+  });
+
   it("sends the complete revisioned request when retrying one segment", async () => {
     let body: unknown;
     server.use(http.post(

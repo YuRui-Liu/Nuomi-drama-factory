@@ -24,6 +24,21 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof GroupRefere
 }
 
 describe("GroupReferenceDialog planned references", () => {
+  it("shows preview warnings in a high-contrast alert", () => {
+    renderDialog({
+      preview: {
+        ...preview,
+        warnings: ["角色主图缺失，将在无正式角色引用的情况下生成"],
+      },
+    });
+
+    const warning = screen.getByRole("alert", {
+      name: "引用预览警告",
+    });
+    expect(warning).toHaveTextContent("角色主图缺失，将在无正式角色引用的情况下生成");
+    expect(warning).toHaveClass("border-amber-300", "bg-amber-950/80", "text-amber-50");
+  });
+
   it("initializes ready defaults, groups bindings, and submits stable IDs", () => {
     const { onSubmit } = renderDialog();
     expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "true");
@@ -87,19 +102,48 @@ describe("GroupReferenceDialog planned references", () => {
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
 
-  it("blocks submission when a required ready binding has no version", () => {
+  it("allows generation when a required ready binding has no version", () => {
     const unresolved = {
       ...preview,
       bindings: [{ ...preview.bindings[0], version_id: "" }],
     };
     const { onSubmit, onResolvePlanning } = renderDialog({ preview: unresolved });
 
-    expect(screen.getByRole("button", { name: "使用 0 张参考图生成" })).toBeDisabled();
+    const generate = screen.getByRole("button", { name: "使用 0 张参考图生成" });
+    expect(generate).toBeEnabled();
     expect(screen.getByText("必需引用尚未就绪，请先返回规划处理。")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回规划处理不可用引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
-    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(generate);
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: [] }));
   });
+
+  it.each(["pending_confirmation", "missing_asset", "missing_image"] as const)(
+    "allows generation without a required %s reference",
+    (status) => {
+      const incomplete = {
+        ...preview,
+        bindings: [{
+          ...preview.bindings[0],
+          status,
+          version_id: null,
+          thumbnail_url: null,
+          warning: "正式引用尚未准备好",
+        }],
+        warnings: ["正式引用尚未准备好，本次可不带该引用继续生成"],
+      };
+      const { onSubmit } = renderDialog({ preview: incomplete });
+
+      const generate = screen.getByRole("button", { name: "使用 0 张参考图生成" });
+      expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toBeDisabled();
+      expect(generate).toBeEnabled();
+      fireEvent.click(generate);
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        selectedBindingIds: [],
+        uploadIds: [],
+      }));
+    },
+  );
 
   it("preserves choices across equivalent refetches and resets on a new revision", () => {
     const { rerender, props } = renderDialog();

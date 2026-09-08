@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -96,9 +96,6 @@ export function GroupReferenceDialog({
   const maxImages = preview?.max_images ?? 0;
   const errorMessage = typeof error === "string" ? error : error?.message;
   const uploading = uploadingReference;
-  const hasRequiredUnavailable = preview?.bindings.some(
-    (item) => item.required && !isPlannedReferenceAvailable(item),
-  ) ?? false;
 
   const uploadTemporary = async (file: File): Promise<TemporaryReferenceSelection | null> => {
     setUploadError(null);
@@ -128,6 +125,14 @@ export function GroupReferenceDialog({
       {errorMessage ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-950/70 p-3 text-red-100"><span>{errorMessage}</span><span className="flex gap-2">{onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}<Button variant="outline" size="sm" onClick={onResolvePlanning}>返回规划</Button></span></div> : null}
 
       {!loading && preview ? <div className="space-y-4">
+        {(preview.warnings ?? []).length > 0 ? <div
+          role="alert"
+          aria-label="引用预览警告"
+          className="rounded-lg border border-amber-300 bg-amber-950/80 p-4 text-amber-50"
+        >
+          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" aria-hidden="true" />引用不完整，本次仍可继续生成</div>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{(preview.warnings ?? []).map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>
+        </div> : null}
         <section className="grid gap-3 rounded-xl border border-lime-300/40 bg-lime-300/10 p-4 sm:grid-cols-2">
           <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={providerId} onChange={(event) => setProviderId(event.target.value)} /></label>
           <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={model} onChange={(event) => { setModel(event.target.value); setImageSize(coerceNarrativeImageSize(event.target.value, imageSize)); }}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
@@ -145,7 +150,7 @@ export function GroupReferenceDialog({
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={loading || !!errorMessage || !preview || submitting || hasRequiredUnavailable || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+        <Button disabled={loading || !!errorMessage || !preview || submitting || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>

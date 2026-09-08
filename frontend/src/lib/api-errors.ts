@@ -134,12 +134,13 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
     typeof directErrorCode === "string" && directErrorCode.trim()
       ? directErrorCode
       : findNestedString(body, "error_code");
+  const nestedMessage = findNestedString(body, "message");
   const message =
     typeof apiError === "string" && apiError.trim()
       ? apiError
       : typeof detail === "string" && detail.trim()
         ? detail
-        : findNestedString(body, "message") ?? fallback;
+        : nestedMessage ?? fallback;
 
   if (errorCode === "INSUFFICIENT_CREDITS") {
     return new InsufficientCreditsError(message, status, body);
@@ -164,6 +165,9 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
   }
   if (typeof detail === "string" && detail.trim()) {
     return new BackendStatusError(detail, status, body);
+  }
+  if (nestedMessage) {
+    return new BackendStatusError(nestedMessage, status, body);
   }
   return null;
 }
