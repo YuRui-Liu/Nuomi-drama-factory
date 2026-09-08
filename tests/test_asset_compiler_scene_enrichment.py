@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from novelvideo.models import NovelScene
 
@@ -22,6 +23,7 @@ class _FakeSQLiteStore:
         self.added: list[NovelScene] = []
         self.updated: list[tuple[str, dict]] = []
         self.atomic_calls: list[tuple[list[str], bool]] = []
+        self.published_menus: list[tuple[int, list, object]] = []
 
     async def get_scene(self, name: str):
         return self.scenes.get(name)
@@ -41,6 +43,19 @@ class _FakeSQLiteStore:
             self.added.append(scene)
             self.scenes[scene.name] = scene
         return [scene.name for scene in scenes]
+
+    async def publish_scene_plan_atomic(
+        self,
+        *,
+        episode_number,
+        scenes,
+        scene_menu,
+        scene_baseline_digests,
+        episode_scene_menu_baseline_digest,
+        bindings,
+    ):
+        await self.add_scenes_atomic(list(scenes), skip_existing=False)
+        self.published_menus.append((episode_number, list(scene_menu), bindings))
 
     async def update_scene(self, name: str, **updates):
         self.updated.append((name, updates))
@@ -62,6 +77,7 @@ class _FakeCogneeStore:
         self.project_dir = project_dir
         self.raw_content = raw_content
         self.updated: list[tuple[int, dict]] = []
+        self.refresh_count = 0
 
     async def load_episode_content(self, ep_num: int):
         return self.raw_content
@@ -69,6 +85,9 @@ class _FakeCogneeStore:
     async def update_episode(self, episode_number: int, **updates):
         self.updated.append((episode_number, updates))
         return None
+
+    async def load_graph_state(self):
+        self.refresh_count += 1
 
 
 def _block(location: str = "咖啡馆", time_of_day: str = "夜"):
@@ -434,6 +453,47 @@ async def test_build_scene_plan_draft_has_no_persistent_writes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scene_draft_tracks_existing_baseline_is_frozen_and_keeps_source_unchanged(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    original = NovelScene(name="咖啡馆", environment_prompt="", notes="用户备注")
+
+    async def fake_load_scene_blocks(self, episode):
+        return [_block("咖啡馆")]
+
+    async def fake_enrich(**kwargs):
+        return NovelScene(
+            name=kwargs["scene_name"],
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+
+    async def fake_derived(self, scene_name, block):
+        return []
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
+    monkeypatch.setattr(asset_compiler, "enrich_scene_environment_from_context", fake_enrich)
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
+    store = _FakeCogneeStore([original], raw_content="咖啡馆内。")
+    compiler = asset_compiler.AssetCompiler(store)
+
+    draft = await compiler.build_scene_plan_draft(SimpleNamespace(number=1, scene_menu=[]))
+
+    assert set(draft.scene_baseline_digests) == {"咖啡馆"}
+    assert draft.scenes[0].environment_prompt == ENRICHED_ENVIRONMENT_PROMPT
+    assert original.environment_prompt == ""
+    assert store.sqlite_store.updated == []
+    assert store.sqlite_store.atomic_calls == []
+    with pytest.raises(ValidationError, match="frozen"):
+        draft.new_count = 3
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        asset_compiler.ScenePlanDraft.model_validate(
+            {**draft.model_dump(), "unexpected": True}
+        )
+
+
+@pytest.mark.asyncio
 async def test_compile_episode_scenes_writes_all_prompt_repairs_once_atomically(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
@@ -470,7 +530,8 @@ async def test_compile_episode_scenes_writes_all_prompt_repairs_once_atomically(
     assert new_count == 0
     assert store.sqlite_store.atomic_calls == [(["直播间", "设备间"], False)]
     assert store.sqlite_store.updated == []
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    assert store.sqlite_store.published_menus == [(1, scene_menu, None)]
+    assert store.updated == []
 
 
 @pytest.mark.asyncio
@@ -567,7 +628,8 @@ async def test_compile_episode_scenes_uses_narrated_fallback_without_scene_heade
     assert new_count == 1
     assert scene_menu[0].scene_id == "医院走廊"
     assert store.sqlite_store.added[0].name == "医院走廊"
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    assert store.sqlite_store.published_menus == [(1, scene_menu, None)]
+    assert store.updated == []
 
 
 @pytest.mark.asyncio
@@ -730,7 +792,8 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
     assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
     assert scene_menu[1].base_scene_id == "咖啡馆"
     assert scene_menu[1].variant_id == "暴雨版"
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    assert store.sqlite_store.published_menus == [(1, scene_menu, None)]
+    assert store.updated == []
 
 
 @pytest.mark.asyncio

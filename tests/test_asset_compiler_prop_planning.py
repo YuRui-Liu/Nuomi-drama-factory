@@ -204,6 +204,163 @@ async def test_legacy_compile_single_episode_finishes_both_drafts_before_writing
     assert store.updated == []
 
 
+@pytest.mark.asyncio
+async def test_split_legacy_entry_requires_atomic_publisher_without_partial_writes(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    store = _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT)
+    compiler = asset_compiler.AssetCompiler(store)
+    prop = asset_compiler.NovelProp(name="强光手电")
+
+    async def fake_draft(*args, **kwargs):
+        return asset_compiler.PropPlanDraft(
+            props=(prop,),
+            prop_menu=(asset_compiler.PropMenuItem(prop_id=prop.name),),
+            new_count=1,
+            prop_baseline_digests={},
+            episode_prop_menu_baseline_digest="baseline",
+        )
+
+    monkeypatch.setattr(compiler, "build_prop_plan_draft", fake_draft)
+
+    with pytest.raises(ValueError, match="ATOMIC_ASSET_PLAN_PUBLICATION_REQUIRED"):
+        await compiler.compile_episode_props(SimpleNamespace(number=1))
+
+    assert store.updated == []
+
+
+@pytest.mark.asyncio
+async def test_combined_legacy_entry_requires_both_atomic_publishers_before_writing(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    calls: list[str] = []
+
+    class SceneOnlySQLite:
+        async def publish_scene_plan_atomic(self, **kwargs):
+            calls.append("scene-commit")
+
+    store = SimpleNamespace(sqlite_store=SceneOnlySQLite())
+    compiler = asset_compiler.AssetCompiler(store)
+
+    async def fake_scene_draft(*args, **kwargs):
+        return asset_compiler.ScenePlanDraft(
+            scenes=(), scene_menu=(), new_count=0, scene_baseline_digests={},
+            episode_scene_menu_baseline_digest="scene-baseline",
+        )
+
+    async def fake_prop_draft(*args, **kwargs):
+        return asset_compiler.PropPlanDraft(
+            props=(), prop_menu=(), new_count=0, prop_baseline_digests={},
+            episode_prop_menu_baseline_digest="prop-baseline",
+        )
+
+    monkeypatch.setattr(compiler, "build_scene_plan_draft", fake_scene_draft)
+    monkeypatch.setattr(compiler, "build_prop_plan_draft", fake_prop_draft)
+
+    with pytest.raises(ValueError, match="ATOMIC_ASSET_PLAN_PUBLICATION_REQUIRED"):
+        await compiler.compile_single_episode(SimpleNamespace(number=1))
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_combined_entry_refreshes_after_scene_commit_before_prop_failure(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    calls: list[str] = []
+
+    class AtomicSQLite:
+        async def publish_scene_plan_atomic(self, **kwargs):
+            calls.append("scene-commit")
+
+        async def publish_prop_plan_atomic(self, **kwargs):
+            calls.append("prop-attempt")
+            raise RuntimeError("prop publish failed")
+
+    class AtomicStore:
+        sqlite_store = AtomicSQLite()
+
+        async def load_graph_state(self):
+            calls.append("refresh")
+
+    compiler = asset_compiler.AssetCompiler(AtomicStore())
+    scene_draft = asset_compiler.ScenePlanDraft(
+        scenes=(),
+        scene_menu=(),
+        new_count=0,
+        scene_baseline_digests={},
+        episode_scene_menu_baseline_digest="scene-baseline",
+    )
+    prop_draft = asset_compiler.PropPlanDraft(
+        props=(),
+        prop_menu=(),
+        new_count=0,
+        prop_baseline_digests={},
+        episode_prop_menu_baseline_digest="prop-baseline",
+    )
+
+    async def fake_scene_draft(*args, **kwargs):
+        return scene_draft
+
+    async def fake_prop_draft(*args, **kwargs):
+        return prop_draft
+
+    monkeypatch.setattr(compiler, "build_scene_plan_draft", fake_scene_draft)
+    monkeypatch.setattr(compiler, "build_prop_plan_draft", fake_prop_draft)
+
+    with pytest.raises(RuntimeError, match="prop publish failed"):
+        await compiler.compile_single_episode(SimpleNamespace(number=1))
+
+    assert calls == ["scene-commit", "refresh", "prop-attempt"]
+
+
+@pytest.mark.asyncio
+async def test_combined_entry_publishes_each_category_atomically_and_refreshes_each(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    calls: list[str] = []
+
+    class AtomicSQLite:
+        async def publish_scene_plan_atomic(self, **kwargs):
+            calls.append("scene-commit")
+
+        async def publish_prop_plan_atomic(self, **kwargs):
+            calls.append("prop-commit")
+
+    class AtomicStore:
+        sqlite_store = AtomicSQLite()
+
+        async def load_graph_state(self):
+            calls.append("refresh")
+
+    compiler = asset_compiler.AssetCompiler(AtomicStore())
+
+    async def fake_scene_draft(*args, **kwargs):
+        return asset_compiler.ScenePlanDraft(
+            scenes=(),
+            scene_menu=(),
+            new_count=0,
+            scene_baseline_digests={},
+            episode_scene_menu_baseline_digest="scene-baseline",
+        )
+
+    async def fake_prop_draft(*args, **kwargs):
+        return asset_compiler.PropPlanDraft(
+            props=(),
+            prop_menu=(),
+            new_count=0,
+            prop_baseline_digests={},
+            episode_prop_menu_baseline_digest="prop-baseline",
+        )
+
+    monkeypatch.setattr(compiler, "build_scene_plan_draft", fake_scene_draft)
+    monkeypatch.setattr(compiler, "build_prop_plan_draft", fake_prop_draft)
+
+    await compiler.compile_single_episode(SimpleNamespace(number=1))
+
+    assert calls == ["scene-commit", "refresh", "prop-commit", "refresh"]
+
+
 def test_prop_name_must_be_exact_source_substring_or_existing_candidate():
     from novelvideo.agents.asset_compiler import BlockPropRequirements
 

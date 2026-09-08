@@ -24,6 +24,8 @@ from novelvideo.models import (
     NovelScene,
     PropMenuItem,
     SceneMenuItem,
+    build_prop_menu,
+    build_scene_menu,
 )
 from novelvideo.cognee.screenplay_normalizer import normalize_time_of_day
 from novelvideo.director_world import stage_manifest
@@ -58,6 +60,14 @@ def _asset_digest(payload: dict[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _asset_menu_digest(asset_kind: str, items: Any) -> str:
+    builder = build_scene_menu if asset_kind == "scene" else build_prop_menu
+    normalized = builder(scene_menu=list(items or [])) if asset_kind == "scene" else builder(
+        prop_menu=list(items or [])
+    )
+    return _asset_digest({"items": [item.model_dump() for item in normalized]})
 
 
 def _scene_planning_payload(scene: NovelScene) -> dict[str, Any]:
@@ -620,6 +630,24 @@ class AssetCompiler:
         self.director_plan = director_plan
         self._draft_store_lock = asyncio.Lock()
 
+    def _atomic_publisher(self, name: str) -> Callable[..., Any]:
+        sqlite_store = getattr(self.cognee_store, "sqlite_store", None)
+        candidates = (
+            self.cognee_store,
+            sqlite_store,
+            getattr(sqlite_store, "sqlite_store", None),
+        )
+        for candidate in candidates:
+            publisher = getattr(candidate, name, None)
+            if callable(publisher):
+                return publisher
+        raise ValueError("ATOMIC_ASSET_PLAN_PUBLICATION_REQUIRED")
+
+    async def _refresh_after_asset_publish(self) -> None:
+        refresher = getattr(self.cognee_store, "load_graph_state", None)
+        if callable(refresher):
+            await refresher()
+
     def _director_scene_blocks(self) -> list[SceneBlock]:
         if self.director_plan is None:
             return []
@@ -681,42 +709,30 @@ class AssetCompiler:
                 else None
             ),
         )
-        scene_publisher = getattr(
-            self.cognee_store.sqlite_store, "publish_scene_plan_atomic", None
+        scene_publisher = self._atomic_publisher("publish_scene_plan_atomic")
+        prop_publisher = self._atomic_publisher("publish_prop_plan_atomic")
+        await scene_publisher(
+            episode_number=episode.number,
+            scenes=scene_draft.scenes,
+            scene_menu=scene_draft.scene_menu,
+            scene_baseline_digests=scene_draft.scene_baseline_digests,
+            episode_scene_menu_baseline_digest=(
+                scene_draft.episode_scene_menu_baseline_digest
+            ),
+            bindings=None,
         )
-        prop_publisher = getattr(
-            self.cognee_store.sqlite_store, "publish_prop_plan_atomic", None
+        await self._refresh_after_asset_publish()
+        await prop_publisher(
+            episode_number=episode.number,
+            props=prop_draft.props,
+            prop_menu=prop_draft.prop_menu,
+            prop_baseline_digests=prop_draft.prop_baseline_digests,
+            episode_prop_menu_baseline_digest=(
+                prop_draft.episode_prop_menu_baseline_digest
+            ),
+            bindings=None,
         )
-        if callable(scene_publisher) and callable(prop_publisher):
-            await scene_publisher(
-                episode_number=episode.number,
-                scenes=scene_draft.scenes,
-                scene_menu=scene_draft.scene_menu,
-                scene_baseline_digests=scene_draft.scene_baseline_digests,
-                episode_scene_menu_baseline_digest=(
-                    scene_draft.episode_scene_menu_baseline_digest
-                ),
-                bindings=None,
-            )
-            await prop_publisher(
-                episode_number=episode.number,
-                props=prop_draft.props,
-                prop_menu=prop_draft.prop_menu,
-                prop_baseline_digests=prop_draft.prop_baseline_digests,
-                episode_prop_menu_baseline_digest=(
-                    prop_draft.episode_prop_menu_baseline_digest
-                ),
-                bindings=None,
-            )
-        else:
-            await self._persist_scene_plan_atomic(list(scene_draft.scenes))
-            for prop in prop_draft.props:
-                await self.cognee_store.sqlite_store.add_prop(prop)
-            await self.cognee_store.update_episode(
-                episode.number,
-                scene_menu=list(scene_draft.scene_menu),
-                prop_menu=list(prop_draft.prop_menu),
-            )
+        await self._refresh_after_asset_publish()
         if on_progress:
             on_progress(1.0, "完成")
         return (
@@ -738,26 +754,18 @@ class AssetCompiler:
             on_log=on_log,
             on_progress=on_progress,
         )
-        publisher = getattr(self.cognee_store.sqlite_store, "publish_scene_plan_atomic", None)
-        if callable(publisher):
-            await publisher(
-                episode_number=episode.number,
-                scenes=draft.scenes,
-                scene_menu=draft.scene_menu,
-                scene_baseline_digests=draft.scene_baseline_digests,
-                episode_scene_menu_baseline_digest=(
-                    draft.episode_scene_menu_baseline_digest
-                ),
-                bindings=None,
-            )
-            refresher = getattr(self.cognee_store, "load_graph_state", None)
-            if callable(refresher):
-                await refresher()
-        else:
-            await self._persist_scene_plan_atomic(list(draft.scenes))
-            await self.cognee_store.update_episode(
-                episode.number, scene_menu=list(draft.scene_menu)
-            )
+        publisher = self._atomic_publisher("publish_scene_plan_atomic")
+        await publisher(
+            episode_number=episode.number,
+            scenes=draft.scenes,
+            scene_menu=draft.scene_menu,
+            scene_baseline_digests=draft.scene_baseline_digests,
+            episode_scene_menu_baseline_digest=(
+                draft.episode_scene_menu_baseline_digest
+            ),
+            bindings=None,
+        )
+        await self._refresh_after_asset_publish()
         return list(draft.scene_menu), draft.new_count
 
     async def build_scene_plan_draft(
@@ -865,15 +873,8 @@ class AssetCompiler:
             scene_menu=tuple(scene_menu),
             new_count=len(planned_new_names),
             scene_baseline_digests=draft_sqlite.scene_baselines(changed_scenes),
-            episode_scene_menu_baseline_digest=_asset_digest(
-                {
-                    "items": [
-                        item.model_dump()
-                        if hasattr(item, "model_dump")
-                        else dict(item)
-                        for item in (getattr(episode, "scene_menu", []) or [])
-                    ]
-                }
+            episode_scene_menu_baseline_digest=_asset_menu_digest(
+                "scene", getattr(episode, "scene_menu", []) or []
             ),
         )
 
@@ -914,27 +915,18 @@ class AssetCompiler:
             on_log=on_log,
             on_progress=on_progress,
         )
-        publisher = getattr(self.cognee_store.sqlite_store, "publish_prop_plan_atomic", None)
-        if callable(publisher):
-            await publisher(
-                episode_number=episode.number,
-                props=draft.props,
-                prop_menu=draft.prop_menu,
-                prop_baseline_digests=draft.prop_baseline_digests,
-                episode_prop_menu_baseline_digest=(
-                    draft.episode_prop_menu_baseline_digest
-                ),
-                bindings=None,
-            )
-            refresher = getattr(self.cognee_store, "load_graph_state", None)
-            if callable(refresher):
-                await refresher()
-        else:
-            for prop in draft.props:
-                await self.cognee_store.sqlite_store.add_prop(prop)
-            await self.cognee_store.update_episode(
-                episode.number, prop_menu=list(draft.prop_menu)
-            )
+        publisher = self._atomic_publisher("publish_prop_plan_atomic")
+        await publisher(
+            episode_number=episode.number,
+            props=draft.props,
+            prop_menu=draft.prop_menu,
+            prop_baseline_digests=draft.prop_baseline_digests,
+            episode_prop_menu_baseline_digest=(
+                draft.episode_prop_menu_baseline_digest
+            ),
+            bindings=None,
+        )
+        await self._refresh_after_asset_publish()
         return list(draft.prop_menu)
 
     async def build_prop_plan_draft(
@@ -1006,15 +998,8 @@ class AssetCompiler:
                 prop.name not in draft_sqlite._prop_baselines for prop in changed_props
             ),
             prop_baseline_digests=draft_sqlite.prop_baselines(changed_props),
-            episode_prop_menu_baseline_digest=_asset_digest(
-                {
-                    "items": [
-                        item.model_dump()
-                        if hasattr(item, "model_dump")
-                        else dict(item)
-                        for item in (getattr(episode, "prop_menu", []) or [])
-                    ]
-                }
+            episode_prop_menu_baseline_digest=_asset_menu_digest(
+                "prop", getattr(episode, "prop_menu", []) or []
             ),
         )
 

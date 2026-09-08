@@ -37,6 +37,8 @@ from novelvideo.models import (
     NovelVisualBeat,
     PropMenuItem,
     SceneMenuItem,
+    build_prop_menu,
+    build_scene_menu,
     normalize_detected_identities,
     normalize_detected_props,
     sync_beat_asset_refs,
@@ -884,11 +886,24 @@ class SQLiteStore:
         await self.load_graph_state()
 
     @staticmethod
-    def asset_menu_baseline_digest(items: Any) -> str:
-        normalized = [
-            item.model_dump() if hasattr(item, "model_dump") else dict(item)
-            for item in (items or [])
-        ]
+    def asset_menu_baseline_digest(items: Any, *, asset_kind: str | None = None) -> str:
+        values = list(items or [])
+        if asset_kind is None:
+            first = values[0] if values else None
+            if isinstance(first, PropMenuItem) or (
+                isinstance(first, dict) and "prop_id" in first
+            ):
+                asset_kind = "prop"
+            else:
+                asset_kind = "scene"
+        if asset_kind not in {"scene", "prop"}:
+            raise ValueError("asset_kind must be scene or prop")
+        normalized_items = (
+            build_scene_menu(scene_menu=values)
+            if asset_kind == "scene"
+            else build_prop_menu(prop_menu=values)
+        )
+        normalized = [item.model_dump() for item in normalized_items]
         canonical = json.dumps(
             {"items": normalized},
             ensure_ascii=False,
@@ -992,7 +1007,9 @@ class SQLiteStore:
                     raise ValueError(
                         f"scene menu conflict for episode {episode_number}"
                     ) from exc
-                if self.asset_menu_baseline_digest(current_menu) != episode_scene_menu_baseline_digest:
+                if self.asset_menu_baseline_digest(
+                    current_menu, asset_kind="scene"
+                ) != episode_scene_menu_baseline_digest:
                     raise ValueError(f"scene menu conflict for episode {episode_number}")
 
                 for scene in scene_items:
@@ -1137,7 +1154,9 @@ class SQLiteStore:
                     raise ValueError(
                         f"prop menu conflict for episode {episode_number}"
                     ) from exc
-                if self.asset_menu_baseline_digest(current_menu) != episode_prop_menu_baseline_digest:
+                if self.asset_menu_baseline_digest(
+                    current_menu, asset_kind="prop"
+                ) != episode_prop_menu_baseline_digest:
                     raise ValueError(f"prop menu conflict for episode {episode_number}")
 
                 for prop in prop_items:
