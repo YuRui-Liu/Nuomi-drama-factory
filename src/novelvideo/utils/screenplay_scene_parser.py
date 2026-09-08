@@ -393,7 +393,11 @@ def _strip_location_prefix(line: str) -> str:
 
 
 def _strip_markdown_heading_prefix(line: str) -> str:
-    return re.sub(r"^#{1,6}\s+", "", (line or "").strip())
+    text = (line or "").strip()
+    match = re.match(r"^#{1,6}\s+(?P<body>.*)$", text)
+    if match is None:
+        return text
+    return re.sub(r"\s+#+\s*$", "", match.group("body")).strip()
 
 
 def _strip_numbered_scene_prefix(line: str) -> str:

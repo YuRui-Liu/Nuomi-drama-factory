@@ -45,6 +45,18 @@ def test_dialogue_keeps_exact_source_line_and_scene_header_is_not_a_beat_candida
     assert scene.blocks[0].id == "line-3"
 
 
+def test_markdown_numbered_scene_heading_sets_semantic_location():
+    parsed = parse_screenplay_document("### 1-1 谢家碑坊\n石九停步。")
+
+    assert parsed.scenes[0].location == "谢家碑坊"
+
+
+def test_closed_atx_numbered_scene_heading_excludes_closing_markers_from_location():
+    parsed = parse_screenplay_document("### 1-1 谢家碑坊 ###\n石九停步。")
+
+    assert parsed.scenes[0].location == "谢家碑坊"
+
+
 def test_document_without_scene_headers_does_not_invent_scenes():
     parsed = parse_screenplay_document(
         "episode: E001\ntitle: 章节信息\nduration_seconds: 110\nrights_risk: low"

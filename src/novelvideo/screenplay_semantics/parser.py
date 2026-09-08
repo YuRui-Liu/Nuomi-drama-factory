@@ -14,7 +14,7 @@ from novelvideo.utils.screenplay_scene_parser import (
     enumerate_screenplay_lines,
     is_scene_start_line,
     parse_character_line,
-    parse_location_header_relaxed,
+    parse_scene_blocks,
 )
 
 
@@ -125,13 +125,14 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
         if value and is_scene_start_line(value):
             flush_scene()
             current_header = line
-            parsed_location = parse_location_header_relaxed(value)
-            if parsed_location:
-                current_location, current_time, marker = parsed_location
+            parsed_header = parse_scene_blocks([value])[0]
+            current_location = parsed_header.location
+            current_time = parsed_header.time_of_day
+            if parsed_header.interior_exterior:
                 current_interior = {
                     "内": "interior",
                     "外": "exterior",
-                }.get(marker, "unspecified")
+                }.get(parsed_header.interior_exterior, "unspecified")
             last_scene_line = line.number
             continue
         if current_header is None:
