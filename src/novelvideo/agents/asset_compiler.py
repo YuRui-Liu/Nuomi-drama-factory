@@ -1057,7 +1057,7 @@ class AssetCompiler:
             if on_progress:
                 on_progress(progress, task)
 
-        scene_blocks = await self._load_scene_blocks(episode)
+        scene_blocks = await self._load_prop_scene_blocks(episode)
         report(0.1, "解析场景块...")
         log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
 
@@ -1246,6 +1246,12 @@ class AssetCompiler:
 
         return scene_blocks
 
+    async def _load_prop_scene_blocks(self, episode: Any) -> list[SceneBlock]:
+        director_blocks = self._director_scene_blocks()
+        if director_blocks:
+            return director_blocks
+        return await self._load_scene_blocks(episode)
+
     async def _load_source_text(self, episode: Any) -> str:
         working_content = ""
         working_loader = getattr(
@@ -1365,6 +1371,7 @@ class AssetCompiler:
                 scene_menu,
                 seen_scene_ids,
                 pending_scene_map,
+                log,
             )
             pending_scenes.extend(director_scenes)
 
@@ -1375,6 +1382,7 @@ class AssetCompiler:
         scene_menu: list[SceneMenuItem],
         seen_scene_ids: set[str],
         pending_scene_map: dict[str, NovelScene],
+        log: Callable[[str], None],
     ) -> list[NovelScene]:
         all_scenes = await self.cognee_store.sqlite_store.list_scenes()
         base_scenes = {
@@ -1390,7 +1398,18 @@ class AssetCompiler:
             }
         )
         known_base_ids = set(base_scenes)
+        structural_variants: dict[tuple[str, str], list[NovelScene]] = {}
+        scenes_by_name = {scene.name: scene for scene in all_scenes}
+        scenes_by_name.update(pending_scene_map)
+        for scene in scenes_by_name.values():
+            base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
+            variant_id = str(getattr(scene, "variant_id", "") or "").strip()
+            if base_scene_id and variant_id:
+                structural_variants.setdefault((base_scene_id, variant_id), []).append(
+                    scene
+                )
         pending: list[NovelScene] = []
+        processed: set[tuple[str, str]] = set()
         for group in getattr(self.director_plan, "groups", ()) or ():
             for shot in getattr(group, "shots", ()) or ():
                 for requirement in getattr(shot, "asset_requirements", ()) or ():
@@ -1399,42 +1418,73 @@ class AssetCompiler:
                     entity_key = str(
                         getattr(requirement, "entity_key", "") or ""
                     ).strip()
-                    base_scene_id, variant_id = parse_scene_requirement(
-                        entity_key,
-                        known_base_ids,
+                    visible_change = str(
+                        getattr(requirement, "visible_change", "") or ""
+                    ).strip()
+                    formal_requirement = entity_key in known_base_ids and bool(
+                        visible_change
                     )
+                    if formal_requirement:
+                        base_scene_id, variant_id = entity_key, visible_change
+                    else:
+                        base_scene_id, variant_id = parse_scene_requirement(
+                            entity_key,
+                            known_base_ids - {entity_key},
+                        )
                     if not variant_id or base_scene_id not in base_scenes:
                         continue
-                    scene_name = compose_derived_scene_name(base_scene_id, variant_id)
-                    existing_variant = pending_scene_map.get(scene_name)
-                    if existing_variant is None:
-                        existing_variant = await self.cognee_store.sqlite_store.get_scene(
-                            scene_name
+                    structural_key = (base_scene_id, variant_id)
+                    if structural_key in processed:
+                        continue
+                    processed.add(structural_key)
+                    matching_variants = structural_variants.get(structural_key, [])
+                    if len(matching_variants) > 1:
+                        log(
+                            "  跳过导演场景变体待确认: "
+                            f"{base_scene_id} / {variant_id}（存在多个结构匹配）"
                         )
-                    if existing_variant is None:
-                        visible_change = str(
-                            getattr(requirement, "visible_change", "") or ""
-                        ).strip()
-                        design_notes = str(
-                            getattr(requirement, "design_notes", "") or ""
-                        ).strip()
-                        variant_prompt = "\n".join(
-                            value for value in (visible_change, design_notes) if value
-                        )
-                        parent_scene = base_scenes[base_scene_id]
-                        existing_variant = NovelScene(
-                            name=scene_name,
-                            aliases=[base_scene_id],
-                            scene_type=parent_scene.scene_type,
+                        continue
+                    if matching_variants:
+                        existing_variant = matching_variants[0]
+                        self._add_to_scene_menu(
+                            existing_variant.name,
+                            scene_menu,
+                            seen_scene_ids,
                             base_scene_id=base_scene_id,
                             variant_id=variant_id,
-                            environment_prompt="",
-                            variant_prompt=variant_prompt,
-                            description=visible_change or design_notes,
-                            notes=f"由 AssetCompiler 从导演方案投影场景 {base_scene_id} 变体",
                         )
-                        pending_scene_map[scene_name] = existing_variant
-                        pending.append(existing_variant)
+                        continue
+                    scene_name = compose_derived_scene_name(base_scene_id, variant_id)
+                    name_collision = scenes_by_name.get(scene_name)
+                    if name_collision is not None:
+                        log(
+                            "  跳过导演场景变体名称冲突待确认: "
+                            f"{scene_name} 已被其他场景身份占用"
+                        )
+                        continue
+                    design_notes = str(
+                        getattr(requirement, "design_notes", "") or ""
+                    ).strip()
+                    descriptive_change = "" if formal_requirement else visible_change
+                    variant_prompt = "\n".join(
+                        value for value in (descriptive_change, design_notes) if value
+                    )
+                    parent_scene = base_scenes[base_scene_id]
+                    existing_variant = NovelScene(
+                        name=scene_name,
+                        aliases=[base_scene_id],
+                        scene_type=parent_scene.scene_type,
+                        base_scene_id=base_scene_id,
+                        variant_id=variant_id,
+                        environment_prompt="",
+                        variant_prompt=variant_prompt,
+                        description=descriptive_change or design_notes,
+                        notes=f"由 AssetCompiler 从导演方案投影场景 {base_scene_id} 变体",
+                    )
+                    pending_scene_map[scene_name] = existing_variant
+                    scenes_by_name[scene_name] = existing_variant
+                    structural_variants[structural_key] = [existing_variant]
+                    pending.append(existing_variant)
                     self._add_to_scene_menu(
                         scene_name,
                         scene_menu,

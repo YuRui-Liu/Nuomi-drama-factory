@@ -224,6 +224,54 @@ async def test_build_prop_plan_draft_creates_entity_without_persistent_writes(mo
 
 
 @pytest.mark.asyncio
+async def test_build_prop_plan_draft_keeps_director_requirements_in_analyzer_input(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.director_plan.models import AssetRequirement
+
+    captured_blocks: list[asset_compiler.SceneBlock] = []
+
+    async def fake_analyze(self, block, preselected, prior_selected_prop_ids):
+        captured_blocks.append(block)
+        return []
+
+    requirement = AssetRequirement(
+        kind="prop",
+        entity_key="龙纹玉佩",
+        design_notes="玉质温润，有旧裂纹",
+    )
+    director_plan = SimpleNamespace(
+        groups=[
+            SimpleNamespace(
+                scene_anchor="谢家碑坊",
+                time_anchor="雨夜",
+                shots=[
+                    SimpleNamespace(
+                        subject="谢怀安",
+                        action="举起龙纹玉佩",
+                        asset_requirements=(requirement,),
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fake_analyze)
+    compiler = asset_compiler.AssetCompiler(
+        _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT),
+        director_plan=director_plan,
+    )
+
+    await compiler.build_prop_plan_draft(SimpleNamespace(number=1, prop_menu=[]))
+
+    assert len(captured_blocks) == 1
+    block = captured_blocks[0]
+    assert block.location == "谢家碑坊"
+    assert "谢怀安 举起龙纹玉佩" in block.lines
+    assert "龙纹玉佩 玉质温润，有旧裂纹" in block.lines
+
+
+@pytest.mark.asyncio
 async def test_legacy_compile_single_episode_finishes_both_drafts_before_writing(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 

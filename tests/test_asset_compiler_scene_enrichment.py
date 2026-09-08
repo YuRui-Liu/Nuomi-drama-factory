@@ -203,6 +203,173 @@ async def test_director_scene_state_projects_known_base_variant_without_ai(monke
 
 
 @pytest.mark.asyncio
+async def test_formal_director_scene_state_uses_visible_change_as_variant_and_deduplicates(
+    monkeypatch,
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.director_plan.models import AssetRequirement
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("正式导演变体不应调用 AI")
+
+    requirement = AssetRequirement(
+        kind="scene_state",
+        entity_key="谢家碑坊",
+        visible_change="暴雨天井",
+        design_notes="天井积水，保留石牌坊结构",
+    )
+    director_plan = SimpleNamespace(
+        groups=[
+            SimpleNamespace(
+                scene_anchor="导演自由文本",
+                time_anchor="雨夜",
+                shots=[
+                    SimpleNamespace(asset_requirements=(requirement,)),
+                    SimpleNamespace(asset_requirements=(requirement,)),
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", forbidden)
+    existing = NovelScene(
+        name="谢家碑坊",
+        scene_type="exterior",
+        environment_prompt="完整的谢家碑坊空间描述",
+    )
+    compiler = asset_compiler.AssetCompiler(
+        _FakeCogneeStore([existing]), director_plan=director_plan
+    )
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家碑坊\n\n谢家碑坊外，雨水沿着青石板流淌。",
+        )
+    )
+
+    assert [scene.name for scene in draft.scenes] == ["谢家碑坊_暴雨天井"]
+    variant = draft.scenes[0]
+    assert variant.base_scene_id == "谢家碑坊"
+    assert variant.variant_id == "暴雨天井"
+    assert variant.variant_prompt == "天井积水，保留石牌坊结构"
+    assert [item.scene_id for item in draft.scene_menu] == [
+        "谢家碑坊",
+        "谢家碑坊_暴雨天井",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_director_scene_state_reuses_variant_by_structural_identity(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.director_plan.models import AssetRequirement
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("结构化变体复用不应调用 AI")
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", forbidden)
+    base = NovelScene(
+        name="谢家碑坊",
+        scene_type="exterior",
+        environment_prompt="完整的谢家碑坊空间描述",
+    )
+    historical = NovelScene(
+        name="暴雨中的谢家碑坊",
+        scene_type="exterior",
+        base_scene_id="谢家碑坊",
+        variant_id="暴雨天井",
+        variant_prompt="历史变体描述",
+    )
+    compiler = asset_compiler.AssetCompiler(
+        _FakeCogneeStore([base, historical]),
+        director_plan=_director_plan(
+            AssetRequirement(
+                kind="scene_state",
+                entity_key="谢家碑坊",
+                visible_change="暴雨天井",
+            )
+        ),
+    )
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家碑坊\n\n谢家碑坊外，雨水沿着青石板流淌。",
+        )
+    )
+
+    assert draft.scenes == ()
+    assert [item.scene_id for item in draft.scene_menu] == [
+        "谢家碑坊",
+        "暴雨中的谢家碑坊",
+    ]
+    assert draft.scene_menu[1].base_scene_id == "谢家碑坊"
+    assert draft.scene_menu[1].variant_id == "暴雨天井"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "collision",
+    [
+        NovelScene(name="谢家碑坊_暴雨天井", environment_prompt="独立基础场景"),
+        NovelScene(
+            name="谢家碑坊_暴雨天井",
+            base_scene_id="谢家碑坊",
+            time_of_day="夜晚",
+            environment_prompt="",
+        ),
+        NovelScene(
+            name="谢家碑坊_暴雨天井",
+            base_scene_id="其他场景",
+            variant_id="暴雨天井",
+            environment_prompt="",
+        ),
+    ],
+    ids=["independent-base", "time-plate", "wrong-base"],
+)
+async def test_director_scene_state_skips_canonical_name_collision(
+    monkeypatch, collision
+):
+    import novelvideo.agents.asset_compiler as asset_compiler
+    from novelvideo.director_plan.models import AssetRequirement
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("名称冲突不应调用 AI")
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", forbidden)
+    base = NovelScene(
+        name="谢家碑坊",
+        scene_type="exterior",
+        environment_prompt="完整的谢家碑坊空间描述",
+    )
+    compiler = asset_compiler.AssetCompiler(
+        _FakeCogneeStore([base, collision]),
+        director_plan=_director_plan(
+            AssetRequirement(
+                kind="scene_state",
+                entity_key="谢家碑坊",
+                visible_change="暴雨天井",
+            )
+        ),
+    )
+    logs: list[str] = []
+
+    draft = await compiler.build_scene_plan_draft(
+        SimpleNamespace(
+            number=1,
+            scene_menu=[],
+            beat_source_text="### 1-1 谢家碑坊\n\n谢家碑坊外，雨水沿着青石板流淌。",
+        ),
+        on_log=logs.append,
+    )
+
+    assert draft.scenes == ()
+    assert [item.scene_id for item in draft.scene_menu] == ["谢家碑坊"]
+    assert any("导演场景变体名称冲突" in message for message in logs)
+
+
+@pytest.mark.asyncio
 async def test_director_unknown_scene_identity_does_not_enter_scene_draft(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
