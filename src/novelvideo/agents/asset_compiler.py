@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import asyncio
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, model_validator
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
@@ -45,6 +48,190 @@ class SceneBlock:
     interior_exterior: str = ""
     characters: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+
+
+def _asset_digest(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _scene_planning_payload(scene: NovelScene) -> dict[str, Any]:
+    return {
+        "aliases": list(scene.aliases),
+        "scene_type": scene.scene_type,
+        "base_scene_id": scene.base_scene_id,
+        "variant_id": scene.variant_id,
+        "time_of_day": scene.time_of_day,
+        "environment_prompt": scene.environment_prompt,
+        "variant_prompt": scene.variant_prompt,
+        "description": scene.description,
+        "stale_reference_kinds": list(scene.stale_reference_kinds),
+    }
+
+
+def _prop_planning_payload(prop: NovelProp) -> dict[str, Any]:
+    return {
+        "aliases": list(prop.aliases),
+        "prop_type": prop.prop_type,
+        "visual_prompt": prop.visual_prompt,
+        "description": prop.description,
+        "owner": prop.owner,
+    }
+
+
+class ScenePlanDraft(BaseModel):
+    """Complete scene plan prepared without mutating persistent storage."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scenes: tuple[NovelScene, ...]
+    scene_menu: tuple[SceneMenuItem, ...]
+    new_count: int = Field(ge=0)
+    scene_baseline_digests: dict[str, str]
+    episode_scene_menu_baseline_digest: str
+
+
+class PropPlanDraft(BaseModel):
+    """Complete prop plan prepared without mutating persistent storage."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    props: tuple[NovelProp, ...]
+    prop_menu: tuple[PropMenuItem, ...]
+    new_count: int = Field(ge=0)
+    prop_baseline_digests: dict[str, str]
+    episode_prop_menu_baseline_digest: str
+
+
+class _AssetDraftSQLiteStore:
+    """In-memory scene/prop catalogue with read-through for unrelated APIs."""
+
+    def __init__(self, source: Any, scenes: list[NovelScene], props: list[NovelProp]):
+        self._source = source
+        self._scenes = {item.name: item.model_copy(deep=True) for item in scenes}
+        self._props = {item.name: item.model_copy(deep=True) for item in props}
+        self._scene_baselines = {
+            item.name: _asset_digest(_scene_planning_payload(item)) for item in scenes
+        }
+        self._prop_baselines = {
+            item.name: _asset_digest(_prop_planning_payload(item)) for item in props
+        }
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)
+
+    async def list_scenes(self) -> list[NovelScene]:
+        return list(self._scenes.values())
+
+    async def get_scene(self, name: str) -> NovelScene | None:
+        exact = self._scenes.get(name)
+        if exact is not None:
+            return exact
+        lookup = AssetCompiler._normalize_alias_lookup(name)
+        return next(
+            (
+                scene
+                for scene in self._scenes.values()
+                if any(AssetCompiler._normalize_alias_lookup(alias) == lookup for alias in scene.aliases)
+            ),
+            None,
+        )
+
+    async def add_scene(self, scene: NovelScene) -> None:
+        self._scenes[scene.name] = scene.model_copy(deep=True)
+
+    async def add_scenes_atomic(
+        self, scenes: list[NovelScene], *, skip_existing: bool = True
+    ) -> list[str]:
+        added: list[str] = []
+        for scene in scenes:
+            if skip_existing and scene.name in self._scenes:
+                continue
+            self._scenes[scene.name] = scene.model_copy(deep=True)
+            added.append(scene.name)
+        return added
+
+    async def update_scene(self, name: str, **updates: Any) -> bool:
+        scene = self._scenes.get(name)
+        if scene is None:
+            return False
+        self._scenes[name] = scene.model_copy(update=updates, deep=True)
+        return True
+
+    async def list_props(self) -> list[NovelProp]:
+        return list(self._props.values())
+
+    async def get_prop(self, name: str) -> NovelProp | None:
+        exact = self._props.get(name)
+        if exact is not None:
+            return exact
+        lookup = AssetCompiler._normalize_alias_lookup(name)
+        return next(
+            (
+                prop
+                for prop in self._props.values()
+                if any(AssetCompiler._normalize_alias_lookup(alias) == lookup for alias in prop.aliases)
+            ),
+            None,
+        )
+
+    async def add_prop(self, prop: NovelProp) -> None:
+        self._props[prop.name] = prop.model_copy(deep=True)
+
+    async def update_prop(self, name: str, **updates: Any) -> bool:
+        prop = self._props.get(name)
+        if prop is None:
+            return False
+        self._props[name] = prop.model_copy(update=updates, deep=True)
+        return True
+
+    def changed_scenes(self) -> tuple[NovelScene, ...]:
+        return tuple(
+            scene.model_copy(deep=True)
+            for scene in self._scenes.values()
+            if self._scene_baselines.get(scene.name)
+            != _asset_digest(_scene_planning_payload(scene))
+        )
+
+    def changed_props(self) -> tuple[NovelProp, ...]:
+        return tuple(
+            prop.model_copy(deep=True)
+            for prop in self._props.values()
+            if self._prop_baselines.get(prop.name)
+            != _asset_digest(_prop_planning_payload(prop))
+        )
+
+    def scene_baselines(self, scenes: tuple[NovelScene, ...]) -> dict[str, str]:
+        return {
+            scene.name: self._scene_baselines[scene.name]
+            for scene in scenes
+            if scene.name in self._scene_baselines
+        }
+
+    def prop_baselines(self, props: tuple[NovelProp, ...]) -> dict[str, str]:
+        return {
+            prop.name: self._prop_baselines[prop.name]
+            for prop in props
+            if prop.name in self._prop_baselines
+        }
+
+
+class _AssetDraftCogneeStore:
+    def __init__(self, source: Any, sqlite_store: _AssetDraftSQLiteStore):
+        self._source = source
+        self.sqlite_store = sqlite_store
+        self.episode_updates: dict[int, dict[str, Any]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)
+
+    async def update_episode(self, episode_number: int, **updates: Any) -> None:
+        self.episode_updates.setdefault(episode_number, {}).update(deepcopy(updates))
 
 
 def _build_scene_blocks(text_or_lines: str | list[str]) -> list[SceneBlock]:
@@ -431,6 +618,7 @@ class AssetCompiler:
     def __init__(self, cognee_store: Any, *, director_plan: Any | None = None):
         self.cognee_store = cognee_store
         self.director_plan = director_plan
+        self._draft_store_lock = asyncio.Lock()
 
     def _director_scene_blocks(self) -> list[SceneBlock]:
         if self.director_plan is None:
@@ -473,65 +661,69 @@ class AssetCompiler:
         on_log: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[float, str], None]] = None,
     ) -> tuple[list[SceneMenuItem], list[PropMenuItem], int]:
-        """兼容旧入口：一次性编译场景和道具。新 UI 应优先调用拆分入口。"""
+        """Legacy combined entry: finish both drafts before either is published."""
 
-        def log(message: str) -> None:
-            if on_log:
-                on_log(message)
-
-        def report(progress: float, task: str) -> None:
-            if on_progress:
-                on_progress(progress, task)
-
-        source_text = await self._load_source_text(episode)
-        if not source_text.strip():
-            raise ValueError("当前集原文为空，无法编译资产")
-
-        scene_blocks = self._director_scene_blocks() or _build_scene_blocks(source_text)
-        if not scene_blocks:
-            raise ValueError("原文无法切分出有效场景块")
-
-        report(0.05, "解析场景块...")
-        log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
-
-        report(0.12, "AI校对基础场景...")
-        planned_scene_writes = await self._reconcile_base_scenes_from_text(
-            source_text, episode, log
-        )
-
-        report(0.2, "编译场景资产...")
-        scene_menu, pending_scenes = await self._compile_scenes(
-            scene_blocks,
+        scene_draft = await self.build_scene_plan_draft(
             episode,
-            log,
-            planned_scene_writes=planned_scene_writes,
+            on_log=on_log,
+            on_progress=(
+                (lambda progress, task: on_progress(progress * 0.55, task))
+                if on_progress
+                else None
+            ),
         )
-        if not scene_menu:
-            report(0.3, "从解说稿规划场景资产...")
-            scene_menu, pending_scenes = await self._compile_narrated_scenes(
-                source_text,
-                episode,
-                log,
-                planned_scene_writes=planned_scene_writes,
+        prop_draft = await self.build_prop_plan_draft(
+            episode,
+            on_log=on_log,
+            on_progress=(
+                (lambda progress, task: on_progress(0.55 + progress * 0.35, task))
+                if on_progress
+                else None
+            ),
+        )
+        scene_publisher = getattr(
+            self.cognee_store.sqlite_store, "publish_scene_plan_atomic", None
+        )
+        prop_publisher = getattr(
+            self.cognee_store.sqlite_store, "publish_prop_plan_atomic", None
+        )
+        if callable(scene_publisher) and callable(prop_publisher):
+            await scene_publisher(
+                episode_number=episode.number,
+                scenes=scene_draft.scenes,
+                scene_menu=scene_draft.scene_menu,
+                scene_baseline_digests=scene_draft.scene_baseline_digests,
+                episode_scene_menu_baseline_digest=(
+                    scene_draft.episode_scene_menu_baseline_digest
+                ),
+                bindings=None,
             )
-        if not scene_menu:
-            raise ValueError("未识别到任何场景，请先生成逐行解说工作稿或补充场次地点")
-
-        report(0.55, "编译道具资产...")
-        prop_menu = await self._compile_props(scene_blocks, episode, log)
-
-        report(0.9, "写入本集资产...")
-        await self._persist_scene_plan_atomic(
-            [*planned_scene_writes, *pending_scenes]
+            await prop_publisher(
+                episode_number=episode.number,
+                props=prop_draft.props,
+                prop_menu=prop_draft.prop_menu,
+                prop_baseline_digests=prop_draft.prop_baseline_digests,
+                episode_prop_menu_baseline_digest=(
+                    prop_draft.episode_prop_menu_baseline_digest
+                ),
+                bindings=None,
+            )
+        else:
+            await self._persist_scene_plan_atomic(list(scene_draft.scenes))
+            for prop in prop_draft.props:
+                await self.cognee_store.sqlite_store.add_prop(prop)
+            await self.cognee_store.update_episode(
+                episode.number,
+                scene_menu=list(scene_draft.scene_menu),
+                prop_menu=list(prop_draft.prop_menu),
+            )
+        if on_progress:
+            on_progress(1.0, "完成")
+        return (
+            list(scene_draft.scene_menu),
+            list(prop_draft.prop_menu),
+            scene_draft.new_count,
         )
-        await self.cognee_store.update_episode(
-            episode.number,
-            scene_menu=scene_menu,
-            prop_menu=prop_menu,
-        )
-
-        report(1.0, "完成")
-        return scene_menu, prop_menu, len(pending_scenes)
 
     async def compile_episode_scenes(
         self,
@@ -539,7 +731,73 @@ class AssetCompiler:
         on_log: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[float, str], None]] = None,
     ) -> tuple[list[SceneMenuItem], int]:
-        """只编译并写入本集 scene_menu，不覆盖 prop_menu。"""
+        """Legacy entry point: prepare the whole draft, then publish it."""
+
+        draft = await self.build_scene_plan_draft(
+            episode,
+            on_log=on_log,
+            on_progress=on_progress,
+        )
+        publisher = getattr(self.cognee_store.sqlite_store, "publish_scene_plan_atomic", None)
+        if callable(publisher):
+            await publisher(
+                episode_number=episode.number,
+                scenes=draft.scenes,
+                scene_menu=draft.scene_menu,
+                scene_baseline_digests=draft.scene_baseline_digests,
+                episode_scene_menu_baseline_digest=(
+                    draft.episode_scene_menu_baseline_digest
+                ),
+                bindings=None,
+            )
+            refresher = getattr(self.cognee_store, "load_graph_state", None)
+            if callable(refresher):
+                await refresher()
+        else:
+            await self._persist_scene_plan_atomic(list(draft.scenes))
+            await self.cognee_store.update_episode(
+                episode.number, scene_menu=list(draft.scene_menu)
+            )
+        return list(draft.scene_menu), draft.new_count
+
+    async def build_scene_plan_draft(
+        self,
+        episode: Any,
+        on_log: Optional[Callable[[str], None]] = None,
+        on_progress: Optional[Callable[[float, str], None]] = None,
+    ) -> ScenePlanDraft:
+        """Plan scenes against an isolated catalogue and return a zero-write draft."""
+
+        async with self._draft_store_lock:
+            source_store = self.cognee_store
+            source_sqlite = source_store.sqlite_store
+            scenes = await source_sqlite.list_scenes()
+            list_props = getattr(source_sqlite, "list_props", None)
+            props = await list_props() if callable(list_props) else []
+            draft_sqlite = _AssetDraftSQLiteStore(source_sqlite, scenes, props)
+            draft_store = _AssetDraftCogneeStore(source_store, draft_sqlite)
+            self.cognee_store = draft_store
+            try:
+                draft = await self._build_scene_plan_draft_current_store(
+                    episode.model_copy(deep=True)
+                    if hasattr(episode, "model_copy")
+                    else deepcopy(episode),
+                    on_log=on_log,
+                    on_progress=on_progress,
+                    draft_sqlite=draft_sqlite,
+                )
+            finally:
+                self.cognee_store = source_store
+            return draft
+
+    async def _build_scene_plan_draft_current_store(
+        self,
+        episode: Any,
+        *,
+        on_log: Optional[Callable[[str], None]],
+        on_progress: Optional[Callable[[float, str], None]],
+        draft_sqlite: _AssetDraftSQLiteStore,
+    ) -> ScenePlanDraft:
 
         def log(message: str) -> None:
             if on_log:
@@ -584,14 +842,40 @@ class AssetCompiler:
         if not scene_menu:
             raise ValueError("未识别到任何场景，请先生成逐行解说工作稿或补充场次地点")
 
-        report(0.85, "写入本集场景规划...")
-        await self._persist_scene_plan_atomic(
-            [*planned_scene_writes, *pending_scenes]
-        )
-        await self.cognee_store.update_episode(episode.number, scene_menu=scene_menu)
-
         report(1.0, "完成")
-        return scene_menu, len(pending_scenes)
+        changed_scene_map = {
+            scene.name: scene for scene in draft_sqlite.changed_scenes()
+        }
+        changed_scene_map.update(
+            {
+                scene.name: scene.model_copy(deep=True)
+                for scene in (*planned_scene_writes, *pending_scenes)
+                if isinstance(scene, NovelScene)
+            }
+        )
+        changed_scenes = tuple(changed_scene_map.values())
+        planned_new_names = {
+            scene.name
+            for scene in (*planned_scene_writes, *pending_scenes)
+            if isinstance(scene, NovelScene)
+            and scene.name not in draft_sqlite._scene_baselines
+        }
+        return ScenePlanDraft(
+            scenes=changed_scenes,
+            scene_menu=tuple(scene_menu),
+            new_count=len(planned_new_names),
+            scene_baseline_digests=draft_sqlite.scene_baselines(changed_scenes),
+            episode_scene_menu_baseline_digest=_asset_digest(
+                {
+                    "items": [
+                        item.model_dump()
+                        if hasattr(item, "model_dump")
+                        else dict(item)
+                        for item in (getattr(episode, "scene_menu", []) or [])
+                    ]
+                }
+            ),
+        )
 
     async def _persist_scene_plan_atomic(self, scenes: list[NovelScene]) -> None:
         if not scenes:
@@ -623,7 +907,74 @@ class AssetCompiler:
         on_log: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[float, str], None]] = None,
     ) -> list[PropMenuItem]:
-        """只编译并写入本集 prop_menu，不覆盖 scene_menu。"""
+        """Legacy entry point: prepare the whole draft, then publish it."""
+
+        draft = await self.build_prop_plan_draft(
+            episode,
+            on_log=on_log,
+            on_progress=on_progress,
+        )
+        publisher = getattr(self.cognee_store.sqlite_store, "publish_prop_plan_atomic", None)
+        if callable(publisher):
+            await publisher(
+                episode_number=episode.number,
+                props=draft.props,
+                prop_menu=draft.prop_menu,
+                prop_baseline_digests=draft.prop_baseline_digests,
+                episode_prop_menu_baseline_digest=(
+                    draft.episode_prop_menu_baseline_digest
+                ),
+                bindings=None,
+            )
+            refresher = getattr(self.cognee_store, "load_graph_state", None)
+            if callable(refresher):
+                await refresher()
+        else:
+            for prop in draft.props:
+                await self.cognee_store.sqlite_store.add_prop(prop)
+            await self.cognee_store.update_episode(
+                episode.number, prop_menu=list(draft.prop_menu)
+            )
+        return list(draft.prop_menu)
+
+    async def build_prop_plan_draft(
+        self,
+        episode: Any,
+        on_log: Optional[Callable[[str], None]] = None,
+        on_progress: Optional[Callable[[float, str], None]] = None,
+    ) -> PropPlanDraft:
+        """Plan props against an isolated catalogue and return a zero-write draft."""
+
+        async with self._draft_store_lock:
+            source_store = self.cognee_store
+            source_sqlite = source_store.sqlite_store
+            list_scenes = getattr(source_sqlite, "list_scenes", None)
+            scenes = await list_scenes() if callable(list_scenes) else []
+            props = await source_sqlite.list_props()
+            draft_sqlite = _AssetDraftSQLiteStore(source_sqlite, scenes, props)
+            draft_store = _AssetDraftCogneeStore(source_store, draft_sqlite)
+            self.cognee_store = draft_store
+            try:
+                draft = await self._build_prop_plan_draft_current_store(
+                    episode.model_copy(deep=True)
+                    if hasattr(episode, "model_copy")
+                    else deepcopy(episode),
+                    on_log=on_log,
+                    on_progress=on_progress,
+                    draft_sqlite=draft_sqlite,
+                )
+            finally:
+                self.cognee_store = source_store
+            return draft
+
+    async def _build_prop_plan_draft_current_store(
+        self,
+        episode: Any,
+        *,
+        on_log: Optional[Callable[[str], None]],
+        on_progress: Optional[Callable[[float, str], None]],
+        draft_sqlite: _AssetDraftSQLiteStore,
+    ) -> PropPlanDraft:
 
         def log(message: str) -> None:
             if on_log:
@@ -638,13 +989,34 @@ class AssetCompiler:
         log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
 
         report(0.25, "编译道具资产...")
-        prop_menu = await self._compile_props(scene_blocks, episode, log)
-
-        report(0.9, "写入本集道具规划...")
-        await self.cognee_store.update_episode(episode.number, prop_menu=prop_menu)
+        planned_props: list[NovelProp] = []
+        prop_menu = await self._compile_props(
+            scene_blocks,
+            episode,
+            log,
+            planned_prop_writes=planned_props,
+        )
 
         report(1.0, "完成")
-        return prop_menu
+        changed_props = draft_sqlite.changed_props()
+        return PropPlanDraft(
+            props=changed_props,
+            prop_menu=tuple(prop_menu),
+            new_count=sum(
+                prop.name not in draft_sqlite._prop_baselines for prop in changed_props
+            ),
+            prop_baseline_digests=draft_sqlite.prop_baselines(changed_props),
+            episode_prop_menu_baseline_digest=_asset_digest(
+                {
+                    "items": [
+                        item.model_dump()
+                        if hasattr(item, "model_dump")
+                        else dict(item)
+                        for item in (getattr(episode, "prop_menu", []) or [])
+                    ]
+                }
+            ),
+        )
 
     async def _reconcile_base_scenes_from_text(
         self,
@@ -1200,6 +1572,8 @@ class AssetCompiler:
         scene_blocks: list[SceneBlock],
         episode: Any,
         log: Callable[[str], None],
+        *,
+        planned_prop_writes: list[NovelProp] | None = None,
     ) -> list[PropMenuItem]:
         prop_menu: list[PropMenuItem] = []
         seen_prop_ids: set[str] = set()
@@ -1239,6 +1613,16 @@ class AssetCompiler:
                 prop_id = prop_id or str(req.prop_name or "").strip()
                 if not prop_id:
                     continue
+                if existing is None and planned_prop_writes is not None:
+                    existing = NovelProp(
+                        name=prop_id,
+                        prop_type=str(req.prop_type or "").strip() or "object",
+                        visual_prompt=str(req.visual_prompt or "").strip(),
+                        description=str(req.description or "").strip(),
+                        owner=str(req.owner or "").strip(),
+                    )
+                    await self.cognee_store.sqlite_store.add_prop(existing)
+                    planned_prop_writes.append(existing)
                 episode_selected_props[str(req.prop_name or "").strip()] = prop_id
                 episode_selected_props[prop_id] = prop_id
                 self._add_to_prop_menu(prop_id, prop_menu, seen_prop_ids, existing, req)

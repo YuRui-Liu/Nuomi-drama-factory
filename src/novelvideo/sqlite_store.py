@@ -35,6 +35,8 @@ from novelvideo.models import (
     NovelProp,
     NovelScene,
     NovelVisualBeat,
+    PropMenuItem,
+    SceneMenuItem,
     normalize_detected_identities,
     normalize_detected_props,
     sync_beat_asset_refs,
@@ -871,6 +873,333 @@ class SQLiteStore:
                         "DELETE FROM planned_reference_bindings "
                         "WHERE episode_number = ? "
                         "AND asset_kind = 'character_identity'",
+                        (episode_number,),
+                    )
+                    for binding in binding_items:
+                        await self._insert_planned_reference_binding(db, binding)
+                await db.commit()
+            except BaseException:
+                await asyncio.shield(db.rollback())
+                raise
+        await self.load_graph_state()
+
+    @staticmethod
+    def asset_menu_baseline_digest(items: Any) -> str:
+        normalized = [
+            item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            for item in (items or [])
+        ]
+        canonical = json.dumps(
+            {"items": normalized},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def scene_plan_baseline_digest(scene: NovelScene) -> str:
+        canonical = json.dumps(
+            {
+                "aliases": list(scene.aliases),
+                "scene_type": scene.scene_type,
+                "base_scene_id": scene.base_scene_id,
+                "variant_id": scene.variant_id,
+                "time_of_day": scene.time_of_day,
+                "environment_prompt": scene.environment_prompt,
+                "variant_prompt": scene.variant_prompt,
+                "description": scene.description,
+                "stale_reference_kinds": list(scene.stale_reference_kinds),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def prop_plan_baseline_digest(prop: NovelProp) -> str:
+        canonical = json.dumps(
+            {
+                "aliases": list(prop.aliases),
+                "prop_type": prop.prop_type,
+                "visual_prompt": prop.visual_prompt,
+                "description": prop.description,
+                "owner": prop.owner,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    async def publish_scene_plan_atomic(
+        self,
+        *,
+        episode_number: int,
+        scenes: tuple[NovelScene, ...] | list[NovelScene],
+        scene_menu: tuple[SceneMenuItem, ...] | list[SceneMenuItem],
+        scene_baseline_digests: dict[str, str],
+        episode_scene_menu_baseline_digest: str,
+        bindings: tuple[PlannedReferenceBinding, ...]
+        | list[PlannedReferenceBinding]
+        | None,
+    ) -> None:
+        scene_items = tuple(
+            NovelScene.model_validate(scene.model_dump()) for scene in scenes
+        )
+        menu_items = tuple(
+            SceneMenuItem.model_validate(item.model_dump()) for item in scene_menu
+        )
+        binding_items = (
+            None
+            if bindings is None
+            else tuple(
+                PlannedReferenceBinding.model_validate(item.model_dump())
+                for item in bindings
+            )
+        )
+        baselines = dict(scene_baseline_digests)
+        if episode_number <= 0:
+            raise ValueError("episode_number must be greater than zero")
+        if len({scene.name for scene in scene_items}) != len(scene_items):
+            raise ValueError("duplicate scene names are not allowed")
+        if set(baselines) - {scene.name for scene in scene_items}:
+            raise ValueError("scene baselines contain scenes outside the draft")
+        if binding_items is not None and any(
+            item.episode_number != episode_number
+            or item.asset_kind not in {"scene_base", "scene_variant"}
+            for item in binding_items
+        ):
+            raise ValueError("scene publish received invalid bindings")
+
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await configure_sqlite_connection_async(db)
+            db.row_factory = aiosqlite.Row
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT scene_menu_json FROM episodes WHERE number = ?",
+                    (episode_number,),
+                ) as cursor:
+                    episode_row = await cursor.fetchone()
+                if episode_row is None:
+                    raise ValueError(f"Episode {episode_number} not found")
+                try:
+                    current_menu = json.loads(episode_row["scene_menu_json"] or "[]")
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"scene menu conflict for episode {episode_number}"
+                    ) from exc
+                if self.asset_menu_baseline_digest(current_menu) != episode_scene_menu_baseline_digest:
+                    raise ValueError(f"scene menu conflict for episode {episode_number}")
+
+                for scene in scene_items:
+                    async with db.execute(
+                        "SELECT * FROM scenes WHERE name = ?", (scene.name,)
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    baseline = baselines.get(scene.name)
+                    if baseline is None:
+                        if row is not None:
+                            raise ValueError(
+                                f"scene plan conflict for {scene.name}: scene now exists"
+                            )
+                        await db.execute(
+                            """INSERT INTO scenes (
+                               name, aliases_json, scene_type, base_scene_id, variant_id,
+                               time_of_day, environment_prompt, variant_prompt, description,
+                               spatial_layout_image, stale_reference_kinds_json, notes)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                scene.name,
+                                json.dumps(scene.aliases, ensure_ascii=False),
+                                scene.scene_type,
+                                scene.base_scene_id,
+                                scene.variant_id,
+                                scene.time_of_day,
+                                scene.environment_prompt,
+                                scene.variant_prompt,
+                                scene.description,
+                                scene.spatial_layout_image,
+                                json.dumps(scene.stale_reference_kinds, ensure_ascii=False),
+                                scene.notes,
+                            ),
+                        )
+                        continue
+                    if row is None:
+                        raise ValueError(
+                            f"scene plan conflict for {scene.name}: scene missing"
+                        )
+                    current = self._row_to_scene(row)
+                    if self.scene_plan_baseline_digest(current) != baseline:
+                        raise ValueError(
+                            f"scene plan conflict for {scene.name}: planning fields changed"
+                        )
+                    await db.execute(
+                        """UPDATE scenes SET aliases_json = ?, scene_type = ?,
+                           base_scene_id = ?, variant_id = ?, time_of_day = ?,
+                           environment_prompt = ?, variant_prompt = ?, description = ?,
+                           stale_reference_kinds_json = ?, updated_at = datetime('now')
+                           WHERE name = ?""",
+                        (
+                            json.dumps(scene.aliases, ensure_ascii=False),
+                            scene.scene_type,
+                            scene.base_scene_id,
+                            scene.variant_id,
+                            scene.time_of_day,
+                            scene.environment_prompt,
+                            scene.variant_prompt,
+                            scene.description,
+                            json.dumps(scene.stale_reference_kinds, ensure_ascii=False),
+                            scene.name,
+                        ),
+                    )
+                await db.execute(
+                    "UPDATE episodes SET scene_menu_json = ?, updated_at = datetime('now') "
+                    "WHERE number = ?",
+                    (
+                        json.dumps(
+                            [item.model_dump() for item in menu_items],
+                            ensure_ascii=False,
+                        ),
+                        episode_number,
+                    ),
+                )
+                if binding_items is not None:
+                    await db.execute(
+                        "DELETE FROM planned_reference_bindings WHERE episode_number = ? "
+                        "AND asset_kind IN ('scene_base', 'scene_variant')",
+                        (episode_number,),
+                    )
+                    for binding in binding_items:
+                        await self._insert_planned_reference_binding(db, binding)
+                await db.commit()
+            except BaseException:
+                await asyncio.shield(db.rollback())
+                raise
+        await self.load_graph_state()
+
+    async def publish_prop_plan_atomic(
+        self,
+        *,
+        episode_number: int,
+        props: tuple[NovelProp, ...] | list[NovelProp],
+        prop_menu: tuple[PropMenuItem, ...] | list[PropMenuItem],
+        prop_baseline_digests: dict[str, str],
+        episode_prop_menu_baseline_digest: str,
+        bindings: tuple[PlannedReferenceBinding, ...]
+        | list[PlannedReferenceBinding]
+        | None,
+    ) -> None:
+        prop_items = tuple(NovelProp.model_validate(prop.model_dump()) for prop in props)
+        menu_items = tuple(
+            PropMenuItem.model_validate(item.model_dump()) for item in prop_menu
+        )
+        binding_items = (
+            None
+            if bindings is None
+            else tuple(
+                PlannedReferenceBinding.model_validate(item.model_dump())
+                for item in bindings
+            )
+        )
+        baselines = dict(prop_baseline_digests)
+        if episode_number <= 0:
+            raise ValueError("episode_number must be greater than zero")
+        if len({prop.name for prop in prop_items}) != len(prop_items):
+            raise ValueError("duplicate prop names are not allowed")
+        if set(baselines) - {prop.name for prop in prop_items}:
+            raise ValueError("prop baselines contain props outside the draft")
+        if binding_items is not None and any(
+            item.episode_number != episode_number or item.asset_kind != "prop"
+            for item in binding_items
+        ):
+            raise ValueError("prop publish received invalid bindings")
+
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await configure_sqlite_connection_async(db)
+            db.row_factory = aiosqlite.Row
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT prop_menu_json FROM episodes WHERE number = ?",
+                    (episode_number,),
+                ) as cursor:
+                    episode_row = await cursor.fetchone()
+                if episode_row is None:
+                    raise ValueError(f"Episode {episode_number} not found")
+                try:
+                    current_menu = json.loads(episode_row["prop_menu_json"] or "[]")
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"prop menu conflict for episode {episode_number}"
+                    ) from exc
+                if self.asset_menu_baseline_digest(current_menu) != episode_prop_menu_baseline_digest:
+                    raise ValueError(f"prop menu conflict for episode {episode_number}")
+
+                for prop in prop_items:
+                    async with db.execute(
+                        "SELECT * FROM props WHERE name = ?", (prop.name,)
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    baseline = baselines.get(prop.name)
+                    if baseline is None:
+                        if row is not None:
+                            raise ValueError(
+                                f"prop plan conflict for {prop.name}: prop now exists"
+                            )
+                        await db.execute(
+                            "INSERT INTO props (name, aliases_json, prop_type, visual_prompt, "
+                            "description, owner, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                prop.name,
+                                json.dumps(prop.aliases, ensure_ascii=False),
+                                prop.prop_type,
+                                prop.visual_prompt,
+                                prop.description,
+                                prop.owner,
+                                prop.notes,
+                            ),
+                        )
+                        continue
+                    if row is None:
+                        raise ValueError(f"prop plan conflict for {prop.name}: prop missing")
+                    current = self._row_to_prop(row)
+                    if self.prop_plan_baseline_digest(current) != baseline:
+                        raise ValueError(
+                            f"prop plan conflict for {prop.name}: planning fields changed"
+                        )
+                    await db.execute(
+                        """UPDATE props SET aliases_json = ?, prop_type = ?,
+                           visual_prompt = ?, description = ?, owner = ?,
+                           updated_at = datetime('now') WHERE name = ?""",
+                        (
+                            json.dumps(prop.aliases, ensure_ascii=False),
+                            prop.prop_type,
+                            prop.visual_prompt,
+                            prop.description,
+                            prop.owner,
+                            prop.name,
+                        ),
+                    )
+                await db.execute(
+                    "UPDATE episodes SET prop_menu_json = ?, updated_at = datetime('now') "
+                    "WHERE number = ?",
+                    (
+                        json.dumps(
+                            [item.model_dump() for item in menu_items],
+                            ensure_ascii=False,
+                        ),
+                        episode_number,
+                    ),
+                )
+                if binding_items is not None:
+                    await db.execute(
+                        "DELETE FROM planned_reference_bindings WHERE episode_number = ? "
+                        "AND asset_kind = 'prop'",
                         (episode_number,),
                     )
                     for binding in binding_items:

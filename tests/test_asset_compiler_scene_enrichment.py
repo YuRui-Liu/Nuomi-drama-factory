@@ -392,6 +392,48 @@ async def test_compile_episode_scenes_does_not_partially_write_when_second_promp
 
 
 @pytest.mark.asyncio
+async def test_build_scene_plan_draft_has_no_persistent_writes(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def fake_load_scene_blocks(self, episode):
+        return [_block("直播间")]
+
+    async def fake_reconcile(self, source_text, episode, log):
+        scene = NovelScene(
+            name="直播间",
+            scene_type="interior",
+            environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
+        )
+        await self.cognee_store.sqlite_store.add_scene(scene)
+        return [scene]
+
+    async def fake_derived(self, scene_name, block):
+        return []
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_load_scene_blocks", fake_load_scene_blocks)
+    monkeypatch.setattr(
+        asset_compiler.AssetCompiler,
+        "_reconcile_base_scenes_from_text",
+        fake_reconcile,
+    )
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_derived_scenes", fake_derived)
+
+    store = _FakeCogneeStore(raw_content="直播间内，灯光昏暗。")
+    compiler = asset_compiler.AssetCompiler(store)
+    episode = SimpleNamespace(number=1, scene_menu=[])
+
+    draft = await compiler.build_scene_plan_draft(episode)
+
+    assert [scene.name for scene in draft.scenes] == ["直播间"]
+    assert [item.scene_id for item in draft.scene_menu] == ["直播间"]
+    assert draft.new_count == 1
+    assert draft.scene_baseline_digests == {}
+    assert store.sqlite_store.added == []
+    assert store.sqlite_store.atomic_calls == []
+    assert store.updated == []
+
+
+@pytest.mark.asyncio
 async def test_compile_episode_scenes_writes_all_prompt_repairs_once_atomically(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 

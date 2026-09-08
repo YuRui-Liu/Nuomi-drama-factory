@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
@@ -25,6 +26,55 @@ def _dump_items(items: list[Any]) -> list[dict]:
         elif isinstance(item, dict):
             data.append(dict(item))
     return data
+
+
+def _episode_asset_bindings(
+    *,
+    asset_kind: str,
+    project_id: str,
+    episode_number: int,
+    director_plan: Any,
+    changed_entities: tuple[Any, ...] | list[Any],
+    characters: tuple[Any, ...] | list[Any],
+    scenes: tuple[Any, ...] | list[Any],
+    props: tuple[Any, ...] | list[Any],
+):
+    """Project one asset kind after overlaying the zero-write draft by name."""
+    from novelvideo.narrative_groups.planned_binding_service import (
+        bindings_by_kind,
+        bindings_for_director_plan,
+    )
+
+    groups = tuple(director_plan.groups)
+    shots = tuple(shot for group in groups for shot in group.shots)
+    if not groups or not shots:
+        raise ValueError("ACTIVE_DIRECTOR_PLAN_HAS_NO_SCOPE")
+    scene_map = {item.name: item for item in scenes}
+    prop_map = {item.name: item for item in props}
+    if asset_kind == "scene":
+        scene_map.update({item.name: item for item in changed_entities})
+        selected_kinds = ("scene_base", "scene_variant")
+    elif asset_kind == "prop":
+        prop_map.update({item.name: item for item in changed_entities})
+        selected_kinds = ("prop",)
+    else:
+        raise ValueError(f"Unsupported asset kind: {asset_kind}")
+    projected = bindings_for_director_plan(
+        project_id=project_id,
+        episode_number=episode_number,
+        source_plan_revision_id=director_plan.revision_id,
+        groups=groups,
+        shots=shots,
+        characters=characters,
+        scenes=tuple(scene_map.values()),
+        props=tuple(prop_map.values()),
+    )
+    grouped = bindings_by_kind(projected)
+    return tuple(
+        binding
+        for kind in selected_kinds
+        for binding in grouped.get(kind, ())
+    )
 
 
 def run_episode_asset_planner(
@@ -109,41 +159,83 @@ async def _run_episode_asset_planner(
     episode_obj = cognee_store.get_episode(episode)
     if episode_obj is None:
         raise ValueError(f"Episode {episode} not found")
-    director_plan = DirectorPlanStore(ctx.output_dir).load_active(episode)
-    if director_plan is None:
-        raise ValueError("DIRECTOR_PLAN_REQUIRED: 请先完成并激活导演镜头方案")
-
     update(0.15, f"规划{label}资产...")
-    compiler = AssetCompiler(cognee_store, director_plan=director_plan)
 
     def on_log(message: str) -> None:
         update(log=message)
 
-    if asset_kind == "scene":
-        scene_menu, new_count = await compiler.compile_episode_scenes(
-            episode_obj,
-            on_log=on_log,
-            on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
+    director_plan_store = DirectorPlanStore(ctx.output_dir)
+    with director_plan_store.lock_active_revision(episode) as director_plan:
+        if director_plan is None:
+            raise ValueError("DIRECTOR_PLAN_REQUIRED: 请先完成并激活导演镜头方案")
+        compiler = AssetCompiler(cognee_store, director_plan=director_plan)
+        if asset_kind == "scene":
+            draft = await compiler.build_scene_plan_draft(
+                episode_obj,
+                on_log=on_log,
+                on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
+            )
+        else:
+            draft = await compiler.build_prop_plan_draft(
+                episode_obj,
+                on_log=on_log,
+                on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
+            )
+        characters = tuple(cognee_store.get_all_characters())
+        scenes = tuple(await sqlite_store.list_scenes())
+        props = tuple(await sqlite_store.list_props())
+        bindings = _episode_asset_bindings(
+            asset_kind=asset_kind,
+            project_id=ctx.project_id,
+            episode_number=episode,
+            director_plan=director_plan,
+            changed_entities=draft.scenes if asset_kind == "scene" else draft.props,
+            characters=characters,
+            scenes=scenes,
+            props=props,
         )
-        scene_menu_data = _dump_items(scene_menu)
+        if asset_kind == "scene":
+            await sqlite_store.publish_scene_plan_atomic(
+                episode_number=episode,
+                scenes=draft.scenes,
+                scene_menu=draft.scene_menu,
+                scene_baseline_digests=draft.scene_baseline_digests,
+                episode_scene_menu_baseline_digest=(
+                    draft.episode_scene_menu_baseline_digest
+                ),
+                bindings=bindings,
+            )
+        else:
+            await sqlite_store.publish_prop_plan_atomic(
+                episode_number=episode,
+                props=draft.props,
+                prop_menu=draft.prop_menu,
+                prop_baseline_digests=draft.prop_baseline_digests,
+                episode_prop_menu_baseline_digest=(
+                    draft.episode_prop_menu_baseline_digest
+                ),
+                bindings=bindings,
+            )
+
+    await cognee_store.load_graph_state()
+    binding_statuses = dict(Counter(binding.status for binding in bindings))
+    if asset_kind == "scene":
+        scene_menu_data = _dump_items(list(draft.scene_menu))
         if not scene_menu_data:
             raise ValueError("未识别到任何场景，请先生成逐行解说工作稿或补充场次地点")
-        update(0.95, "场景规划完成", f"场景 {new_count} 新建/{len(scene_menu_data)} 总计")
+        update(0.95, "场景规划完成", f"场景 {draft.new_count} 新建/{len(scene_menu_data)} 总计")
         return {
             "episode": episode,
             "kind": "scene",
-            "new_count": new_count,
+            "new_count": draft.new_count,
             "total_count": len(scene_menu_data),
             "scene_menu": scene_menu_data,
+            "binding_count": len(bindings),
+            "binding_statuses": binding_statuses,
         }
 
-    prop_menu = await compiler.compile_episode_props(
-        episode_obj,
-        on_log=on_log,
-        on_progress=lambda progress, task: update(0.15 + progress * 0.75, task),
-    )
-    promoted_props = await promote_episode_props_to_global(cognee_store, prop_menu)
-    prop_menu_data = _dump_items(prop_menu)
+    promoted_props = await promote_episode_props_to_global(cognee_store, list(draft.prop_menu))
+    prop_menu_data = _dump_items(list(draft.prop_menu))
     update(0.95, "道具规划完成", f"道具 {len(prop_menu_data)} 总计")
     return {
         "episode": episode,
@@ -151,6 +243,8 @@ async def _run_episode_asset_planner(
         "total_count": len(prop_menu_data),
         "auto_promoted_props": promoted_props,
         "prop_menu": prop_menu_data,
+        "binding_count": len(bindings),
+        "binding_statuses": binding_statuses,
     }
 
 

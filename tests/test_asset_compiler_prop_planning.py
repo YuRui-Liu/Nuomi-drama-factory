@@ -34,6 +34,9 @@ class _FakeSQLiteStore:
     async def get_prop(self, name: str):
         return None
 
+    async def add_prop(self, prop) -> None:
+        raise AssertionError("draft must not persist props")
+
 
 class _FakeCogneeStore:
     def __init__(self, raw_content: str = ""):
@@ -138,6 +141,67 @@ async def test_standard_drama_prop_planner_reports_string_list_validation_error(
     assert store.updated == []
     assert "1-1、地下室 深夜 内" in captured["task"]
     assert "强光手电" in captured["task"]
+
+
+@pytest.mark.asyncio
+async def test_build_prop_plan_draft_creates_entity_without_persistent_writes(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def fake_analyze(self, block, preselected, prior_selected_prop_ids):
+        return [
+            asset_compiler.PropRequirement(
+                prop_name="强光手电",
+                prop_type="object",
+                owner="沈月白",
+                visual_prompt="黑色金属筒身，冷白光束",
+                description="地下室照明",
+            )
+        ]
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fake_analyze)
+    store = _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT)
+    compiler = asset_compiler.AssetCompiler(store)
+    episode = SimpleNamespace(number=1, prop_menu=[])
+
+    draft = await compiler.build_prop_plan_draft(episode)
+
+    assert [prop.name for prop in draft.props] == ["强光手电"]
+    assert [item.prop_id for item in draft.prop_menu] == ["强光手电"]
+    assert draft.new_count == 1
+    assert draft.prop_baseline_digests == {}
+    assert store.updated == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_compile_single_episode_finishes_both_drafts_before_writing(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    store = _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT)
+    compiler = asset_compiler.AssetCompiler(store)
+
+    async def fake_scene_draft(*args, **kwargs):
+        return asset_compiler.ScenePlanDraft(
+            scenes=(),
+            scene_menu=(),
+            new_count=0,
+            scene_baseline_digests={},
+            episode_scene_menu_baseline_digest="scene-baseline",
+        )
+
+    async def fail_prop_draft(*args, **kwargs):
+        raise RuntimeError("prop draft failed")
+
+    async def old_path_must_not_run(*args, **kwargs):
+        raise AssertionError("legacy entry must build isolated drafts")
+
+    monkeypatch.setattr(compiler, "build_scene_plan_draft", fake_scene_draft)
+    monkeypatch.setattr(compiler, "build_prop_plan_draft", fail_prop_draft)
+    monkeypatch.setattr(compiler, "_load_source_text", old_path_must_not_run)
+
+    with pytest.raises(RuntimeError, match="prop draft failed"):
+        await compiler.compile_single_episode(SimpleNamespace(number=1))
+
+    assert store.updated == []
 
 
 def test_prop_name_must_be_exact_source_substring_or_existing_candidate():
