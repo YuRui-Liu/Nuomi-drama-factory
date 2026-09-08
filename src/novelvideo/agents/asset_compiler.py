@@ -655,13 +655,20 @@ class AssetCompiler:
         refresher = getattr(self.cognee_store, "load_graph_state", None)
         if callable(refresher):
             try:
-                await refresher()
+                refreshed = await refresher()
             except Exception:
                 import logging
 
                 logging.getLogger(__name__).warning(
                     "asset plan committed but Cognee cache refresh is pending",
                     exc_info=True,
+                )
+                return False
+            if refreshed is False:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "asset plan committed but Cognee cache refresh is pending"
                 )
                 return False
         return True

@@ -55,17 +55,19 @@ logger = logging.getLogger(__name__)
 def asset_menu_baseline_digest(items: Any, *, asset_kind: str) -> str:
     """Hash normalized menu items while retaining unsupported legacy strings."""
     values = list(items or [])
-    normalized_items = (
-        build_scene_menu(scene_menu=values)
-        if asset_kind == "scene"
-        else build_prop_menu(prop_menu=values)
-    )
-    legacy_strings = [item for item in values if isinstance(item, str)]
+    normalize = build_scene_menu if asset_kind == "scene" else build_prop_menu
+    keyword = "scene_menu" if asset_kind == "scene" else "prop_menu"
+    canonical_items: list[dict[str, Any]] = []
+    for value in values:
+        if isinstance(value, str):
+            canonical_items.append({"legacy_string": value})
+            continue
+        normalized_items = normalize(**{keyword: [value]})
+        canonical_items.extend(
+            {"item": item.model_dump()} for item in normalized_items
+        )
     canonical = json.dumps(
-        {
-            "items": [item.model_dump() for item in normalized_items],
-            "legacy_strings": legacy_strings,
-        },
+        canonical_items,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

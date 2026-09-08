@@ -21,6 +21,15 @@ _TASK_ASSET_KIND = {
 logger = logging.getLogger(__name__)
 
 
+async def _refresh_asset_caches(sqlite_store: Any, cognee_store: Any) -> bool:
+    """Refresh post-commit caches while honoring Cognee's explicit status."""
+    try:
+        await sqlite_store.load_graph_state()
+        return await cognee_store.load_graph_state() is not False
+    except Exception:
+        return False
+
+
 def _dump_items(items: list[Any]) -> list[dict]:
     data: list[dict] = []
     for item in items or []:
@@ -242,16 +251,13 @@ async def _run_episode_asset_planner(
         isinstance(publication, dict)
         and publication.get("cache_refresh_pending", False)
     )
-    try:
-        await sqlite_store.load_graph_state()
-        await cognee_store.load_graph_state()
+    if await _refresh_asset_caches(sqlite_store, cognee_store):
         cache_refresh_pending = False
-    except Exception:
+    else:
         cache_refresh_pending = True
         logger.warning(
             "%s plan committed but runner cache refresh is pending",
             asset_kind,
-            exc_info=True,
         )
         update(log=f"{label}规划已提交，缓存刷新待重试")
     binding_statuses = dict(Counter(binding.status for binding in bindings))

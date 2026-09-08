@@ -141,6 +141,7 @@ class CogneeStore:
         self._episodes: Dict[int, NovelEpisode] = {}
         self._props: Dict[str, NovelProp] = {}
         self._alias_index: Dict[str, str] = {}  # alias -> primary_name
+        self._cache_refresh_pending = False
 
         # 项目目录
         sqlite_project_dir = (
@@ -1605,9 +1606,13 @@ class CogneeStore:
             return json.dumps(value.model_dump(), ensure_ascii=False)
         return str(value)
 
-    async def load_graph_state(self) -> None:
-        """从 SQLite 加载角色和剧集到内存缓存。"""
+    async def load_graph_state(self) -> bool:
+        """从 SQLite 刷新缓存，并明确报告是否刷新成功。"""
         print("[load_graph_state] 从 SQLite 加载...")
+        previous_characters = dict(self._characters)
+        previous_episodes = dict(self._episodes)
+        previous_props = dict(self._props)
+        previous_aliases = dict(self._alias_index)
         try:
             await self.sqlite_store.load_graph_state()
             self._sync_sqlite_caches()
@@ -1619,16 +1624,26 @@ class CogneeStore:
                 episode.scene_menu = await self._normalize_scene_menu_items(episode.scene_menu)
                 episode.prop_menu = self._normalize_prop_menu_items(episode.prop_menu)
 
+            self._cache_refresh_pending = False
+            self.sqlite_store._cache_refresh_pending = False
             print(
                 f"[load_graph_state] 加载完成: 角色={len(self._characters)}, 剧集={len(self._episodes)}, 道具={len(self._props)}"
             )
+            return True
         except Exception as e:
-            print(f"[load_graph_state] 加载失败: {e}，使用空数据")
+            print(f"[load_graph_state] 加载失败: {e}，保留旧缓存等待重试")
             self._characters.clear()
+            self._characters.update(previous_characters)
             self._episodes.clear()
+            self._episodes.update(previous_episodes)
             self._props.clear()
+            self._props.update(previous_props)
             self._alias_index.clear()
+            self._alias_index.update(previous_aliases)
+            self._cache_refresh_pending = True
+            self.sqlite_store._cache_refresh_pending = True
             self._share_sqlite_caches()
+            return False
 
     # ============================================================
     # 添加/更新

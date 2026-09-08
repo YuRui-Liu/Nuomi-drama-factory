@@ -856,6 +856,22 @@ async def test_find_matching_scene_treats_independent_underscore_scene_as_base_c
     assert matched.name == "地下_主控室"
 
 
+@pytest.mark.asyncio
+async def test_legacy_asset_compiler_recognizes_swallowed_cognee_refresh_failure(caplog):
+    store = _FakeCogneeStore()
+
+    async def failed_refresh():
+        return False
+
+    store.load_graph_state = failed_refresh
+    compiler = __import__(
+        "novelvideo.agents.asset_compiler", fromlist=["AssetCompiler"]
+    ).AssetCompiler(store)
+
+    assert await compiler._refresh_after_asset_publish() is False
+    assert "cache refresh is pending" in caplog.text
+
+
 def test_derived_scene_normalization_filters_plain_time_but_keeps_stable_light_plate():
     import novelvideo.agents.asset_compiler as asset_compiler
 

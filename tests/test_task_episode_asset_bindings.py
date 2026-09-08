@@ -721,3 +721,27 @@ def test_legacy_string_menu_digest_preserves_string_identity():
     assert SQLiteStore.asset_menu_baseline_digest(
         ["场景甲"], asset_kind="scene"
     ) != SQLiteStore.asset_menu_baseline_digest(["场景乙"], asset_kind="scene")
+
+
+def test_mixed_legacy_menu_digest_preserves_source_order():
+    structured = {"scene_id": "咖啡馆"}
+    assert SQLiteStore.asset_menu_baseline_digest(
+        ["旧场景", structured], asset_kind="scene"
+    ) != SQLiteStore.asset_menu_baseline_digest(
+        [structured, "旧场景"], asset_kind="scene"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_cache_refresh_treats_cognee_false_status_as_pending():
+    from novelvideo.task_backend.runners.episode_assets import _refresh_asset_caches
+
+    class SQLiteCache:
+        async def load_graph_state(self):
+            return None
+
+    class CogneeCache:
+        async def load_graph_state(self):
+            return False
+
+    assert await _refresh_asset_caches(SQLiteCache(), CogneeCache()) is False
