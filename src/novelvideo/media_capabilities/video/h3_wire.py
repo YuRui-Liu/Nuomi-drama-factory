@@ -30,6 +30,7 @@ class H3BaseWire(BaseModel):
         H3Mode.L2VA,
     ]
     duration_seconds: _DurationSeconds
+    final_shot_number: int = Field(default=1, ge=1)
     integrated_multimodal_description: _NonEmptyString
     overall_soundscape: _NonEmptyString
     non_diegetic_music: _NonEmptyString
@@ -37,15 +38,13 @@ class H3BaseWire(BaseModel):
     @model_validator(mode="after")
     def validate_image_alignment(self) -> Self:
         description = self.integrated_multimodal_description
-        if self.mode in {H3Mode.I2VA, H3Mode.FL2VA}:
-            if "provided first image" not in description:
-                raise ValueError(
-                    f"{self.mode.value} description must include provided first image"
-                )
+        if not description.startswith("[Shot 1]"):
+            raise ValueError("description must start with [Shot 1]")
         if self.mode in {H3Mode.FL2VA, H3Mode.L2VA}:
-            if "provided last image" not in description:
+            final_shot = f"[Shot {self.final_shot_number}]"
+            if final_shot not in description:
                 raise ValueError(
-                    f"{self.mode.value} description must include provided last image"
+                    f"{self.mode.value} description must include {final_shot}"
                 )
         return self
 
@@ -88,5 +87,30 @@ def compile_h3_wire(wire: H3Wire) -> str:
             ("overall_soundscape", wire.overall_soundscape),
             ("non_diegetic_music", wire.non_diegetic_music),
         )
+        body = "\n\n".join(f"{name}: {value}" for name, value in sections)
+        instruction = _base_alignment_instruction(wire)
+        return f"{instruction}\n\n{body}" if instruction else body
 
     return "\n\n".join(f"{name}:\n{value}" for name, value in sections)
+
+
+def _base_alignment_instruction(wire: H3BaseWire) -> str:
+    if wire.mode is H3Mode.I2VA:
+        return (
+            "For the target video, at 0.00 seconds into the target video, "
+            "<Picture 1> (from [Shot 1]) is fully referenced."
+        )
+    if wire.mode is H3Mode.FL2VA:
+        return (
+            "How the reference pictures align with the target video — Picture 1 "
+            "(from Shot 1) aligns with the 0.00-second mark of the target video; "
+            f"Picture 2 (from Shot {wire.final_shot_number}) aligns with the "
+            f"{wire.duration_seconds:.2f}-second mark of the target video."
+        )
+    if wire.mode is H3Mode.L2VA:
+        return (
+            "How the reference pictures align with the target video — "
+            f"<Picture 1> (from [Shot {wire.final_shot_number}]) aligns with the "
+            f"{wire.duration_seconds:.2f}-second mark of the target video."
+        )
+    return ""

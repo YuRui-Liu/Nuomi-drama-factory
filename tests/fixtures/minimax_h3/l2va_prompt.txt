@@ -1,8 +1,7 @@
-integrated_multimodal_description:
-[0-6s] (S1) crosses the room and converges exactly into the provided last image.
+How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 6.00-second mark of the target video.
 
-overall_soundscape:
-Rain taps the glass; soft footsteps cross the wooden floor.
+integrated_multimodal_description: [Shot 1] [0-6s] (S1) crosses the room and converges exactly into <Picture 1>.
 
-non_diegetic_music:
-N/A
+overall_soundscape: Rain taps the glass; soft footsteps cross the wooden floor.
+
+non_diegetic_music: N/A
