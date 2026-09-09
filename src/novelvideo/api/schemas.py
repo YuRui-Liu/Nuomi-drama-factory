@@ -7,6 +7,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from novelvideo.models import SceneRef
 from novelvideo.freezone.slots import PushTarget
+from novelvideo.shot_continuity.models import H3RequestedMode
 
 ProjectStatus = Literal["active", "archived", "deleted"]
 ProjectStatusFilter = Literal["all", "active", "archived", "deleted", "visible"]
@@ -102,7 +103,7 @@ class ProjectUpdate(BaseModel):
     grid_mode: Optional[str] = None
     grid_model: Optional[str] = None
     video_backend: Optional[str] = None
-    h3_mode: Optional[Literal["auto", "i2va", "fl2va"]] = None
+    h3_mode: Optional[H3RequestedMode] = None
     use_director_render: Optional[bool] = None
     video_resolution: Optional[str] = None
     add_subtitles: Optional[bool] = None
@@ -113,7 +114,7 @@ class ProjectUpdate(BaseModel):
 
 class MediaDefaultsRequest(BaseModel):
     video_model: str
-    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    h3_mode: H3RequestedMode = "auto"
     video_workflow_parameters: dict[str, dict[str, str]] | None = None
     narrative_sketch_provider: str = "grsai-main"
     narrative_sketch_model: str = "nano-banana-2"
@@ -381,7 +382,7 @@ class InsertManualShotRequest(BaseModel):
 class SingleVideoRequest(BaseModel):
     resolution: str = "720x1280"
     video_backend: str = "runninghub_minimax_h3"
-    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    h3_mode: H3RequestedMode = "auto"
     use_director_render: bool = False
     seedance2_config_json: Optional[str] = None
     mode: Optional[str] = None

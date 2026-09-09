@@ -1582,7 +1582,7 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
         VideoBackendOption(
             value="runninghub:minimax-h3",
             label="MiniMax H3 (RunningHub)",
-            supported_modes=["auto", "i2va", "fl2va"],
+            supported_modes=["i2va", "fl2va"],
             min_duration=1,
             max_duration=15,
             reference_image_max=2,
@@ -4170,8 +4170,13 @@ async def generate_single_video(
     is_happyhorse = _is_happyhorse_backend(body.video_backend)
     is_grok_video = _is_grok_video_backend(body.video_backend)
     is_h3 = body.video_backend == "runninghub:minimax-h3"
+    h3_requested_capability = None
     if is_h3:
-        from novelvideo.media_capabilities.video.catalog import H3_MODEL_ID, list_video_models
+        from novelvideo.media_capabilities.video.catalog import (
+            H3_MODEL_ID,
+            h3_mode_capabilities,
+            list_video_models,
+        )
 
         h3 = next(
             item
@@ -4196,6 +4201,26 @@ async def generate_single_video(
                     "action": reasons.get(h3.unavailable_reason, "请检查 RunningHub H3 配置"),
                 },
             )
+        if body.h3_mode != "auto" and body.h3_mode not in h3.supported_modes:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "h3.mode_unsupported_by_workflow",
+                    "mode": body.h3_mode,
+                    "workflow": H3_MODEL_ID,
+                },
+            )
+        h3_requested_capability = next(
+            (
+                capability
+                for capability in h3_mode_capabilities(
+                    supported_modes=h3.supported_modes,
+                    reference_unavailable_reason="hybrid_input_unverified",
+                )
+                if capability.mode == body.h3_mode
+            ),
+            None,
+        )
 
     # 首帧路径
     from novelvideo.utils.path_resolver import PathResolver
@@ -4231,15 +4256,35 @@ async def generate_single_video(
             video_mode = "first_frame"  # 回退
             prompt = _legacy_video_prompt_for_mode(beat, video_mode)
 
-    if is_h3 and body.h3_mode in {"auto", "fl2va"} and not last_frame_path:
+    if (
+        is_h3
+        and h3_requested_capability is not None
+        and not h3_requested_capability.requires_last_frame
+    ):
+        last_frame_path = None
+        video_mode = "first_frame"
+        prompt = _legacy_video_prompt_for_mode(beat, video_mode)
+
+    h3_should_resolve_last_frame = is_h3 and (
+        body.h3_mode == "auto"
+        or bool(
+            h3_requested_capability
+            and h3_requested_capability.requires_last_frame
+        )
+    )
+    if h3_should_resolve_last_frame and not last_frame_path:
         next_frame = paths.first_frame_for_video(
             beat_num + 1,
             use_director_render=bool(body.use_director_render),
         )
-        if not next_frame.exists() and body.h3_mode == "fl2va":
+        if (
+            not next_frame.exists()
+            and h3_requested_capability is not None
+            and h3_requested_capability.requires_last_frame
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="MiniMax H3 fl2va mode requires a last frame",
+                detail=f"MiniMax H3 {body.h3_mode} mode requires a last frame",
             )
         if next_frame.exists():
             last_frame_path = str(next_frame)

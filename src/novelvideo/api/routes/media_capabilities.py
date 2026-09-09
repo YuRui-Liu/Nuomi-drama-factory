@@ -50,7 +50,12 @@ from novelvideo.media_capabilities.workflow_profiles import (
     import_profile,
 )
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
-from novelvideo.media_capabilities.video.catalog import list_video_models
+from novelvideo.media_capabilities.video.catalog import (
+    H3_MODEL_ID,
+    H3_REFERENCE_MODEL_ID,
+    h3_mode_capabilities,
+    list_video_models,
+)
 
 
 class _Body(BaseModel):
@@ -162,9 +167,32 @@ def get_video_models(
         keyring_reader=credentials.get,
         secret_reader=credentials.get,
     )
+    items = list_video_models(store, resolver)
+    reference_item = next(
+        (item for item in items if item.id == H3_REFERENCE_MODEL_ID), None
+    )
+    data = []
+    for item in items:
+        payload = item.model_dump(mode="json")
+        payload["mode_capabilities"] = (
+            [
+                capability.model_dump(mode="json")
+                for capability in h3_mode_capabilities(
+                    supported_modes=item.supported_modes,
+                    reference_unavailable_reason=(
+                        reference_item.unavailable_reason
+                        if reference_item is not None
+                        else None
+                    ),
+                )
+            ]
+            if item.id == H3_MODEL_ID
+            else []
+        )
+        data.append(payload)
     return {
         "ok": True,
-        "data": [item.model_dump(mode="json") for item in list_video_models(store, resolver)],
+        "data": data,
     }
 
 _PUBLISH_REQUIREMENTS: dict[MediaCapability, tuple[frozenset[str], str]] = {

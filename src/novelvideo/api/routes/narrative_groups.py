@@ -101,6 +101,7 @@ from novelvideo.narrative_groups.video_references import (
     temporary_upload_path,
     write_temporary_video_reference,
 )
+from novelvideo.shot_continuity.models import H3RequestedMode
 
 from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorOutputManifest,
@@ -292,7 +293,7 @@ class NarrativeGroupVideoRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="runninghub:minimax-h3", min_length=1)
-    mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    mode: H3RequestedMode = "auto"
     aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     resolution: str | None = None
     revision: int = Field(ge=0)
@@ -1019,7 +1020,9 @@ def _serialize_prompt_review(
                     summary.get("mode"), plan.get("mode"),
                     getattr(stage, "actual_mode", ""),
                 )
-                if isinstance(value, str) and value in {"auto", "i2va", "fl2va"}
+                if isinstance(value, str)
+                and value
+                in {"auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"}
             ),
             "fl2va" if last_frame else "i2va",
         )
@@ -1831,10 +1834,14 @@ async def _enqueue_group_video(
             status_code=422,
             detail="Video workflow is unavailable for narrative groups",
         ) from exc
-    if request.mode not in workflow.supported_modes:
+    if request.mode != "auto" and request.mode not in workflow.supported_modes:
         raise HTTPException(
             status_code=422,
-            detail="Video mode is unsupported by the selected workflow",
+            detail={
+                "code": "h3.mode_unsupported_by_workflow",
+                "mode": request.mode,
+                "workflow": workflow.id,
+            },
         )
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     source_group = next((item for item in groups if item.id == group_id), None)

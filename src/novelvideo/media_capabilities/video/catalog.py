@@ -23,10 +23,32 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoReferencePolicy,
     build_video_workflow_registry,
 )
+from novelvideo.shot_continuity.models import H3ResolvedMode
 
 
 H3_MODEL_ID = H3_WORKFLOW_ID
 H3_REFERENCE_MODEL_ID = H3_REFERENCE_WORKFLOW_ID
+
+_H3_RESOLVED_MODES: tuple[H3ResolvedMode, ...] = (
+    "t2va",
+    "i2va",
+    "fl2va",
+    "l2va",
+    "ref2va",
+)
+
+
+class H3ModeCapability(BaseModel):
+    """Public input contract for one resolved MiniMax H3 mode."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: H3ResolvedMode
+    enabled: bool
+    reason: str | None = None
+    requires_first_frame: bool = False
+    requires_last_frame: bool = False
+    requires_references: bool = False
 
 
 class VideoModelCatalogItem(BaseModel):
@@ -41,6 +63,38 @@ class VideoModelCatalogItem(BaseModel):
     parameters: tuple[VideoWorkflowParameterDefinition, ...] = ()
     reference_policy: VideoReferencePolicy = VideoReferencePolicy()
     unavailable_reason: str | None = None
+
+
+def h3_mode_capabilities(
+    *,
+    supported_modes: Sequence[str],
+    reference_unavailable_reason: str | None,
+) -> tuple[H3ModeCapability, ...]:
+    requirements = {
+        "t2va": (False, False, False),
+        "i2va": (True, False, False),
+        "fl2va": (True, True, False),
+        "l2va": (False, True, False),
+        "ref2va": (False, False, True),
+    }
+    capabilities = []
+    for mode in _H3_RESOLVED_MODES:
+        enabled = mode in supported_modes
+        reason = None if enabled else "workflow_capability_unverified"
+        if mode == "ref2va" and not enabled:
+            reason = reference_unavailable_reason or "hybrid_input_unverified"
+        first_frame, last_frame, references = requirements[mode]
+        capabilities.append(
+            H3ModeCapability(
+                mode=mode,
+                enabled=enabled,
+                reason=reason,
+                requires_first_frame=first_frame,
+                requires_last_frame=last_frame,
+                requires_references=references,
+            )
+        )
+    return tuple(capabilities)
 
 
 def list_video_models(
@@ -101,7 +155,9 @@ def resolve_video_model_route(
 __all__ = [
     "H3_MODEL_ID",
     "H3_REFERENCE_MODEL_ID",
+    "H3ModeCapability",
     "VideoModelCatalogItem",
+    "h3_mode_capabilities",
     "list_video_models",
     "resolve_video_model_route",
 ]

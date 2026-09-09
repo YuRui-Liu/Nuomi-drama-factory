@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 import asyncpg
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
@@ -75,6 +75,7 @@ from novelvideo.project_context import (
     resolve_project_context,
     user_id_from_api_user,
 )
+from novelvideo.shot_continuity.models import H3RequestedMode
 from novelvideo.seedance2_i2v.character_voice_storage import (
     VOICE_SAMPLE_EXTENSIONS,
     decode_recorded_audio_data_url,
@@ -704,6 +705,8 @@ def _media_defaults_payload(
 ) -> dict[str, object]:
     video_model = str(config.get("video_backend") or "runninghub:minimax-h3")
     h3_mode = str(config.get("h3_mode") or "auto")
+    if h3_mode not in get_args(H3RequestedMode):
+        h3_mode = "auto"
     if registry is not None:
         try:
             workflow = registry.resolve(
@@ -712,8 +715,6 @@ def _media_defaults_payload(
         except VideoWorkflowUnavailable:
             workflow = registry.default(VideoWorkflowScene.NARRATIVE_GROUP)
         video_model = workflow.id
-        if h3_mode not in workflow.supported_modes:
-            h3_mode = workflow.default_mode
     render_model = str(config.get("narrative_render_model") or "gpt-image-2")
     render_image_size = str(
         config.get("narrative_render_image_size")
@@ -809,10 +810,14 @@ async def put_project_media_defaults(
             status_code=422,
             detail="Video workflow is unavailable for narrative groups",
         ) from exc
-    if body.h3_mode not in workflow.supported_modes:
+    if body.h3_mode != "auto" and body.h3_mode not in workflow.supported_modes:
         raise HTTPException(
             status_code=422,
-            detail="Video mode is unsupported by the selected workflow",
+            detail={
+                "code": "h3.mode_unsupported_by_workflow",
+                "mode": body.h3_mode,
+                "workflow": workflow.id,
+            },
         )
     resolved_parameter_updates: dict[str, dict[str, str]] | None = None
     if body.video_workflow_parameters is not None:

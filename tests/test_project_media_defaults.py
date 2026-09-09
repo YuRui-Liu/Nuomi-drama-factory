@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import projects
 from novelvideo.api.routes.projects import _media_defaults_payload
-from novelvideo.api.schemas import MediaDefaultsRequest
+from novelvideo.api.schemas import MediaDefaultsRequest, ProjectUpdate, SingleVideoRequest
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
     VideoWorkflowRegistry,
@@ -38,7 +38,7 @@ def _enum_parameter(
 def _workflow(
     model: str,
     *,
-    supported_modes: tuple[str, ...] = ("auto", "i2va", "fl2va"),
+    supported_modes: tuple[str, ...] = ("i2va", "fl2va"),
     default_mode: str = "auto",
     parameters: tuple[VideoWorkflowParameterDefinition, ...] | None = None,
 ) -> VideoWorkflowDefinition:
@@ -56,6 +56,7 @@ def _workflow(
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
         supported_modes=supported_modes,
         default_mode=default_mode,
+        is_default=model == "runninghub:minimax-h3",
         parameters=parameters,
     )
 
@@ -138,6 +139,17 @@ def test_media_defaults_request_tracks_optional_workflow_parameters():
     assert "video_workflow_parameters" in provided.model_fields_set
 
 
+@pytest.mark.parametrize(
+    "mode", ("auto", "t2va", "i2va", "fl2va", "l2va", "ref2va")
+)
+def test_api_project_and_single_video_schemas_accept_official_h3_modes(mode):
+    assert MediaDefaultsRequest(
+        video_model="runninghub:minimax-h3", h3_mode=mode
+    ).h3_mode == mode
+    assert ProjectUpdate(h3_mode=mode).h3_mode == mode
+    assert SingleVideoRequest(h3_mode=mode).h3_mode == mode
+
+
 def test_media_defaults_use_vip_2k_default_and_preserve_explicit_size():
     assert _media_defaults_payload(
         {"narrative_render_model": "gpt-image-2-vip"}
@@ -191,7 +203,7 @@ def test_get_media_defaults_preserves_future_registered_model(monkeypatch, tmp_p
     assert response.json()["data"]["video_model"] == future_model
 
 
-def test_get_media_defaults_uses_fallback_workflow_default_mode(
+def test_get_media_defaults_preserves_requested_mode_across_workflow_fallback(
     monkeypatch, tmp_path
 ):
     (tmp_path / "project_config.json").write_text(
@@ -218,10 +230,10 @@ def test_get_media_defaults_uses_fallback_workflow_default_mode(
 
     assert response.status_code == 200
     assert response.json()["data"]["video_model"] == "runninghub:minimax-h3"
-    assert response.json()["data"]["h3_mode"] == "i2va"
+    assert response.json()["data"]["h3_mode"] == "fl2va"
 
 
-def test_get_media_defaults_uses_resolved_workflow_default_for_unsupported_mode(
+def test_get_media_defaults_preserves_auto_as_request_strategy(
     monkeypatch, tmp_path
 ):
     future_model = "future:director-v2"
@@ -245,7 +257,7 @@ def test_get_media_defaults_uses_resolved_workflow_default_for_unsupported_mode(
 
     assert response.status_code == 200
     assert response.json()["data"]["video_model"] == future_model
-    assert response.json()["data"]["h3_mode"] == "i2va"
+    assert response.json()["data"]["h3_mode"] == "auto"
 
 
 def test_get_media_defaults_preserves_supported_mode(monkeypatch, tmp_path):
@@ -347,11 +359,42 @@ def test_put_media_defaults_rejects_unsupported_mode_without_persisting(
 
     response = client.put(
         "/api/v1/projects/demo/media-defaults",
-        json={"video_model": "runninghub:minimax-h3", "h3_mode": "auto"},
+        json={"video_model": "runninghub:minimax-h3", "h3_mode": "fl2va"},
     )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "h3.mode_unsupported_by_workflow",
+        "mode": "fl2va",
+        "workflow": "runninghub:minimax-h3",
+    }
     assert json.loads(config_path.read_text(encoding="utf-8")) == original
+
+
+def test_put_media_defaults_accepts_auto_outside_transport_modes(
+    monkeypatch, tmp_path
+):
+    config_path = tmp_path / "project_config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    registry = VideoWorkflowRegistry(
+        (
+            _workflow(
+                "runninghub:minimax-h3",
+                supported_modes=("i2va",),
+                default_mode="i2va",
+            ),
+        )
+    )
+    client = _make_client(monkeypatch, tmp_path, registry=registry)
+
+    response = client.put(
+        "/api/v1/projects/demo/media-defaults",
+        json={"video_model": "runninghub:minimax-h3", "h3_mode": "auto"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["h3_mode"] == "auto"
+    assert json.loads(config_path.read_text(encoding="utf-8"))["h3_mode"] == "auto"
 
 
 def test_put_media_defaults_saves_resolved_workflow_parameters(monkeypatch, tmp_path):
