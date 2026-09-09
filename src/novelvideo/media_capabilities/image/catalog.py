@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict
 
 from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
@@ -105,6 +106,13 @@ def list_image_models(
     try:
         runtime = load_grsai_runtime_configuration(store, resolver)
     except MediaRuntimeConfigurationError:
+        return ()
+
+    try:
+        base_url = httpx.URL(runtime.account.base_url or "")
+    except httpx.InvalidURL:
+        return ()
+    if base_url.scheme not in {"http", "https"} or not base_url.host:
         return ()
 
     default_model = runtime.model

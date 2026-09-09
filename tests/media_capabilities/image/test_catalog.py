@@ -12,6 +12,7 @@ def _save_grsai_provider(
     store: MediaCapabilityStore,
     *,
     provider_type: str = "grsai",
+    base_url: str | None = "https://grsai.example",
     model: str | None = "nano-banana-pro",
     enabled: bool = True,
 ) -> None:
@@ -19,6 +20,7 @@ def _save_grsai_provider(
         ProviderAccount(
             id="grsai-main",
             provider_type=provider_type,
+            base_url=base_url,
             model=model,
             credential_ref="env://GRSAI_API_KEY",
             enabled=enabled,
@@ -101,6 +103,23 @@ def test_catalog_is_empty_when_credential_reader_fails(tmp_path) -> None:
     )
 
     assert list_image_models(store, resolver) == ()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [None, "", "   ", "not-a-url", "ftp://grsai.example"],
+)
+def test_catalog_is_empty_when_grsai_base_url_is_not_executable(
+    tmp_path,
+    base_url: str | None,
+) -> None:
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    _save_grsai_provider(store, base_url=base_url)
+
+    assert list_image_models(
+        store,
+        CredentialResolver(env={"GRSAI_API_KEY": "available"}),
+    ) == ()
 
 
 def test_model_selection_classifier_and_resolver_are_fail_closed() -> None:
