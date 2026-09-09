@@ -35,7 +35,6 @@ import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
-  SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { inheritMainlineFields } from '@/features/canvas/domain/inheritMainlineFields';
@@ -108,8 +107,7 @@ export const OutpaintEditorOverlay = memo(
     const [isSubmitting, setIsSubmitting] = useState(false);
     const selectedModel =
       availableModels.find((m) => m.id === modelId)
-      ?? availableModels[0]
-      ?? SHARED_MODELS.find((m) => m.id === modelId);
+      ?? availableModels[0];
     const creditCost = useGenerationCreditCost(
       'image_selection',
       selectedModel?.apiModel ?? null,
@@ -226,7 +224,7 @@ export const OutpaintEditorOverlay = memo(
     );
 
     const handleSubmit = useCallback(async () => {
-      if (isSubmitting) return;
+      if (isSubmitting || !selectedModel) return;
       const project = readUrl().project;
       if (!project) {
         console.error('[outpaint] no project in URL — cannot submit');
@@ -242,7 +240,7 @@ export const OutpaintEditorOverlay = memo(
         EXPORT_RESULT_NODE_DEFAULT_WIDTH,
         EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
       );
-      const apiModel = selectedModel?.apiModel ?? modelId;
+      const apiModel = selectedModel.apiModel;
 
       setIsSubmitting(true);
       try {
@@ -370,9 +368,9 @@ export const OutpaintEditorOverlay = memo(
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !selectedModel}
               className={`shrink-0 ${NODE_GENERATE_BUTTON_BASE_CLASS} ${
-                isSubmitting
+                isSubmitting || !selectedModel
                   ? NODE_GENERATE_BUTTON_DISABLED_CLASS
                   : NODE_GENERATE_BUTTON_ENABLED_CLASS
               }`}

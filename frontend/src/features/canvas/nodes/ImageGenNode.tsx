@@ -102,9 +102,7 @@ import { generationTaskDescriptor } from '@/features/canvas/application/resumeGe
 import { backendErrorToastMessage } from '@/lib/api-errors';
 import { readUrl } from '@/lib/url-params';
 import {
-  DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
-  SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
 import { extractRequestId } from '@/features/canvas/application/generationErrorReport';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
@@ -422,14 +420,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // displayed id and the submit apiModel from this one object, so they can
   // never diverge.
   //
-  // The node's default `data.model` is seeded to the static
-  // `DEFAULT_SHARED_MODEL_ID` (`huimeng/gpt-image-2`), which is normally NOT in
-  // the live `/freezone/image/models` list. Trusting it blindly is the bug:
-  // ProviderModelPicker silently falls back to showing `availableModels[0]`
-  // (e.g. LingShan-G2) when the id isn't found, while submit resolves the stale
-  // id through SHARED_MODELS to `huimeng_gpt_image2` — display ≠ value sent.
-  // Reconciling here keeps them in lockstep: an unknown persisted id falls back
-  // to the first live model (exactly what the picker shows).
+  // Persisted ids are only executable when they still exist in the live
+  // project catalog. Otherwise both the picker and submit path use the first
+  // currently available model; an empty catalog disables submission.
   const selectedModel = useMemo(() => {
     const persisted =
       typeof data.model === 'string' && data.model.length > 0 ? data.model : null;
@@ -438,7 +431,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       ?? availableModels[0]
     );
   }, [data.model, availableModels]);
-  const modelId = selectedModel?.id ?? DEFAULT_SHARED_MODEL_ID;
+  const modelId = selectedModel?.id ?? '';
   const isImage2 = isImage2Model(selectedModel?.apiModel);
   const imageSelectionForCost =
     imageModelsLoading || imageModelsFallback ? null : selectedModel?.apiModel ?? null;
@@ -879,11 +872,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       upstreamTextJoined.length > 0 &&
       (!shouldInlineUpstreamTextAsPrompt || !hasUserEditedPromptRef.current)
     );
-  const submitDisabled =
-    isGenerating || !hasEffectivePrompt;
+  const submitDisabled = isGenerating || !selectedModel || !hasEffectivePrompt;
 
   const handleSubmit = useCallback(async () => {
     if (submitDisabled || submittingRef.current) return;
+    if (!selectedModel) return;
     submittingRef.current = true;
     try {
     const projectId = readUrl().project;
@@ -894,10 +887,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
 
     // apiModel comes from the SAME reconciled model the picker displays, so the
     // backend always receives the model the user actually sees.
-    const apiModel =
-      selectedModel?.apiModel
-      ?? SHARED_MODELS.find((m) => m.id === modelId)?.apiModel
-      ?? modelId;
+    const apiModel = selectedModel.apiModel;
     // 自身参考图（用户手动上传） + 所有上游图片/视频 URL，去重 —— 与 @图片N
     // 编号共用同一份有序列表（orderedReferenceUrls），后端按位置解释 图片N。
     // 后端 reference_urls 接受 image / video 混合数组。

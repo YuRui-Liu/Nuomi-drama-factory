@@ -42,7 +42,6 @@ import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
-  SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
 import {
   CANVAS_NODE_INPUT_PLACEHOLDER_CLASS,
@@ -135,8 +134,7 @@ export const RedrawOverlay = memo(({ node, imageSource, onClose }: RedrawOverlay
   const [aspectRatio, setAspectRatio] = useState<FreezoneRedrawAspectRatio>('original');
   const selectedModel =
     availableModels.find((m) => m.id === modelId)
-    ?? availableModels[0]
-    ?? SHARED_MODELS.find((m) => m.id === modelId);
+    ?? availableModels[0];
   const creditCost = useGenerationCreditCost(
     'image_selection',
     selectedModel?.apiModel ?? null,
@@ -466,7 +464,7 @@ export const RedrawOverlay = memo(({ node, imageSource, onClose }: RedrawOverlay
   );
 
   const handleSubmit = useCallback(async () => {
-    if (submitting) return;
+    if (submitting || !selectedModel) return;
     const project = readUrl().project;
     if (!project) {
       setError('当前 URL 没有 project，无法提交');
@@ -513,7 +511,7 @@ export const RedrawOverlay = memo(({ node, imageSource, onClose }: RedrawOverlay
         const uploaded = await uploadFreezoneImage(project, maskFile);
         maskUrl = uploaded.url.split('?')[0];
       }
-      const apiModel = selectedModel?.apiModel ?? modelId;
+      const apiModel = selectedModel.apiModel;
       nodeIds.forEach((id) =>
         void runRedrawGeneration(project, id, sourceUrl, maskUrl, apiModel),
       );
@@ -735,7 +733,7 @@ export const RedrawOverlay = memo(({ node, imageSource, onClose }: RedrawOverlay
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={submitting || !imageReady}
+                disabled={submitting || !imageReady || !selectedModel}
                 className={REDRAW_CONFIRM_BUTTON_CLASS}
                 title={submitLabel}
               >

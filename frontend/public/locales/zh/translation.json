@@ -604,6 +604,7 @@
     "imageSource": {
       "label": "图源",
       "loading": "正在读取图源",
+      "unavailable": "暂无可用生图模型",
       "saveFailed": "图源更新失败"
     },
     "projectStyle": {
