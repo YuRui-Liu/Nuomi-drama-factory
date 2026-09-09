@@ -1537,6 +1537,9 @@ async def generate_h3_reference_director_video(
                 resolution=resolution or "720p",
                 output_path=output_path,
             ),
+            transport_reference_urls=tuple(
+                reference.uploaded_url for reference in uploaded_references
+            ),
             on_provider_submitted=on_provider_submitted,
         )
         source = artifact_root / candidate.artifact.local_path

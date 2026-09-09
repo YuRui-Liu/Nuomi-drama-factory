@@ -24,10 +24,17 @@ from PIL import Image
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
     H3FrozenFrame,
 )
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 from novelvideo.media_capabilities.video.h3_size_settings import (
     resolve_h3_size_setting,
 )
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    H3RetentionItem,
+    compile_h3_wire,
+)
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.runtime import _probe_video
 from novelvideo.narrative_groups.video_references import (
     MAX_VIDEO_REFERENCE_BYTES,
@@ -50,6 +57,7 @@ class _PreparedInputs:
     references: tuple[ResolvedVideoReference, ...]
     segment: H3DirectorSegment
     frozen_frames: Mapping[str, H3FrozenFrame]
+    wire: H3ReferenceWire
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,10 +170,43 @@ def _resolved_references(args: argparse.Namespace) -> tuple[ResolvedVideoReferen
 
 def _prepare_inputs(args: argparse.Namespace) -> _PreparedInputs:
     references = _resolved_references(args)
+    subjects = tuple(
+        f"<Subject {index}>" for index in range(1, len(references) + 1)
+    )
+    wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=args.duration,
+        subject_definitions="\n".join(
+            f"{subject}: {reference.subject_description} from <Picture {index}>."
+            for index, (subject, reference) in enumerate(
+                zip(subjects, references, strict=True), start=1
+            )
+        ),
+        summary=f"[reference generation] {args.prompt.strip()}",
+        retention_analysis=tuple(
+            H3RetentionItem(
+                subject=f"{subject} (appears in [Shot 1])",
+                retain=(
+                    "fully_preserved - preserve the referenced subject's visible "
+                    "identity, proportions, colors, and texture"
+                ),
+            )
+            for subject in subjects
+        ),
+        detailed_description=(
+            "[Shot 1] "
+            + ", ".join(subjects)
+            + f" remain visibly faithful to their source pictures. {args.prompt.strip()}"
+        ),
+        overall_soundscape="Natural location ambience and synchronized visible sounds.",
+        non_diegetic_music="N/A",
+    )
+    final_wire = compile_h3_wire(wire)
+    inspect_h3_prompt(final_wire, H3Mode.REF2VA, args.duration).raise_for_failure()
     segment = H3DirectorSegment(
         segment_id="h3-ref-real-smoke",
         beat_number=1,
-        prompt=args.prompt,
+        prompt=final_wire,
         duration_seconds=args.duration,
         first_frame=str(args.first_frame),
         last_frame=(str(args.last_frame) if args.last_frame else None),
@@ -175,7 +216,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _PreparedInputs:
     }
     if args.last_frame is not None:
         frames[str(args.last_frame)] = _frozen_frame(args.last_frame, label="last frame")
-    return _PreparedInputs(references, segment, MappingProxyType(frames))
+    return _PreparedInputs(references, segment, MappingProxyType(frames), wire)
 
 
 def receipt_path(output: Path) -> Path:
@@ -391,6 +432,7 @@ async def _run(
             global_references=prepared.references,
             reference_limit=args.reference_limit,
             workflow_id=WORKFLOW_ID,
+            wire=prepared.wire,
             frozen_frames=prepared.frozen_frames,
             on_provider_submitted=on_provider_submitted,
         )

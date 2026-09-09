@@ -122,6 +122,9 @@ def _timeline_data(
                 ),
                 "prompt": H3_GLOBAL_CONTINUITY_PROMPT,
                 "refs": [],
+                "continuousReference": False,
+                "commonEnabled": False,
+                "commonCollapsed": False,
             },
             "version": 5,
             "editMode": "segment",
@@ -702,6 +705,9 @@ async def test_director_timeline_rejects_malformed_transport_values_before_execu
         "edit_mode",
         "segment_continuity",
         "shot_continuity",
+        "continuous_reference",
+        "common_enabled",
+        "common_collapsed",
     ],
 )
 async def test_director_timeline_rejects_unbound_node_12_semantics(
@@ -752,6 +758,15 @@ async def test_director_timeline_rejects_unbound_node_12_semantics(
         ),
         "shot_continuity": lambda: payload["shots"][0].update(
             {"continuityFromPrev": True}
+        ),
+        "continuous_reference": lambda: payload["global"].update(
+            {"continuousReference": True}
+        ),
+        "common_enabled": lambda: payload["global"].update(
+            {"commonEnabled": True}
+        ),
+        "common_collapsed": lambda: payload["global"].update(
+            {"commonCollapsed": True}
         ),
     }
     mutations[tamper]()

@@ -61,7 +61,15 @@ def _reference_wire(*, duration_seconds: float = 4) -> H3ReferenceWire:
 
 @pytest.mark.parametrize(
     "tamper",
-    ["missing_ref", "blank_ref_asset", "global_task_type", "segment_task_type"],
+    [
+        "missing_ref",
+        "blank_ref_asset",
+        "global_task_type",
+        "segment_task_type",
+        "continuous_reference",
+        "common_enabled",
+        "common_collapsed",
+    ],
 )
 def test_reference_transport_rejects_unbound_reference_semantics(tamper: str) -> None:
     from novelvideo.media_capabilities.video.h3_reference_payload import (
@@ -109,6 +117,15 @@ def test_reference_transport_rejects_unbound_reference_semantics(tamper: str) ->
         "segment_task_type": lambda: payload["segments"][0].update(
             {"taskType": "Ref-Unknown"}
         ),
+        "continuous_reference": lambda: payload["global"].update(
+            {"continuousReference": True}
+        ),
+        "common_enabled": lambda: payload["global"].update(
+            {"commonEnabled": False}
+        ),
+        "common_collapsed": lambda: payload["global"].update(
+            {"commonCollapsed": False}
+        ),
     }
     mutations[tamper]()
     evidence = {
@@ -129,6 +146,59 @@ def test_reference_transport_rejects_unbound_reference_semantics(tamper: str) ->
         _validate_transport_timeline(
             json.dumps(payload, ensure_ascii=False),
             evidence,
+            transport_reference_urls=("uploaded://ref.png",),
+        )
+
+
+def test_reference_transport_binds_reference_urls_in_evidence_order() -> None:
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        H3GlobalReference,
+        build_h3_reference_timeline_payload,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        build_h3_timeline_data,
+    )
+    from novelvideo.media_capabilities.video.pipeline import (
+        _validate_transport_timeline,
+    )
+
+    wire = _reference_wire()
+    prompt = compile_h3_wire(wire)
+    timeline = build_h3_timeline_data((H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt=prompt, duration_seconds=4,
+        first_frame="first.png",
+    ),), strict_first_frame=True)
+    reference = H3GlobalReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发",
+        uploaded_url="uploaded://first-ref.png", sha256="a" * 64,
+    )
+    payload = json.loads(build_h3_reference_timeline_payload(
+        timeline, (reference,), max_references=5, wire=wire,
+        uploaded_frames={"first.png": {"imageFile": "uploaded://frame.png"}},
+    ))
+    payload["global"]["refs"] = [
+        {"index": 0, "imageFile": "uploaded://second-ref.png"},
+        {"index": 1, "imageFile": "uploaded://first-ref.png"},
+    ]
+    evidence = {
+        "references": [{"reference_id": "ref-1"}, {"reference_id": "ref-2"}],
+        "frame_rate": timeline.fps,
+        "total_frames": timeline.total_frames,
+        "segments": [{
+            "id": "s1", "start": 0,
+            "frame_count": timeline.entries[0].frame_count,
+            "prompt": prompt, "resolved_mode": "ref2va", "duration_seconds": 4,
+        }],
+    }
+
+    with pytest.raises(ValueError, match="refs do not match evidence"):
+        _validate_transport_timeline(
+            json.dumps(payload, ensure_ascii=False), evidence,
+            transport_reference_urls=(
+                "uploaded://first-ref.png",
+                "uploaded://second-ref.png",
+            ),
         )
 
 
@@ -1216,7 +1286,8 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
             )
 
             _validate_transport_timeline(
-                kwargs["timeline_data"], kwargs["idempotency_input"]
+                kwargs["timeline_data"], kwargs["idempotency_input"],
+                transport_reference_urls=kwargs["transport_reference_urls"],
             )
             captured["request"] = request
             captured.update(kwargs)
@@ -1290,6 +1361,7 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     }]
     assert captured["idempotency_input"]["frame_rate"] == 24
     assert captured["idempotency_input"]["total_frames"] == 107
+    assert captured["transport_reference_urls"] == ("uploaded://1",)
     assert result.provider_task_id == "provider-7"
     assert submitted == ["provider-7"]
     assert Path(result.output_path).read_bytes() == b"video"

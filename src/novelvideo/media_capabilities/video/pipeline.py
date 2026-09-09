@@ -8,7 +8,7 @@ import inspect
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
@@ -228,6 +228,8 @@ def _reject_nonfinite_json_constant(value: str) -> None:
 def _validate_transport_timeline(
     timeline_data: str,
     stable_timeline: object,
+    *,
+    transport_reference_urls: Sequence[str] = (),
 ) -> dict[str, JsonValue]:
     if not isinstance(stable_timeline, dict):
         raise ValueError("H3 timeline quality evidence must be a mapping")
@@ -381,6 +383,14 @@ def _validate_transport_timeline(
     )
     if global_settings.get("taskType") != expected_global_task_type:
         raise ValueError("H3 transport timeline global task type is not canonical")
+    if global_settings.get("continuousReference") is not (len(actual_segments) > 1):
+        raise ValueError("H3 transport timeline continuous reference flag is invalid")
+    expected_common = has_reference_mode
+    if (
+        global_settings.get("commonEnabled") is not expected_common
+        or global_settings.get("commonCollapsed") is not expected_common
+    ):
+        raise ValueError("H3 transport timeline common reference flags are invalid")
     refs = global_settings.get("refs")
     if has_reference_mode:
         expected_references = stable_timeline.get("references")
@@ -388,11 +398,19 @@ def _validate_transport_timeline(
             raise ValueError("H3 transport timeline reference evidence is incomplete")
         if len(refs) != len(expected_references) or not refs:
             raise ValueError("H3 transport timeline refs do not match evidence")
+        expected_urls = tuple(transport_reference_urls)
+        if len(expected_urls) != len(expected_references) or any(
+            not isinstance(url, str) or not url for url in expected_urls
+        ):
+            raise ValueError("H3 transport timeline reference URLs are incomplete")
         for index, reference in enumerate(refs):
             if not isinstance(reference, dict) or reference.get("index") != index:
                 raise ValueError("H3 transport timeline refs do not match evidence")
-            _timeline_image_file(reference, field="global.refs")
-    elif refs != []:
+            if _timeline_image_file(
+                reference, field="global.refs"
+            ) != expected_urls[index]:
+                raise ValueError("H3 transport timeline refs do not match evidence")
+    elif refs != [] or transport_reference_urls:
         raise ValueError("H3 transport timeline base refs must be empty")
 
     expected_duration = sum(
@@ -622,12 +640,15 @@ class H3VideoPipeline:
         director_params: Mapping[str, JsonValue] | None = None,
         input_asset_hashes: tuple[str, ...] = (),
         idempotency_input: Mapping[str, JsonValue],
+        transport_reference_urls: Sequence[str] = (),
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
         stable_timeline = dict(idempotency_input)
         transport_timeline = _validate_transport_timeline(
-            timeline_data, stable_timeline
+            timeline_data,
+            stable_timeline,
+            transport_reference_urls=transport_reference_urls,
         )
         semantic_values: dict[str, JsonValue] = {
             **dict(director_params or {}),
