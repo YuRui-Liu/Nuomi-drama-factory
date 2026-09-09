@@ -1147,6 +1147,26 @@
     "emptyHint": "点击上方按钮创建新项目"
   },
   "assets": {
+    "import": {
+      "button": { "character": "导入人物表", "scene": "导入场景表", "prop": "导入道具表" },
+      "title": { "character": "导入人物表", "scene": "导入场景表", "prop": "导入道具表" },
+      "help": "选择 .md 或 .txt 文件。解析预览不会修改资产，确认后仅补全空字段。",
+      "fileLabel": "资产表文件",
+      "invalidFileType": "请选择 .md 或 .txt 文件。",
+      "preview": "解析预览",
+      "confirm": "确认导入",
+      "success": "导入完成",
+      "actualResult": "导入完成：新增 {{created}}，补全 {{supplemented}}，跳过 {{skipped}}，警告 {{warnings}}",
+      "reparseRequired": "预览已失效，请重新解析后再确认",
+      "created": "新增",
+      "supplemented": "补全",
+      "skipped": "跳过",
+      "preserved": "保留原值",
+      "warnings": "警告",
+      "ignored": "已忽略其他章节",
+      "fieldDisposition": { "fill": "补全", "preserve": "保留原值", "conflict": "冲突" },
+      "disposition": { "create": "新增", "supplement": "补全空字段", "skip": "跳过", "conflict": "存在冲突" }
+    },
     "common": {
       "edit": "编辑",
       "delete": "删除",

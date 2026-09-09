@@ -429,6 +429,7 @@ async def ingest_source_text_structured(
                     run_id=plan.run_id,
                     before_commit=mark_ready,
                 )
+                published = {"episodes": published["episodes"]}
             except BaseException as publish_error:
                 if marker_written:
                     _restore_novel_marker_if_unchanged(

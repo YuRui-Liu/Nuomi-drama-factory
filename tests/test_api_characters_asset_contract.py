@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +56,12 @@ def _client(monkeypatch, tmp_path, store: _CharacterStore):
 
     async def fake_resolve_project(project: str, user: dict, *, required_role: str = "editor"):
         return (
-            SimpleNamespace(project_id="proj_demo", output_dir=project_dir, is_home_node=True),
+            SimpleNamespace(
+                project_id="proj_demo",
+                output_dir=project_dir,
+                state_dir=tmp_path / "state" / "admin" / "demo",
+                is_home_node=True,
+            ),
             "admin",
             "demo",
             project_dir,
@@ -352,3 +358,179 @@ def test_delete_character_route_removes_character(monkeypatch, tmp_path):
         "data": {"name": "秦昭", "deleted": True},
     }
     assert store.get_character("秦昭") is None
+
+
+def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    state_path = (
+        tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    )
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    assert _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=project_dir, state_dir=state_path.parent),
+        characters=(NovelCharacter(name="林昭"),),
+    ) == frozenset({"林昭"})
+    legacy_workflow = ProductionWorkflowStore(state_path)
+    legacy_slot, legacy_versions = legacy_workflow.get_slot("character:林昭:portrait")
+    legacy_path = project_dir / legacy_versions[legacy_slot.current_version_id].asset_path
+    legacy_bytes = legacy_path.read_bytes()
+    assert legacy_path != canonical
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    workflow = ProductionWorkflowStore(state_path)
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    assert slot.asset_kind == "character_portrait"
+    assert slot.current_version_id
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/林昭/portrait_versions/portrait-"
+    )
+    assert current.adoption_status.value == "adopted"
+    assert current.origin.value == "uploaded"
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert (project_dir / current.asset_path).read_bytes() == (
+        project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    ).read_bytes()
+
+
+def test_portrait_upload_archives_mutable_current_without_identity_planning(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    old_bytes = canonical.read_bytes()
+    state_path = tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(state_path)
+    old_slot, old_version = workflow.materialize_legacy_current(
+        slot_id="character:林昭:portrait",
+        asset_kind="character_portrait",
+        asset_path="assets/characters/林昭/portrait.png",
+    )
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    reloaded_slot, versions = ProductionWorkflowStore(state_path).get_slot(old_slot.slot_id)
+    archived = versions[old_version.version_id]
+    assert archived.adoption_status.value == "superseded"
+    assert archived.asset_path != "assets/characters/林昭/portrait.png"
+    assert (project_dir / archived.asset_path).read_bytes() == old_bytes
+    assert reloaded_slot.current_version_id != old_version.version_id
+
+
+def test_portrait_history_restore_commits_a_new_workflow_current(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.production_workflow.character_portraits import (
+        reconcile_character_portrait_canonical,
+    )
+    from novelvideo.production_workflow.store import production_workflow_project_lock
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    current = io.BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(current, format="PNG")
+    assert client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", current.getvalue(), "image/png")},
+    ).status_code == 200
+    history = canonical.with_name("portrait_20260909010101000000.png")
+    Image.new("RGB", (8, 8), "red").save(history)
+    restored_bytes = history.read_bytes()
+
+    response = client.post(
+        "/projects/demo/characters/林昭/asset-history/restore",
+        json={"kind": "portrait", "history_id": history.name},
+    )
+
+    assert response.status_code == 200
+    state_dir = tmp_path / "state" / "admin" / "demo"
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    restored = versions[slot.current_version_id]
+    assert restored.origin.value == "uploaded"
+    assert (project_dir / restored.asset_path).read_bytes() == restored_bytes
+    assert canonical.read_bytes() == restored_bytes
+
+    Image.new("RGB", (8, 8), "green").save(canonical)
+    with production_workflow_project_lock(state_dir):
+        assert reconcile_character_portrait_canonical(
+            workflow=ProductionWorkflowStore(state_dir / "production_workflow.json"),
+            project_dir=project_dir,
+            character_name="林昭",
+        )
+    assert canonical.read_bytes() == restored_bytes
+
+
+@pytest.mark.asyncio
+async def test_portrait_history_restore_rejects_unsafe_stored_character_name(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from novelvideo.api.routes import characters
+    from novelvideo.api.schemas import CharacterAssetRestoreRequest
+
+    unsafe_name = "../scenes/villain"
+    store = _CharacterStore([SimpleNamespace(name=unsafe_name, identities=[])])
+    _client(monkeypatch, tmp_path, store)
+    cross_asset_history = (
+        tmp_path
+        / "output"
+        / "admin"
+        / "demo"
+        / "assets"
+        / "scenes"
+        / "villain"
+        / "portrait_20260909010101000000.png"
+    )
+    cross_asset_history.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(cross_asset_history)
+
+    result = await characters.restore_character_asset_history(
+        "demo",
+        unsafe_name,
+        CharacterAssetRestoreRequest(
+            kind="portrait",
+            history_id=cross_asset_history.name,
+        ),
+        {"username": "admin"},
+    )
+
+    assert result == {"ok": False, "error": "invalid character name"}
+    assert not (
+        tmp_path / "output" / "admin" / "demo" / "assets" / "characters"
+    ).exists()

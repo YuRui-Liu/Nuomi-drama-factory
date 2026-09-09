@@ -40,12 +40,6 @@ export function isPlannedReferenceAvailable(binding: PlannedReferenceBinding) {
   return binding.status === "ready" && Boolean(binding.version_id?.trim());
 }
 
-function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
-  const ready = new Set(bindings.filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
-  const required = bindings.filter((item) => item.required && isPlannedReferenceAvailable(item)).map((item) => item.binding_id);
-  return [...new Set([...required, ...selectedIds])].filter((id) => ready.has(id));
-}
-
 function uniqueBindingsById(bindings: PlannedReferenceBinding[]) {
   const seen = new Set<string>();
   return bindings.filter((binding) => {
@@ -53,6 +47,53 @@ function uniqueBindingsById(bindings: PlannedReferenceBinding[]) {
     seen.add(binding.binding_id);
     return true;
   });
+}
+
+export function normalizePlannedReferenceSelection(
+  bindings: PlannedReferenceBinding[],
+  selectedIds: string[],
+  maxImages: number,
+  temporaryCount = 0,
+) {
+  const visibleBindings = uniqueBindingsById(bindings);
+  const available = new Set(visibleBindings.filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
+  const lockedRequired = visibleBindings.filter((item) => (
+    item.required
+    && item.resolution !== "explicit_fallback"
+    && isPlannedReferenceAvailable(item)
+  )).map((item) => item.binding_id);
+  const lockedSet = new Set(lockedRequired);
+  const remainingCapacity = Math.max(0, maxImages - Math.max(0, temporaryCount) - lockedRequired.length);
+  const selectable = [...new Set(selectedIds)].filter((id) => available.has(id) && !lockedSet.has(id));
+  return {
+    selectedIds: [...lockedRequired, ...selectable.slice(0, remainingCapacity)],
+    requiredOverflow: lockedRequired.length > Math.max(0, maxImages - Math.max(0, temporaryCount)),
+    bindingConflict: visibleBindings.length !== bindings.length,
+    hasRequiredUnavailable: visibleBindings.some((item) => item.required && !isPlannedReferenceAvailable(item)),
+  };
+}
+
+function deferredSelectionIntent(
+  bindings: PlannedReferenceBinding[],
+  selectedIds: string[],
+  normalizedIds: string[],
+) {
+  const available = new Set(uniqueBindingsById(bindings).filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
+  const normalized = new Set(normalizedIds);
+  return [...new Set(selectedIds)].filter((id) => available.has(id) && !normalized.has(id));
+}
+
+function normalizedSelectionIntent(
+  bindings: PlannedReferenceBinding[],
+  selectedIds: string[],
+  maxImages: number,
+  temporaryCount: number,
+) {
+  const normalized = normalizePlannedReferenceSelection(bindings, selectedIds, maxImages, temporaryCount);
+  return [
+    ...normalized.selectedIds,
+    ...deferredSelectionIntent(bindings, selectedIds, normalized.selectedIds),
+  ];
 }
 
 export function PlannedReferencePicker({
@@ -65,29 +106,39 @@ export function PlannedReferencePicker({
 }: PlannedReferencePickerProps) {
   const headingIdPrefix = useId();
   const visibleBindings = uniqueBindingsById(bindings);
-  const selected = uniqueReadyIds(visibleBindings, selectedIds);
+  const normalized = normalizePlannedReferenceSelection(bindings, selectedIds, maxImages, temporaryCount);
+  const selected = normalized.selectedIds;
   const selectedSet = new Set(selected);
   const safeTemporaryCount = Math.max(0, temporaryCount);
   const totalCount = selected.length + safeTemporaryCount;
-  const remainingSlots = Math.max(0, maxImages - safeTemporaryCount);
   const atLimit = totalCount >= maxImages;
-  const hasRequiredUnavailable = visibleBindings.some((item) => item.required && !isPlannedReferenceAvailable(item));
 
   const selectGroups = (groups: BindingGroup[]) => {
     const orderedCandidates = groups.flatMap((group) => visibleBindings.filter(
       (item) => group.includes(item) && isPlannedReferenceAvailable(item),
     ));
-    const ids = [...new Set([
+    const next = normalizePlannedReferenceSelection(bindings, [...new Set([
       ...selected,
       ...orderedCandidates.map((item) => item.binding_id),
-    ])].slice(0, remainingSlots);
-    onChange(ids);
+    ])], maxImages, temporaryCount);
+    onChange([
+      ...next.selectedIds,
+      ...deferredSelectionIntent(bindings, selectedIds, next.selectedIds),
+    ]);
   };
 
   const clearGroups = (groups: BindingGroup[]) => {
-    const removed = new Set(visibleBindings.filter((item) => !item.required && groups.some((group) => group.includes(item)))
+    const removed = new Set(visibleBindings.filter((item) => (
+      (!item.required || item.resolution === "explicit_fallback")
+      && groups.some((group) => group.includes(item))
+    ))
       .map((item) => item.binding_id));
-    onChange(selected.filter((id) => !removed.has(id)));
+    onChange(normalizedSelectionIntent(
+      bindings,
+      selectedIds.filter((id) => !removed.has(id)),
+      maxImages,
+      temporaryCount,
+    ));
   };
 
   return <section aria-label="规划参考图" className="space-y-4 rounded-xl border border-white/20 bg-black/25 p-4 text-foreground">
@@ -104,9 +155,17 @@ export function PlannedReferencePicker({
       </div>
     </header>
 
-    {hasRequiredUnavailable ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">
+    {normalized.hasRequiredUnavailable ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">
       <span className="flex items-center gap-2"><AlertTriangle className="size-4" aria-hidden="true" />必需引用尚未就绪，请先返回规划处理。</span>
       <Button type="button" size="sm" variant="outline" aria-label="返回规划处理不可用引用" onClick={onResolvePlanning}>返回规划处理</Button>
+    </div> : null}
+
+    {normalized.requiredOverflow ? <div role="alert" className="rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">
+      必选引用数量超过参考图上限，请返回规划调整。
+    </div> : null}
+
+    {normalized.bindingConflict ? <div role="alert" className="rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">
+      规划引用包含重复 ID，请返回规划重新生成。
     </div> : null}
 
     {bindingGroups.map((group) => {
@@ -125,7 +184,7 @@ export function PlannedReferencePicker({
           {items.map((binding) => {
             const available = isPlannedReferenceAvailable(binding);
             const isSelected = available && selectedSet.has(binding.binding_id);
-            const lockedRequired = available && binding.required;
+            const lockedRequired = available && binding.required && binding.resolution !== "explicit_fallback";
             const disabled = !available || lockedRequired || (!isSelected && atLimit);
             const warning = binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
               ? "缺少有效资产版本"
@@ -136,9 +195,14 @@ export function PlannedReferencePicker({
               aria-pressed={isSelected}
               data-selection-state={isSelected ? "selected" : "unselected"}
               disabled={disabled}
-              onClick={() => onChange(isSelected
-                ? selected.filter((id) => id !== binding.binding_id)
-                : [...selected, binding.binding_id])}
+              onClick={() => onChange(normalizedSelectionIntent(
+                bindings,
+                isSelected
+                  ? selectedIds.filter((id) => id !== binding.binding_id)
+                  : [...selectedIds, binding.binding_id],
+                maxImages,
+                temporaryCount,
+              ))}
               className={cn(
                 "relative min-h-32 overflow-hidden rounded-lg border-2 p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300",
                 isSelected

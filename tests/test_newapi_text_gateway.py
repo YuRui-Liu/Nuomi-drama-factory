@@ -207,6 +207,7 @@ def test_asset_compiler_scene_planner_uses_scene_newapi_env(monkeypatch):
     model_calls = []
     settings_calls = []
     agent_kwargs = {}
+    captured_tasks = []
 
     def fake_newapi_model(model_env, default_model):
         model_calls.append((model_env, default_model))
@@ -222,6 +223,7 @@ def test_asset_compiler_scene_planner_uses_scene_newapi_env(monkeypatch):
             agent_kwargs.update(kwargs)
 
         async def run(self, task):
+            captured_tasks.append(task)
             return SimpleNamespace(output=SimpleNamespace(derived_scenes=[]))
 
     monkeypatch.setattr(asset_compiler, "get_newapi_text_pydantic_model", fake_newapi_model)
@@ -233,17 +235,24 @@ def test_asset_compiler_scene_planner_uses_scene_newapi_env(monkeypatch):
     monkeypatch.setattr(asset_compiler, "Agent", FakeAgent)
 
     compiler = asset_compiler.AssetCompiler(cognee_store=None)
-    block = SimpleNamespace(
+    first_block = SimpleNamespace(
         header_line="古董店 内 日", lines=["△ 古董堆满房间", "李雷环顾四周", "灯光昏暗"]
     )
+    second_block = SimpleNamespace(
+        header_line="古董店 内 夜", lines=["△ 入口仍被封闭", "李雷返回店内", "通道无法通行"]
+    )
 
-    result = asyncio.run(compiler._analyze_derived_scenes("古董店", block))
+    result = asyncio.run(
+        compiler._analyze_derived_scenes("古董店", [first_block, second_block])
+    )
 
     assert result == []
     assert model_calls == [("EPISODE_SCENE_PLANNER_MODEL", "gemini-3.5-flash")]
     assert settings_calls == [("EPISODE_SCENE_PLANNER_THINKING_LEVEL", "low")]
     assert agent_kwargs["model"] == "scene-model"
     assert agent_kwargs["name"] == "派生场景分析师"
+    assert "古董店 内 日" in captured_tasks[0]
+    assert "古董店 内 夜" in captured_tasks[0]
 
 
 def test_asset_compiler_prop_planner_uses_prop_newapi_env(monkeypatch):

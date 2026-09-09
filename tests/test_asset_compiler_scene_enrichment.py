@@ -93,13 +93,17 @@ class _FakeCogneeStore:
         self.refresh_count += 1
 
 
-def _block(location: str = "咖啡馆", time_of_day: str = "夜"):
+def _block(
+    location: str = "咖啡馆",
+    time_of_day: str = "夜",
+    scene_number: int = 1,
+):
     return SimpleNamespace(
         location=location,
         interior_exterior="内",
         time_of_day=time_of_day,
         characters=["陆辰", "沈月白"],
-        header_line=f"场次（1）地点：{location}，{time_of_day}，内；出场人物：陆辰、沈月白",
+        header_line=f"场次（{scene_number}）地点：{location}，{time_of_day}，内；出场人物：陆辰、沈月白",
         lines=[
             "窗外暴雨如注，雨滴重重砸在玻璃上。",
             "咖啡馆内只有他们这一桌，昏黄的灯光将两人的影子拉得很长。",
@@ -636,7 +640,7 @@ async def test_compile_episode_scenes_uses_narrated_fallback_without_scene_heade
 
 
 @pytest.mark.asyncio
-async def test_compile_scenes_promotes_stable_visual_states_to_pending_scenes(monkeypatch):
+async def test_compile_scenes_does_not_promote_single_block_visual_state(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
     async def fake_enrich(**kwargs):
@@ -647,13 +651,16 @@ async def test_compile_scenes_promotes_stable_visual_states_to_pending_scenes(mo
             description="雨夜咖啡馆",
         )
 
-    async def fake_derived(self, scene_name, block):
+    async def fake_derived(self, scene_name, blocks):
         return [
             asset_compiler.DerivedSceneRequirement(
                 label="暴雨版",
                 description="窗外暴雨，玻璃挂满水痕",
                 lighting="昏黄灯光",
                 atmosphere="潮湿雨夜空气",
+                evidence_scene_headers=[blocks[0].header_line],
+                affects_whole_environment=True,
+                requires_shared_plate=True,
             )
         ]
 
@@ -678,33 +685,22 @@ async def test_compile_scenes_promotes_stable_visual_states_to_pending_scenes(mo
         lambda _message: None,
     )
 
-    assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
-    assert scene_menu[1].base_scene_id == "咖啡馆"
-    assert scene_menu[1].variant_id == "暴雨版"
-    assert [scene.name for scene in pending_scenes] == ["咖啡馆_暴雨版"]
-    derived_scene = pending_scenes[0]
-    assert derived_scene.name == "咖啡馆_暴雨版"
-    assert not hasattr(derived_scene, "base_scene")
-    assert derived_scene.aliases == ["咖啡馆"]
-    assert derived_scene.environment_prompt == ""
-    assert derived_scene.description == "窗外暴雨，玻璃挂满水痕"
-    assert "窗外暴雨，玻璃挂满水痕" in derived_scene.variant_prompt
-    assert "昏黄灯光" in derived_scene.variant_prompt
-    assert "潮湿雨夜空气" in derived_scene.variant_prompt
-    assert "正面：临街玻璃窗" not in derived_scene.variant_prompt
+    assert [item.scene_id for item in scene_menu] == ["咖啡馆"]
+    assert pending_scenes == []
 
 
 @pytest.mark.asyncio
 async def test_compile_scenes_reuses_existing_derived_scene(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
-    async def fake_derived(self, scene_name, block):
+    async def fake_derived(self, scene_name, blocks):
         return [
             asset_compiler.DerivedSceneRequirement(
-                label="暴雨版",
-                description="窗外暴雨，玻璃挂满水痕",
-                lighting="昏黄灯光",
-                atmosphere="潮湿雨夜空气",
+                label="封控版",
+                description="入口和通道持续封闭",
+                evidence_scene_headers=[block.header_line for block in blocks],
+                affects_whole_environment=True,
+                requires_shared_plate=True,
             )
         ]
 
@@ -718,23 +714,23 @@ async def test_compile_scenes_reuses_existing_derived_scene(monkeypatch):
                 environment_prompt=ENRICHED_ENVIRONMENT_PROMPT,
             ),
             NovelScene(
-                name="咖啡馆_暴雨版",
+                name="咖啡馆_封控版",
                 scene_type="interior",
                 base_scene_id="咖啡馆",
-                variant_id="暴雨版",
-                variant_prompt="已有暴雨版",
+                variant_id="封控版",
+                variant_prompt="已有封控版",
             ),
         ]
     )
     compiler = asset_compiler.AssetCompiler(store)
 
     scene_menu, pending_scenes = await compiler._compile_scenes(
-        [_block()],
+        [_block(time_of_day="日", scene_number=1), _block(time_of_day="夜", scene_number=2)],
         SimpleNamespace(number=1),
         lambda _message: None,
     )
 
-    assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
+    assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_封控版"]
     assert pending_scenes == []
 
 
@@ -745,7 +741,10 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
     import novelvideo.agents.asset_compiler as asset_compiler
 
     async def fake_load_scene_blocks(self, episode):
-        return [_block()]
+        return [
+            _block(time_of_day="日", scene_number=1),
+            _block(time_of_day="夜", scene_number=2),
+        ]
 
     async def fake_enrich(**kwargs):
         return NovelScene(
@@ -755,13 +754,14 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
             description="雨夜咖啡馆",
         )
 
-    async def fake_derived(self, scene_name, block):
+    async def fake_derived(self, scene_name, blocks):
         return [
             asset_compiler.DerivedSceneRequirement(
-                label="暴雨版",
-                description="窗外暴雨，玻璃挂满水痕",
-                lighting="昏黄灯光",
-                atmosphere="潮湿雨夜空气",
+                label="封控版",
+                description="入口和通道持续封闭",
+                evidence_scene_headers=[block.header_line for block in blocks],
+                affects_whole_environment=True,
+                requires_shared_plate=True,
             )
         ]
 
@@ -791,10 +791,10 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
     )
 
     assert new_count == 1
-    assert [scene.name for scene in store.sqlite_store.added] == ["咖啡馆", "咖啡馆_暴雨版"]
-    assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
+    assert [scene.name for scene in store.sqlite_store.added] == ["咖啡馆", "咖啡馆_封控版"]
+    assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_封控版"]
     assert scene_menu[1].base_scene_id == "咖啡馆"
-    assert scene_menu[1].variant_id == "暴雨版"
+    assert scene_menu[1].variant_id == "封控版"
     assert store.sqlite_store.published_menus == [(1, scene_menu, None)]
     assert store.updated == []
 
@@ -899,20 +899,88 @@ async def test_legacy_scene_publication_defers_shared_cache_refresh(monkeypatch)
     assert store.sqlite_store.publish_refresh_cache == [False]
 
 
-def test_derived_scene_normalization_filters_plain_time_but_keeps_stable_light_plate():
+def test_derived_scene_specs_require_cross_block_global_plate_evidence():
     import novelvideo.agents.asset_compiler as asset_compiler
+
+    headers = {"场次1", "场次2"}
+    normalized = asset_compiler.AssetCompiler._build_derived_scene_specs(
+        [
+            asset_compiler.DerivedSceneRequirement(
+                label="暴雨积水版",
+                evidence_scene_headers=["场次1"],
+                affects_whole_environment=True,
+                requires_shared_plate=True,
+            ),
+            asset_compiler.DerivedSceneRequirement(
+                label="油灯侧光版",
+                evidence_scene_headers=["场次1", "场次2"],
+                affects_whole_environment=False,
+                requires_shared_plate=True,
+            ),
+            asset_compiler.DerivedSceneRequirement(
+                label="封控版",
+                evidence_scene_headers=["场次1", "场次2"],
+                affects_whole_environment=True,
+                requires_shared_plate=True,
+            ),
+        ],
+        valid_scene_headers=headers,
+    )
+
+    assert [item.label for item in normalized] == ["封控版"]
+
+
+def test_derived_scene_specs_keep_only_two_highest_coverage_candidates():
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    headers = {"场次1", "场次2", "场次3", "场次4"}
+
+    def candidate(label: str, evidence: list[str]):
+        return asset_compiler.DerivedSceneRequirement(
+            label=label,
+            evidence_scene_headers=evidence,
+            affects_whole_environment=True,
+            requires_shared_plate=True,
+        )
 
     normalized = asset_compiler.AssetCompiler._build_derived_scene_specs(
         [
-            asset_compiler.DerivedSceneRequirement(label="夜晚", description="普通夜间时段"),
-            asset_compiler.DerivedSceneRequirement(
-                label="暴雨夜霓虹版",
-                description="暴雨夜晚，霓虹灯在积水中反射",
-                lighting="高对比霓虹反光",
-                atmosphere="雨幕和湿冷空气",
-            ),
-            asset_compiler.DerivedSceneRequirement(label="特写", description="镜头语言"),
-        ]
+            candidate("两场复用版", ["场次1", "场次2"]),
+            candidate("四场复用版", ["场次1", "场次2", "场次3", "场次4"]),
+            candidate("三场复用版", ["场次1", "场次2", "场次3"]),
+        ],
+        valid_scene_headers=headers,
     )
 
-    assert [item.label for item in normalized] == ["暴雨夜霓虹版"]
+    assert [item.label for item in normalized] == ["四场复用版", "三场复用版"]
+
+
+def test_derived_scene_specs_collapse_xie_memorial_arch_case_to_spatial_variant():
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    headers = {"叙事组1", "叙事组2", "叙事组3", "叙事组4"}
+    labels = [
+        "暴雨积水版",
+        "朱红姓名渗显版",
+        "封控版",
+        "暴雨朱红显碑版",
+        "残字显露封存版",
+        "封锁后油灯侧光版",
+        "朱红姓名满碑版",
+    ]
+    candidates = [
+        asset_compiler.DerivedSceneRequirement(
+            label=label,
+            evidence_scene_headers=sorted(headers),
+            affects_whole_environment=True,
+            requires_shared_plate=True,
+        )
+        for label in labels
+    ]
+
+    normalized = asset_compiler.AssetCompiler._build_derived_scene_specs(
+        candidates,
+        valid_scene_headers=headers,
+    )
+
+    assert [item.label for item in normalized] == ["封控版"]

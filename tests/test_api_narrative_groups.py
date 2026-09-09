@@ -1774,6 +1774,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
                 display_label="Hero / casual",
                 required=True,
                 status="ready",
+                resolution="auto_matched",
                 selected_by_default=True,
                 asset_slot_id="character:Hero:state:Hero_casual",
                 version_id="hero-v1",
@@ -1803,6 +1804,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
     assert data["bindings"][0]["asset_slot_id"] == (
         "character:Hero:state:Hero_casual"
     )
+    assert data["bindings"][0]["resolution"] == "auto_matched"
 
 
 def test_reference_preview_rejects_activation_during_async_resolution(

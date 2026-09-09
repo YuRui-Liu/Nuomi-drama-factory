@@ -6,6 +6,10 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
     from novelvideo.character_visual import (
         CharacterNarrativeProfile,
         CharacterVisualBible,
@@ -13,7 +17,26 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         CharacterVisualWorkspaceStore,
     )
     from novelvideo.models import NovelCharacter
+    from novelvideo.production_workflow import ProductionWorkflowStore
     from novelvideo.task_backend.runners import character_image
+
+    previous_portrait = tmp_path / "assets" / "characters" / "小鹿" / "portrait.png"
+    previous_portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(previous_portrait)
+    existing_workflow = ProductionWorkflowStore(
+        tmp_path / "production_workflow.json"
+    )
+    existing_workflow.register_candidate_version(
+        slot_id="character:小鹿:portrait",
+        asset_kind="character_portrait",
+        version_id="previous-v1",
+        asset_path="assets/characters/小鹿/portrait.png",
+        source_attempt_id="previous-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
 
     character = NovelCharacter(
         name="小鹿",
@@ -62,7 +85,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         calls["grsai"] = kwargs
         output = Path(kwargs["output_path"])
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"png")
+        Image.new("RGB", (8, 8), "red").save(output)
         return output
 
     monkeypatch.setattr("novelvideo.sqlite_store.SQLiteStore", FakeSQLiteStore)
@@ -109,7 +132,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         ctx,
     )
 
-    assert Path(result["path"]).read_bytes() == b"png"
+    assert Path(result["path"]).is_file()
     assert calls["sqlite_initialized"] is True
     assert calls["state_loaded"] is True
     assert calls["sqlite_closed"] is True
@@ -123,6 +146,22 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in generated_prompt
     assert "head and shoulders" not in generated_prompt
     assert "newapi_gpt_image2" not in str(calls["grsai"])
+    slot, versions = ProductionWorkflowStore(
+        tmp_path / "production_workflow.json"
+    ).get_slot("character:小鹿:portrait")
+    assert slot.asset_kind == "character_portrait"
+    assert slot.current_version_id
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/小鹿/portrait_versions/portrait-"
+    )
+    assert current.adoption_status.value == "adopted"
+    assert current.origin.value == "generated"
+    assert (tmp_path / current.asset_path).read_bytes() == Path(result["path"]).read_bytes()
+    archived = versions["previous-v1"]
+    assert archived.adoption_status.value == "superseded"
+    assert archived.asset_path != "assets/characters/小鹿/portrait.png"
+    assert (tmp_path / archived.asset_path).read_bytes() != Path(result["path"]).read_bytes()
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from PIL import Image
 from novelvideo.narrative_groups.planned_binding_service import (
     PlannedReferencesRequired,
     StaleReferenceBinding,
+    UnresolvedPlannedReference,
     build_planned_reference_snapshot,
     required_binding_keys_for_director_group,
     resolve_planned_reference_preview,
@@ -69,7 +70,9 @@ def _workflow(project_dir: Path, binding: PlannedReferenceBinding) -> Production
         slot_id=binding.asset_slot_id,
         asset_kind="character_state",
         version_id="version-1",
-        asset_path=str(_image(project_dir / "assets" / "alice.png")),
+        asset_path=str(
+            _image(project_dir / "assets" / "characters" / "alice" / "alice.png")
+        ),
         source_attempt_id="attempt-1",
         qc_passed=True,
         generation_metadata=None,
@@ -164,10 +167,11 @@ async def test_preview_resolves_exact_current_version_without_writes(tmp_path: P
     assert preview.reference_revision
     assert preview.max_images == 8
     assert preview.bindings[0].binding_id == binding.binding_id
+    assert preview.bindings[0].resolution == "auto_matched"
     assert preview.bindings[0].version_id == "version-1"
     assert preview.bindings[0].adoption_status == "provisional"
     assert preview.bindings[0].selected_by_default is True
-    assert preview.bindings[0].relative_path == "assets/alice.png"
+    assert preview.bindings[0].relative_path == "assets/characters/alice/alice.png"
     assert len(preview.bindings[0].sha256) == 64
 
 
@@ -217,6 +221,7 @@ async def test_preview_does_not_fall_back_to_named_asset_for_candidate_version(
     workflow._versions[version.version_id] = version.model_copy(  # noqa: SLF001
         update={"adoption_status": AdoptionStatus.CANDIDATE}
     )
+    workflow._save()  # noqa: SLF001 - persist the deliberately corrupted live state
     _image(tmp_path / "assets" / "characters" / "alice-youth.png", "blue")
 
     preview = await resolve_planned_reference_preview(
@@ -257,6 +262,7 @@ async def test_preview_derives_unavailable_status_from_live_workflow_state(
     missing_current._slots[binding.asset_slot_id] = slot.model_copy(  # noqa: SLF001
         update={"current_version_id": "deleted-version"}
     )
+    missing_current._save()  # noqa: SLF001 - persist the deliberately corrupted state
     missing_current_preview = await resolve_planned_reference_preview(
         _BindingStore([binding]),
         missing_current,
@@ -269,7 +275,7 @@ async def test_preview_derives_unavailable_status_from_live_workflow_state(
 
     missing_image_root = tmp_path / "missing-image"
     missing_image = _workflow(missing_image_root, binding)
-    (missing_image_root / "assets" / "alice.png").unlink()
+    (missing_image_root / "assets" / "characters" / "alice" / "alice.png").unlink()
     missing_image_preview = await resolve_planned_reference_preview(
         _BindingStore([binding]),
         missing_image,
@@ -446,6 +452,51 @@ async def test_snapshot_reloads_workflow_under_project_lock_before_freezing(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_rejects_bindings_replaced_after_initial_catalog_read(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    replacement = binding.model_copy(update={"display_label": "Alice / replanned youth"})
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+
+    class _ReplannedBindingStore(_BindingStore):
+        async def list_planned_reference_bindings(
+            self, episode_number: int, group_id: str | None = None
+        ) -> list[PlannedReferenceBinding]:
+            self.reads += 1
+            source = [binding] if self.reads == 1 else [replacement]
+            return [
+                item
+                for item in source
+                if item.episode_number == episode_number
+                and (group_id is None or group_id in item.group_ids)
+            ]
+
+    replanned_store = _ReplannedBindingStore([binding])
+    with pytest.raises(StaleReferenceBinding):
+        await build_planned_reference_snapshot(
+            replanned_store,
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(binding.binding_id,),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+        )
+    assert replanned_store.reads == 2
+
+
+@pytest.mark.asyncio
 async def test_snapshot_holds_workflow_lock_through_version_validation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -531,7 +582,7 @@ async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None
     assert image.binding_id == binding.binding_id
     assert image.asset_slot_id == binding.asset_slot_id
     assert image.version_id == "version-1"
-    assert image.relative_path == "assets/alice.png"
+    assert image.relative_path == "assets/characters/alice/alice.png"
     assert len(image.sha256) == 64
     assert image.group_ids == ("group-01",)
     assert image.beat_ids == ("beat-07",)
@@ -555,6 +606,95 @@ async def test_snapshot_requires_every_ready_required_binding_to_be_selected(
     )
 
     with pytest.raises(PlannedReferencesRequired):
+        await build_planned_reference_snapshot(
+            store,
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+        )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_allows_ready_required_explicit_fallback_to_be_omitted(
+    tmp_path: Path,
+) -> None:
+    binding = _binding(
+        asset_slot_id="character:alice:portrait",
+        resolution="explicit_fallback",
+    )
+    store = _BindingStore([binding])
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_portrait",
+        version_id="portrait-version-1",
+        asset_path=str(_image(tmp_path / "assets" / "alice-portrait.png")),
+        source_attempt_id="attempt-portrait-1",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        required_binding_keys=frozenset(
+            {(binding.asset_kind, binding.entity_id, binding.variant_id)}
+        ),
+    )
+
+    assert preview.bindings[0].resolution == "explicit_fallback"
+    assert preview.bindings[0].selected_by_default is True
+    snapshot = await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        selected_binding_ids=(),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+        required_binding_keys=frozenset(
+            {(binding.asset_kind, binding.entity_id, binding.variant_id)}
+        ),
+    )
+
+    assert snapshot.images == ()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_still_rejects_unavailable_required_explicit_fallback(
+    tmp_path: Path,
+) -> None:
+    binding = _binding(
+        asset_slot_id="character:alice:portrait",
+        resolution="explicit_fallback",
+    )
+    store = _BindingStore([binding])
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "production_workflow.json")
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+
+    with pytest.raises(
+        UnresolvedPlannedReference,
+        match="unresolved planned references",
+    ):
         await build_planned_reference_snapshot(
             store,
             workflow,

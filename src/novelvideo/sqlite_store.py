@@ -199,6 +199,30 @@ CREATE TABLE IF NOT EXISTS props (
     updated_at         TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS asset_import_previews (
+    import_id          TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL,
+    user_id            TEXT NOT NULL,
+    asset_type         TEXT NOT NULL,
+    filename           TEXT NOT NULL,
+    content_sha256     TEXT NOT NULL,
+    candidates_json    TEXT NOT NULL,
+    preview_json       TEXT NOT NULL,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    confirmed_at       TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS asset_import_audits (
+    import_id          TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL,
+    user_id            TEXT NOT NULL,
+    asset_type         TEXT NOT NULL,
+    filename           TEXT NOT NULL,
+    content_sha256     TEXT NOT NULL,
+    result_json        TEXT NOT NULL,
+    confirmed_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS beats (
     episode_number         INTEGER NOT NULL,
     beat_number            INTEGER NOT NULL,
@@ -1380,6 +1404,154 @@ class SQLiteStore:
             separators=(",", ":"),
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    async def save_asset_import_preview(
+        self, import_id: str, project_id: str, user_id: str, asset_type: str,
+        filename: str, content_sha256: str, candidates_json: str, preview_json: str,
+    ) -> None:
+        """Persist candidate data without retaining the uploaded document body."""
+        db = await self._ensure_db()
+        await db.execute(
+            """INSERT INTO asset_import_previews
+               (import_id, project_id, user_id, asset_type, filename, content_sha256,
+                candidates_json, preview_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (import_id, project_id, user_id, asset_type, filename, content_sha256,
+             candidates_json, preview_json),
+        )
+        await db.commit()
+
+    async def get_asset_import_preview(self, import_id: str):
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM asset_import_previews
+               WHERE import_id = ? AND created_at >= datetime('now', '-24 hours')""",
+            (import_id,),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def get_asset_import_audit(
+        self, import_id: str, project_id: str, user_id: str, asset_type: str
+    ):
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM asset_import_audits
+               WHERE import_id = ? AND project_id = ? AND user_id = ? AND asset_type = ?""",
+            (import_id, project_id, user_id, asset_type),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def confirm_asset_import(self, import_id: str, asset_type: str, candidates, diffs, project_id: str, user_id: str) -> list[dict]:
+        """Atomically apply a server-side preview using fill-only SQL expressions."""
+        db = await self._ensure_db()
+        model_columns = {
+            "character": ("characters", {"aliases": "aliases_json", "role": "role", "gender": "gender", "age_group": "age_group", "body_type": "body_type", "description": "description"}),
+            "scene": ("scenes", {"aliases": "aliases_json", "scene_type": "scene_type", "time_of_day": "time_of_day", "environment_prompt": "environment_prompt", "description": "description", "notes": "notes"}),
+            "prop": ("props", {"aliases": "aliases_json", "prop_type": "prop_type", "visual_prompt": "visual_prompt", "description": "description", "owner": "owner", "notes": "notes"}),
+        }
+        table, allowed = model_columns[asset_type]
+        actual_diffs: list[dict] = []
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """SELECT * FROM asset_import_previews
+                   WHERE import_id = ? AND project_id = ? AND user_id = ? AND asset_type = ?
+                     AND created_at >= datetime('now', '-24 hours')""",
+                (import_id, project_id, user_id, asset_type),
+            ) as cursor:
+                record = await cursor.fetchone()
+            if not record:
+                raise ValueError("导入预览作用域不匹配、不存在或已过期")
+            claim = await db.execute(
+                """UPDATE asset_import_previews SET confirmed_at = datetime('now')
+                   WHERE import_id = ? AND project_id = ? AND user_id = ? AND asset_type = ?
+                     AND confirmed_at IS NULL AND created_at >= datetime('now', '-24 hours')""",
+                (import_id, project_id, user_id, asset_type),
+            )
+            if (claim.rowcount or 0) != 1:
+                raise ValueError("导入预览已确认")
+
+            from novelvideo.asset_imports.parsing import normalize_asset_name
+            for candidate in candidates:
+                # Re-read for every candidate so earlier inserts and aliases in this batch are visible.
+                async with db.execute(f"SELECT * FROM {table}") as cursor:
+                    existing_rows = await cursor.fetchall()
+                wanted = normalize_asset_name(candidate.name)
+                exact = [row for row in existing_rows if normalize_asset_name(row["name"]) == wanted]
+                alias_matches = [row for row in existing_rows if any(normalize_asset_name(alias) == wanted for alias in json.loads(row["aliases_json"] or "[]"))]
+                matches = list({row["name"]: row for row in [*exact, *alias_matches]}.values())
+                if len(matches) > 1:
+                    actual_diffs.append({"name": candidate.name, "canonical_name": None, "source_code": candidate.source_code, "disposition": "conflict", "changes": [], "warnings": ["名称或别名匹配到多个现有资产"]})
+                    continue
+                current = matches[0] if matches else None
+                target_name = current["name"] if current else candidate.name
+                values = {key: value for key, value in candidate.fields.items() if key in allowed}
+                serialized = {key: json.dumps(value, ensure_ascii=False) if key == "aliases" else value for key, value in values.items()}
+                created = False
+                if current is None:
+                    columns = ["name"] + [allowed[key] for key in serialized]
+                    placeholders = ", ".join("?" for _ in columns)
+                    cursor = await db.execute(
+                        f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+                        [target_name, *serialized.values()],
+                    )
+                    created = (cursor.rowcount or 0) > 0
+                # Always follow with conditional updates: INSERT OR IGNORE may have lost a race.
+                actual_changes = []
+                for key, value in serialized.items():
+                    column = allowed[key]
+                    empty_clause = f"({column} IS NULL OR {column} = '')"
+                    empty_params: list[object] = []
+                    if key == "aliases":
+                        empty_clause = f"({empty_clause} OR {column} = '[]')"
+                    technical_default = {
+                        "character": {"age_group": "youth"},
+                        "scene": {"scene_type": "interior"},
+                        "prop": {"prop_type": "object"},
+                    }.get(asset_type, {}).get(key)
+                    has_evidence = any(item.field == key for item in candidate.evidence)
+                    if technical_default is not None and has_evidence:
+                        empty_clause = f"({empty_clause} OR {column} = ?)"
+                        empty_params.append(technical_default)
+                    cursor = await db.execute(
+                        f"UPDATE {table} SET {column} = ?, updated_at = datetime('now') WHERE name = ? AND {empty_clause}",
+                        (value, target_name, *empty_params),
+                    )
+                    evidence = [item.model_dump(mode="json") for item in candidate.evidence if item.field == key]
+                    old_value = None if current is None else current[column]
+                    if key == "aliases" and isinstance(old_value, str):
+                        old_value = json.loads(old_value or "[]")
+                    change = {"field": key, "current": old_value, "proposed": values[key], "evidence": evidence}
+                    change["disposition"] = "fill" if created or (cursor.rowcount or 0) > 0 else "preserve"
+                    actual_changes.append(change)
+                actual_disposition = "create" if created else "supplement" if any(x["disposition"] == "fill" for x in actual_changes) else "skip"
+                actual_diffs.append({"name": candidate.name, "canonical_name": target_name, "source_code": candidate.source_code, "disposition": actual_disposition, "changes": actual_changes, "warnings": []})
+            preview_payload = json.loads(record["preview_json"] or "{}")
+            result_json = json.dumps(
+                {
+                    "diffs": actual_diffs,
+                    "preview_summary": {
+                        "ignored_sections": preview_payload.get("ignored_sections", []),
+                        "warnings": preview_payload.get("warnings", []),
+                        "created_at": record["created_at"],
+                        "filename": record["filename"],
+                        "content_sha256": record["content_sha256"],
+                        "asset_type": record["asset_type"],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            await db.execute(
+                """INSERT INTO asset_import_audits
+                   (import_id, project_id, user_id, asset_type, filename, content_sha256, result_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (import_id, record["project_id"], record["user_id"], record["asset_type"],
+                 record["filename"], record["content_sha256"], result_json),
+            )
+            await db.commit()
+            return actual_diffs
+        except Exception:
+            await db.rollback()
+            raise
 
     def is_closed(self) -> bool:
         return self._closing or self._closed

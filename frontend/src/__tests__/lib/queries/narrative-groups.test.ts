@@ -54,6 +54,7 @@ const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
     beat_ids: ["beat-1"],
     required: true,
     status: "ready",
+    resolution: "auto_matched",
     selected_by_default: true,
   }],
   max_images: 9,
@@ -416,6 +417,28 @@ describe("narrative group reference hooks", () => {
     );
     await waitFor(() => expect(enabled.result.current.data).toBeDefined());
     expect(requests).toBeGreaterThan(0);
+  });
+
+  it("surfaces the structured planning reason when reference preview returns 409", async () => {
+    server.use(http.get(
+      "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/render/references",
+      () => HttpResponse.json({
+        detail: {
+          code: "PLANNED_REFERENCES_REQUIRED",
+          message: "当前导演方案仍有未规划的必需引用: prop:深灰功德碑",
+        },
+      }, { status: 409 }),
+    ));
+
+    const query = renderHook(
+      () => useNarrativeGroupReferences("demo", 2, "ng-1", "render", true),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(query.result.current.isError).toBe(true));
+    expect(query.result.current.error).toMatchObject({
+      message: "当前导演方案仍有未规划的必需引用: prop:深灰功德碑",
+    });
   });
 
   it("uploads generation-only references as file-only form data", async () => {

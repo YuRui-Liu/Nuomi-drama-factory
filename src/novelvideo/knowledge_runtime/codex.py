@@ -58,7 +58,13 @@ def build_codex_process_env(*, environ: Mapping[str, str] | None = None, proxies
 def _process_group_kwargs(*, platform: str | None = None) -> dict[str, Any]:
     effective_platform = platform or os.name
     if effective_platform == "nt":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {
+            "creationflags": getattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0x00000200,
+            )
+        }
     return {"start_new_session": True}
 
 class _ThreadedProcess:
@@ -454,6 +460,7 @@ class CodexCliStructuredBackend:
         text_input: str,
         system_prompt: str,
         response_model: type[Any],
+        validation_context: dict[str, Any] | None = None,
         **_kwargs: Any,
     ) -> Any:
         schema = None if response_model is str else response_model.model_json_schema()
@@ -466,7 +473,10 @@ class CodexCliStructuredBackend:
             if response_model is str:
                 return raw.strip()
             try:
-                return response_model.model_validate_json(_strip_json_fence(raw))
+                return response_model.model_validate_json(
+                    _strip_json_fence(raw),
+                    context=validation_context,
+                )
             except (ValueError, ValidationError) as exc:
                 repair_error = _validation_summary(exc)
                 if attempt == 2:

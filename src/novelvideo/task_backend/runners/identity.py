@@ -5,14 +5,249 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
+import os
+from pathlib import Path
+import shutil
 from typing import Any
+import uuid
 
+from novelvideo.narrative_groups.reference_uploads import validate_reference_image
 from novelvideo.project_context import ProjectContext
+from novelvideo.production_workflow import (
+    ProductionWorkflowStore,
+    production_workflow_project_lock,
+)
+from novelvideo.production_workflow.character_portraits import (
+    materialize_legacy_character_portrait,
+    reconcile_character_portrait_canonical,
+    validate_character_name,
+)
+from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
+    character_state_slot_id,
+)
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _immutable_legacy_identity_reference(
+    *,
+    root: Path,
+    character_root: Path,
+    image_path: Path,
+) -> tuple[Path, bool]:
+    validated = validate_reference_image(image_path, allowed_roots=(character_root,))
+    extension = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+    }[validated.mime_type]
+    versions_root = (
+        character_root / "identities" / "_workflow_versions"
+    ).resolve(strict=False)
+    versions_root.relative_to(character_root)
+    immutable_path = (
+        versions_root / f"legacy-{validated.sha256[:20]}{extension}"
+    ).resolve(strict=False)
+    immutable_path.relative_to(character_root)
+    stage = immutable_path.with_name(
+        f".{immutable_path.stem}.{uuid.uuid4().hex}.stage{immutable_path.suffix}"
+    )
+    created = False
+    try:
+        versions_root.mkdir(parents=True, exist_ok=True)
+        if immutable_path.is_file():
+            existing = validate_reference_image(
+                immutable_path,
+                allowed_roots=(character_root,),
+            )
+            if existing.sha256 != validated.sha256:
+                raise RuntimeError("legacy identity history content mismatch")
+        else:
+            shutil.copy2(image_path, stage)
+            staged = validate_reference_image(stage, allowed_roots=(character_root,))
+            if staged.sha256 != validated.sha256:
+                raise RuntimeError("legacy identity changed while being copied")
+            with stage.open("rb") as staged_file:
+                os.fsync(staged_file.fileno())
+            os.replace(stage, immutable_path)
+            created = True
+    finally:
+        stage.unlink(missing_ok=True)
+    immutable_path.relative_to(root)
+    return immutable_path, created
+
+
+def _available_character_identity_ids(
+    *,
+    ctx: ProjectContext,
+    characters,
+) -> frozenset[str]:
+    """Return identities backed by a valid workflow current and real image."""
+
+    root = Path(ctx.output_dir).resolve()
+    state_dir = Path(ctx.state_dir)
+    available: set[str] = set()
+    with production_workflow_project_lock(state_dir):
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        for character in characters:
+            try:
+                character_name = validate_character_name(
+                    str(getattr(character, "name", "") or "")
+                )
+                canonical_characters_root = root / "assets" / "characters"
+                characters_root = canonical_characters_root.resolve(strict=False)
+                if characters_root != canonical_characters_root:
+                    raise ValueError("characters root must not be redirected")
+                characters_root.relative_to(root)
+                canonical_character_root = characters_root / character_name
+                if canonical_character_root.is_symlink():
+                    raise ValueError("character root must not be redirected")
+                character_root = canonical_character_root.resolve(strict=False)
+                if character_root != canonical_character_root:
+                    raise ValueError("character root must preserve physical identity")
+                character_root.relative_to(characters_root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            for identity in getattr(character, "identities", ()) or ():
+                identity_id = str(getattr(identity, "identity_id", "") or "").strip()
+                try:
+                    slot_id = character_state_slot_id(character_name, identity_id)
+                except ValueError:
+                    continue
+                try:
+                    slot, versions = workflow.get_slot(slot_id)
+                except KeyError:
+                    legacy_path = None
+                    for raw_path in getattr(identity, "reference_images", ()) or ():
+                        candidate = Path(str(raw_path or ""))
+                        if not candidate.is_absolute():
+                            candidate = root / candidate
+                        try:
+                            validated = validate_reference_image(
+                                candidate,
+                                allowed_roots=(character_root,),
+                            )
+                            legacy_path = Path(validated.image_path)
+                            break
+                        except (OSError, ValueError):
+                            continue
+                    if legacy_path is None:
+                        continue
+                    try:
+                        immutable_path, created = _immutable_legacy_identity_reference(
+                            root=root,
+                            character_root=character_root,
+                            image_path=legacy_path,
+                        )
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    workflow_snapshot = workflow.capture_file_snapshot()
+                    try:
+                        workflow.materialize_legacy_current(
+                            slot_id=slot_id,
+                            asset_kind="character_state",
+                            asset_path=immutable_path.relative_to(root).as_posix(),
+                        )
+                    except (OSError, ValueError, RuntimeError):
+                        workflow.restore_file_snapshot(workflow_snapshot)
+                        if created:
+                            immutable_path.unlink(missing_ok=True)
+                        continue
+                    slot, versions = workflow.get_slot(slot_id)
+                if (
+                    slot.slot_id != slot_id
+                    or slot.asset_kind != "character_state"
+                    or not slot.current_version_id
+                ):
+                    continue
+                current = versions.get(slot.current_version_id)
+                if (
+                    current is None
+                    or current.slot_id != slot_id
+                    or current.adoption_status.value not in {"provisional", "adopted"}
+                ):
+                    continue
+                metadata_identity_id = str(
+                    (current.generation_metadata or {}).get("identity_id") or ""
+                ).strip()
+                if metadata_identity_id and metadata_identity_id != identity_id:
+                    continue
+                image_path = Path(current.asset_path)
+                if not image_path.is_absolute():
+                    image_path = root / image_path
+                try:
+                    validate_reference_image(
+                        image_path,
+                        allowed_roots=(character_root,),
+                    )
+                except (OSError, ValueError):
+                    continue
+                available.add(identity_id)
+    return frozenset(available)
+
+
+def _available_character_portraits(
+    *,
+    ctx: ProjectContext,
+    characters,
+) -> frozenset[str]:
+    root = Path(ctx.output_dir).resolve()
+    state_dir = Path(ctx.state_dir)
+    available: set[str] = set()
+    with production_workflow_project_lock(state_dir):
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        for character in characters:
+            try:
+                character_name = validate_character_name(
+                    str(getattr(character, "name", "") or "")
+                )
+            except ValueError:
+                continue
+            try:
+                slot_id = character_portrait_slot_id(character_name)
+            except ValueError:
+                continue
+            try:
+                slot, _versions = workflow.get_slot(slot_id)
+            except KeyError:
+                slot = None
+            if slot is not None and slot.asset_kind != "character_portrait":
+                logger.warning(
+                    "ignoring incompatible character portrait slot kind",
+                    extra={"slot_id": slot_id, "asset_kind": slot.asset_kind},
+                )
+                continue
+            try:
+                if not materialize_legacy_character_portrait(
+                    workflow=workflow,
+                    project_dir=root,
+                    character_name=character_name,
+                ):
+                    continue
+                slot, _versions = workflow.get_slot(slot_id)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if slot.asset_kind != "character_portrait":
+                logger.warning(
+                    "ignoring incompatible character portrait slot kind",
+                    extra={"slot_id": slot_id, "asset_kind": slot.asset_kind},
+                )
+                continue
+            try:
+                usable = reconcile_character_portrait_canonical(
+                    workflow=workflow,
+                    project_dir=root,
+                    character_name=character_name,
+                )
+            except (OSError, ValueError):
+                continue
+            if usable:
+                available.add(character_name)
+    return frozenset(available)
 
 
 async def _refresh_identity_caches(cognee_store: Any) -> bool:
@@ -62,6 +297,8 @@ def _character_identity_bindings(
     characters,
     scenes,
     props,
+    available_character_portraits=(),
+    available_character_identity_ids=None,
 ):
     """Project only identity bindings, overlaying the zero-write draft snapshot."""
     from novelvideo.narrative_groups.planned_binding_service import (
@@ -86,8 +323,45 @@ def _character_identity_bindings(
         characters=tuple(characters_by_name.values()),
         scenes=scenes,
         props=props,
+        episode_identity_ids=draft.episode_identity_ids,
+        identity_default_map=draft.identity_default_map,
+        available_character_portraits=available_character_portraits,
+        available_character_identity_ids=available_character_identity_ids,
     )
     return bindings_by_kind(bindings).get("character_identity", ())
+
+
+def _character_identity_bindings_for_publish(
+    *,
+    ctx: ProjectContext,
+    project_id: str,
+    episode_number: int,
+    director_plan,
+    draft,
+    characters,
+    scenes,
+    props,
+):
+    """Re-read workflow availability immediately before binding publication."""
+
+    merged = {character.name: character for character in characters}
+    merged.update({character.name: character for character in draft.characters})
+    current_characters = tuple(merged.values())
+    return _character_identity_bindings(
+        project_id=project_id,
+        episode_number=episode_number,
+        director_plan=director_plan,
+        draft=draft,
+        characters=characters,
+        scenes=scenes,
+        props=props,
+        available_character_portraits=_available_character_portraits(
+            ctx=ctx, characters=current_characters
+        ),
+        available_character_identity_ids=_available_character_identity_ids(
+            ctx=ctx, characters=current_characters
+        ),
+    )
 
 
 def run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
@@ -149,6 +423,28 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         update(log=message)
 
     draft = await planner.build_identity_plan_draft(episode_obj, on_log=on_log)
+    persisted_characters = tuple(cognee_store.get_all_characters())
+    portrait_characters = {character.name: character for character in persisted_characters}
+    portrait_characters.update(
+        {character.name: character for character in draft.characters}
+    )
+    available_character_portraits = _available_character_portraits(
+        ctx=ctx,
+        characters=tuple(portrait_characters.values()),
+    )
+    available_character_identity_ids = _available_character_identity_ids(
+        ctx=ctx,
+        characters=tuple(portrait_characters.values()),
+    )
+    logger.debug(
+        "sampled identity assets before final publication check",
+        extra={
+            "portrait_count": len(available_character_portraits),
+            "identity_count": len(available_character_identity_ids),
+        },
+    )
+    scenes = tuple(await sqlite_store.list_scenes())
+    props = tuple(await sqlite_store.list_props())
 
     from novelvideo.director_plan.store import DirectorPlanStore
 
@@ -156,14 +452,15 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
     with director_plan_store.lock_active_revision(episode) as director_plan:
         if director_plan is None:
             raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
-        bindings = _character_identity_bindings(
+        bindings = _character_identity_bindings_for_publish(
+            ctx=ctx,
             project_id=ctx.project_id,
             episode_number=episode,
             director_plan=director_plan,
             draft=draft,
-            characters=tuple(cognee_store.get_all_characters()),
-            scenes=tuple(await sqlite_store.list_scenes()),
-            props=tuple(await sqlite_store.list_props()),
+            characters=persisted_characters,
+            scenes=scenes,
+            props=props,
         )
         publication = await sqlite_store.publish_identity_plan_atomic(
             episode_number=episode,

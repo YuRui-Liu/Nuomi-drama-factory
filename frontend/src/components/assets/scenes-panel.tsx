@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Map, Plus, Sparkles } from "lucide-react";
+import { FileUp, Loader2, Map, Plus, Sparkles } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
+import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { SceneAssetCard } from "@/components/assets/scene-asset-card";
 import { SceneReferenceVersions } from "@/components/assets/scene-reference-versions";
@@ -1149,6 +1150,7 @@ export function ScenesPanel({
   const scenes = useScenes(project);
   const createScene = useCreateScene(project);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<SceneAsset | null>(null);
   const [draftSeed, setDraftSeed] = useState<Partial<ScenePayload> | null>(null);
   const [selectedBaseName, setSelectedBaseName] = useState<string | null>(() =>
@@ -1328,6 +1330,10 @@ export function ScenesPanel({
           refreshing={scenes.isRefetching}
           data-scenes-refresh
         />
+        <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}>
+          <FileUp className="size-3.5" />
+          {t("assets.import.button.scene")}
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -1360,6 +1366,9 @@ export function ScenesPanel({
           />
         </Button>
       </AssetHeaderActions>
+      {importOpen ? (
+        <AssetImportDialog project={project} assetType="scene" open onOpenChange={setImportOpen} />
+      ) : null}
       {refIndex.isError ? (
         <p role="alert" className="px-4 pb-2 text-xs text-destructive">
           {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}

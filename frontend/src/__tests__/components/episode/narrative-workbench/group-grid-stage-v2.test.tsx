@@ -27,7 +27,9 @@ describe("narrative production batches and segments", () => {
     expect(screen.getByText("二联画 · 2 个镜头")).toBeInTheDocument();
     expect(screen.getByText(/grsai-main\/gpt-image-2-vip/)).toBeInTheDocument();
     expect(screen.getByText(/2K.*2160x3840/)).toBeInTheDocument();
-    expect(screen.getByText(/style-hash-abc/)).toBeInTheDocument();
+    expect(screen.getByText(/风格已锁定/)).toBeInTheDocument();
+    expect(screen.queryByText(/style-hash-abc/)).not.toBeInTheDocument();
+    expect(screen.getByTitle("风格版本：style-hash-abc")).toBeInTheDocument();
     expect(screen.getByText(/亮边 0.40%/)).toBeInTheDocument();
   });
 
