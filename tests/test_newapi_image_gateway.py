@@ -1383,7 +1383,7 @@ async def test_legacy_newapi_image_entry_prefers_configured_grsai(monkeypatch):
 
     result = await nanobanana_grid._call_newapi_image_api(
         api_key="",
-        model="legacy-newapi-model",
+        model="LingShan-G2",
         prompt="draw a scene",
         reference_images=[b"png-bytes"],
         image_config={"aspect_ratio": "16:9", "image_size": "2K"},
@@ -1392,3 +1392,114 @@ async def test_legacy_newapi_image_entry_prefers_configured_grsai(monkeypatch):
     assert result == (b"grsai-image", "", "")
     assert calls["model"] == "gpt-image-2"
     assert calls["reference_images"][0][1] == b"png-bytes"
+
+
+@pytest.mark.asyncio
+async def test_legacy_newapi_image_entry_preserves_supported_grsai_model(monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.generators import nanobanana_grid
+
+    calls = {}
+
+    async def fake_grsai(**kwargs):
+        calls.update(kwargs)
+        return b"grsai-image", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+
+    result = await nanobanana_grid._call_newapi_image_api(
+        api_key="",
+        model="gpt-image-2-vip",
+        prompt="draw a scene",
+    )
+
+    assert result == (b"grsai-image", "", "")
+    assert calls["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
+async def test_legacy_newapi_image_entry_rejects_unknown_model_before_grsai(monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.generators import nanobanana_grid
+
+    called = False
+
+    async def fake_grsai(**_kwargs):
+        nonlocal called
+        called = True
+        return b"grsai-image", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model="outside-catalog-model",
+            prompt="draw a scene",
+        )
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generator_keeps_raw_grsai_model_id(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    captured = {}
+
+    async def fake_grsai(**kwargs):
+        captured.update(kwargs)
+        return b"portrait", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+    monkeypatch.setattr(
+        nanobanana_character,
+        "get_style_preset",
+        lambda *_args, **_kwargs: {
+            "style_instructions": "anime",
+            "avoid_instructions": "text",
+        },
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(
+            model="gpt-image-2",
+            api_key="grsai-key",
+            account=SimpleNamespace(base_url="https://grsai.test"),
+        ),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    paths = await image_generator.generate_character_reference_unified(
+        character_name="小鹿",
+        appearance_prompt="black hair",
+        output_dir=str(tmp_path),
+        model="gpt-image-2-vip",
+    )
+
+    assert paths == [str(tmp_path / "reference_portrait.png")]
+    assert (tmp_path / "reference_portrait.png").read_bytes() == b"portrait"
+    assert captured["model"] == "gpt-image-2-vip"

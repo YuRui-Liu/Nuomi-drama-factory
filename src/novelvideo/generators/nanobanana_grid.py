@@ -3305,7 +3305,28 @@ async def _call_newapi_image_api(
         grsai_runtime = None
 
     if grsai_runtime is not None:
+        from novelvideo.config import (
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        )
         from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+
+        requested_model = str(model or "").strip()
+        legacy_selections = {
+            *IMAGE_GENERATION_SELECTIONS,
+            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            *(
+                entry["model"]
+                for entry in IMAGE_GENERATION_SELECTIONS.values()
+            ),
+        }
+        if requested_model in GRSAI_IMAGE_MODELS:
+            grsai_model = requested_model
+        elif not requested_model or requested_model in legacy_selections:
+            grsai_model = grsai_runtime.model
+        else:
+            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
 
         normalized_refs: list[tuple[str, bytes, str]] = []
         for index, item in enumerate(reference_images or []):
@@ -3316,7 +3337,7 @@ async def _call_newapi_image_api(
             else:
                 normalized_refs.append((f"reference_{index}", item[0], str(item[1])))
         return await _call_grsai_image_api(
-            model=grsai_runtime.model,
+            model=grsai_model,
             prompt=prompt,
             reference_images=normalized_refs or None,
             image_config=image_config or {},

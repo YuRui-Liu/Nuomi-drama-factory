@@ -223,7 +223,34 @@ async def _run_scene_reference_asset(
             get_media_capability_store(),
             get_media_credential_resolver(),
         )
-        model = grsai_runtime.model
+        from novelvideo.config import (
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        )
+        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+        from novelvideo.project_config import load_project_config_file
+
+        requested_model = str(payload.get("model") or "").strip()
+        project_model = str(
+            load_project_config_file(ctx.owner_username, ctx.project_name).get(
+                "scene_image_selection"
+            )
+            or ""
+        ).strip()
+        legacy_selections = {
+            *IMAGE_GENERATION_SELECTIONS,
+            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        }
+        if requested_model in GRSAI_IMAGE_MODELS:
+            model = requested_model
+        elif requested_model in legacy_selections:
+            model = grsai_runtime.model
+        elif requested_model:
+            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+        elif project_model in GRSAI_IMAGE_MODELS:
+            model = project_model
+        else:
+            model = grsai_runtime.model
         candidate_path = _scene_reference_version_path(
             output_dir,
             scene_name=scene.name,

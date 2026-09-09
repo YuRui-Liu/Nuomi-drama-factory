@@ -94,6 +94,10 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "get_task_manager",
         lambda: SimpleNamespace(update_progress_for_project=lambda *_a, **_k: None),
     )
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file",
+        lambda *_args: {"prop_image_selection": "nano-banana-pro"},
+    )
 
     ctx = SimpleNamespace(
         owner_project_label="frank/demo",
@@ -107,14 +111,19 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "payload": {
             "prop_name": prop.name,
             "style": "anime",
-            "model": "requested-model",
+            "model": "gpt-image-2-vip",
             "output_dir": str(tmp_path),
         },
     }
 
     first = await prop_reference._run_prop_reference_asset(envelope, ctx)
     second = await prop_reference._run_prop_reference_asset(
-        {**envelope, "task_id": "attempt-2"}, ctx
+        {
+            **envelope,
+            "task_id": "attempt-2",
+            "payload": {key: value for key, value in envelope["payload"].items() if key != "model"},
+        },
+        ctx,
     )
 
     canonical = tmp_path / "assets" / "props" / prop.name / "reference_3view.png"
@@ -122,7 +131,8 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert first["slot_id"] == "prop:手机:reference"
     assert first["adoption_status"] == "provisional"
     assert second["adoption_status"] == "candidate"
-    assert calls[0]["model"] == "requested-model"
+    assert calls[0]["model"] == "gpt-image-2-vip"
+    assert calls[1]["model"] == "nano-banana-pro"
     assert calls[0]["aspect_ratio"] == "16:9"
     assert "front, strict side, and back" in calls[0]["prompt"]
     assert "readable text" in calls[0]["prompt"]
@@ -138,3 +148,73 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert versions[second["version_id"]].generation_metadata["canonical_path"] == (
         "assets/props/手机/reference_3view.png"
     )
+
+
+@pytest.mark.asyncio
+async def test_batch_prop_runner_uses_project_model_when_payload_omits_it(
+    monkeypatch, tmp_path
+):
+    from novelvideo.models import NovelProp
+    from novelvideo.task_backend.runners import prop_reference
+
+    prop = NovelProp(name="钥匙", prop_type="object", visual_prompt="brass key")
+    calls = []
+
+    class FakeSQLiteStore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def load_graph_state(self):
+            pass
+
+        async def list_props(self):
+            return [prop]
+
+        async def close(self):
+            pass
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        output = Path(kwargs["output_path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"candidate")
+        return output
+
+    monkeypatch.setattr("novelvideo.sqlite_store.SQLiteStore", FakeSQLiteStore)
+    monkeypatch.setattr(
+        "novelvideo.task_backend.runners.character_image._generate_grsai_image",
+        fake_generate,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file",
+        lambda *_args: {"prop_image_selection": "nano-banana-pro-vip"},
+    )
+    monkeypatch.setattr(
+        prop_reference,
+        "get_task_manager",
+        lambda: SimpleNamespace(update_progress_for_project=lambda *_a, **_k: None),
+    )
+    ctx = SimpleNamespace(
+        owner_project_label="frank/demo",
+        owner_username="frank",
+        project_name="demo",
+        output_dir=tmp_path,
+        state_dir=tmp_path,
+        requester_username="frank",
+    )
+
+    result = await prop_reference._run_batch_prop_ref(
+        {"payload": {"output_dir": str(tmp_path)}}, ctx
+    )
+
+    assert result == {"generated": 1}
+    assert calls[0]["model"] == "nano-banana-pro-vip"

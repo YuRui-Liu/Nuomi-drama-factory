@@ -67,6 +67,7 @@ from novelvideo.config import (
 )
 from novelvideo.image_request_usage import get_image_usage_summary
 from novelvideo.media_capabilities.image.catalog import list_image_models
+from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.project_config import (
     load_project_config,
@@ -202,6 +203,8 @@ def _resolve_character_image_model(username: str, project: str, requested_model:
         )
         or ""
     ).strip()
+    if saved_selection in GRSAI_IMAGE_MODELS:
+        return saved_selection
     if saved_selection in options:
         return saved_selection
     selection = normalize_character_image_selection(saved_selection)

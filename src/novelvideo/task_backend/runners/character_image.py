@@ -304,9 +304,33 @@ async def _run_character_image(
         ethnicity = project_config.get("ethnicity", "Chinese")
         from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
         from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
-        model = load_grsai_runtime_configuration(
+        from novelvideo.config import (
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        )
+        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+
+        runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
-        ).model
+        )
+        requested_model = str(payload.get("model") or "").strip()
+        project_model = str(
+            project_config.get("character_image_selection") or ""
+        ).strip()
+        legacy_selections = {
+            *IMAGE_GENERATION_SELECTIONS,
+            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        }
+        if requested_model in GRSAI_IMAGE_MODELS:
+            model = requested_model
+        elif requested_model in legacy_selections:
+            model = runtime.model
+        elif requested_model:
+            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+        elif project_model in GRSAI_IMAGE_MODELS:
+            model = project_model
+        else:
+            model = runtime.model
         from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
         visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(

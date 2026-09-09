@@ -137,6 +137,12 @@ async def _run_prop_reference_asset(
 ) -> dict[str, Any] | None:
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
@@ -169,7 +175,27 @@ async def _run_prop_reference_asset(
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-        model = str(payload.get("model") or runtime.model).strip() or runtime.model
+        requested_model = str(payload.get("model") or "").strip()
+        project_model = str(
+            load_project_config_file(ctx.owner_username, ctx.project_name).get(
+                "prop_image_selection"
+            )
+            or ""
+        ).strip()
+        legacy_selections = {
+            *IMAGE_GENERATION_SELECTIONS,
+            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        }
+        if requested_model in GRSAI_IMAGE_MODELS:
+            model = requested_model
+        elif requested_model in legacy_selections:
+            model = runtime.model
+        elif requested_model:
+            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+        elif project_model in GRSAI_IMAGE_MODELS:
+            model = project_model
+        else:
+            model = runtime.model
         prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
             model=model,
@@ -214,8 +240,14 @@ def run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[st
 
 
 async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
@@ -223,6 +255,17 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
     style = str(payload.get("style") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     manager = get_task_manager()
+    project_model = str(
+        load_project_config_file(ctx.owner_username, ctx.project_name).get(
+            "prop_image_selection"
+        )
+        or ""
+    ).strip()
+    requested_model = str(payload.get("model") or "").strip()
+    legacy_selections = {
+        *IMAGE_GENERATION_SELECTIONS,
+        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    }
 
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
@@ -253,7 +296,16 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             runtime = load_grsai_runtime_configuration(
                 get_media_capability_store(), get_media_credential_resolver()
             )
-            model = str(payload.get("model") or runtime.model).strip() or runtime.model
+            if requested_model in GRSAI_IMAGE_MODELS:
+                model = requested_model
+            elif requested_model in legacy_selections:
+                model = runtime.model
+            elif requested_model:
+                raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+            elif project_model in GRSAI_IMAGE_MODELS:
+                model = project_model
+            else:
+                model = runtime.model
             visual_prompt = prop.visual_prompt or prop.description or prop.name
             prompt = _prop_reference_prompt(
                 style=style,

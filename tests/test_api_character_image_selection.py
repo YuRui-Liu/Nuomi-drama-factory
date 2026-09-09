@@ -179,6 +179,43 @@ def test_patch_response_uses_the_selection_written_by_this_request(
     assert response.json()["data"]["image_source_selection"] == "nano-banana-2"
 
 
+def test_portrait_async_injects_project_character_model_into_task_payload(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo.api.routes import characters
+
+    client, _config = _client(
+        monkeypatch,
+        tmp_path,
+        config={"character_image_selection": "gpt-image-2-vip"},
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_enqueue(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_state=SimpleNamespace(task_id="task-portrait"),
+            backend="celery",
+            queue="default",
+        )
+
+    monkeypatch.setattr(
+        characters,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=fake_enqueue),
+    )
+    monkeypatch.setattr(
+        characters,
+        "load_project_config",
+        lambda *_args: {"visual_style": "anime"},
+    )
+
+    response = client.post("/api/v1/projects/demo/characters/小鹿/portrait-async", json={})
+
+    assert response.status_code == 200
+    assert captured["payload"]["model"] == "gpt-image-2-vip"
+
+
 def test_patch_persists_only_target_key_in_real_project_config(
     monkeypatch, tmp_path
 ) -> None:
