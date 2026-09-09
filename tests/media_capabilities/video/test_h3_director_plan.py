@@ -1409,3 +1409,104 @@ def test_new_input_models_are_frozen_and_forbid_extra_fields():
         director_plan_module.H3ReferenceSubjectPlan(
             **subject.model_dump(), unknown="value"
         )
+
+
+@pytest.mark.parametrize("mode", (H3Mode.FL2VA, H3Mode.L2VA))
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("reference_summary", "Preserve Lin from source picture 1."),
+        ("reference_subjects", (_reference_subject(),)),
+    ),
+)
+def test_v3_frame_conditioned_modes_reject_reference_inputs(mode, field, value):
+    with pytest.raises(ValidationError, match=f"{mode.value}.*reference"):
+        H3DirectorPlan(**_director_payload(mode, **{field: value}))
+
+
+@pytest.mark.parametrize("field", ("first_frame_anchor", "last_frame_anchor"))
+def test_v3_ref2va_rejects_frame_anchors(field):
+    with pytest.raises(ValidationError, match="ref2va.*frame anchors"):
+        H3DirectorPlan(
+            **_director_payload(H3Mode.REF2VA, **{field: _frame_anchor()})
+        )
+
+
+@pytest.mark.parametrize("indexes", ((), (0,), (-1,)))
+def test_reference_subject_requires_positive_source_picture_indexes(indexes):
+    with pytest.raises(ValidationError, match="source_picture_indexes"):
+        _reference_subject(source_picture_indexes=indexes)
+
+
+@pytest.mark.parametrize(
+    ("shot_ids", "message"),
+    (
+        ((), "shot_ids"),
+        (("0",), "positive integer strings"),
+        (("one",), "positive integer strings"),
+        (("1", "1"), "strictly increasing"),
+        (("2", "1"), "strictly increasing"),
+    ),
+)
+def test_reference_subject_requires_ordered_positive_shot_ids(shot_ids, message):
+    with pytest.raises(ValidationError, match=message):
+        _reference_subject(shot_ids=shot_ids)
+
+
+def test_reference_subject_rejects_unknown_retention_marker():
+    with pytest.raises(ValidationError, match="retention_marker"):
+        _reference_subject(retention_marker="identity_guess")
+
+
+@pytest.mark.parametrize("speaker_id", ("S0", "S01", "speaker-1"))
+def test_reference_subject_rejects_unstable_speaker_ids(speaker_id):
+    with pytest.raises(ValidationError, match="speaker_id"):
+        _reference_subject(speaker_id=speaker_id)
+
+
+@pytest.mark.parametrize("field", ("description", "retention_detail"))
+def test_reference_subject_text_fields_reject_blank_values(field):
+    with pytest.raises(ValidationError, match="must not be blank"):
+        _reference_subject(**{field: "  "})
+
+
+@pytest.mark.parametrize("field", ("description", "retention_detail"))
+@pytest.mark.parametrize(
+    ("value", "message"),
+    (
+        ("safe <SceneTrans> injected", "reserved wire marker"),
+        ("overall_soundscape: injected", "reserved wire field"),
+    ),
+)
+def test_reference_subject_text_fields_reject_wire_injection(
+    field, value, message
+):
+    with pytest.raises(ValidationError, match=message):
+        _reference_subject(**{field: value})
+
+
+@pytest.mark.parametrize("schema_version", (1, 2))
+@pytest.mark.parametrize(
+    "mode", (H3Mode.T2VA, H3Mode.L2VA, H3Mode.REF2VA)
+)
+def test_legacy_schema_versions_reject_v3_only_modes(schema_version, mode):
+    payload = _director_payload(H3Mode.T2VA)
+    payload.update(schema_version=schema_version, mode=mode)
+
+    with pytest.raises(ValidationError, match="support only i2va and fl2va"):
+        H3DirectorPlan(**payload)
+
+
+def test_v3_carries_rigid_prompt_and_round_trips():
+    plan = H3DirectorPlan(
+        **_director_payload(H3Mode.T2VA, rigid_prompt=_rigid_prompt())
+    )
+
+    assert plan.rigid_prompt == _rigid_prompt()
+    assert H3DirectorPlan.model_validate_json(plan.model_dump_json()) == plan
+
+
+def test_frame_anchor_trims_and_lowercases_sha256():
+    anchor = _frame_anchor(f"  {_FIRST_SHA}  ")
+
+    assert anchor.sha256 == _FIRST_SHA.lower()
