@@ -26,6 +26,7 @@ from novelvideo.production_workflow import (
     AssetVersion,
     ProductionWorkflowStore,
 )
+from novelvideo.production_workflow.character_portraits import validate_character_name
 from novelvideo.production_workflow.store import production_workflow_project_lock
 
 from novelvideo.production_workflow.slot_ids import (
@@ -1059,9 +1060,15 @@ def _resolve_binding(
             if characters_root != canonical_characters_root:
                 raise ValueError("characters root must not be redirected")
             characters_root.relative_to(project_root)
-            character_root = (characters_root / parts[1]).resolve(strict=False)
+            character_name = validate_character_name(parts[1])
+            canonical_character_root = characters_root / character_name
+            if canonical_character_root.is_symlink():
+                raise ValueError("character root must not be redirected")
+            character_root = canonical_character_root.resolve(strict=False)
+            if character_root != canonical_character_root:
+                raise ValueError("character root must preserve physical identity")
             character_root.relative_to(characters_root)
-        except ValueError:
+        except (OSError, RuntimeError, ValueError):
             return _unavailable(
                 binding, "character state asset root is invalid", status="missing_asset"
             )

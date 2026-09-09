@@ -103,11 +103,14 @@ def _available_character_identity_ids(
                 if characters_root != canonical_characters_root:
                     raise ValueError("characters root must not be redirected")
                 characters_root.relative_to(root)
-                character_root = (characters_root / character_name).resolve(
-                    strict=False
-                )
+                canonical_character_root = characters_root / character_name
+                if canonical_character_root.is_symlink():
+                    raise ValueError("character root must not be redirected")
+                character_root = canonical_character_root.resolve(strict=False)
+                if character_root != canonical_character_root:
+                    raise ValueError("character root must preserve physical identity")
                 character_root.relative_to(characters_root)
-            except ValueError:
+            except (OSError, RuntimeError, ValueError):
                 continue
             for identity in getattr(character, "identities", ()) or ():
                 identity_id = str(getattr(identity, "identity_id", "") or "").strip()

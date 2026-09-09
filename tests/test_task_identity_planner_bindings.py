@@ -321,6 +321,32 @@ def test_identity_runner_rejects_characters_root_symlink(tmp_path):
     assert not (character_root / "identities" / "_workflow_versions").exists()
 
 
+def test_identity_runner_rejects_sibling_character_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    characters_root = tmp_path / "assets" / "characters"
+    other_root = characters_root / "Other"
+    other_root.mkdir(parents=True)
+    image_path = other_root / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (characters_root / "Lin").symlink_to(other_root, target_is_directory=True)
+    identity = CharacterIdentity(
+        identity_id="lin-duty",
+        character_name="Lin",
+        identity_name="Duty",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("Lin", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+    assert not (other_root / "identities" / "_workflow_versions").exists()
+
+
 def test_identity_legacy_snapshot_rejects_changed_copy(tmp_path, monkeypatch):
     from PIL import Image
 

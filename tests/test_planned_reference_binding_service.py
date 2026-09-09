@@ -515,6 +515,63 @@ async def test_direct_identity_preview_rejects_characters_root_symlink(
     assert preview.bindings[0].version_id == ""
 
 
+async def test_direct_identity_preview_rejects_sibling_character_symlink(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "lin-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin",
+                "identities": [
+                    {
+                        "identity_id": "lin-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("lin-duty",),
+    )
+    characters_root = tmp_path / "assets" / "characters"
+    other_root = characters_root / "Other"
+    image_path = other_root / "state.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (characters_root / "Lin").symlink_to(other_root, target_is_directory=True)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="sibling-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "lin-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "missing_asset"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
 def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:
     [binding] = _project(
         shots=[
