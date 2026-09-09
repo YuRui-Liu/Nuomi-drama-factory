@@ -44,6 +44,10 @@ from novelvideo.media_capabilities.video.runtime import (
 from novelvideo.media_capabilities.video.workflow_registry import (
     load_h3_reference_workflow_profile,
 )
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    compile_h3_wire,
+)
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.narrative_groups.video_references import (
     MAX_VIDEO_REFERENCE_BYTES,
@@ -1337,12 +1341,20 @@ async def generate_h3_reference_director_video(
     global_references,
     reference_limit: int,
     workflow_id: str,
+    wire: H3ReferenceWire,
     frozen_frames=None,
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> H3GenerationResult:
     """Submit H3 Ref using immutable bytes captured before remote I/O."""
     from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_data
     normalized_segments = tuple(segments)
+    if not isinstance(wire, H3ReferenceWire):
+        raise ValueError("a validated H3ReferenceWire is required")
+    final_wire = compile_h3_wire(wire)
+    if any(segment.prompt != final_wire for segment in normalized_segments):
+        raise ValueError(
+            "every H3 reference segment prompt must equal its compiled wire"
+        )
     timeline = build_h3_timeline_data(normalized_segments, strict_first_frame=True)
     references, preflight_references, reference_suffixes, frames = _freeze_inputs(
         normalized_segments,
@@ -1365,6 +1377,7 @@ async def generate_h3_reference_director_video(
         timeline,
         preflight_references,
         max_references=reference_limit,
+        wire=wire,
         mode=mode,
         uploaded_frames=preflight_frames,
         aspect_ratio=aspect_ratio,
@@ -1409,6 +1422,7 @@ async def generate_h3_reference_director_video(
             timeline,
             uploaded_references,
             max_references=reference_limit,
+            wire=wire,
             mode=mode,
             uploaded_frames=uploaded_frames,
             aspect_ratio=aspect_ratio,
@@ -1430,7 +1444,7 @@ async def generate_h3_reference_director_video(
                 if actual_mode == "fl2va"
                 else MediaCapability.VIDEO_I2VA
             ),
-            prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
+            prompt=final_wire,
             duration=timeline.duration_seconds,
             first_frame=f"sha256:{first_frame.sha256}",
             last_frame=(f"sha256:{frames[last_source].sha256}" if last_source else None),

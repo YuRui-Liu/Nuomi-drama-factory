@@ -12,6 +12,12 @@ import pytest
 from PIL import Image
 
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.h3_prompt import H3Mode
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    H3RetentionItem,
+    compile_h3_wire,
+)
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 
 
@@ -31,6 +37,26 @@ def _png_bytes() -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (3, 3), "green").save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _reference_wire(*, duration_seconds: float = 4) -> H3ReferenceWire:
+    return H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=duration_seconds,
+        subject_definitions="<Subject 1>: 阿明 from <Picture 1>.",
+        summary="[reference generation] 阿明走近。",
+        retention_analysis=(
+            H3RetentionItem(
+                subject="<Subject 1> (appears in [Shot 1])",
+                retain="fully_preserved - identity and proportions",
+            ),
+        ),
+        detailed_description=(
+            f"[Shot 1] [0-{duration_seconds:g}s] 阿明走近。"
+        ),
+        overall_soundscape="安静的室内环境声。",
+        non_diegetic_music="N/A",
+    )
 
 
 def test_task_display_metadata_persists_reference_snapshot_ownership() -> None:
@@ -832,21 +858,57 @@ async def test_reference_runtime_validates_all_local_inputs_before_upload(
     monkeypatch.setattr(runtime, "_load_runtime", lambda: configured)
     missing = tmp_path / "missing.png"
     reference = _reference(tmp_path / "deleted-reference.png", _png_bytes())
+    wire = _reference_wire()
 
     with pytest.raises(ValueError, match="missing.*H3 frame"):
         await runtime.generate_h3_reference_director_video(
             SimpleNamespace(runtime_dir=tmp_path / "runtime"),
             segments=(H3DirectorSegment(
-                segment_id="s1", beat_number=1, prompt="走近",
-                duration_seconds=2, first_frame=str(missing),
+                segment_id="s1", beat_number=1, prompt=compile_h3_wire(wire),
+                duration_seconds=4, first_frame=str(missing),
             ),),
             output_path=str(tmp_path / "out.mp4"),
             aspect_ratio="9:16", resolution="720p", mode="auto",
             global_references=(reference,), reference_limit=5,
             workflow_id="2096502793044582401",
+            wire=wire,
         )
 
     assert uploads == []
+
+
+@pytest.mark.asyncio
+async def test_reference_runtime_rejects_prompt_that_did_not_come_from_wire(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (5, 5), "black").save(frame)
+    monkeypatch.setattr(
+        runtime,
+        "_load_runtime",
+        lambda: pytest.fail("runtime must not load for an untrusted prompt"),
+    )
+
+    with pytest.raises(ValueError, match="prompt.*compiled wire"):
+        await runtime.generate_h3_reference_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="s1",
+                beat_number=1,
+                prompt="arbitrary legacy prompt",
+                duration_seconds=4,
+                first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"),
+            global_references=(
+                _reference(tmp_path / "deleted-reference.png", _png_bytes()),
+            ),
+            reference_limit=5,
+            workflow_id="2096502793044582401",
+            wire=_reference_wire(),
+        )
 
 
 @pytest.mark.asyncio
@@ -864,9 +926,10 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     frozen_reference = ref_path.read_bytes()
     reference = _reference(ref_path, frozen_reference)
     ref_path.write_bytes(b"changed-after-resolution")
+    wire = _reference_wire()
     segment = H3DirectorSegment(
-        segment_id="s1", beat_number=1, prompt="走近",
-        duration_seconds=2, first_frame=str(first), last_frame=str(last),
+        segment_id="s1", beat_number=1, prompt=compile_h3_wire(wire),
+        duration_seconds=4, first_frame=str(first), last_frame=str(last),
     )
     frozen_frames = runtime.freeze_h3_reference_frames(
         (segment,), project_root=tmp_path
@@ -929,6 +992,7 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
         aspect_ratio="9:16", resolution="720p", mode="auto",
         global_references=(reference,), reference_limit=5,
         workflow_id="2096502793044582401",
+        wire=wire,
         frozen_frames=frozen_frames,
         on_provider_submitted=on_submitted,
     )
@@ -936,10 +1000,20 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     assert uploads[0] == frozen_reference
     assert set(uploads[1:]) == {frozen_first, frozen_last}
     assert captured["profile"].workflow_id == "2096502793044582401"
+    timeline_data = json.loads(captured["timeline_data"])
+    assert {
+        timeline_data["global"]["prompt"],
+        *(item["prompt"] for item in timeline_data["segments"]),
+        *(item["prompt"] for item in timeline_data["shots"]),
+        *(item["prompt"] for item in timeline_data["keyframes"]),
+        captured["request"].prompt,
+    } == {compile_h3_wire(wire)}
     assert not captured["request"].reference_images
     assert captured["request"].capability.value == "video.fl2va"
     assert "first.png" not in str(captured["idempotency_input"])
-    assert captured["idempotency_input"]["compiler_version"] == 5
+    assert captured["idempotency_input"]["compiler_version"] == (
+        runtime.H3_REFERENCE_COMPILER_VERSION
+    )
     assert captured["idempotency_input"]["references"] == [{
         "picture_index": 1,
         "reference_id": "ref-1",
@@ -962,6 +1036,7 @@ async def test_reference_runtime_removes_partial_staging_when_chmod_fails(
 
     frame = tmp_path / "frame.png"
     Image.new("RGB", (5, 5), "black").save(frame)
+    wire = _reference_wire()
     configured = SimpleNamespace(
         account=SimpleNamespace(
             id="cleanup-test", max_concurrency=1, capability_limits={}, queue_limit=2
@@ -982,13 +1057,15 @@ async def test_reference_runtime_removes_partial_staging_when_chmod_fails(
         await runtime.generate_h3_reference_director_video(
             SimpleNamespace(runtime_dir=tmp_path / "runtime"),
             segments=(H3DirectorSegment(
-                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+                segment_id="s1", beat_number=1, prompt=compile_h3_wire(wire),
+                duration_seconds=4,
                 first_frame=str(frame),
             ),),
             output_path=str(tmp_path / "out.mp4"), aspect_ratio="9:16",
             resolution="720p", global_references=(
                 _reference(tmp_path / "gone.png", _png_bytes()),
             ), reference_limit=5, workflow_id="2096502793044582401",
+            wire=wire,
         )
 
     assert not (tmp_path / "runtime" / "media_h3_ref" / "staging").exists()
@@ -1002,6 +1079,7 @@ async def test_reference_runtime_preserves_primary_error_when_close_fails_and_cl
 
     frame = tmp_path / "frame.png"
     Image.new("RGB", (5, 5), "black").save(frame)
+    wire = _reference_wire()
 
     class Client:
         async def upload(self, _path):
@@ -1031,13 +1109,15 @@ async def test_reference_runtime_preserves_primary_error_when_close_fails_and_cl
         await runtime.generate_h3_reference_director_video(
             SimpleNamespace(runtime_dir=tmp_path / "runtime"),
             segments=(H3DirectorSegment(
-                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
+                segment_id="s1", beat_number=1, prompt=compile_h3_wire(wire),
+                duration_seconds=4,
                 first_frame=str(frame),
             ),),
             output_path=str(tmp_path / "out.mp4"), aspect_ratio="9:16",
             resolution="720p", global_references=(
                 _reference(tmp_path / "gone.png", _png_bytes()),
             ), reference_limit=5, workflow_id="2096502793044582401",
+            wire=wire,
         )
 
     assert not (tmp_path / "runtime" / "media_h3_ref" / "staging").exists()

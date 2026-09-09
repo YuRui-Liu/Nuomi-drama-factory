@@ -201,9 +201,12 @@ def test_runner_explicit_model_selects_future_workflow_adapter(tmp_path, monkeyp
 
     class WorkflowRegistry:
         def resolve(self, model, _scene):
-            return SimpleNamespace(
-                id=model, provider="runninghub", adapter_key="future-adapter"
-            )
+                return SimpleNamespace(
+                    id=model,
+                    provider="runninghub",
+                    adapter_key="future-adapter",
+                    supported_modes=("i2va",),
+                )
 
     monkeypatch.setattr(
         runner, "_video_workflow_registry", lambda: WorkflowRegistry()

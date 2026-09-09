@@ -306,8 +306,21 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
         "closing_s",
         "closing_e",
     ]
-    assert payload["segments"][0]["prompt"] == payload["shots"][0]["prompt"]
-    assert payload["keyframes"][0]["prompt"] == payload["segments"][0]["prompt"]
+    assert {
+        payload["global"]["prompt"],
+        *(item["prompt"] for item in payload["segments"]),
+        *(item["prompt"] for item in payload["shots"]),
+        *(item["prompt"] for item in payload["keyframes"]),
+    } == {compile_h3_wire(wire)}
+
+
+def test_reference_payload_rejects_an_untyped_timeline_prompt() -> None:
+    with pytest.raises(ValueError, match="H3ReferenceWire.*required"):
+        _compiler().build_h3_reference_timeline_payload(
+            _timeline(),
+            (_reference("ref1", "https://assets.example/one.png", "woman"),),
+            max_references=1,
+        )
 
 
 def test_reference_tags_are_stable_and_used_as_subject_definition_aliases() -> None:
@@ -600,12 +613,14 @@ def test_rejects_missing_first_frame_and_explicit_fl2v_without_last_frame() -> N
             _timeline(first_frame=None, last_frame="last.png"),
             references,
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
         )
     with pytest.raises(ValueError, match="last frame"):
         compiler(
             _timeline(),
             references,
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             mode="fl2va",
         )
 
@@ -616,6 +631,7 @@ def test_explicit_i2va_rejects_a_segment_with_last_frame() -> None:
             _timeline(last_frame="last.png"),
             (_reference("ref1", "runninghub-one.png", "woman"),),
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             mode="i2va",
         )
 
@@ -639,6 +655,7 @@ def test_explicit_upload_mapping_rejects_missing_or_invalid_first_frame(
             _timeline(),
             (_reference("ref1", "runninghub-one.png", "woman"),),
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             uploaded_frames=uploaded_frames,
         )
 
@@ -649,6 +666,7 @@ def test_explicit_upload_mapping_requires_last_frame_source_key() -> None:
             _timeline(last_frame="last.png"),
             (_reference("ref1", "runninghub-one.png", "woman"),),
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             uploaded_frames={"first.png": "remote-first.png"},
         )
 
@@ -659,6 +677,7 @@ def test_normalizes_string_and_mapping_frame_uploads() -> None:
             _timeline(last_frame="last.png"),
             (_reference("ref1", "runninghub-one.png", "woman"),),
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             uploaded_frames={
                 "first.png": {
                     "imageFile": "  remote-first.png  ",
@@ -691,6 +710,7 @@ def test_preserves_product_modes(mode: str, expected_task_type: str) -> None:
             _timeline(last_frame=last_frame),
             (_reference("ref1", "https://assets.example/one.png", "woman"),),
             max_references=1,
+            wire=_wire("<Subject 1>: woman from <Picture 1>."),
             mode=mode,
         )
     )

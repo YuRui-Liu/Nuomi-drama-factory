@@ -9,6 +9,7 @@ from typing import Protocol
 
 from novelvideo.media_capabilities.video.h3_reference_runtime import H3FrozenFrame
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.h3_wire import H3ReferenceWire
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.media_capabilities.video.runtime import H3GenerationResult
 from novelvideo.media_capabilities.video.workflow_registry import (
@@ -35,6 +36,7 @@ class NarrativeGroupVideoRequest:
     reference_limit: int | None = None
     provider_workflow_id: str | None = None
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None
+    reference_wire: H3ReferenceWire | None = None
 
     def __post_init__(self) -> None:
         parameters = dict(self.workflow_parameters)
@@ -96,6 +98,7 @@ class H3ReferenceDirectorGenerator(Protocol):
         global_references: tuple[ResolvedVideoReference, ...],
         reference_limit: int,
         workflow_id: str,
+        wire: H3ReferenceWire,
         frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
@@ -220,6 +223,8 @@ class H3ReferenceWorkflowAdapter:
             raise ValueError("H3 reference workflow requires a reference limit")
         if request.provider_workflow_id is None:
             raise ValueError("H3 reference workflow requires a provider workflow ID")
+        if not isinstance(request.reference_wire, H3ReferenceWire):
+            raise ValueError("H3 reference workflow requires an H3ReferenceWire")
         resolution = request.workflow_parameters.get("resolution")
         if resolution is None:
             raise ValueError("H3 workflow parameter 'resolution' is required")
@@ -233,6 +238,7 @@ class H3ReferenceWorkflowAdapter:
             "global_references": request.global_references,
             "reference_limit": request.reference_limit,
             "workflow_id": request.provider_workflow_id,
+            "wire": request.reference_wire,
             "frozen_frames": request.frozen_frames,
         }
         if request.on_provider_submitted is not None:

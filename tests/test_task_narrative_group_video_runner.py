@@ -157,6 +157,7 @@ def test_episode_optimizer_context_uses_the_provider_reference_tag_mapping(
         build_h3_reference_tag_map,
     )
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.models import H3Mode
     from novelvideo.task_backend.runners import narrative_group_video
 
     frame = tmp_path / "first.png"
@@ -186,7 +187,7 @@ def test_episode_optimizer_context_uses_the_provider_reference_tag_mapping(
 
     class Optimizer:
         async def optimize(self, episode_input):
-            captured.extend(item.context for item in episode_input.segments)
+            captured.extend(episode_input.segments)
             return SimpleNamespace(
                 segments=tuple(
                     SimpleNamespace(
@@ -221,13 +222,14 @@ def test_episode_optimizer_context_uses_the_provider_reference_tag_mapping(
         )
     )
 
-    assert captured[0].resolved_reference_tags == tuple(
+    assert captured[0].context.resolved_reference_tags == tuple(
         build_h3_reference_tag_map(references).values()
     )
-    assert [fact.kind for fact in captured[0].resolved_references] == [
+    assert [fact.kind for fact in captured[0].context.resolved_references] == [
         "character",
         "location",
     ]
+    assert captured[0].mode is H3Mode.REF2VA
 
 
 def test_paid_episode_optimizer_fails_before_runtime_without_active_style(
@@ -531,6 +533,11 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
         NarrativeGroupVideoRequest,
     )
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.h3_prompt import H3Mode
+    from novelvideo.media_capabilities.video.h3_wire import (
+        H3ReferenceWire,
+        H3RetentionItem,
+    )
     from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 
     captured = {}
@@ -539,6 +546,19 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
         reference_id="ref-1", source_kind="character_identity", label="阿明",
         subject_description="阿明，黑色短发", path=Path("deleted.png"),
         content=content, sha256=hashlib.sha256(content).hexdigest(),
+    )
+    wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=5,
+        subject_definitions="<Subject 1>: 阿明 from <Picture 1>.",
+        summary="[reference generation] 阿明走近。",
+        retention_analysis=(H3RetentionItem(
+            subject="<Subject 1> (appears in [Shot 1])",
+            retain="fully_preserved - identity and proportions",
+        ),),
+        detailed_description="[Shot 1] [0-5s] 阿明走近。",
+        overall_soundscape="安静室内环境声。",
+        non_diegetic_music="N/A",
     )
 
     async def generate(_ctx, **kwargs):
@@ -558,6 +578,7 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
             output_path="out.mp4", aspect_ratio="9:16", mode="i2va",
             reference_revision=2, global_references=(reference,), reference_limit=5,
             provider_workflow_id="2096502793044582401",
+            reference_wire=wire,
         ),
     )
 
@@ -566,7 +587,112 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
     assert captured["reference_limit"] == 5
     assert captured["workflow_id"] == "2096502793044582401"
     assert captured["mode"] == "i2va"
+    assert captured["wire"] is wire
     assert result.provider_parameters["workflowId"] == "2096502793044582401"
+
+
+@pytest.mark.asyncio
+async def test_reference_adapter_rejects_missing_typed_wire_before_generator() -> None:
+    import hashlib
+
+    from novelvideo.media_capabilities.video.adapters import (
+        H3ReferenceWorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+
+    called = []
+    content = b"frozen"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=Path("deleted.png"),
+        content=content, sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    async def generate(*args, **kwargs):
+        called.append((args, kwargs))
+
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt="走近", duration_seconds=5,
+            first_frame="first.png",
+        ),),
+        output_path="out.mp4", aspect_ratio="9:16",
+        reference_revision=2, global_references=(reference,), reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+    )
+
+    with pytest.raises(ValueError, match="H3ReferenceWire"):
+        await H3ReferenceWorkflowAdapter(generator=generate).generate_narrative_group(
+            object(), request
+        )
+    assert called == []
+
+
+def test_reference_runner_projects_only_a_matching_typed_reference_plan() -> None:
+    from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
+    from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+        project_director_plan_to_wire,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _reference_wire_from_evidence,
+    )
+
+    plan = H3DirectorPlan.model_validate({
+        "schema_version": 3,
+        "mode": "ref2va",
+        "total_frames": 120,
+        "visual_style": "cinematic realism",
+        "continuity_locks": ["same face and black coat"],
+        "shots": [{
+            "shot_id": "1",
+            "start_frame": 0,
+            "end_frame": 120,
+            "framing": "medium shot",
+            "angle": "eye level",
+            "focus": "阿明",
+            "composition": "阿明位于画面中央",
+            "camera": {"type": "fixed"},
+            "actions": [{
+                "phase": "execute",
+                "start_frame": 0,
+                "end_frame": 120,
+                "description": "阿明走近门口。",
+                "moving_entities": ["阿明"],
+            }],
+        }],
+        "soundscape": "安静的室内环境声。",
+        "music": "N/A",
+        "reference_summary": "阿明走近门口。",
+        "reference_subjects": [{
+            "subject_index": 1,
+            "source_picture_indexes": [1],
+            "description": "阿明，黑色短发",
+            "retention_marker": "fully_preserved",
+            "retention_detail": "保留面容和身体比例。",
+            "shot_ids": ["1"],
+        }],
+    })
+    expected = project_director_plan_to_wire(plan)
+    segment = H3DirectorSegment(
+        segment_id="s1",
+        beat_number=1,
+        prompt=compile_h3_wire(expected),
+        duration_seconds=5,
+        first_frame="first.png",
+    )
+
+    assert _reference_wire_from_evidence(
+        {"director_plan": plan.model_dump(mode="json")}, segment=segment
+    ) == expected
+    with pytest.raises(ValueError, match="does not match"):
+        _reference_wire_from_evidence(
+            {"director_plan": plan.model_dump(mode="json")},
+            segment=segment.model_copy(update={"prompt": "arbitrary"}),
+        )
 
 
 def test_runner_rejects_stale_reference_revision_before_running_or_transport(
@@ -710,7 +836,13 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     import hashlib
 
     from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoResult
+    from novelvideo.media_capabilities.video.h3_prompt import H3Mode
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.h3_wire import (
+        H3ReferenceWire,
+        H3RetentionItem,
+        compile_h3_wire,
+    )
     from novelvideo.narrative_groups.video_references import ResolvedVideoReference
     from novelvideo.task_backend.runners import narrative_group_video
     from novelvideo.task_backend.runners import narrative_group_video_compose
@@ -736,10 +868,24 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
         supported_modes=("ref2va",),
         reference_policy=SimpleNamespace(required=True, max_images=5),
     )
+    reference_wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=4,
+        subject_definitions="<Subject 1>: 阿明 from <Picture 1>.",
+        summary="[reference generation] 阿明走近。",
+        retention_analysis=(H3RetentionItem(
+            subject="<Subject 1> (appears in [Shot 1])",
+            retain="fully_preserved - identity and proportions",
+        ),),
+        detailed_description="[Shot 1] [0-4s] 阿明走近。",
+        overall_soundscape="安静的环境声。",
+        non_diegetic_music="N/A",
+    )
     segments = [
         H3DirectorSegment(
-            segment_id=f"s{index}", beat_number=index, prompt=f"prompt-{index}",
-            duration_seconds=2, first_frame=str(frame), dialogue_source="h3_native",
+            segment_id=f"s{index}", beat_number=index,
+            prompt=compile_h3_wire(reference_wire),
+            duration_seconds=4, first_frame=str(frame), dialogue_source="h3_native",
         )
         for index in (1, 2)
     ]
@@ -845,6 +991,11 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
         narrative_group_video, "_optimize_missing_prompts",
         lambda values, *_args, **_kwargs: asyncio.sleep(0, result=values),
     )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_reference_wire_from_evidence",
+        lambda *_args, **_kwargs: reference_wire,
+    )
     monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_a, **_k: None)
     monkeypatch.setattr(
         narrative_group_video, "record_video_segment_result", lambda *_a, **_k: None
@@ -878,6 +1029,8 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
 
     assert cleanup_calls == []
     assert len(requests) == 2
+    assert all(request.reference_wire is reference_wire for request in requests)
+    assert all(request.mode == "auto" for request in requests)
     fail_first_attempt[0] = False
     frame.unlink()
     requests.clear()
@@ -1017,11 +1170,13 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
         "last_frame_sha256": None,
         "requested_mode": "auto",
         "resolved_mode": "i2va",
+        "input_hash": manifest.entries[0].input_summary["frozen_input_hash"],
         "frozen_input_hash": "<stable>",
         "prompt_schema_version": H3_PROMPT_PROFILE_VERSION,
         "compiler_version": 1,
         "final_wire": "<wire>",
         "workflow_id": "test-minimax-h3",
+        "quality_report": manifest.entries[0].quality_report,
     }
     assert len(manifest.entries[0].input_summary["frozen_input_hash"]) == 64
     assert manifest.entries[0].input_summary["final_wire"] == "优化：beat-1"
@@ -1138,6 +1293,17 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
     assert manifest.physical_video is None
     assert manifest.entries[0].status == "quality_rejected"
     assert manifest.entries[0].quality_report["issues"][0]["location"] == "shots.0"
+    summary = manifest.entries[0].input_summary
+    assert summary is not None
+    assert summary["requested_mode"] == "auto"
+    assert summary["resolved_mode"] == "i2va"
+    assert len(summary["frozen_input_hash"]) == 64
+    assert summary["input_hash"] == summary["frozen_input_hash"]
+    assert summary["prompt_schema_version"] > 0
+    assert summary["compiler_version"] > 0
+    assert summary["final_wire"] is None
+    assert summary["workflow_id"] == "test-minimax-h3"
+    assert summary["quality_report"] == manifest.entries[0].quality_report
     assert manifest.entries[0].attempts == ()
 
 
@@ -1402,11 +1568,12 @@ def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
     assert manifest.entries[1].attempts[0].provider_task_id == "provider-2"
 
 
-def test_group_video_replay_appends_attempt_history_for_same_revision(
+def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
     tmp_path, monkeypatch
 ):
     from novelvideo.media_capabilities.video.h3_timeline import (
         load_h3_director_manifest,
+        save_h3_director_manifest,
     )
     from novelvideo.narrative_groups.service import load_groups
     from novelvideo.task_backend.runners import narrative_group_video
@@ -1460,17 +1627,198 @@ def test_group_video_replay_appends_attempt_history_for_same_revision(
     }
 
     narrative_group_video.run_narrative_group_video(envelope, ctx)
-    envelope["payload"]["mode"] = "fl2va"
+    manifest_path = load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
+    incomplete = load_h3_director_manifest(manifest_path)
+    incomplete.entries[0].input_summary.pop("final_wire")
+    save_h3_director_manifest(manifest_path, incomplete)
     narrative_group_video.run_narrative_group_video(envelope, ctx)
-    manifest = load_h3_director_manifest(
-        load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
-    )
+    manifest = load_h3_director_manifest(manifest_path)
 
     assert [[attempt.attempt for attempt in entry.attempts] for entry in manifest.entries] == [
         [1, 2], [1, 2]
     ]
     assert all(attempt.status == "completed" for entry in manifest.entries for attempt in entry.attempts)
-    assert optimizer_calls == 2
+    assert optimizer_calls == 4
+
+
+@pytest.mark.parametrize("policy", ["legacy", "observe", "guard", "enforce"])
+def test_same_revision_replay_reuses_prompt_wire_and_decision_without_optimizer(
+    tmp_path, monkeypatch, policy
+):
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.shot_continuity import (
+        H3ModeDecision,
+        RiskDimensionScore,
+        ShotRiskReport,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    optimizer_calls = 0
+    prepare_calls = 0
+    provider_calls = 0
+    report = ShotRiskReport(
+        spatial=RiskDimensionScore(dimension="spatial", level=0),
+        identity=RiskDimensionScore(dimension="identity", level=0),
+        motion=RiskDimensionScore(dimension="motion", level=0),
+        continuity=RiskDimensionScore(dimension="continuity", level=0),
+    )
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1},
+            {"id": "beat-2", "beat_number": 2},
+        ]
+
+    def prepare(*, segments, **_kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return {
+            segment.segment_id: narrative_group_video.PreparedContinuity(
+                provider_segment=segment,
+                contracts=(),
+                risk_report=report,
+                mode_decision=H3ModeDecision(
+                    requested="auto",
+                    mode="i2va",
+                    reason_codes=("replay_fixture",),
+                ),
+            )
+            for segment in segments
+        }
+
+    async def optimize(
+        segments,
+        _beats,
+        *,
+        evidence_by_segment=None,
+        continuity_by_segment=None,
+        requested_mode="auto",
+        workflow_id=None,
+        resolved_modes=None,
+        policy="legacy",
+        **_kwargs,
+    ):
+        nonlocal optimizer_calls
+        optimizer_calls += 1
+        prefix = "continuity" if continuity_by_segment is not None else "legacy"
+        selected_prefix = "continuity" if policy == "enforce" else "legacy"
+        if evidence_by_segment is not None:
+            for segment in segments:
+                resolved_mode = resolved_modes[segment.segment_id].value
+                selected_prompt = f"{selected_prefix}:{segment.segment_id}"
+                summary = {
+                    "beat_ids": [segment.segment_id],
+                    "mode": resolved_mode,
+                    "duration_seconds": segment.duration_seconds,
+                    "first_frame_sha256": narrative_group_video._frame_sha256(
+                        str(segment.first_frame)
+                    ),
+                    "last_frame_sha256": None,
+                    "requested_mode": requested_mode,
+                    "resolved_mode": resolved_mode,
+                    "input_hash": "a" * 64,
+                    "frozen_input_hash": "a" * 64,
+                    "prompt_schema_version": 4,
+                    "compiler_version": 1,
+                    "final_wire": selected_prompt,
+                    "workflow_id": workflow_id,
+                    "quality_report": {
+                        "passed": True, "issues": [], "version": 1
+                    },
+                }
+                evidence_by_segment.setdefault(segment.segment_id, {}).update({
+                    "director_plan": {"mode": resolved_mode, "shots": []},
+                    "prompt_profile": {
+                        "id": "minimax-h3-director",
+                        "version": 4,
+                        "compiler_version": 1,
+                    },
+                    "quality_report": summary["quality_report"],
+                    "input_summary": summary,
+                    "_final_prompt": selected_prompt,
+                })
+        return [
+            segment.model_copy(update={"prompt": f"{prefix}:{segment.segment_id}"})
+            for segment in segments
+        ]
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return SimpleNamespace(
+            output_path=output_path,
+            provider_task_id=f"provider-{provider_calls}",
+            actual_mode="i2va",
+        )
+
+    async def separate(video, _directory):
+        return {
+            "original_audio_path": str(video),
+            "dialogue_stem_path": str(video),
+            "ambience_stem_path": str(video),
+            "dialogue_stem_status": "succeeded",
+            "ambience_stem_status": "succeeded",
+        }
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
+    monkeypatch.setattr(
+        narrative_group_video, "_optimize_missing_prompts", optimize
+    )
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "_separate_stems", separate)
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state", project_id="demo",
+    )
+    envelope = {
+        "episode": 1,
+        "payload": {
+            "group_id": "ng-01",
+            "revision": 1,
+            "workflow_parameters": {
+                "resolution": "720p",
+                "continuity_policy": policy,
+            },
+        },
+    }
+
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    manifest_path = load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
+    first = load_h3_director_manifest(manifest_path)
+    snapshot = tuple(
+        (
+            entry.segment.prompt,
+            entry.input_summary["final_wire"],
+            entry.mode_decision,
+        )
+        for entry in first.entries
+    )
+    first_optimizer_calls = optimizer_calls
+    first_prepare_calls = prepare_calls
+
+    envelope["payload"]["mode"] = "fl2va"
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    replayed = load_h3_director_manifest(manifest_path)
+
+    assert optimizer_calls == first_optimizer_calls
+    assert prepare_calls == first_prepare_calls
+    assert tuple(
+        (
+            entry.segment.prompt,
+            entry.input_summary["final_wire"],
+            entry.mode_decision,
+        )
+        for entry in replayed.entries
+    ) == snapshot
+    assert all(len(entry.attempts) == 2 for entry in replayed.entries)
 
 
 @pytest.mark.parametrize("fail_boundary", ["callback", "completed"])

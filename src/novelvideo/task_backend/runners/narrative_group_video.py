@@ -31,7 +31,9 @@ from novelvideo.media_capabilities.video.h3_prompt_profile import (
 )
 from novelvideo.media_capabilities.video.h3_prompt_compiler import (
     H3_PROMPT_COMPILER_VERSION,
+    project_director_plan_to_wire,
 )
+from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
 from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityError
 from novelvideo.media_capabilities.video.h3_beat_adapter import (
     h3_dialogue_required,
@@ -65,6 +67,10 @@ from novelvideo.media_capabilities.video.h3_reference_runtime import (
 )
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     build_h3_resolved_reference_facts,
+)
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    compile_h3_wire,
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowDefinition,
@@ -666,11 +672,21 @@ async def _optimize_missing_prompts(
             source_segment=segment,
             context=context,
             mode=(
-                H3Mode(continuity_by_segment[segment.segment_id].mode_decision.mode)
-                if policy == "enforce"
-                and continuity_by_segment is not None
-                and continuity_by_segment[segment.segment_id].mode_decision.mode
-                else (resolved_modes or {}).get(segment.segment_id, _mode_for(segment))
+                H3Mode.REF2VA
+                if global_references
+                else (
+                    H3Mode(
+                        continuity_by_segment[
+                            segment.segment_id
+                        ].mode_decision.mode
+                    )
+                    if policy == "enforce"
+                    and continuity_by_segment is not None
+                    and continuity_by_segment[segment.segment_id].mode_decision.mode
+                    else (resolved_modes or {}).get(
+                        segment.segment_id, _mode_for(segment)
+                    )
+                )
             ),
             summary=context.visual_description or segment.prompt,
             character_anchor=segment.speaker,
@@ -699,7 +715,11 @@ async def _optimize_missing_prompts(
                 segment.segment_id, _mode_for(segment)
             ).value
             proposed_mode = prepared.mode_decision.mode
-            if policy in {"observe", "guard"} and proposed_mode != current_mode:
+            if global_references:
+                # Ref transport consumes the six-section reference wire itself;
+                # the base shot-bundle compiler requires an I/FL plan mode.
+                bundle = None
+            elif policy in {"observe", "guard"} and proposed_mode != current_mode:
                 diagnostics = ("shadow_mode_replan_required",)
                 prepared = replace(
                     prepared,
@@ -750,15 +770,19 @@ async def _optimize_missing_prompts(
             continuity_by_segment[segment.segment_id] = replace(
                 prepared,
                 provider_segment=(
-                    segment.model_copy(update={
-                        "prompt": bundle.prompt,
-                        "last_frame": (
-                            str(segment.last_frame)
-                            if bundle.mode == "fl2va" else None
-                        ),
-                    })
-                    if policy == "enforce" and bundle is not None
-                    else segment
+                    segment.model_copy(update={"prompt": item.prompt})
+                    if policy == "enforce" and global_references
+                    else (
+                        segment.model_copy(update={
+                            "prompt": bundle.prompt,
+                            "last_frame": (
+                                str(segment.last_frame)
+                                if bundle.mode == "fl2va" else None
+                            ),
+                        })
+                        if policy == "enforce" and bundle is not None
+                        else segment
+                    )
                 ),
                 bundle=bundle,
             )
@@ -766,19 +790,15 @@ async def _optimize_missing_prompts(
             resolved_mode = (resolved_modes or {}).get(
                 segment.segment_id, _mode_for(segment)
             )
-            input_summary = _input_summary(segment, context, resolved_mode)
-            input_summary.update(
-                {
-                    "requested_mode": requested_mode,
-                    "resolved_mode": resolved_mode.value,
-                    "frozen_input_hash": hashlib.sha256(
-                        _canonical_json(input_summary).encode("utf-8")
-                    ).hexdigest(),
-                    "prompt_schema_version": H3_PROMPT_PROFILE_VERSION,
-                    "compiler_version": item.compiler_version,
-                    "final_wire": item.prompt,
-                    "workflow_id": workflow_id,
-                }
+            quality_report = item.quality_report.model_dump(mode="json")
+            input_summary = _snapshot_input_summary(
+                _input_summary(segment, context, resolved_mode),
+                requested_mode=requested_mode,
+                resolved_mode=resolved_mode.value,
+                compiler_version=item.compiler_version,
+                final_wire=item.prompt,
+                workflow_id=workflow_id,
+                quality_report=quality_report,
             )
             evidence_by_segment[segment.segment_id] = {
                 "director_plan": item.plan.model_dump(mode="json"),
@@ -787,7 +807,7 @@ async def _optimize_missing_prompts(
                     "version": H3_PROMPT_PROFILE_VERSION,
                     "compiler_version": item.compiler_version,
                 },
-                "quality_report": item.quality_report.model_dump(mode="json"),
+                "quality_report": quality_report,
                 "input_summary": input_summary,
                 **(
                     {
@@ -805,7 +825,7 @@ async def _optimize_missing_prompts(
                 ),
                 **(
                     {"_final_prompt": item.prompt}
-                    if policy == "legacy"
+                    if policy == "legacy" or (policy == "enforce" and global_references)
                     else (
                         {"_final_prompt": bundle.prompt}
                         if policy == "enforce" and bundle is not None else {}
@@ -834,6 +854,85 @@ def _input_summary(
         "first_frame_sha256": context.first_frame_sha256,
         "last_frame_sha256": context.last_frame_sha256,
     }
+
+
+def _snapshot_input_summary(
+    base: Mapping[str, Any],
+    *,
+    requested_mode: str,
+    resolved_mode: str,
+    compiler_version: int,
+    final_wire: str | None,
+    workflow_id: str | None,
+    quality_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    summary = dict(base)
+    input_hash = hashlib.sha256(
+        _canonical_json(summary).encode("utf-8")
+    ).hexdigest()
+    summary.update({
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+        "input_hash": input_hash,
+        "frozen_input_hash": input_hash,
+        "prompt_schema_version": H3_PROMPT_PROFILE_VERSION,
+        "compiler_version": compiler_version,
+        "final_wire": final_wire,
+        "workflow_id": workflow_id,
+        "quality_report": dict(quality_report),
+    })
+    return summary
+
+
+_REPLAY_SNAPSHOT_FIELDS = frozenset({
+    "requested_mode",
+    "resolved_mode",
+    "input_hash",
+    "frozen_input_hash",
+    "prompt_schema_version",
+    "compiler_version",
+    "final_wire",
+    "workflow_id",
+    "quality_report",
+})
+
+
+def _has_complete_replay_snapshot(
+    entry: H3TimelineEntry, *, workflow_id: str
+) -> bool:
+    summary = entry.input_summary
+    if not isinstance(summary, Mapping) or not _REPLAY_SNAPSHOT_FIELDS <= summary.keys():
+        return False
+    frozen_hash = summary.get("frozen_input_hash")
+    final_wire = summary.get("final_wire")
+    return (
+        isinstance(frozen_hash, str)
+        and re.fullmatch(r"[0-9a-f]{64}", frozen_hash) is not None
+        and summary.get("input_hash") == frozen_hash
+        and isinstance(final_wire, str)
+        and bool(final_wire)
+        and summary.get("workflow_id") == workflow_id
+        and isinstance(summary.get("quality_report"), Mapping)
+        and summary.get("quality_report") == entry.quality_report
+        and bool(entry.segment.prompt)
+        and isinstance(entry.director_plan, Mapping)
+        and isinstance(entry.prompt_profile, Mapping)
+    )
+
+
+def _reference_wire_from_evidence(
+    evidence: Mapping[str, Any], *, segment: H3DirectorSegment
+) -> H3ReferenceWire:
+    plan_payload = evidence.get("director_plan")
+    if not isinstance(plan_payload, Mapping):
+        raise ValueError("H3 reference execution requires a typed director plan")
+    plan = H3DirectorPlan.model_validate(plan_payload)
+    wire = project_director_plan_to_wire(plan)
+    if not isinstance(wire, H3ReferenceWire):
+        raise ValueError("H3 reference execution requires an H3ReferenceWire")
+    if compile_h3_wire(wire) != segment.prompt:
+        raise ValueError("H3 reference segment prompt does not match its compiled wire")
+    return wire
 
 
 def _entries_with_evidence(
@@ -1880,9 +1979,7 @@ async def _execute_inner(
             and tuple(entry.segment.segment_id for entry in replay_manifest.entries)
             == tuple(segment.segment_id for segment in raw_segments)
             and all(
-                entry.input_summary
-                and entry.input_summary.get("frozen_input_hash")
-                and entry.segment.prompt
+                _has_complete_replay_snapshot(entry, workflow_id=workflow.id)
                 for entry in replay_manifest.entries
             )
             else {}
@@ -1910,7 +2007,7 @@ async def _execute_inner(
         evidence_by_segment: dict[str, dict[str, Any]] = {}
         continuity_by_segment: dict[str, PreparedContinuity] | None = None
         blocked: dict[str, tuple[str, ...]] = {}
-        if policy != "legacy":
+        if not replay_entries and policy != "legacy":
             try:
                 _assert_stage_revision(
                     project_dir, episode, group_id, revision, plan_revision
@@ -1996,7 +2093,7 @@ async def _execute_inner(
             )
             raise error
         try:
-            if policy == "legacy" and replay_entries:
+            if replay_entries:
                 segments = [
                     replay_entries[segment.segment_id].segment
                     for segment in raw_segments
@@ -2008,6 +2105,10 @@ async def _execute_inner(
                             "prompt_profile": entry.prompt_profile,
                             "quality_report": entry.quality_report,
                             "input_summary": entry.input_summary,
+                            "continuity_contracts": entry.continuity_contracts,
+                            "risk_report": entry.risk_report,
+                            "mode_decision": entry.mode_decision,
+                            "compiled_bundle": entry.compiled_bundle,
                             "_final_prompt": entry.segment.prompt,
                         }
                         for segment_id, entry in replay_entries.items()
@@ -2025,9 +2126,11 @@ async def _execute_inner(
                     workflow_id=workflow.id,
                 )
             else:
+                legacy_evidence: dict[str, dict[str, Any]] = {}
                 legacy_segments = await _optimize_missing_prompts(
                     raw_segments, segment_beats, ctx=ctx,
                     project_dir=project_dir, episode=episode,
+                    evidence_by_segment=legacy_evidence,
                     episode_beats=source_beats,
                     global_references=global_references,
                     resolved_modes=resolved_modes,
@@ -2094,26 +2197,50 @@ async def _execute_inner(
                     continuity_segments
                     if policy == "enforce" else legacy_segments
                 )
+                if policy != "enforce":
+                    for segment_id, selected in legacy_evidence.items():
+                        continuity = evidence_by_segment.get(segment_id, {})
+                        selected.update({
+                            key: continuity.get(key)
+                            for key in (
+                                "continuity_contracts",
+                                "risk_report",
+                                "mode_decision",
+                                "compiled_bundle",
+                            )
+                            if key in continuity
+                        })
+                        evidence_by_segment[segment_id] = selected
         except H3PromptQualityError as exc:
             report = exc.report.model_dump(mode="json")
             for segment in raw_segments:
-                evidence_by_segment.setdefault(segment.segment_id, {
+                resolved_mode = resolved_modes[segment.segment_id]
+                base_summary = {
+                    "beat_ids": source_shot_ids_for(segment),
+                    "mode": resolved_mode.value,
+                    "duration_seconds": segment.duration_seconds,
+                    "first_frame_sha256": _frame_sha256(str(segment.first_frame)),
+                    "last_frame_sha256": (
+                        _frame_sha256(str(segment.last_frame))
+                        if segment.last_frame else None
+                    ),
+                }
+                evidence_by_segment.setdefault(segment.segment_id, {}).update({
                     "prompt_profile": {
                         "id": H3_PROMPT_PROFILE_ID,
                         "version": H3_PROMPT_PROFILE_VERSION,
                         "compiler_version": H3_PROMPT_COMPILER_VERSION,
                     },
                     "quality_report": report,
-                    "input_summary": {
-                        "beat_ids": source_shot_ids_for(segment),
-                        "mode": _mode_for(segment).value,
-                        "duration_seconds": segment.duration_seconds,
-                        "first_frame_sha256": _frame_sha256(str(segment.first_frame)),
-                        "last_frame_sha256": (
-                            _frame_sha256(str(segment.last_frame))
-                            if segment.last_frame else None
-                        ),
-                    },
+                    "input_summary": _snapshot_input_summary(
+                        base_summary,
+                        requested_mode=requested_mode,
+                        resolved_mode=resolved_mode.value,
+                        compiler_version=H3_PROMPT_COMPILER_VERSION,
+                        final_wire=None,
+                        workflow_id=workflow.id,
+                        quality_report=report,
+                    ),
                     "_status": "quality_rejected",
                 })
             rejected_timeline = build_h3_timeline_data(
@@ -2221,6 +2348,13 @@ async def _execute_inner(
                     _persist_generation_evidence(manifest_path, manifest)
 
                 try:
+                    reference_wire = (
+                        _reference_wire_from_evidence(
+                            evidence_by_segment.get(segment.segment_id, {}),
+                            segment=segment,
+                        )
+                        if global_references else None
+                    )
                     item = await adapter.generate_narrative_group(
                         ctx,
                         NarrativeGroupVideoRequest(
@@ -2228,15 +2362,18 @@ async def _execute_inner(
                             output_path=str(segment_output),
                             aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
                             workflow_parameters=provider_workflow_parameters,
-                            mode=str(
-                                payload.get("mode")
-                                or getattr(workflow, "default_mode", "auto")
+                            mode=(
+                                "auto"
+                                if global_references
+                                and requested_mode in {"auto", "ref2va"}
+                                else requested_mode
                             ),
                             reference_revision=reference_revision,
                             global_references=global_references,
                             reference_limit=reference_limit,
                             provider_workflow_id=provider_workflow_id,
                             frozen_frames=frozen_frames,
+                            reference_wire=reference_wire,
                             on_provider_submitted=on_provider_submitted,
                         ),
                     )

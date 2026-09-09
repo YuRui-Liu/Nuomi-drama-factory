@@ -318,13 +318,9 @@ def build_h3_reference_timeline_payload(
     requested_mode = str(mode).strip().lower()
     if requested_mode not in {"auto", "i2va", "fl2va"}:
         raise ValueError("mode must be auto, i2va, or fl2va")
-    # The quality-gated official wire is the sole provider prompt. Existing
-    # runtime callers already freeze that wire on the timeline segment.
-    final_wire = (
-        compile_h3_wire(wire)
-        if wire is not None
-        else timeline.entries[0].segment.prompt
-    )
+    if not isinstance(wire, H3ReferenceWire):
+        raise ValueError("a validated H3ReferenceWire is required")
+    final_wire = compile_h3_wire(wire)
 
     shots: list[dict[str, Any]] = []
     segments: list[dict[str, Any]] = []
@@ -361,12 +357,11 @@ def build_h3_reference_timeline_payload(
             segment_id=source.segment_id,
             last_frame=last,
         )
-        segment_prompt = final_wire if wire is not None else source.prompt
         shots.append(
             {
                 "id": source.segment_id,
                 "durationSec": source.duration_seconds,
-                "prompt": segment_prompt,
+                "prompt": final_wire,
                 "negativePrompt": "",
                 "continuityFromPrev": index > 0,
                 "startImage": first,
@@ -380,7 +375,7 @@ def build_h3_reference_timeline_payload(
                 "length": entry.frame_count,
                 "frameCount": entry.frame_count,
                 "durationSec": source.duration_seconds,
-                "prompt": segment_prompt,
+                "prompt": final_wire,
                 "negativePrompt": "",
                 "continuityFromPrev": index > 0,
                 "isStartFrame": True,
@@ -423,7 +418,7 @@ def build_h3_reference_timeline_payload(
                     "length": segment["frameCount"] - half,
                     "frameCount": segment["frameCount"] - half,
                     "durationSec": segment["durationSec"],
-                    "prompt": "",
+                    "prompt": final_wire,
                     "negativePrompt": segment["negativePrompt"],
                     "isStartFrame": False,
                     "isEndFrame": True,
