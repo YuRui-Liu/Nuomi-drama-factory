@@ -452,6 +452,51 @@ async def test_snapshot_reloads_workflow_under_project_lock_before_freezing(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_rejects_bindings_replaced_after_initial_catalog_read(
+    tmp_path: Path,
+) -> None:
+    binding = _binding()
+    replacement = binding.model_copy(update={"display_label": "Alice / replanned youth"})
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]),
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+    )
+
+    class _ReplannedBindingStore(_BindingStore):
+        async def list_planned_reference_bindings(
+            self, episode_number: int, group_id: str | None = None
+        ) -> list[PlannedReferenceBinding]:
+            self.reads += 1
+            source = [binding] if self.reads == 1 else [replacement]
+            return [
+                item
+                for item in source
+                if item.episode_number == episode_number
+                and (group_id is None or group_id in item.group_ids)
+            ]
+
+    replanned_store = _ReplannedBindingStore([binding])
+    with pytest.raises(StaleReferenceBinding):
+        await build_planned_reference_snapshot(
+            replanned_store,
+            workflow,
+            project_id="p1",
+            episode_number=1,
+            group_id="group-01",
+            project_dir=tmp_path,
+            selected_binding_ids=(binding.binding_id,),
+            upload_ids=(),
+            reference_revision=preview.reference_revision,
+        )
+    assert replanned_store.reads == 2
+
+
+@pytest.mark.asyncio
 async def test_snapshot_holds_workflow_lock_through_version_validation(
     tmp_path: Path, monkeypatch
 ) -> None:

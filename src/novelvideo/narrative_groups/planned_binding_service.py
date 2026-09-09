@@ -1260,6 +1260,22 @@ def _reference_revision(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+async def _read_planned_reference_catalog(
+    store: PlannedBindingStore,
+    *,
+    episode_number: int,
+    group_id: str,
+) -> tuple[tuple[PlannedReferenceBinding, ...], tuple[Any, ...]]:
+    bindings = tuple(
+        await store.list_planned_reference_bindings(
+            episode_number, group_id=group_id
+        )
+    )
+    list_scenes = getattr(store, "list_scenes", None)
+    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
+    return bindings, scenes
+
+
 async def resolve_planned_reference_preview(
     store: PlannedBindingStore,
     workflow_store: ProductionWorkflowStore,
@@ -1275,11 +1291,11 @@ async def resolve_planned_reference_preview(
     """Resolve only persisted bindings and current versions without mutation."""
     if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
         raise InvalidPlannedReference("max_images must be a positive integer")
-    bindings = await store.list_planned_reference_bindings(
-        episode_number, group_id=group_id
+    bindings, scenes = await _read_planned_reference_catalog(
+        store,
+        episode_number=episode_number,
+        group_id=group_id,
     )
-    list_scenes = getattr(store, "list_scenes", None)
-    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
     # Async binding/catalog reads above may yield while another publisher advances
     # workflow state. Reload under the project lock and resolve synchronously so a
     # stale caller-owned store cannot select a superseded fallback.
@@ -1401,11 +1417,11 @@ async def build_planned_reference_snapshot(
         raise InvalidPlannedReference("duplicate selected binding IDs")
     if len(set(upload_ids)) != len(upload_ids):
         raise InvalidPlannedReference("duplicate upload IDs")
-    bindings = await store.list_planned_reference_bindings(
-        episode_number, group_id=group_id
+    bindings, scenes = await _read_planned_reference_catalog(
+        store,
+        episode_number=episode_number,
+        group_id=group_id,
     )
-    list_scenes = getattr(store, "list_scenes", None)
-    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
     with production_workflow_project_lock(workflow_store.state_path.parent):
         current_workflow = ProductionWorkflowStore(workflow_store.state_path)
         preview = _preview_from_bindings(
@@ -1420,6 +1436,13 @@ async def build_planned_reference_snapshot(
             active_plan_revision_id=active_plan_revision_id,
             required_binding_keys=required_binding_keys,
         )
+    current_bindings, current_scenes = await _read_planned_reference_catalog(
+        store,
+        episode_number=episode_number,
+        group_id=group_id,
+    )
+    if current_bindings != bindings or current_scenes != scenes:
+        raise StaleReferenceBinding("planned reference catalog changed during snapshot")
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")
     by_id = {item.binding_id: item for item in preview.bindings}
