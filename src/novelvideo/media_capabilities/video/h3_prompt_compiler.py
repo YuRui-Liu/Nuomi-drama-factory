@@ -39,9 +39,11 @@ _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
 _NO_MUSIC = frozenset(
     {"", "n/a", "none", "none.", "no music", "no music.", "no music. sfx only."}
 )
-_ASSERTION_COUNT_RE = re.compile(
-    r"\b(?:exactly\s+)?(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|"
-    r"two|three|four|five|six|seven|eight|nine|ten|[0-9]+)\b\s*",
+_PURE_COUNT_ASSERTION_RE = re.compile(
+    r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
+    r"(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|two|three|four|"
+    r"five|six|seven|eight|nine|ten|[0-9]+)\s+"
+    r"(?:.+\s+(?:remains?\s+visible|(?:is|are)\s+present)|resolved\s+references?)$",
     flags=re.IGNORECASE,
 )
 
@@ -135,18 +137,18 @@ def _compile_shot_intro(
     reference_subjects: tuple[H3ReferenceSubjectPlan, ...],
 ) -> str:
     label = _shot_label(shot.shot_id)
-    visual_style = _strip_leading_article(plan.visual_style)
-    framing = _strip_leading_article(shot.framing)
     if first:
         opening = (
-            f"[{label}] Render with {visual_style} visual styling. "
-            f"Use {framing} framing from {shot.angle} on {shot.focus}; "
+            f"[{label}] Render with {plan.visual_style} visual styling. "
+            f"Use a composition described as {shot.framing}; "
+            f"view {shot.focus} from {shot.angle}; "
             f"{_sentence(shot.composition)}"
         )
     else:
         opening = (
             f"[{label}] At {_timestamp(shot.start_frame, plan.fps)}, "
-            f"cut to {framing} framing from {shot.angle} on {shot.focus}; "
+            f"cut to a composition described as {shot.framing}; "
+            f"view {shot.focus} from {shot.angle}; "
             f"{_sentence(shot.composition)}"
         )
     parts = [f"{opening} The {_camera_text(shot.camera)}."]
@@ -280,7 +282,9 @@ def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     if constraint.count is None:
         return constraint.assertion
     assertion = _strip_terminal(constraint.assertion)
-    semantic_assertion = "" if _ASSERTION_COUNT_RE.search(assertion) else assertion
+    semantic_assertion = (
+        "" if _PURE_COUNT_ASSERTION_RE.fullmatch(assertion) else assertion
+    )
     semantic = (
         _sentence(_capitalize_initial(semantic_assertion))
         if semantic_assertion
@@ -531,13 +535,6 @@ def _natural_list(values: tuple[str, ...]) -> str:
     if len(values) == 2:
         return " and ".join(values)
     return f"{', '.join(values[:-1])}, and {values[-1]}"
-
-
-def _strip_leading_article(value: str) -> str:
-    normalized = value.strip()
-    return re.sub(
-        r"^(?:a|an|the)\s+", "", normalized, count=1, flags=re.IGNORECASE
-    )
 
 
 def _shot_label(shot_id: str) -> str:

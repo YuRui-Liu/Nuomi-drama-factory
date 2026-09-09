@@ -686,7 +686,8 @@ def test_rigid_facts_render_as_stable_complete_natural_sentences():
     description = wire.integrated_multimodal_description
     assert description.startswith(
         "[Shot 1] Render with cinematic realism visual styling. "
-        "Use medium close-up framing from eye level on Lin Mo; "
+        "Use a composition described as medium close-up; "
+        "view Lin Mo from eye level; "
         "Lin Mo remains centered against the iron door."
     )
     assert "Exactly one visible character, lin, is present without duplicates." in description
@@ -785,6 +786,39 @@ def test_positive_count_uses_structured_count_and_target_as_truth(
     assert forbidden not in wire.integrated_multimodal_description
 
 
+@pytest.mark.parametrize(
+    "assertion",
+    (
+        "Lin holds one red umbrella in his right hand",
+        "No extra limbs or duplicated faces appear",
+    ),
+)
+def test_positive_count_preserves_non_count_director_semantics(assertion):
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion=assertion,
+        count=1,
+        target="characters",
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert (
+        f"{assertion}. Keep exactly one character visible."
+        in wire.integrated_multimodal_description
+    )
+
+
 def test_shot_intro_selects_article_and_preserves_existing_framing_article():
     plan = _v3_plan(H3Mode.T2VA)
     shot = plan.shots[0].model_copy(
@@ -797,10 +831,60 @@ def test_shot_intro_selects_article_and_preserves_existing_framing_article():
     assert isinstance(wire, H3BaseWire)
     assert wire.integrated_multimodal_description.startswith(
         "[Shot 1] Render with anime visual styling. "
-        "Use extreme close-up framing from eye level on Lin Mo;"
+        "Use a composition described as an extreme close-up; "
+        "view Lin Mo from eye level;"
     )
     assert "a anime" not in wire.integrated_multimodal_description
     assert "a an extreme close-up" not in wire.integrated_multimodal_description
+
+
+@pytest.mark.parametrize(
+    "style",
+    ("The Matrix-inspired realism", "A Scanner Darkly rotoscope"),
+)
+def test_shot_intro_preserves_leading_article_in_authored_style(style):
+    plan = _v3_plan(H3Mode.T2VA).model_copy(update={"visual_style": style})
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert wire.integrated_multimodal_description.startswith(
+        f"[Shot 1] Render with {style} visual styling."
+    )
+
+
+def test_projected_description_snapshot_keeps_proper_noun_semantics_and_count():
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion="Lin holds one red umbrella in his right hand",
+        count=1,
+        target="characters",
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert wire.integrated_multimodal_description.endswith(
+        "Image quality must preserve stable corridor geometry. "
+        "Lin holds one red umbrella in his right hand. "
+        "Keep exactly one character visible. "
+        "Shot 1 starts with Lin one meter from the door. "
+        "lin stays frame center, facing north, looking at the handle. "
+        "Use 50 mm equivalent at eye height, 1.5 meters from the subject, "
+        "with shallow, both eyes sharp; hold on Lin's eyes.\n"
+        "Lin Mo braces against the door.\n"
+        "At 00:00.500, He turns toward the rattling handle.\n"
+        "At 00:02.000, Lin Mo (S1) says: <d>[Chinese]别过来。</d>"
+    )
 
 
 @pytest.mark.parametrize("style", ("hour-long", "university", "8mm"))
@@ -826,11 +910,11 @@ def test_shot_intro_does_not_guess_pronunciation_for_open_style_text(style):
             "Characters remain visible.",
         ),
         (
-            "A pair of props remain visible",
+            "A pair of gloves remains visible",
             2,
             "props",
             "Keep exactly 2 props visible.",
-            "Props remain visible.",
+            "Gloves remains visible.",
         ),
     ),
 )
