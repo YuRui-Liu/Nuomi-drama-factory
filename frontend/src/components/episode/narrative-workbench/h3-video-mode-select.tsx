@@ -4,6 +4,7 @@ import type {
   H3ResolvedVideoMode,
   H3VideoMode,
 } from "@/lib/queries/media-models";
+import { h3ModeReasonLabel } from "@/lib/queries/media-models";
 
 const MODE_LABELS: Record<H3ResolvedVideoMode, string> = {
   t2va: "T2V（文本）",
@@ -11,12 +12,6 @@ const MODE_LABELS: Record<H3ResolvedVideoMode, string> = {
   fl2va: "FL2V（首尾帧）",
   l2va: "L2V（尾帧）",
   ref2va: "Ref2V（参考图）",
-};
-
-const REASON_LABELS: Record<NonNullable<H3ModeAvailability["reason"]>, string> = {
-  missing_input: "缺输入",
-  workflow_unverified: "工作流未验证",
-  model_unsupported: "模型不支持",
 };
 
 export function h3ModeLabel(mode: H3ResolvedVideoMode) {
@@ -43,14 +38,14 @@ export function H3VideoModeSelect({ value, availability, disabled = false, onCha
         const label = item.mode === "auto"
           ? `自动（解析为 ${MODE_LABELS[item.resolvedMode]}）`
           : MODE_LABELS[item.resolvedMode];
-        const reason = item.reason ? ` · ${REASON_LABELS[item.reason]}` : "";
+        const reason = item.reason ? ` · ${h3ModeReasonLabel(item.reason)}` : "";
         return <option key={item.mode} value={item.mode} disabled={!item.available}>
           {label}{reason}
         </option>;
       })}
     </select>
     {selected?.reason ? <span className="text-muted-foreground">
-      {REASON_LABELS[selected.reason]}
+      {h3ModeReasonLabel(selected.reason)}
     </span> : null}
   </label>;
 }

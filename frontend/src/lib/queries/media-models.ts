@@ -22,11 +22,20 @@ export interface H3ModeInputs {
   referenceCount: number;
 }
 
+export interface H3ModeCapability {
+  mode: H3ResolvedVideoMode;
+  enabled: boolean;
+  reason: string | null;
+  requires_first_frame: boolean;
+  requires_last_frame: boolean;
+  requires_references: boolean;
+}
+
 export interface H3ModeAvailability {
   mode: H3VideoMode;
   resolvedMode: H3ResolvedVideoMode;
   available: boolean;
-  reason?: "missing_input" | "workflow_unverified" | "model_unsupported";
+  reason?: string;
 }
 export interface VideoWorkflowParameterOption {
   value: string;
@@ -67,6 +76,7 @@ export interface VideoModelCatalogItem {
   available: boolean;
   unavailable_reason?: string | null;
   supported_modes: VideoModelMode[];
+  mode_capabilities?: H3ModeCapability[];
   default_mode: VideoModelMode;
   parameters: VideoWorkflowParameterDefinition[];
   reference_policy?: VideoReferencePolicy;
@@ -80,7 +90,14 @@ export function resolveAutomaticH3Mode(inputs: H3ModeInputs): H3ResolvedVideoMod
   return "t2va";
 }
 
-function h3ModeHasRequiredInputs(mode: H3VideoMode, inputs: H3ModeInputs) {
+function h3ModeHasRequiredInputs(
+  mode: H3VideoMode,
+  inputs: H3ModeInputs,
+  capability?: H3ModeCapability,
+) {
+  if (capability?.requires_first_frame && !inputs.hasFirstFrame) return false;
+  if (capability?.requires_last_frame && !inputs.hasLastFrame) return false;
+  if (capability?.requires_references && inputs.referenceCount <= 0) return false;
   const hasReferences = inputs.referenceCount > 0;
   if (mode === "auto") return true;
   if (mode === "t2va") {
@@ -104,8 +121,29 @@ export function h3ModeAvailability(
   mode: H3VideoMode,
 ): H3ModeAvailability {
   const resolvedMode = mode === "auto" ? resolveAutomaticH3Mode(inputs) : mode;
-  if (!h3ModeHasRequiredInputs(mode, inputs)) {
+  const hasAuthoritativeCapabilities = model.mode_capabilities !== undefined;
+  const capability = model.mode_capabilities?.find((item) => item.mode === resolvedMode);
+  if (!h3ModeHasRequiredInputs(mode, inputs, capability)) {
     return { mode, resolvedMode, available: false, reason: "missing_input" };
+  }
+  if (hasAuthoritativeCapabilities) {
+    if (!capability?.enabled) {
+      return {
+        mode,
+        resolvedMode,
+        available: false,
+        reason: capability?.reason ?? "model_unsupported",
+      };
+    }
+    if (!model.available) {
+      return {
+        mode,
+        resolvedMode,
+        available: false,
+        reason: model.unavailable_reason ?? "workflow_unverified",
+      };
+    }
+    return { mode, resolvedMode, available: true };
   }
   if (!model.available) {
     return { mode, resolvedMode, available: false, reason: "workflow_unverified" };
@@ -114,6 +152,22 @@ export function h3ModeAvailability(
     return { mode, resolvedMode, available: false, reason: "model_unsupported" };
   }
   return { mode, resolvedMode, available: true };
+}
+
+const H3_MODE_REASON_LABELS: Record<string, string> = {
+  missing_input: "缺输入",
+  workflow_capability_unverified: "当前工作流未验证",
+  hybrid_input_unverified: "参考图混合输入工作流未验证",
+  workflow_unverified: "工作流未验证",
+  model_unsupported: "模型不支持",
+  provider_not_configured: "RunningHub 提供方未配置",
+  credential_unavailable: "RunningHub 凭据不可用",
+  workflow_not_configured: "工作流未配置",
+  profile_invalid: "工作流配置无效",
+};
+
+export function h3ModeReasonLabel(reason: string) {
+  return H3_MODE_REASON_LABELS[reason] ?? `当前工作流不可用（${reason}）`;
 }
 
 export function h3ModeAvailabilities(

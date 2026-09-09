@@ -13,6 +13,7 @@ vi.mock("@/lib/api", () => ({
 import {
   availableVideoModels,
   effectiveVideoMode,
+  h3ModeAvailability,
   h3ModeAvailabilities,
   resolveAutomaticH3Mode,
   resolveVideoModel,
@@ -105,6 +106,71 @@ describe("video media model contract", () => {
       resolvedMode: "i2va",
       available: true,
     });
+  });
+
+  it("prefers authoritative API mode capabilities over supported-modes fallback", () => {
+    const model: VideoModelCatalogItem = {
+      id: "runninghub:minimax-h3",
+      label: "H3",
+      provider: "runninghub",
+      available: true,
+      supported_modes: ["i2va", "fl2va"],
+      default_mode: "auto",
+      parameters: [],
+      mode_capabilities: [
+        {
+          mode: "t2va",
+          enabled: false,
+          reason: "workflow_capability_unverified",
+          requires_first_frame: false,
+          requires_last_frame: false,
+          requires_references: false,
+        },
+        {
+          mode: "ref2va",
+          enabled: false,
+          reason: "hybrid_input_unverified",
+          requires_first_frame: false,
+          requires_last_frame: false,
+          requires_references: true,
+        },
+      ],
+    };
+
+    expect(h3ModeAvailability(model, {
+      hasFirstFrame: false,
+      hasLastFrame: false,
+      referenceCount: 0,
+    }, "t2va")).toMatchObject({
+      available: false,
+      reason: "workflow_capability_unverified",
+    });
+    expect(h3ModeAvailability(model, {
+      hasFirstFrame: false,
+      hasLastFrame: false,
+      referenceCount: 1,
+    }, "ref2va")).toMatchObject({
+      available: false,
+      reason: "hybrid_input_unverified",
+    });
+  });
+
+  it("keeps supported_modes as the legacy API fallback", () => {
+    const legacy: VideoModelCatalogItem = {
+      id: "runninghub:minimax-h3",
+      label: "H3",
+      provider: "runninghub",
+      available: true,
+      supported_modes: ["i2va", "fl2va"],
+      default_mode: "auto",
+      parameters: [],
+    };
+
+    expect(h3ModeAvailability(legacy, {
+      hasFirstFrame: false,
+      hasLastFrame: true,
+      referenceCount: 0,
+    }, "l2va").reason).toBe("model_unsupported");
   });
 
   it("selects FL2VA for first and last frames and I2VA for first frame only", () => {
