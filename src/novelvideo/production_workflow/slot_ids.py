@@ -23,6 +23,10 @@ def character_state_slot_id(character_name: str, identity_id: str) -> str:
     )
 
 
+def character_portrait_slot_id(character_name: str) -> str:
+    return f"character:{_required(character_name, 'character_name')}:portrait"
+
+
 def scene_base_slot_id(scene_name: str, kind: str) -> str:
     return (
         f"scene:{_required(scene_name, 'scene_name')}:base:"

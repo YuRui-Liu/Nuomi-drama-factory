@@ -15,7 +15,10 @@ from novelvideo.narrative_groups.planned_binding_service import (
     _binding as _project_binding,
     bindings_for_director_plan,
 )
-from novelvideo.production_workflow.slot_ids import character_state_slot_id
+from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
+    character_state_slot_id,
+)
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.identity import (
     _build_identity_planner_result,
@@ -118,6 +121,40 @@ def test_character_name_requirement_uses_only_episode_identity_without_default()
 
     assert binding.entity_id == episode_identity.identity_id
     assert binding.status == "ready"
+
+
+def test_unique_identity_without_image_falls_back_to_character_portrait():
+    identity = _identity("陆辰_青年时期")
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+    )
+
+    assert binding.asset_kind == "character_identity"
+    assert binding.entity_id == identity.identity_id
+    assert binding.asset_slot_id == character_portrait_slot_id("陆辰")
+    assert binding.status == "ready"
+    assert binding.resolution == "explicit_fallback"
+    assert "基础头像" in binding.display_label
+
+
+def test_unique_identity_with_image_keeps_state_slot_auto_match():
+    identity = _identity("陆辰_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+    )
+
+    assert binding.asset_slot_id == character_state_slot_id(
+        "陆辰", identity.identity_id
+    )
+    assert binding.status == "ready"
+    assert binding.resolution == "auto_matched"
+    assert "基础头像" not in binding.display_label
 
 
 def test_character_name_requirement_uses_only_identity_for_legacy_episode():

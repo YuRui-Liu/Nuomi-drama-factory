@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from novelvideo.narrative_groups.planned_binding_service import (
     bindings_by_kind,
     bindings_for_director_plan,
+    resolve_planned_reference_preview,
 )
+from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+from novelvideo.production_workflow import ProductionWorkflowStore
 
 
 def _group(group_id: str, beat_id: str, *shot_ids: str) -> dict:
@@ -31,6 +37,20 @@ def _project(**overrides):
     }
     values.update(overrides)
     return bindings_for_director_plan(**values)
+
+
+class _BindingStore:
+    def __init__(self, binding: PlannedReferenceBinding) -> None:
+        self.binding = binding
+
+    async def list_planned_reference_bindings(
+        self, episode_number: int, group_id: str | None = None
+    ) -> list[PlannedReferenceBinding]:
+        if self.binding.episode_number != episode_number:
+            return []
+        if group_id is not None and group_id not in self.binding.group_ids:
+            return []
+        return [self.binding]
 
 
 def test_projects_all_four_ready_kinds_with_canonical_slots() -> None:
@@ -214,7 +234,7 @@ def test_multiple_exact_candidates_are_pending_confirmation() -> None:
     assert binding.status == "pending_confirmation"
 
 
-def test_missing_asset_and_explicit_missing_image_are_distinct() -> None:
+def test_missing_asset_and_explicit_identity_fallback_are_distinct() -> None:
     result = _project(
         shots=[
             _shot(
@@ -239,9 +259,81 @@ def test_missing_asset_and_explicit_missing_image_are_distinct() -> None:
 
     assert [(binding.asset_kind, binding.status) for binding in result] == [
         ("prop", "missing_asset"),
-        ("character_identity", "missing_image"),
+        ("character_identity", "ready"),
     ]
-    assert result[1].resolution == "auto_matched"
+    assert result[1].resolution == "explicit_fallback"
+    assert result[1].asset_slot_id == "character:Lin Mo:portrait"
+
+
+@pytest.mark.asyncio
+async def test_identity_portrait_fallback_requires_valid_workflow_version(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": [],
+                    }
+                ],
+            }
+        ],
+    )
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+
+    unavailable = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert unavailable.bindings[0].status == "missing_asset"
+    assert unavailable.bindings[0].selected_by_default is False
+    assert unavailable.bindings[0].version_id == ""
+    assert unavailable.bindings[0].thumbnail_url == ""
+
+    portrait_path = tmp_path / "assets" / "characters" / "lin-mo.png"
+    portrait_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait_path)
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_portrait",
+        version_id="portrait-v1",
+        asset_path=str(portrait_path),
+        source_attempt_id="portrait-attempt-1",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    resolved = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert resolved.bindings[0].status == "ready"
+    assert resolved.bindings[0].selected_by_default is True
+    assert resolved.bindings[0].asset_slot_id == "character:Lin Mo:portrait"
+    assert resolved.bindings[0].version_id == "portrait-v1"
+    assert resolved.bindings[0].thumbnail_url == str(portrait_path)
 
 
 def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:

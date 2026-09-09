@@ -24,6 +24,7 @@ from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowSto
 from novelvideo.production_workflow.store import production_workflow_project_lock
 
 from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
     character_state_slot_id,
     prop_reference_slot_id,
     scene_base_slot_id,
@@ -487,18 +488,22 @@ def _binding(
             )
             identity_name = _text(_get(identity, "identity_name"))
             label = " / ".join(item for item in (character_name, identity_name) if item)
+            missing_identity_image = _explicitly_missing_image(identity, identity=True)
             try:
-                slot_id = character_state_slot_id(character_name, entity_id)
+                slot_id = (
+                    character_portrait_slot_id(character_name)
+                    if missing_identity_image
+                    else character_state_slot_id(character_name, entity_id)
+                )
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
             else:
-                status = (
-                    "missing_image"
-                    if _explicitly_missing_image(identity, identity=True)
-                    else "ready"
-                )
+                status = "ready"
+                if missing_identity_image:
+                    resolution = "explicit_fallback"
+                    label = f"{label}（基础头像）"
         elif candidates or force_pending:
             slot_id = ""
             status = "pending_confirmation"
