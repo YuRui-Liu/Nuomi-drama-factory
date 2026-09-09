@@ -294,7 +294,7 @@ def test_v2_complete_prompt_projects_to_official_base_wire() -> None:
     assert isinstance(wire, H3BaseWire)
     assert prompt == h3_prompt_compiler.compile_h3_wire(wire)
     assert wire.integrated_multimodal_description.startswith(
-        "[Shot 1] Render in a legacy visual style."
+        "[Shot 1] Render with legacy visual styling."
     )
     assert "Lin confronts a locked door" in wire.integrated_multimodal_description
     assert "50 mm equivalent" in wire.integrated_multimodal_description
@@ -439,8 +439,8 @@ def test_compiles_complete_i2va_in_deterministic_official_wire_order():
     assert prompt.startswith(
         "For the target video, at 0.00 seconds into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
-        "integrated_multimodal_description: [Shot 1] Render in a cinematic "
-        "realism visual style."
+        "integrated_multimodal_description: [Shot 1] Render with cinematic "
+        "realism visual styling."
     )
     assert "Throughout, preserve same face and black coat; same iron door and lighting." in prompt
     assert "Lin Mo braces against the door.\nAt 00:00.500, He turns" in prompt
@@ -685,8 +685,8 @@ def test_rigid_facts_render_as_stable_complete_natural_sentences():
     assert isinstance(wire, H3BaseWire)
     description = wire.integrated_multimodal_description
     assert description.startswith(
-        "[Shot 1] Render in a cinematic realism visual style. "
-        "Frame Lin Mo in a medium close-up from eye level; "
+        "[Shot 1] Render with cinematic realism visual styling. "
+        "Use medium close-up framing from eye level on Lin Mo; "
         "Lin Mo remains centered against the iron door."
     )
     assert "Exactly one visible character, lin, is present without duplicates." in description
@@ -705,7 +705,8 @@ def test_rigid_facts_render_as_stable_complete_natural_sentences():
     ) in description
     assert "Image quality must preserve stable identity." in description
     assert "Image quality must preserve stable corridor geometry." in description
-    assert "Lin remains visible. Keep exactly one character visible." in description
+    assert "Keep exactly one character visible." in description
+    assert "exactly one Lin remains visible" not in description
     for awkward in (
         "Exactly 1 visible characters",
         "fixture. one overhead",
@@ -747,7 +748,7 @@ def test_rigid_character_count_uses_plural_grammar():
         (
             "Exactly two props remain visible",
             "props",
-            "Props remain visible. Keep exactly one prop visible.",
+            "Keep exactly one prop visible.",
             "Exactly two props",
         ),
         (
@@ -795,11 +796,69 @@ def test_shot_intro_selects_article_and_preserves_existing_framing_article():
 
     assert isinstance(wire, H3BaseWire)
     assert wire.integrated_multimodal_description.startswith(
-        "[Shot 1] Render in an anime visual style. "
-        "Frame Lin Mo in an extreme close-up from eye level;"
+        "[Shot 1] Render with anime visual styling. "
+        "Use extreme close-up framing from eye level on Lin Mo;"
     )
     assert "a anime" not in wire.integrated_multimodal_description
     assert "a an extreme close-up" not in wire.integrated_multimodal_description
+
+
+@pytest.mark.parametrize("style", ("hour-long", "university", "8mm"))
+def test_shot_intro_does_not_guess_pronunciation_for_open_style_text(style):
+    plan = _v3_plan(H3Mode.T2VA).model_copy(update={"visual_style": style})
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert wire.integrated_multimodal_description.startswith(
+        f"[Shot 1] Render with {style} visual styling."
+    )
+
+
+@pytest.mark.parametrize(
+    "assertion,count,target,expected,forbidden_semantic",
+    (
+        (
+            "No characters remain visible",
+            0,
+            "characters",
+            "Keep exactly zero characters visible.",
+            "Characters remain visible.",
+        ),
+        (
+            "A pair of props remain visible",
+            2,
+            "props",
+            "Keep exactly 2 props visible.",
+            "Props remain visible.",
+        ),
+    ),
+)
+def test_explicit_assertion_quantity_is_discarded_in_favor_of_structured_count(
+    assertion, count, target, expected, forbidden_semantic
+):
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion=assertion,
+        count=count,
+        target=target,
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert expected in wire.integrated_multimodal_description
+    assert assertion not in wire.integrated_multimodal_description
+    assert forbidden_semantic not in wire.integrated_multimodal_description
 
 
 def test_rigid_description_is_natural_playback_without_internal_labels_or_motives():

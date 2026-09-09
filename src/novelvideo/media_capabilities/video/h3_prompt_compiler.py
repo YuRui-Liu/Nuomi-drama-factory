@@ -135,18 +135,18 @@ def _compile_shot_intro(
     reference_subjects: tuple[H3ReferenceSubjectPlan, ...],
 ) -> str:
     label = _shot_label(shot.shot_id)
+    visual_style = _strip_leading_article(plan.visual_style)
+    framing = _strip_leading_article(shot.framing)
     if first:
         opening = (
-            f"[{label}] Render in {_with_indefinite_article(plan.visual_style)} "
-            f"visual style. Frame {shot.focus} in "
-            f"{_with_indefinite_article(shot.framing)} from {shot.angle}; "
+            f"[{label}] Render with {visual_style} visual styling. "
+            f"Use {framing} framing from {shot.angle} on {shot.focus}; "
             f"{_sentence(shot.composition)}"
         )
     else:
         opening = (
             f"[{label}] At {_timestamp(shot.start_frame, plan.fps)}, "
-            f"cut to {_with_indefinite_article(shot.framing)} from {shot.angle}, "
-            f"focused on {shot.focus}; "
+            f"cut to {framing} framing from {shot.angle} on {shot.focus}; "
             f"{_sentence(shot.composition)}"
         )
     parts = [f"{opening} The {_camera_text(shot.camera)}."]
@@ -279,10 +279,8 @@ def _compile_acting_fact(
 def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     if constraint.count is None:
         return constraint.assertion
-    semantic_assertion = _ASSERTION_COUNT_RE.sub(
-        "", _strip_terminal(constraint.assertion)
-    ).strip()
-    semantic_assertion = re.sub(r"\s{2,}", " ", semantic_assertion)
+    assertion = _strip_terminal(constraint.assertion)
+    semantic_assertion = "" if _ASSERTION_COUNT_RE.search(assertion) else assertion
     semantic = (
         _sentence(_capitalize_initial(semantic_assertion))
         if semantic_assertion
@@ -535,12 +533,11 @@ def _natural_list(values: tuple[str, ...]) -> str:
     return f"{', '.join(values[:-1])}, and {values[-1]}"
 
 
-def _with_indefinite_article(value: str) -> str:
+def _strip_leading_article(value: str) -> str:
     normalized = value.strip()
-    if re.match(r"^(?:a|an|the)\s+", normalized, flags=re.IGNORECASE):
-        return normalized
-    article = "an" if normalized[:1].casefold() in "aeiou" else "a"
-    return f"{article} {normalized}"
+    return re.sub(
+        r"^(?:a|an|the)\s+", "", normalized, count=1, flags=re.IGNORECASE
+    )
 
 
 def _shot_label(shot_id: str) -> str:
