@@ -140,6 +140,10 @@ class ProductionWorkflowStore:
             if version_id in self._versions
         }
 
+    def list_slots(self) -> tuple[AssetSlot, ...]:
+        """Return the immutable slot views used by read-only consumers."""
+        return tuple(slot.model_copy(deep=True) for slot in self._slots.values())
+
     def read_legacy_current(
         self, *, slot_id: str, asset_kind: str, asset_path: str
     ) -> tuple[AssetSlot, AssetVersion]:

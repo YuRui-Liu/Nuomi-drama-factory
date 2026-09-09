@@ -871,6 +871,51 @@ def _read_legacy_scene_binding(
     return slot, {version.version_id: version}
 
 
+def _available_scene_state_supersedes_fallback(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+    project_dir: Path,
+) -> bool:
+    """Conservatively reject a base fallback after any base state becomes usable."""
+    if workflow_store.read_only_reason:
+        return False
+    try:
+        base_scene_id = _safe_scene_path_segment(binding.base_entity_id)
+    except ValueError:
+        return False
+    prefix = f"scene:{base_scene_id}:state:"
+    for state_slot in workflow_store.list_slots():
+        if (
+            state_slot.slot_id.startswith(prefix)
+            and state_slot.slot_id.endswith(":master")
+            and state_slot.asset_kind == "scene_state"
+            and state_slot.current_version_id
+        ):
+            try:
+                loaded_slot, versions = workflow_store.get_slot(state_slot.slot_id)
+            except KeyError:
+                continue
+            if loaded_slot.slot_id != state_slot.slot_id:
+                continue
+            version = versions.get(str(loaded_slot.current_version_id))
+            if (
+                version is None
+                or version.slot_id != state_slot.slot_id
+                or version.adoption_status
+                not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
+            ):
+                continue
+            try:
+                validate_reference_image(
+                    _asset_path(project_dir, version.asset_path),
+                    allowed_roots=(project_dir / "assets",),
+                )
+            except (InvalidReferenceUpload, OSError, ValueError):
+                continue
+            return True
+    return False
+
+
 def _unavailable(
     binding: PlannedReferenceBinding,
     warning: str,
@@ -929,7 +974,10 @@ def _resolve_binding(
         )
     expected_slot_kind = _scene_binding_slot_kind(binding)
     if expected_slot_kind is not None:
-        if slot.asset_kind != expected_slot_kind:
+        if (
+            slot.slot_id != binding.asset_slot_id
+            or slot.asset_kind != expected_slot_kind
+        ):
             return _unavailable(
                 binding,
                 f"asset slot kind is not {expected_slot_kind}",
@@ -963,6 +1011,20 @@ def _resolve_binding(
     except (InvalidReferenceUpload, OSError, ValueError):
         return _unavailable(
             binding, "current version is not a safe valid image", status="missing_image"
+        )
+    # Final consumer-side invariant: a fallback observed before a concurrent state
+    # publication must never remain selected merely because planning already ended.
+    if (
+        binding.asset_kind == "scene_variant"
+        and binding.resolution == "explicit_fallback"
+        and _available_scene_state_supersedes_fallback(
+            binding, workflow_store, project_dir
+        )
+    ):
+        return _unavailable(
+            binding,
+            "scene variant became available; re-run scene planning",
+            status="pending_confirmation",
         )
     return ResolvedPlannedReference(
         binding_id=binding.binding_id,

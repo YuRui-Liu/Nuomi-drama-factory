@@ -424,6 +424,66 @@ async def test_scene_variant_base_fallback_is_selected_in_preview(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_preview_rejects_fallback_when_variant_appears_after_planning(tmp_path):
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="咖啡馆",
+                base_scene_id="",
+                variant_id="",
+                master_image="assets/scenes/咖啡馆/master.png",
+            ),
+        ),
+    )
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    for slot_id, asset_kind, relative_path, version_id, color in (
+        (
+            binding.asset_slot_id,
+            "scene_base",
+            "assets/scenes/咖啡馆/master.png",
+            "base-v1",
+            "red",
+        ),
+        (
+            scene_state_slot_id("咖啡馆", "雨中咖啡馆", "master"),
+            "scene_state",
+            "assets/scenes/雨中咖啡馆/master.png",
+            "variant-v1",
+            "blue",
+        ),
+    ):
+        image_path = tmp_path / relative_path
+        image_path.parent.mkdir(parents=True)
+        Image.new("RGB", (8, 8), color).save(image_path)
+        workflow.register_candidate_version(
+            slot_id=slot_id,
+            asset_kind=asset_kind,
+            version_id=version_id,
+            asset_path=relative_path,
+            source_attempt_id=f"{version_id}-attempt",
+            qc_passed=True,
+            generation_metadata=None,
+            actor="test",
+            at=datetime.now(UTC),
+        )
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        workflow,
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "pending_confirmation"
+    assert resolved.selected_by_default is False
+    assert "re-run scene planning" in resolved.warning
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("binding", "scene_name", "expected_slot_fragment"),
     [
@@ -692,6 +752,41 @@ def test_scene_slot_availability_rejects_cross_slot_current_version(tmp_path):
     assert available == frozenset()
 
 
+def test_scene_slot_availability_rejects_mismatched_slot_identity(tmp_path):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    scene = NovelScene(name="咖啡馆")
+    slot_id = scene_base_slot_id(scene.name, "master")
+    image_path = tmp_path / "assets" / "scenes" / scene.name / "master.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow_path = tmp_path / "state" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(workflow_path)
+    workflow.register_candidate_version(
+        slot_id=slot_id,
+        asset_kind="scene_base",
+        version_id="base-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id="base-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    payload = json.loads(workflow_path.read_text(encoding="utf-8"))
+    payload["slots"][slot_id]["slot_id"] = scene_base_slot_id("车站", "master")
+    workflow_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(scene,),
+    )
+
+    assert available == frozenset()
+
+
 def test_scene_slot_availability_does_not_replace_wrong_kind_with_legacy(
     tmp_path,
 ):
@@ -832,6 +927,58 @@ async def test_scene_variant_preview_rejects_incompatible_slot_kind(
     assert resolved.selected_by_default is False
 
 
+@pytest.mark.asyncio
+async def test_scene_variant_preview_rejects_mismatched_slot_identity(tmp_path):
+    binding = PlannedReferenceBinding.create(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        asset_kind="scene_variant",
+        entity_id="咖啡馆",
+        base_entity_id="咖啡馆",
+        variant_id="暴雨版",
+        asset_slot_id=scene_base_slot_id("咖啡馆", "master"),
+        group_ids=("group-1",),
+        status="ready",
+        resolution="explicit_fallback",
+        display_label="咖啡馆 / 暴雨版（基础场景）",
+    )
+    image_path = tmp_path / "assets" / "scenes" / "咖啡馆" / "master.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow_path = tmp_path / "state" / "workflow.json"
+    workflow = ProductionWorkflowStore(workflow_path)
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="scene_base",
+        version_id="base-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id="base-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    payload = json.loads(workflow_path.read_text(encoding="utf-8"))
+    payload["slots"][binding.asset_slot_id]["slot_id"] = scene_base_slot_id(
+        "车站", "master"
+    )
+    workflow_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        ProductionWorkflowStore(workflow_path),
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "missing_asset"
+    assert resolved.selected_by_default is False
+
+
 def test_prop_binding_resolves_existing_asset_alias_to_canonical_id():
     prop = NovelProp(name="功德碑", aliases=["镇河碑"])
     requirement = SimpleNamespace(kind="prop", entity_key="镇河碑", required=True)
@@ -934,6 +1081,79 @@ async def test_publish_scene_plan_atomic_exposes_entity_menu_and_binding_togethe
     assert persisted_scene.environment_prompt == scene.environment_prompt
     assert (await store.list_episodes())[0].scene_menu == list(menu)
     assert await store.list_planned_reference_bindings(1) == [_binding("scene_base", "咖啡馆")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_real_sqlite_scene_reconcile_waits_for_final_binding(
+    tmp_path,
+):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _shield_scene_publication,
+    )
+
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    await store.initialize()
+    await store.add_episode(NovelEpisode(number=1, title="第一集"))
+    fallback = PlannedReferenceBinding.create(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        asset_kind="scene_variant",
+        entity_id="咖啡馆",
+        base_entity_id="咖啡馆",
+        variant_id="暴雨版",
+        asset_slot_id=scene_base_slot_id("咖啡馆", "master"),
+        status="ready",
+        resolution="explicit_fallback",
+        display_label="咖啡馆 / 暴雨版（基础场景）",
+    )
+    direct = PlannedReferenceBinding.create(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        asset_kind="scene_variant",
+        entity_id="雨中咖啡馆",
+        base_entity_id="咖啡馆",
+        variant_id="暴雨版",
+        asset_slot_id=scene_state_slot_id("咖啡馆", "雨中咖啡馆", "master"),
+        status="ready",
+        resolution="auto_matched",
+        display_label="咖啡馆 / 暴雨版",
+    )
+    release_reconcile = asyncio.Event()
+
+    await store.publish_scene_plan_atomic(
+        episode_number=1,
+        scenes=(NovelScene(name="咖啡馆"),),
+        scene_menu=(SceneMenuItem(scene_id="咖啡馆"),),
+        scene_baseline_digests={},
+        episode_scene_menu_baseline_digest=store.asset_menu_baseline_digest([]),
+        bindings=(fallback,),
+        refresh_cache=False,
+    )
+
+    async def reconcile_after_commit():
+        await release_reconcile.wait()
+        await store.replace_planned_reference_bindings_atomic(
+            1, ("scene_base", "scene_variant"), (direct,)
+        )
+
+    task = asyncio.create_task(
+        _shield_scene_publication(reconcile_after_commit())
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release_reconcile.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [persisted] = await store.list_planned_reference_bindings(1)
+    assert persisted.entity_id == "雨中咖啡馆"
+    assert persisted.resolution == "auto_matched"
 
 
 @pytest.mark.asyncio
@@ -1515,6 +1735,7 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
     await publish_started.wait()
     task.cancel()
+    release_publish.set()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not workflow_path.exists()

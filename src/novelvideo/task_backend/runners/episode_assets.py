@@ -49,6 +49,21 @@ async def _refresh_asset_caches(sqlite_store: Any, cognee_store: Any) -> bool:
         return False
 
 
+async def _shield_scene_publication(operation: Any) -> Any:
+    """Wait for scene publication to settle even if its caller is cancelled."""
+    task = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except BaseException:
+            # Consume and propagate the publication outcome instead of orphaning a
+            # background task whose exception would otherwise be lost.
+            raise
+        raise
+
+
 def _dump_items(items: list[Any]) -> list[dict]:
     data: list[dict] = []
     for item in items or []:
@@ -132,7 +147,11 @@ def _available_scene_reference_slots(
             available.add(slot_id)
             continue
 
-        if slot.asset_kind != expected_kind or not slot.current_version_id:
+        if (
+            slot.slot_id != slot_id
+            or slot.asset_kind != expected_kind
+            or not slot.current_version_id
+        ):
             continue
         current = versions.get(slot.current_version_id)
         if current is None or current.slot_id != slot_id:
@@ -424,53 +443,59 @@ async def _run_episode_asset_planner(
         ):
             raise ValueError("ACTIVE_DIRECTOR_PLAN_STALE")
         if asset_kind == "scene":
-            publication = await sqlite_store.publish_scene_plan_atomic(
-                episode_number=episode,
-                scenes=draft.scenes,
-                scene_menu=draft.scene_menu,
-                scene_baseline_digests=draft.scene_baseline_digests,
-                episode_scene_menu_baseline_digest=(
-                    draft.episode_scene_menu_baseline_digest
-                ),
-                scene_catalog_baseline_digest=scene_catalog_digest,
-                prop_catalog_baseline_digest=prop_catalog_digest,
-                bindings=bindings,
-                refresh_cache=False,
-            )
-            for _attempt in range(3):
-                (
-                    current_scene_slots,
-                    current_scene_revision,
-                ) = _scene_reference_catalog_snapshot(
-                    ctx=ctx,
-                    scenes=scene_projection_items,
-                )
-                if current_scene_revision == scene_reference_revision:
-                    break
-                scene_reference_revision = current_scene_revision
-                bindings = _episode_asset_bindings(
-                    asset_kind=asset_kind,
-                    project_id=ctx.project_id,
+            async def publish_and_reconcile() -> tuple[Any, tuple[Any, ...]]:
+                current_bindings = bindings
+                current_revision = scene_reference_revision
+                scene_publication = await sqlite_store.publish_scene_plan_atomic(
                     episode_number=episode,
-                    director_plan=final_active,
-                    changed_entities=draft.scenes,
-                    characters=characters,
-                    scenes=scenes,
-                    props=props,
-                    available_scene_reference_slots=current_scene_slots,
+                    scenes=draft.scenes,
+                    scene_menu=draft.scene_menu,
+                    scene_baseline_digests=draft.scene_baseline_digests,
+                    episode_scene_menu_baseline_digest=(
+                        draft.episode_scene_menu_baseline_digest
+                    ),
+                    scene_catalog_baseline_digest=scene_catalog_digest,
+                    prop_catalog_baseline_digest=prop_catalog_digest,
+                    bindings=current_bindings,
+                    refresh_cache=False,
                 )
-                await sqlite_store.replace_planned_reference_bindings_atomic(
-                    episode,
-                    ("scene_base", "scene_variant"),
-                    bindings,
-                )
-            else:
+                for _attempt in range(3):
+                    (
+                        current_scene_slots,
+                        observed_revision,
+                    ) = _scene_reference_catalog_snapshot(
+                        ctx=ctx,
+                        scenes=scene_projection_items,
+                    )
+                    if observed_revision == current_revision:
+                        return scene_publication, current_bindings
+                    current_revision = observed_revision
+                    current_bindings = _episode_asset_bindings(
+                        asset_kind=asset_kind,
+                        project_id=ctx.project_id,
+                        episode_number=episode,
+                        director_plan=final_active,
+                        changed_entities=draft.scenes,
+                        characters=characters,
+                        scenes=scenes,
+                        props=props,
+                        available_scene_reference_slots=current_scene_slots,
+                    )
+                    await sqlite_store.replace_planned_reference_bindings_atomic(
+                        episode,
+                        ("scene_base", "scene_variant"),
+                        current_bindings,
+                    )
                 await sqlite_store.replace_planned_reference_bindings_atomic(
                     episode,
                     ("scene_base", "scene_variant"),
                     (),
                 )
                 raise ValueError("SCENE_REFERENCE_CATALOG_BUSY")
+
+            publication, bindings = await _shield_scene_publication(
+                publish_and_reconcile()
+            )
         else:
             publication = await sqlite_store.publish_prop_plan_atomic(
                 episode_number=episode,
