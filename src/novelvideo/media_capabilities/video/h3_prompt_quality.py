@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections import Counter
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
@@ -30,7 +29,12 @@ _BASE_WIRE_FIELD_ORDER = tuple(
 _REFERENCE_WIRE_FIELD_ORDER = tuple(
     name for name in H3ReferenceWire.model_fields if name not in _WIRE_METADATA_FIELDS
 )
-_WIRE_FIELD_PATTERN = re.compile(r"(?m)^([a-z][a-z_]*):(?:[ \t]*|\n)")
+_CANONICAL_WIRE_FIELDS = tuple(
+    dict.fromkeys((*_BASE_WIRE_FIELD_ORDER, *_REFERENCE_WIRE_FIELD_ORDER))
+)
+_WIRE_FIELD_PATTERN = re.compile(
+    rf"(?m)^({'|'.join(re.escape(field) for field in _CANONICAL_WIRE_FIELDS)}):"
+)
 _EVENT_TIMESTAMP_PATTERN = re.compile(r"\bAt (\d{2}):(\d{2})\.(\d{3}),")
 _TIMED_ACTION_PATTERN = re.compile(r"^At \d{2}:\d{2}\.\d{3},")
 _TIMED_CAMERA_PATTERN = re.compile(
@@ -162,14 +166,14 @@ def inspect_h3_prompt(
         _add(issues, "h3.mode_invalid", "mode must be an official H3 mode", "mode")
         return H3PromptQualityReport(passed=False, issues=tuple(issues))
 
-    fields = _extract_wire_fields(prompt)
+    fields, wire_format_valid = _extract_wire_fields(prompt, resolved_mode)
     actual_order = tuple(name for name, _ in fields)
     expected_order = (
         _REFERENCE_WIRE_FIELD_ORDER
         if resolved_mode is H3Mode.REF2VA
         else _BASE_WIRE_FIELD_ORDER
     )
-    if Counter(actual_order) != Counter(expected_order):
+    if sorted(actual_order) != sorted(expected_order):
         _add(
             issues,
             "h3.wire_field_set",
@@ -181,6 +185,13 @@ def inspect_h3_prompt(
             issues,
             "h3.wire_field_order",
             "prompt fields must follow the official wire order",
+            "prompt",
+        )
+    if not wire_format_valid:
+        _add(
+            issues,
+            "h3.wire_format_invalid",
+            "prompt must match the mode-specific official wire grammar",
             "prompt",
         )
 
@@ -215,11 +226,18 @@ def inspect_h3_prompt(
     )
     description = _first_field_value(values_by_field, description_field)
     if duration is not None:
+        _inspect_base_wire_contract(
+            values_by_field,
+            resolved_mode,
+            duration,
+            issues,
+        )
         _inspect_alignment(prompt, description, resolved_mode, duration, issues)
         _inspect_event_timestamps(prompt, duration, issues)
         _inspect_action_budget(description, duration, issues)
 
     if resolved_mode is H3Mode.REF2VA:
+        definitions = _first_field_value(values_by_field, "subject_definitions")
         retention = _first_field_value(values_by_field, "retention_analysis")
         if not retention or not all(
             re.match(r"^-\s+<Subject [1-9][0-9]*>.+:\s*\S", line)
@@ -230,6 +248,15 @@ def inspect_h3_prompt(
                 issues,
                 "h3.retention_analysis_missing",
                 "Ref2VA requires nonempty subject retention rules",
+                "retention_analysis",
+            )
+        defined_subjects = set(re.findall(r"<Subject ([1-9][0-9]*)>", definitions))
+        retained_subjects = set(re.findall(r"<Subject ([1-9][0-9]*)>", retention))
+        if defined_subjects != retained_subjects:
+            _add(
+                issues,
+                "h3.reference_subject_mismatch",
+                "subject definitions and retention analysis must name the same subjects",
                 "retention_analysis",
             )
 
@@ -246,13 +273,52 @@ def inspect_h3_prompt(
     return H3PromptQualityReport(passed=not issues, issues=tuple(issues))
 
 
-def _extract_wire_fields(prompt: str) -> tuple[tuple[str, str], ...]:
-    matches = tuple(_WIRE_FIELD_PATTERN.finditer(prompt))
-    fields = []
-    for index, match in enumerate(matches):
-        value_end = matches[index + 1].start() if index + 1 < len(matches) else None
-        fields.append((match.group(1), prompt[match.end():value_end].strip()))
-    return tuple(fields)
+def _extract_wire_fields(
+    prompt: str,
+    mode: H3Mode,
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    expected_order = (
+        _REFERENCE_WIRE_FIELD_ORDER
+        if mode is H3Mode.REF2VA
+        else _BASE_WIRE_FIELD_ORDER
+    )
+    body = _wire_body(prompt, mode)
+    actual_order = tuple(match.group(1) for match in _WIRE_FIELD_PATTERN.finditer(body))
+    if actual_order != expected_order:
+        return tuple((field, "") for field in actual_order), False
+
+    fields: list[tuple[str, str]] = []
+    cursor = 0
+    for index, field in enumerate(expected_order):
+        prefix = f"{field}:\n" if mode is H3Mode.REF2VA else f"{field}: "
+        if not body.startswith(prefix, cursor):
+            return tuple(fields), False
+        value_start = cursor + len(prefix)
+        if index + 1 < len(expected_order):
+            next_field = expected_order[index + 1]
+            delimiter = f"\n\n{next_field}:"
+            value_end = body.find(delimiter, value_start)
+            if value_end < 0:
+                return tuple(fields), False
+            value = body[value_start:value_end]
+            cursor = value_end + 2
+        else:
+            value = body[value_start:]
+            cursor = len(body)
+        fields.append((field, value))
+    format_valid = cursor == len(body) and all(
+        value and value == value.strip() for _, value in fields
+    )
+    return tuple(fields), format_valid
+
+
+def _wire_body(prompt: str, mode: H3Mode) -> str:
+    if mode in {H3Mode.I2VA, H3Mode.FL2VA, H3Mode.L2VA} and prompt.startswith(
+        _ALIGNMENT_PREFIXES
+    ):
+        _, separator, body = prompt.partition("\n\n")
+        return body if separator else prompt
+    return prompt
 
 
 def _first_field_value(values: dict[str, list[str]], field: str) -> str:
@@ -292,6 +358,40 @@ def _validated_wire_duration(duration_seconds: float) -> float | None:
     except ValidationError:
         return None
     return probe.duration_seconds
+
+
+def _inspect_base_wire_contract(
+    values: dict[str, list[str]],
+    mode: H3Mode,
+    duration_seconds: float,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    if mode is H3Mode.REF2VA:
+        return
+    description = _first_field_value(values, "integrated_multimodal_description")
+    soundscape = _first_field_value(values, "overall_soundscape")
+    music = _first_field_value(values, "non_diegetic_music")
+    if not all((description, soundscape, music)):
+        return
+    shot_numbers = tuple(
+        int(number) for number in re.findall(r"\[Shot ([1-9][0-9]*)\]", description)
+    )
+    try:
+        H3BaseWire(
+            mode=mode,
+            duration_seconds=duration_seconds,
+            final_shot_number=shot_numbers[-1] if shot_numbers else 1,
+            integrated_multimodal_description=description,
+            overall_soundscape=soundscape,
+            non_diegetic_music=music,
+        )
+    except ValidationError:
+        _add(
+            issues,
+            "h3.shot_sequence_invalid",
+            "base wire description must use the canonical ordered shot sequence",
+            "integrated_multimodal_description",
+        )
 
 
 def _canonical_alignment(
@@ -398,14 +498,21 @@ def _inspect_action_budget(
     duration_seconds: float,
     issues: list[H3PromptQualityIssue],
 ) -> None:
-    action_beats = sum(
-        1
-        for line in description.splitlines()
-        if _TIMED_ACTION_PATTERN.match(line)
-        and _TIMED_CAMERA_PATTERN.match(line) is None
-        and "<d>" not in line
-        and "converges toward" not in line.casefold()
-    )
+    action_shots: set[str] = set()
+    current_shot: str | None = None
+    for line in description.splitlines():
+        shot = re.match(r"^\[Shot ([1-9][0-9]*)\]", line)
+        if shot is not None:
+            current_shot = shot.group(1)
+        if (
+            current_shot is not None
+            and _TIMED_ACTION_PATTERN.match(line)
+            and _TIMED_CAMERA_PATTERN.match(line) is None
+            and "<d>" not in line
+            and "converges toward" not in line.casefold()
+        ):
+            action_shots.add(current_shot)
+    action_beats = len(action_shots)
     maximum = 1 if duration_seconds <= 6 else 2 if duration_seconds <= 10 else 3
     if action_beats > maximum:
         _add(

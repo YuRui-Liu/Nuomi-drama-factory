@@ -15,6 +15,9 @@ from novelvideo.media_capabilities.video.h3_prompt_quality import (
     inspect_h3_prompt,
     normalize_h3_action_timeline,
 )
+from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+    compile_h3_director_plan,
+)
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     compile_and_gate_h3_plan,
@@ -1227,6 +1230,60 @@ def test_prompt_fields_must_match_canonical_reference_wire_set() -> None:
     assert "h3.wire_field_set" in report.codes
 
 
+def test_canonical_body_may_contain_lowercase_colon_notes() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "camera_note: keep the lens level while Lin settles."
+        ),
+    )
+
+    assert inspect_h3_prompt(prompt, H3Mode.T2VA, 6).passed is True
+
+
+def test_t2va_rejects_a_leading_wrapper() -> None:
+    prompt = f"Generate exactly this video.\n\n{_official_prompt(H3Mode.T2VA)}"
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_base_wire_rejects_next_line_field_values() -> None:
+    prompt = _official_prompt(H3Mode.T2VA).replace(
+        "integrated_multimodal_description: ",
+        "integrated_multimodal_description:\n",
+        1,
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_reference_wire_rejects_inline_field_values() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "subject_definitions:\n", "subject_definitions: ", 1
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_t2va_requires_shot_one_at_the_start_of_description() -> None:
+    prompt = (
+        "integrated_multimodal_description: A static medium shot.\n\n"
+        "overall_soundscape: Rain taps the window.\n\n"
+        "non_diegetic_music: N/A"
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.shot_sequence_invalid" in report.codes
+
+
 @pytest.mark.parametrize("duration_seconds", [3.99, 15.01])
 def test_prompt_duration_must_stay_inside_official_range(
     duration_seconds: float,
@@ -1330,6 +1387,26 @@ def test_reference_wire_requires_nonempty_retention_analysis() -> None:
     report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
 
     assert "h3.retention_analysis_missing" in report.codes
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        _official_prompt(H3Mode.REF2VA).replace(
+            "<Subject 1> (appears in [Shot 1])",
+            "<Subject 99> (appears in [Shot 1])",
+        ),
+        _official_prompt(H3Mode.REF2VA).replace(
+            "summary:\n",
+            "<Subject 2> comes from <Picture 2>: Kai in a grey coat.\n\nsummary:\n",
+            1,
+        ),
+    ],
+)
+def test_reference_subject_definitions_and_retention_must_match(prompt: str) -> None:
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_subject_mismatch" in report.codes
 
 
 def test_dialogue_requires_speaker_id_language_and_wrapping() -> None:
@@ -1440,14 +1517,20 @@ def test_main_action_beats_obey_duration_budget(
     duration_seconds: float,
     beat_count: int,
 ) -> None:
-    events = "\n".join(
+    description = "\n".join(
+        f"[Shot {index}] A restrained composition.\n"
         f"At 00:{index:02d}.000, Lin completes action beat {index}."
         for index in range(1, beat_count + 1)
     )
-    prompt = _official_prompt(
-        H3Mode.T2VA,
-        duration_seconds=duration_seconds,
-        description=f"[Shot 1] A static medium shot.\n{events}",
+    prompt = compile_h3_wire(
+        H3BaseWire(
+            mode=H3Mode.T2VA,
+            duration_seconds=duration_seconds,
+            final_shot_number=beat_count,
+            integrated_multimodal_description=description,
+            overall_soundscape="Rain taps the window.",
+            non_diegetic_music="N/A",
+        )
     )
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
@@ -1463,17 +1546,60 @@ def test_action_budget_accepts_the_modeled_maximum(
     duration_seconds: float,
     beat_count: int,
 ) -> None:
-    events = "\n".join(
+    description = "\n".join(
+        f"[Shot {index}] A restrained composition.\n"
         f"At 00:{index:02d}.000, Lin completes action beat {index}."
         for index in range(1, beat_count + 1)
     )
-    prompt = _official_prompt(
-        H3Mode.T2VA,
-        duration_seconds=duration_seconds,
-        description=f"[Shot 1] A static medium shot.\n{events}",
+    prompt = compile_h3_wire(
+        H3BaseWire(
+            mode=H3Mode.T2VA,
+            duration_seconds=duration_seconds,
+            final_shot_number=beat_count,
+            integrated_multimodal_description=description,
+            overall_soundscape="Rain taps the window.",
+            non_diegetic_music="N/A",
+        )
     )
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
+
+    assert "h3.action_beat_overload" not in report.codes
+
+
+def test_one_compiled_shot_with_multiple_action_phases_uses_one_beat() -> None:
+    plan = _rigid_plan()
+    shot = plan.shots[0]
+    actions = (
+        shot.actions[0].model_copy(update={"end_frame": 36}),
+        H3ActionPlan(
+            phase="prepare",
+            start_frame=36,
+            end_frame=60,
+            description="Lin deliberately braces one foot and grips the latch.",
+            moving_entities=("lin",),
+        ),
+        H3ActionPlan(
+            phase="execute",
+            start_frame=60,
+            end_frame=90,
+            description="Lin firmly turns the latch and holds the door closed.",
+            moving_entities=("lin",),
+        ),
+        H3ActionPlan(
+            phase="settle",
+            start_frame=90,
+            end_frame=120,
+            description="Lin steadily settles with both feet planted.",
+            moving_entities=("lin",),
+        ),
+    )
+    plan = plan.model_copy(
+        update={"shots": (shot.model_copy(update={"actions": actions}),)}
+    )
+    prompt = compile_h3_director_plan(plan)
+
+    report = inspect_h3_prompt(prompt, H3Mode.I2VA, 5)
 
     assert "h3.action_beat_overload" not in report.codes
 
