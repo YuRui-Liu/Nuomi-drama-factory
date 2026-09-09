@@ -30,15 +30,13 @@ from .h3_wire import (
     H3RetentionItem,
     H3Wire,
     compile_h3_wire,
+    normalize_h3_music,
 )
 from .models import H3Mode
 
 
 H3_PROMPT_COMPILER_VERSION = 3
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
-_NO_MUSIC = frozenset(
-    {"", "n/a", "none", "none.", "no music", "no music.", "no music. sfx only."}
-)
 _PURE_COUNT_ASSERTION_RE = re.compile(
     r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
     r"(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|two|three|four|"
@@ -60,7 +58,7 @@ def project_director_plan_to_wire(plan: H3DirectorPlan) -> H3Wire:
         "mode": plan.mode,
         "duration_seconds": plan.total_frames / plan.fps,
         "overall_soundscape": plan.soundscape,
-        "non_diegetic_music": _normalize_music(plan.music),
+        "non_diegetic_music": normalize_h3_music(plan.music),
     }
     if plan.mode is H3Mode.REF2VA:
         return H3ReferenceWire(
@@ -523,11 +521,6 @@ def _compile_retention_item(subject: H3ReferenceSubjectPlan) -> H3RetentionItem:
         subject=f"<Subject {subject.subject_index}> (appears in {shots})",
         retain=f"{subject.retention_marker} - {subject.retention_detail}",
     )
-
-
-def _normalize_music(music: str) -> str:
-    normalized = music.strip()
-    return "N/A" if normalized.casefold() in _NO_MUSIC else normalized
 
 
 def _sentence(value: str) -> str:

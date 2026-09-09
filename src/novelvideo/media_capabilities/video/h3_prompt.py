@@ -4,23 +4,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
+from .h3_wire import (
+    H3BaseWire,
+    H3ReferenceWire,
+    H3RetentionItem,
+    H3Wire,
+    compile_h3_wire,
+    normalize_h3_music,
+)
 from .models import H3Mode, MotionSpec
 
-if TYPE_CHECKING:
-    from .h3_wire import H3Wire
-
-
 LEGACY_H3_DURATION_SECONDS = 5.0
-_NO_MUSIC_VALUES = {
-    "",
-    "n/a",
-    "none",
-    "no music",
-    "no music.",
-    "no music. sfx only.",
-}
 
 
 def select_mode(
@@ -55,8 +50,6 @@ def compile_h3(
     tone: str = "",
 ) -> str:
     """Compile a legacy MotionSpec through the canonical official wire."""
-    from .h3_wire import compile_h3_wire
-
     wire = _project_motion_spec_to_wire(
         spec,
         H3Mode(mode),
@@ -109,8 +102,6 @@ def _project_motion_spec_to_wire(
     speaker: str,
     tone: str,
 ) -> H3Wire:
-    from .h3_wire import H3BaseWire, H3ReferenceWire, H3RetentionItem
-
     description = _shot_description(spec.action)
     if mode is H3Mode.REF2VA:
         definitions = _reference_subject_definitions(spec.subject_definitions)
@@ -139,12 +130,15 @@ def _project_motion_spec_to_wire(
             subject_definitions="\n".join(definitions),
             summary=summary,
             retention_analysis=tuple(
-                H3RetentionItem(subject=subject, retain=retention)
+                H3RetentionItem(
+                    subject=f"{subject} (appears in [Shot 1])",
+                    retain=retention,
+                )
                 for subject in subject_tags
             ),
             detailed_description=detailed_description,
             overall_soundscape=_nonempty(spec.soundscape),
-            non_diegetic_music=_music(spec.music),
+            non_diegetic_music=normalize_h3_music(spec.music),
         )
 
     description = _append_dialogue(
@@ -160,7 +154,7 @@ def _project_motion_spec_to_wire(
         final_shot_number=resolved_final_shot,
         integrated_multimodal_description=description,
         overall_soundscape=_nonempty(spec.soundscape),
-        non_diegetic_music=_music(spec.music),
+        non_diegetic_music=normalize_h3_music(spec.music),
     )
 
 
@@ -240,11 +234,6 @@ def _final_shot_number(description: str) -> int:
 
 def _nonempty(value: str | None) -> str:
     return str(value or "").strip() or "N/A"
-
-
-def _music(value: str | None) -> str:
-    normalized = str(value or "").strip()
-    return "N/A" if normalized.casefold() in _NO_MUSIC_VALUES else normalized
 
 
 __all__ = [

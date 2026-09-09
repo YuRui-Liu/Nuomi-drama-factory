@@ -121,7 +121,11 @@ class H3VideoPipeline:
             if source is not None
         ]
         uploaded = [await self.upload_reference(source) for source in sources]
-        compiled_prompt = compile_h3(motion_spec, mode)
+        compiled_prompt = compile_h3(
+            motion_spec,
+            mode,
+            duration_seconds=request.duration,
+        )
         input_snapshot = {
             "source_motion_spec": motion_spec.model_dump(mode="json"),
             "compiled_prompt": compiled_prompt,

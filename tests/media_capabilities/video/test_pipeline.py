@@ -17,7 +17,8 @@ from novelvideo.media_capabilities.models import (
     WorkflowProfile,
 )
 from novelvideo.media_capabilities.task_store import TaskStore
-from novelvideo.media_capabilities.video.models import MotionSpec
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
 from novelvideo.media_capabilities.video.pipeline import (
     H3VideoPipeline,
     UploadedReference,
@@ -208,7 +209,7 @@ async def test_three_shots_submit_concurrently_and_quality_failure_is_isolated(
     )
 
     async def probe(artifact: MediaArtifact) -> VideoProbe:
-        duration = 1 if artifact.local_path.startswith("shot-2") else 5
+        duration = 1 if artifact.local_path.startswith("shot-2") else 7
         return VideoProbe(
             duration=duration,
             width=1080,
@@ -232,7 +233,7 @@ async def test_three_shots_submit_concurrently_and_quality_failure_is_isolated(
         request = VideoGenerationRequest(
             capability=MediaCapability.VIDEO_FL2VA,
             prompt="legacy prompt is not the H3 fact source",
-            duration=5,
+            duration=7,
             first_frame=f"shot-{index}-first.png",
             last_frame=f"shot-{index}-last.png",
             resolution="1080x1920",
@@ -271,6 +272,8 @@ async def test_three_shots_submit_concurrently_and_quality_failure_is_isolated(
         assert compiled_prompt.startswith(
             "How the reference pictures align with the target video"
         )
+        assert "7.00-second mark" in compiled_prompt
+        assert inspect_h3_prompt(compiled_prompt, H3Mode.FL2VA, 7).passed
         assert "integrated_multimodal_description:" in compiled_prompt
         assert "overall_soundscape: N/A" in compiled_prompt
         assert "non_diegetic_music: N/A" in compiled_prompt

@@ -5,6 +5,7 @@ from novelvideo.media_capabilities.video.h3_prompt import (
     render_h3_optimized_prompt,
     select_mode,
 )
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 from novelvideo.media_capabilities.video.h3_wire import (
     H3BaseWire,
     H3ReferenceWire,
@@ -93,7 +94,7 @@ def test_legacy_reference_mode_equals_the_canonical_six_section_wire():
             summary="[reference generation] The woman turns in the rain.",
             retention_analysis=(
                 H3RetentionItem(
-                    subject="<Subject 1>",
+                    subject="<Subject 1> (appears in [Shot 1])",
                     retain="identity - keep the red coat and short black hair",
                 ),
             ),
@@ -122,6 +123,30 @@ def test_legacy_reference_mode_equals_the_canonical_six_section_wire():
     )
     assert "mode:" not in prompt
     assert "dialogue:" not in prompt
+
+
+def test_legacy_reference_mode_passes_the_formal_prompt_gate():
+    prompt = compile_h3(_legacy_spec(), H3Mode.REF2VA, duration_seconds=6)
+
+    assert inspect_h3_prompt(prompt, H3Mode.REF2VA, 6).passed
+
+
+@pytest.mark.parametrize("mode", (H3Mode.FL2VA, H3Mode.L2VA))
+def test_legacy_terminal_modes_use_the_supplied_duration(mode):
+    prompt = compile_h3(_legacy_spec(), mode, duration_seconds=7)
+
+    assert "7.00-second mark" in prompt
+    assert inspect_h3_prompt(prompt, mode, 7).passed
+
+
+def test_legacy_none_period_music_is_canonical_na():
+    prompt = compile_h3(
+        MotionSpec(action="A figure waits.", music="None."),
+        H3Mode.T2VA,
+    )
+
+    assert prompt.endswith("non_diegetic_music: N/A")
+    assert inspect_h3_prompt(prompt, H3Mode.T2VA, 5).passed
 
 
 def test_legacy_call_signature_uses_documented_duration_and_anchor_defaults():

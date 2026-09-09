@@ -3,18 +3,27 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from novelvideo.media_capabilities.video.h3_prompt import H3Mode
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.h3_wire import (
     H3BaseWire,
     H3ReferenceWire,
     H3RetentionItem,
     H3Wire,
     compile_h3_wire,
+    normalize_h3_music,
 )
 
 
 FIXTURE_DIR = Path(__file__).parents[2] / "fixtures" / "minimax_h3"
 OFFICIAL_SKILL_COMMIT = "d21241f0a4b3acbb34c97dae47fa417b7065e438"
+
+
+@pytest.mark.parametrize(
+    "value",
+    (None, "", "N/A", " none ", "None.", "No music", "No music. SFX only."),
+)
+def test_canonical_music_normalizer_maps_no_music_values_to_na(value):
+    assert normalize_h3_music(value) == "N/A"
 
 
 def _base_wire(**updates: object) -> H3BaseWire:

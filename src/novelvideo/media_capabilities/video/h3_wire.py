@@ -3,7 +3,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from .h3_prompt import H3Mode
+from .models import H3Mode
 
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True)
@@ -12,6 +12,15 @@ _NonEmptyString = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1),
 ]
 _DurationSeconds = Annotated[float, Field(ge=4, le=15)]
+_NO_MUSIC_VALUES = frozenset(
+    {"", "n/a", "none", "none.", "no music", "no music.", "no music. sfx only."}
+)
+
+
+def normalize_h3_music(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    semantic_value = " ".join(normalized.casefold().split())
+    return "N/A" if semantic_value in _NO_MUSIC_VALUES else normalized
 
 
 class H3RetentionItem(BaseModel):
