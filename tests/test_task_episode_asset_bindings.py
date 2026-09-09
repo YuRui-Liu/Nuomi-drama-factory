@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import hashlib
 import json
 import threading
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from novelvideo.models import NovelEpisode, NovelProp, NovelScene, PropMenuItem, SceneMenuItem
+from novelvideo.narrative_groups.planned_binding_service import (
+    bindings_for_director_plan,
+    resolve_planned_reference_preview,
+)
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+from novelvideo.production_workflow import ProductionWorkflowStore
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.episode_assets import _episode_asset_bindings
 
@@ -34,6 +41,61 @@ def _binding(kind: str, entity_id: str) -> PlannedReferenceBinding:
         resolution="auto_matched",
         display_label=entity_id,
     )
+
+
+def _scene_bindings(*requirements: SimpleNamespace, scenes: tuple[object, ...]):
+    shots = tuple(
+        SimpleNamespace(
+            id=f"shot-{index}",
+            dramatic_beat_ids=(f"beat-{index}",),
+            asset_requirements=(requirement,),
+        )
+        for index, requirement in enumerate(requirements, start=1)
+    )
+    plan = SimpleNamespace(
+        revision_id="director-r2",
+        groups=tuple(
+            SimpleNamespace(
+                id=f"group-{index}",
+                dramatic_beat_ids=(f"beat-{index}",),
+                shots=(shot,),
+            )
+            for index, shot in enumerate(shots, start=1)
+        ),
+    )
+    return bindings_for_director_plan(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id=plan.revision_id,
+        groups=plan.groups,
+        shots=shots,
+        characters=(),
+        scenes=scenes,
+        props=(),
+    )
+
+
+def _scene_state(variant_id: str = "暴雨版") -> SimpleNamespace:
+    return SimpleNamespace(
+        kind="scene_state",
+        entity_key="咖啡馆",
+        visible_change=variant_id,
+        required=True,
+    )
+
+
+class _PlannedBindingStore:
+    def __init__(self, binding: PlannedReferenceBinding) -> None:
+        self.binding = binding
+
+    async def list_planned_reference_bindings(
+        self, episode_number: int, group_id: str | None = None
+    ) -> list[PlannedReferenceBinding]:
+        if episode_number != self.binding.episode_number:
+            return []
+        if group_id is not None and group_id not in self.binding.group_ids:
+            return []
+        return [self.binding]
 
 
 def test_scene_and_prop_binding_projection_overlays_draft_entities():
@@ -90,6 +152,189 @@ def test_scene_and_prop_binding_projection_overlays_draft_entities():
         ("prop", "强光手电")
     ]
     assert all(item.entity_id != "咖啡馆_暴雨版" for item in scene_bindings)
+
+
+def test_scene_variant_with_reference_image_keeps_real_variant_state_slot():
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="咖啡馆",
+                base_scene_id="",
+                variant_id="",
+                master_image="assets/scenes/cafe.png",
+            ),
+            SimpleNamespace(
+                name="雨中咖啡馆",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="assets/scenes/cafe-rain.png",
+            ),
+        ),
+    )
+
+    assert binding.asset_kind == "scene_variant"
+    assert binding.entity_id == "雨中咖啡馆"
+    assert binding.asset_slot_id == "scene:咖啡馆:state:雨中咖啡馆:master"
+    assert binding.status == "ready"
+    assert binding.resolution == "auto_matched"
+
+
+@pytest.mark.parametrize("include_empty_variant", [False, True])
+def test_unavailable_scene_variant_falls_back_to_exact_base_scene(
+    include_empty_variant: bool,
+):
+    scenes: tuple[object, ...] = (
+        SimpleNamespace(
+            name="咖啡馆",
+            base_scene_id="",
+            variant_id="",
+            master_image="assets/scenes/cafe.png",
+        ),
+    )
+    if include_empty_variant:
+        scenes += (
+            SimpleNamespace(
+                name="雨中咖啡馆",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="",
+            ),
+        )
+
+    [binding] = _scene_bindings(_scene_state(), scenes=scenes)
+
+    assert binding.asset_kind == "scene_variant"
+    assert (binding.base_entity_id, binding.variant_id) == ("咖啡馆", "暴雨版")
+    assert binding.entity_id == "咖啡馆"
+    assert binding.asset_slot_id == "scene:咖啡馆:base:master"
+    assert binding.status == "ready"
+    assert binding.resolution == "explicit_fallback"
+
+
+@pytest.mark.parametrize(
+    ("scenes", "expected_status"),
+    [
+        (
+            (
+                SimpleNamespace(
+                    name="咖啡馆_暴雨版",
+                    base_scene_id="",
+                    variant_id="",
+                    master_image="assets/scenes/fuzzy.png",
+                ),
+            ),
+            "missing_asset",
+        ),
+        (
+            (
+                SimpleNamespace(
+                    name="咖啡馆",
+                    base_scene_id="",
+                    variant_id="",
+                    master_image="assets/scenes/cafe-a.png",
+                ),
+                SimpleNamespace(
+                    name="咖啡馆",
+                    base_scene_id="",
+                    variant_id="",
+                    master_image="assets/scenes/cafe-b.png",
+                ),
+            ),
+            "pending_confirmation",
+        ),
+        (
+            (
+                SimpleNamespace(
+                    name="咖啡馆",
+                    base_scene_id="",
+                    variant_id="",
+                    master_image="",
+                ),
+            ),
+            "missing_image",
+        ),
+    ],
+)
+def test_scene_variant_fallback_reports_exact_base_failure(
+    scenes: tuple[object, ...], expected_status: str
+):
+    [binding] = _scene_bindings(_scene_state(), scenes=scenes)
+
+    assert binding.status == expected_status
+    assert binding.entity_id == "咖啡馆"
+    assert (binding.base_entity_id, binding.variant_id) == ("咖啡馆", "暴雨版")
+    assert binding.resolution == "explicit_fallback"
+    if expected_status in {"missing_asset", "pending_confirmation"}:
+        assert binding.asset_slot_id == ""
+    else:
+        assert binding.asset_slot_id == "scene:咖啡馆:base:master"
+
+
+def test_scene_variant_fallback_bindings_keep_requested_variants_distinct():
+    bindings = _scene_bindings(
+        _scene_state("暴雨版"),
+        _scene_state("夜景版"),
+        scenes=(
+            SimpleNamespace(
+                name="咖啡馆",
+                base_scene_id="",
+                variant_id="",
+                master_image="assets/scenes/cafe.png",
+            ),
+        ),
+    )
+
+    assert [binding.variant_id for binding in bindings] == ["暴雨版", "夜景版"]
+    assert len({binding.binding_id for binding in bindings}) == 2
+    assert {binding.asset_slot_id for binding in bindings} == {
+        "scene:咖啡馆:base:master"
+    }
+
+
+@pytest.mark.asyncio
+async def test_scene_variant_base_fallback_is_selected_in_preview(tmp_path):
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="咖啡馆",
+                base_scene_id="",
+                variant_id="",
+                master_image="assets/scenes/cafe.png",
+            ),
+        ),
+    )
+    image_path = tmp_path / "assets" / "scenes" / "cafe.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="scene_base",
+        version_id="scene-base-v1",
+        asset_path=str(image_path),
+        source_attempt_id="scene-attempt-1",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        workflow,
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "ready"
+    assert resolved.selected_by_default is True
+    assert resolved.asset_slot_id == "scene:咖啡馆:base:master"
+    assert resolved.version_id == "scene-base-v1"
 
 
 def test_prop_binding_resolves_existing_asset_alias_to_canonical_id():
