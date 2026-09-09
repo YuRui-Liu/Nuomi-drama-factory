@@ -293,7 +293,9 @@ def test_v2_complete_prompt_projects_to_official_base_wire() -> None:
 
     assert isinstance(wire, H3BaseWire)
     assert prompt == h3_prompt_compiler.compile_h3_wire(wire)
-    assert wire.integrated_multimodal_description.startswith("[Shot 1] legacy")
+    assert wire.integrated_multimodal_description.startswith(
+        "[Shot 1] Render in a legacy visual style."
+    )
     assert "Lin confronts a locked door" in wire.integrated_multimodal_description
     assert "50 mm equivalent" in wire.integrated_multimodal_description
     assert "jaw tightens before his eyes move" in wire.integrated_multimodal_description
@@ -437,7 +439,8 @@ def test_compiles_complete_i2va_in_deterministic_official_wire_order():
     assert prompt.startswith(
         "For the target video, at 0.00 seconds into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
-        "integrated_multimodal_description: [Shot 1] cinematic realism visual style."
+        "integrated_multimodal_description: [Shot 1] Render in a cinematic "
+        "realism visual style."
     )
     assert "Throughout, preserve same face and black coat; same iron door and lighting." in prompt
     assert "Lin Mo braces against the door.\nAt 00:00.500, He turns" in prompt
@@ -534,7 +537,7 @@ def test_compiles_complete_multi_shot_with_official_cut_and_dialogue_markers():
         "Lin Mo (S1) continues across the cut: "
         "<scenetrans><d>[Chinese]别开门——</d>"
     ) in prompt
-    assert "[Shot 2] At 00:02.083, the camera cuts to" in prompt
+    assert "[Shot 2] At 00:02.083, cut to" in prompt
     assert (
         "Lin Mo (S1) carries over from the previous shot: "
         "<scenetrans><d>[Chinese]外面不是人。</d>"
@@ -657,6 +660,79 @@ def test_base_projection_sets_duration_and_final_shot_for_l2va_instruction():
     assert wire.final_shot_number == 2
     assert "<Picture 1> (from [Shot 2]) aligns with the 4.21-second mark" in prompt
     assert "[Shot 2] At 00:02.083," in prompt
+
+
+def test_frame_convergence_uses_the_mode_specific_target_picture():
+    fl_wire = h3_prompt_compiler.project_director_plan_to_wire(
+        _v3_plan(H3Mode.FL2VA)
+    )
+    l2_wire = h3_prompt_compiler.project_director_plan_to_wire(
+        _v3_plan(H3Mode.L2VA)
+    )
+
+    assert isinstance(fl_wire, H3BaseWire)
+    assert isinstance(l2_wire, H3BaseWire)
+    assert "converges toward Picture 2" in fl_wire.integrated_multimodal_description
+    assert "converges toward <Picture 1>" in l2_wire.integrated_multimodal_description
+    assert "Picture 2" not in l2_wire.integrated_multimodal_description
+
+
+def test_rigid_facts_render_as_stable_complete_natural_sentences():
+    wire = h3_prompt_compiler.project_director_plan_to_wire(
+        _v3_plan(H3Mode.I2VA)
+    )
+
+    assert isinstance(wire, H3BaseWire)
+    description = wire.integrated_multimodal_description
+    assert description.startswith(
+        "[Shot 1] Render in a cinematic realism visual style. "
+        "Frame Lin Mo in a medium close-up from eye level; "
+        "Lin Mo remains centered against the iron door."
+    )
+    assert "Exactly one visible character, lin, is present without duplicates." in description
+    assert "The scene occupies a narrow north-south corridor." in description
+    assert (
+        "The primary light source is one overhead fluorescent fixture originating "
+        "above frame center; it casts light downward and camera-left and shadows "
+        "downward and camera-right."
+    ) in description
+    assert "Use no independent fill." in description
+    assert "Preserve one small upper catchlight per visible eye." in description
+    assert "Feet and props retain contact shadows." in description
+    assert (
+        "Movement remains physically grounded: Lin's weight stays supported "
+        "through both feet."
+    ) in description
+    assert "Image quality must preserve stable identity." in description
+    assert "Image quality must preserve stable corridor geometry." in description
+    assert "exactly one Lin remains visible." in description
+    for awkward in (
+        "Exactly 1 visible characters",
+        "fixture. one overhead",
+        "stable identity. stable corridor geometry.",
+        "exactly one Lin remains visible, with exactly 1.",
+    ):
+        assert awkward not in description
+
+
+def test_rigid_character_count_uses_plural_grammar():
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    context = rigid.scene_context.model_copy(
+        update={"exact_character_count": 2, "active_characters": ("lin", "mei")}
+    )
+    plan = plan.model_copy(
+        update={"rigid_prompt": rigid.model_copy(update={"scene_context": context})}
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert (
+        "Exactly 2 visible characters, lin and mei, are present without duplicates."
+        in wire.integrated_multimodal_description
+    )
 
 
 def test_rigid_description_is_natural_playback_without_internal_labels_or_motives():

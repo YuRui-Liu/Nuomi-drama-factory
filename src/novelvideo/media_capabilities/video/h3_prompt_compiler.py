@@ -130,17 +130,18 @@ def _compile_shot_intro(
 ) -> str:
     label = _shot_label(shot.shot_id)
     if first:
-        opening = f"[{label}] {plan.visual_style} visual style."
+        opening = (
+            f"[{label}] Render in a {plan.visual_style} visual style. "
+            f"Frame {shot.focus} in a {shot.framing} from {shot.angle}; "
+            f"{_sentence(shot.composition)}"
+        )
     else:
         opening = (
             f"[{label}] At {_timestamp(shot.start_frame, plan.fps)}, "
-            "the camera cuts to"
+            f"cut to a {shot.framing} from {shot.angle}, focused on {shot.focus}; "
+            f"{_sentence(shot.composition)}"
         )
-    setup = (
-        f" {shot.framing} from {shot.angle}, focused on {shot.focus}, with "
-        f"{shot.composition}. The {_camera_text(shot.camera)}."
-    )
-    parts = [opening + setup]
+    parts = [f"{opening} The {_camera_text(shot.camera)}."]
     if first:
         parts.append(f" Throughout, preserve {'; '.join(plan.continuity_locks)}.")
         if rigid is not None:
@@ -164,9 +165,8 @@ def _compile_rigid_global_facts(
     context = rigid.scene_context
     parts = [
         context.summary,
-        (
-            f"Exactly {context.exact_character_count} visible characters are present"
-            f" ({', '.join(context.active_characters) or 'none'}), without duplicates."
+        _compile_character_count_fact(
+            context.exact_character_count, context.active_characters
         ),
         _compile_active_references(rigid.active_references),
         _compile_location_fact(rigid.location_map),
@@ -176,10 +176,31 @@ def _compile_rigid_global_facts(
     ]
     if rigid.style_prefix != visual_style:
         parts.append(f"Rendering follows {rigid.style_prefix}.")
-    parts.extend(rigid.physics.statements)
-    parts.extend(rigid.quality.requirements)
+    parts.extend(
+        f"Movement remains physically grounded: {_strip_terminal(statement)}."
+        for statement in rigid.physics.statements
+    )
+    parts.extend(
+        f"Image quality must preserve {_lower_initial(requirement)}."
+        for requirement in rigid.quality.requirements
+    )
     parts.extend(_compile_positive_fact(item) for item in rigid.positive_constraints)
     return " ".join(_sentence(part) for part in parts if part)
+
+
+def _compile_character_count_fact(
+    count: int, active_characters: tuple[str, ...]
+) -> str:
+    if count == 0:
+        return "No visible characters are present."
+    names = _natural_list(active_characters) if active_characters else ""
+    if count == 1:
+        subject = f", {names}," if names else ""
+        return f"Exactly one visible character{subject} is present without duplicates."
+    subject = f", {names}," if names else ""
+    return (
+        f"Exactly {count} visible characters{subject} are present without duplicates."
+    )
 
 
 def _compile_active_references(references: tuple[H3ActiveReference, ...]) -> str:
@@ -195,10 +216,11 @@ def _compile_active_references(references: tuple[H3ActiveReference, ...]) -> str
 
 
 def _compile_location_fact(location: H3LocationMapPlan) -> str:
-    landmarks = "; ".join(location.landmarks)
+    geography = _lower_initial(_strip_terminal(location.geography))
+    landmarks = _natural_list(location.landmarks)
     return (
-        f"{location.geography} The landmarks are {landmarks}. The camera stays "
-        f"{location.camera_side} along the {location.axis}"
+        f"The scene occupies {geography}. Its fixed landmarks are {landmarks}. "
+        f"The camera remains {location.camera_side}, respecting {location.axis}."
     )
 
 
@@ -222,12 +244,17 @@ def _compile_format_fact(rigid: H3RigidPromptPlan) -> str:
 
 def _compile_lighting_fact(lighting: H3LightingPlan) -> str:
     return (
-        f"{lighting.source_logic} {lighting.primary_source} originates "
-        f"{lighting.origin}, casts {lighting.direction} light and "
-        f"{lighting.shadow_direction} shadows, with {lighting.quality} in "
-        f"{lighting.color}. {lighting.subject_effect}; {lighting.environment_effect}; "
-        f"{lighting.fill_logic}; {lighting.catchlight}; {lighting.contact_shadows}. "
-        f"Keep {lighting.continuity_key} consistent"
+        f"The lighting follows one coherent source: "
+        f"{_strip_terminal(lighting.source_logic)}. The primary light source is "
+        f"{lighting.primary_source} originating {lighting.origin}; it casts light "
+        f"{lighting.direction} and shadows {lighting.shadow_direction}. Its quality "
+        f"is {lighting.quality}, with {lighting.color}. On the subjects, "
+        f"{_lower_initial(_strip_terminal(lighting.subject_effect))}. In the "
+        f"environment, {_lower_initial(_strip_terminal(lighting.environment_effect))}. "
+        f"Use {_lower_initial(_strip_terminal(lighting.fill_logic))}. Preserve "
+        f"{_lower_initial(_strip_terminal(lighting.catchlight))}. "
+        f"{_capitalize_initial(_sentence(lighting.contact_shadows))} Maintain the same "
+        f"{lighting.continuity_key} lighting logic throughout."
     )
 
 
@@ -244,7 +271,12 @@ def _compile_acting_fact(
 def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     if constraint.count is None:
         return constraint.assertion
-    return f"{constraint.assertion}, with exactly {constraint.count}"
+    if _assertion_contains_count(constraint.assertion, constraint.count):
+        return constraint.assertion
+    return (
+        f"{_strip_terminal(constraint.assertion)}; keep exactly {constraint.count} "
+        f"{constraint.target} visible"
+    )
 
 
 def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
@@ -311,7 +343,15 @@ def _compile_shot_events(
             (
                 difference.convergence_frame,
                 2,
-                _compile_difference(difference, plan.fps),
+                _compile_difference(
+                    difference,
+                    plan.fps,
+                    target_picture=(
+                        "Picture 2"
+                        if plan.mode is H3Mode.FL2VA
+                        else "<Picture 1>"
+                    ),
+                ),
             )
             for difference in plan.frame_differences
             if shot.start_frame <= difference.convergence_frame < shot.end_frame
@@ -325,10 +365,12 @@ def _compile_action(action: H3ActionPlan, fps: int) -> str:
     return f"At {_timestamp(action.start_frame, fps)}, {action.description}"
 
 
-def _compile_difference(difference: H3FrameDifference, fps: int) -> str:
+def _compile_difference(
+    difference: H3FrameDifference, fps: int, *, target_picture: str
+) -> str:
     return (
         f"At {_timestamp(difference.convergence_frame, fps)}, the image converges "
-        f"toward Picture 2 as {difference.description}"
+        f"toward {target_picture} as {difference.description}"
     )
 
 
@@ -446,6 +488,41 @@ def _sentence(value: str) -> str:
     if not normalized or normalized.endswith((".", "!", "?")):
         return normalized
     return f"{normalized}."
+
+
+def _strip_terminal(value: str) -> str:
+    return value.strip().rstrip(".!?")
+
+
+def _lower_initial(value: str) -> str:
+    if value.startswith(("A ", "An ", "The ")):
+        return value[0].lower() + value[1:]
+    return value
+
+
+def _capitalize_initial(value: str) -> str:
+    return value[:1].upper() + value[1:]
+
+
+def _natural_list(values: tuple[str, ...]) -> str:
+    if not values:
+        return "none"
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return " and ".join(values)
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
+def _assertion_contains_count(assertion: str, count: int) -> bool:
+    words = {
+        0: ("0", "zero", "no "),
+        1: ("1", "one", "single"),
+        2: ("2", "two", "pair"),
+        3: ("3", "three"),
+    }.get(count, (str(count),))
+    normalized = assertion.casefold()
+    return "exactly" in normalized or any(word in normalized for word in words)
 
 
 def _shot_label(shot_id: str) -> str:
