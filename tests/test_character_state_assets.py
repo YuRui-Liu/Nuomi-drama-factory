@@ -166,6 +166,7 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
                     "identity_id": identity.identity_id,
                     "identity_name": identity.identity_name,
                     "style": "custom_anime_realistic",
+                    "model": "gpt-image-2-vip",
                     "output_dir": str(tmp_path),
                 },
             },
@@ -206,6 +207,10 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
         },
         "raw_candidate_path": versions[second["version_id"]].generation_metadata["raw_candidate_path"],
         "recipe_revision": "1",
+        "provider": "grsai",
+        "requested_model": "gpt-image-2-vip",
+        "resolved_model": "gpt-image-2-vip",
+        "resolution_source": "explicit",
         "reference_sources": [portrait.relative_to(tmp_path).as_posix()],
         "canonical_path": canonical.relative_to(tmp_path).as_posix(),
     }
