@@ -78,6 +78,39 @@ describe("GroupVideoStage", () => {
     expect(screen.getByText(/MiniMax H3 多参考图 · Ref2VA/)).toBeInTheDocument();
   });
 
+  it("keeps explicit Ref2VA with transport frames enabled when the backend capability allows it", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3-ref"
+      mode="ref2va"
+      hasFirstFrame
+      hasLastFrame
+      models={[{
+        id: "runninghub:minimax-h3-ref",
+        label: "RunningHub MiniMax H3 · Ref",
+        provider: "runninghub",
+        available: true,
+        supported_modes: ["ref2va"],
+        default_mode: "auto",
+        parameters: [],
+        mode_capabilities: [{
+          mode: "ref2va",
+          enabled: true,
+          reason: null,
+          requires_first_frame: false,
+          requires_last_frame: false,
+          requires_references: true,
+        }],
+      }]}
+      reference={{ required: true, count: 2, max: 5, valid: true }}
+      onModeChange={vi.fn()}
+      onGenerate={vi.fn()}
+    />);
+
+    expect(screen.getByRole("option", { name: "Ref2VA" })).toBeEnabled();
+    expect(screen.queryByText("缺输入")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeEnabled();
+  });
+
   it.each([
     { mode: "t2va" as const, first: false, last: false, supported: ["t2va"] as const },
     { mode: "l2va" as const, first: false, last: true, supported: ["l2va"] as const },

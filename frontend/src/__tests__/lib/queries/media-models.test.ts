@@ -173,6 +173,40 @@ describe("video media model contract", () => {
     }, "l2va").reason).toBe("model_unsupported");
   });
 
+  it("allows reference mode to carry frozen transport frames in explicit and auto selection", () => {
+    const model: VideoModelCatalogItem = {
+      id: "runninghub:minimax-h3-ref",
+      label: "H3 Ref",
+      provider: "runninghub",
+      available: true,
+      supported_modes: ["ref2va"],
+      default_mode: "auto",
+      parameters: [],
+      mode_capabilities: [{
+        mode: "ref2va",
+        enabled: true,
+        reason: null,
+        requires_first_frame: false,
+        requires_last_frame: false,
+        requires_references: true,
+      }],
+    };
+    const inputs = {
+      hasFirstFrame: true,
+      hasLastFrame: true,
+      referenceCount: 2,
+    };
+
+    expect(h3ModeAvailability(model, inputs, "auto")).toMatchObject({
+      resolvedMode: "ref2va",
+      available: true,
+    });
+    expect(h3ModeAvailability(model, inputs, "ref2va")).toMatchObject({
+      resolvedMode: "ref2va",
+      available: true,
+    });
+  });
+
   it("selects FL2VA for first and last frames and I2VA for first frame only", () => {
     expect(effectiveVideoMode("auto", true, true)).toBe("fl2va");
     expect(effectiveVideoMode("auto", true, false)).toBe("i2va");

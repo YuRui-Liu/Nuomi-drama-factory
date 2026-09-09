@@ -112,7 +112,7 @@ function h3ModeHasRequiredInputs(
   if (mode === "l2va") {
     return !inputs.hasFirstFrame && inputs.hasLastFrame && !hasReferences;
   }
-  return !inputs.hasFirstFrame && !inputs.hasLastFrame && hasReferences;
+  return hasReferences;
 }
 
 export function h3ModeAvailability(
