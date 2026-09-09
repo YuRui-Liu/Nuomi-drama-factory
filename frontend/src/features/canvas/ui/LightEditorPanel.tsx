@@ -967,9 +967,8 @@ export function LightEditorPanel({
       presetLabel: smartMode ? presetLabel : null,
       presetPrompt: smartMode ? presetPrompt : null,
     };
-    // No model picker in this panel — just use the first model from the
-    // shared API store. The store falls back to SHARED_MODELS on failure,
-    // so this is only ever undefined if the URL has no project.
+    // No model picker in this panel — use the first model in the live project
+    // catalog and keep submission unavailable when that catalog is empty.
     if (!selectedModel) return;
     onSubmit({
       prompt,
@@ -1130,6 +1129,7 @@ export function LightEditorPanel({
             />
             <button
               type="button"
+              disabled={!selectedModel}
               className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
               onClick={handleSubmit}
               aria-label={t("lightEditor.submit")}

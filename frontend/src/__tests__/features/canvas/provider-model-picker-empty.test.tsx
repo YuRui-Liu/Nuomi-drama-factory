@@ -39,4 +39,20 @@ describe("ProviderModelPicker empty catalog", () => {
       /const submitDisabled\s*=\s*isGenerating\s*\|\|\s*!selectedModel\s*\|\|/,
     );
   });
+
+  it.each([
+    ["LightEditorPanel", "disabled={!selectedModel}"],
+    ["MultiAngleEditorPanel", "disabled={!selectedModel}"],
+    ["EraseOverlay", "disabled={submitting || !imageDims || !selectedModel}"],
+    ["Scene360Overlay", "disabled={!selectedModel}"],
+    ["GridActionConfirmOverlay", "disabled={!selectedModel}"],
+  ])("disables %s submission when the live model catalog is empty", (name, disabledProp) => {
+    const source = readFileSync(
+      `src/features/canvas/ui/${name}.tsx`,
+      "utf8",
+    );
+
+    expect(source).toContain("if (!selectedModel) return;");
+    expect(source).toContain(disabledProp);
+  });
 });

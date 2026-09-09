@@ -109,6 +109,7 @@ export const GridActionConfirmOverlay = memo(
     );
 
     const handleSubmit = useCallback(async () => {
+      if (!selectedModel) return;
       const project = readUrl().project;
       if (!project) {
         console.error('[grid-action] no project in URL — cannot submit');
@@ -180,6 +181,7 @@ export const GridActionConfirmOverlay = memo(
       node,
       onClose,
       request,
+      selectedModel,
       setSelectedNode,
       updateNodeData,
     ]);
@@ -214,6 +216,7 @@ export const GridActionConfirmOverlay = memo(
 
           <button
             type="button"
+            disabled={!selectedModel}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-bg-dark transition-colors hover:bg-white/90"
             onClick={handleSubmit}
             title={t('nodeToolbar.gridMenu.confirmBar.submit')}

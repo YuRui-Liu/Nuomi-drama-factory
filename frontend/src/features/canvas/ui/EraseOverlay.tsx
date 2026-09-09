@@ -506,6 +506,7 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
 
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
+    if (!selectedModel) return;
     const project = readUrl().project;
     if (!project) {
       setError('当前 URL 没有 project，无法提交');
@@ -572,6 +573,7 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
     numImages,
     onClose,
     runEraseGeneration,
+    selectedModel,
     setSelectedNode,
     submitting,
     updateNodeData,
@@ -739,7 +741,7 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting || !imageDims}
+            disabled={submitting || !imageDims || !selectedModel}
             className={`ml-1 shrink-0 ${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS} disabled:cursor-not-allowed disabled:opacity-50`}
             title="提交擦除"
           >

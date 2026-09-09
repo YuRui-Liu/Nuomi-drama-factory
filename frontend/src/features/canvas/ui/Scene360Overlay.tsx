@@ -68,6 +68,7 @@ export const Scene360Overlay = memo(
     );
 
     const handleSubmit = useCallback(async () => {
+      if (!selectedModel) return;
       const project = readUrl().project;
       if (!project) {
         console.error('[scene-360] no project in URL — cannot submit');
@@ -147,6 +148,7 @@ export const Scene360Overlay = memo(
       imageSource,
       node,
       onClose,
+      selectedModel,
       setSelectedNode,
       t,
       updateNodeData,
@@ -190,6 +192,7 @@ export const Scene360Overlay = memo(
 
           <button
             type="button"
+            disabled={!selectedModel}
             className={`${NODE_GENERATE_BUTTON_BASE_CLASS} shrink-0 ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
             onClick={handleSubmit}
             title={t('scene360.submit')}

@@ -39,7 +39,7 @@ export function CharacterImageSourceSelect({
   const options = selectionQuery.data?.data.options ?? {};
   const optionEntries = Object.entries(options);
   const hasNoOptions = Boolean(selectionQuery.data) && optionEntries.length === 0;
-  const selectedLabel = options[selection] ?? selection;
+  const selectedLabel = hasNoOptions ? "" : (options[selection] ?? selection);
   const isDisabled =
     disabled ||
     hasNoOptions ||

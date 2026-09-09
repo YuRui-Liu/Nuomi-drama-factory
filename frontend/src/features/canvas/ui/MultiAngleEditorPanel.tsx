@@ -528,9 +528,8 @@ export function MultiAngleEditorPanel({ imageSource, onClose, onSubmit }: MultiA
       activePreset === 'custom'
         ? `${t('nodeToolbar.multiDimension')} · ${horizontalDescription} ${verticalDescription}`
         : `${t('nodeToolbar.multiDimension')} · ${presetLabel}`;
-    // No model picker in this panel — just use the first model returned by
-    // the API (the shared store already falls back to SHARED_MODELS on
-    // failure, so this is always defined unless the URL has no project).
+    // No model picker in this panel — use the first model in the live project
+    // catalog and keep submission unavailable when that catalog is empty.
     if (!selectedModel) return;
     onSubmit({
       prompt,
@@ -669,6 +668,7 @@ export function MultiAngleEditorPanel({ imageSource, onClose, onSubmit }: MultiA
             />
             <button
               type="button"
+              disabled={!selectedModel}
               className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
               onClick={handleSubmit}
               aria-label={t('multiAngleEditor.submit')}

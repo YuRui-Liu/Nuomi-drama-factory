@@ -170,7 +170,7 @@ describe("CharacterImageSourceSelect", () => {
             ok: true,
             data: {
               asset_kind: "scene",
-              image_source_selection: "",
+              image_source_selection: "stale-model-from-project-config",
               options: {},
             },
           }),
