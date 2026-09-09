@@ -42,7 +42,11 @@ export function isPlannedReferenceAvailable(binding: PlannedReferenceBinding) {
 
 function uniqueReadyIds(bindings: PlannedReferenceBinding[], selectedIds: string[]) {
   const ready = new Set(bindings.filter(isPlannedReferenceAvailable).map((item) => item.binding_id));
-  const required = bindings.filter((item) => item.required && isPlannedReferenceAvailable(item)).map((item) => item.binding_id);
+  const required = bindings.filter((item) => (
+    item.required
+    && item.resolution !== "explicit_fallback"
+    && isPlannedReferenceAvailable(item)
+  )).map((item) => item.binding_id);
   return [...new Set([...required, ...selectedIds])].filter((id) => ready.has(id));
 }
 
@@ -85,7 +89,10 @@ export function PlannedReferencePicker({
   };
 
   const clearGroups = (groups: BindingGroup[]) => {
-    const removed = new Set(visibleBindings.filter((item) => !item.required && groups.some((group) => group.includes(item)))
+    const removed = new Set(visibleBindings.filter((item) => (
+      (!item.required || item.resolution === "explicit_fallback")
+      && groups.some((group) => group.includes(item))
+    ))
       .map((item) => item.binding_id));
     onChange(selected.filter((id) => !removed.has(id)));
   };
@@ -125,7 +132,7 @@ export function PlannedReferencePicker({
           {items.map((binding) => {
             const available = isPlannedReferenceAvailable(binding);
             const isSelected = available && selectedSet.has(binding.binding_id);
-            const lockedRequired = available && binding.required;
+            const lockedRequired = available && binding.required && binding.resolution !== "explicit_fallback";
             const disabled = !available || lockedRequired || (!isSelected && atLimit);
             const warning = binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
               ? "缺少有效资产版本"

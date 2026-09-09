@@ -133,6 +133,7 @@ class ResolvedPlannedReference(BaseModel):
     beat_ids: tuple[str, ...] = ()
     required: bool
     status: BindingStatus
+    resolution: BindingResolution
     selected_by_default: bool
     asset_slot_id: str
     version_id: str = ""
@@ -951,6 +952,7 @@ def _unavailable(
         beat_ids=binding.beat_ids,
         required=binding.required,
         status=status or binding.status,
+        resolution=binding.resolution,
         selected_by_default=False,
         asset_slot_id=binding.asset_slot_id,
         warning=warning,
@@ -1109,6 +1111,7 @@ def _resolve_binding(
         beat_ids=binding.beat_ids,
         required=binding.required,
         status=binding.status,
+        resolution=binding.resolution,
         selected_by_default=True,
         asset_slot_id=binding.asset_slot_id,
         version_id=version.version_id,
@@ -1301,7 +1304,9 @@ async def build_planned_reference_snapshot(
     omitted_required = [
         item.binding_id
         for item in preview.bindings
-        if item.required and item.binding_id not in selected_binding_ids
+        if item.required
+        and item.resolution != "explicit_fallback"
+        and item.binding_id not in selected_binding_ids
     ]
     if omitted_required:
         raise PlannedReferencesRequired(

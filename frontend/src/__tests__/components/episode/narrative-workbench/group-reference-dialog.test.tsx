@@ -8,9 +8,9 @@ const preview: PlannedNarrativeGroupReferencePreview = {
   reference_revision: "director-plan-r7",
   max_images: 3,
   bindings: [
-    { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true, thumbnail_url: "/hero.png", version_id: "hero-v1" },
-    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: false, status: "ready", selected_by_default: true, thumbnail_url: "/hall.png", version_id: "hall-rain-v1" },
-    { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: false, status: "missing_image", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
+    { binding_id: "identity:hero:young", asset_kind: "character_identity", display_label: "石九 / 青年时期", variant_id: "young", beat_ids: ["beat-1"], required: true, status: "ready", resolution: "auto_matched", selected_by_default: true, thumbnail_url: "/hero.png", version_id: "hero-v1" },
+    { binding_id: "scene:hall:rain", asset_kind: "scene_variant", display_label: "谢家碑坊 / 暴雨天井", variant_id: "rain", beat_ids: ["beat-1"], required: false, status: "ready", resolution: "auto_matched", selected_by_default: true, thumbnail_url: "/hall.png", version_id: "hall-rain-v1" },
+    { binding_id: "prop:tablet", asset_kind: "prop", display_label: "深灰功德碑", beat_ids: ["beat-1"], required: false, status: "missing_image", resolution: "auto_matched", selected_by_default: false, warning: "请先在规划阶段补齐道具参考图" },
   ],
 };
 
@@ -41,6 +41,34 @@ describe("GroupReferenceDialog planned references", () => {
     expect(hero).toHaveAttribute("aria-pressed", "true");
     expect(hero).toBeDisabled();
     expect(screen.getByRole("button", { name: "使用 2 张参考图生成" })).toBeEnabled();
+  });
+
+  it("defaults a required fallback on but submits without it after cancellation", () => {
+    const fallbackPreview: PlannedNarrativeGroupReferencePreview = {
+      ...preview,
+      bindings: [
+        preview.bindings[0],
+        {
+          ...preview.bindings[1],
+          required: true,
+          resolution: "explicit_fallback",
+          selected_by_default: true,
+        },
+      ],
+    };
+    const { onSubmit } = renderDialog({ preview: fallbackPreview });
+    const direct = screen.getByRole("button", { name: /石九 \/ 青年时期/ });
+    const fallback = screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ });
+    expect(direct).toBeDisabled();
+    expect(fallback).toBeEnabled();
+    expect(fallback).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(fallback);
+    fireEvent.click(screen.getByRole("button", { name: "使用 1 张参考图生成" }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: ["identity:hero:young"],
+    }));
   });
 
   it("keeps style independent from the image count", () => {

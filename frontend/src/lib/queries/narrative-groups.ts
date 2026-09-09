@@ -19,6 +19,10 @@ export type PlannedReferenceStatus =
   | "pending_confirmation"
   | "missing_asset"
   | "missing_image";
+export type PlannedReferenceResolution =
+  | "auto_matched"
+  | "manually_confirmed"
+  | "explicit_fallback";
 
 export interface PlannedReferenceBinding {
   binding_id: string;
@@ -28,6 +32,7 @@ export interface PlannedReferenceBinding {
   beat_ids: string[];
   required: boolean;
   status: PlannedReferenceStatus;
+  resolution: PlannedReferenceResolution;
   selected_by_default: boolean;
   asset_slot_id?: string | null;
   version_id?: string | null;

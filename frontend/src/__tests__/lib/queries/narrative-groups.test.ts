@@ -54,6 +54,7 @@ const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
     beat_ids: ["beat-1"],
     required: true,
     status: "ready",
+    resolution: "auto_matched",
     selected_by_default: true,
   }],
   max_images: 9,
