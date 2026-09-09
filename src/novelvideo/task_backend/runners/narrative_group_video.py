@@ -600,7 +600,7 @@ async def _optimize_missing_prompts(
     source_beats = list(episode_beats or beats)
     for group in (
         load_materialized_groups(project_dir, episode)
-        if continuity_by_segment is None
+        if continuity_by_segment is None and frozen_frames is None
         else ()
     ):
         render = stage_payload(project_dir, episode, group.id, "render")

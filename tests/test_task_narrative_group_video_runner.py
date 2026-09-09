@@ -1185,6 +1185,7 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
     from novelvideo.media_capabilities.video.h3_timeline import (
         H3DirectorSegment,
         load_h3_director_manifest,
+        save_h3_director_manifest,
     )
     from novelvideo.narrative_groups.video_references import ResolvedVideoReference
     from novelvideo.task_backend.runners import narrative_group_video
@@ -1195,6 +1196,12 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
     segment = H3DirectorSegment(
         segment_id="s1", beat_number=1, prompt="source prompt",
         duration_seconds=5, first_frame=str(frame), dialogue_source="h3_native",
+    )
+    sibling_segment = H3DirectorSegment(
+        segment_id="sibling", beat_number=2, prompt="sibling prompt",
+        duration_seconds=5,
+        first_frame=str(tmp_path / "unfrozen-sibling.png"),
+        dialogue_source="h3_native",
     )
     frozen_frames = freeze_h3_reference_frames((segment,), project_root=tmp_path)
     frozen_sha256 = frozen_frames[str(frame)].sha256
@@ -1214,6 +1221,10 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
     group = SimpleNamespace(
         id="ng-01", video_reference_settings=SimpleNamespace(revision=7),
         video_segments=({"id": "durable-1"},),
+    )
+    sibling_group = SimpleNamespace(
+        id="ng-02", video_reference_settings=SimpleNamespace(revision=1),
+        video_segments=({"id": "durable-sibling"},),
     )
     optimizer_calls = 0
     requests = []
@@ -1258,10 +1269,15 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
             frames=frozen_frames,
         )
 
-    monkeypatch.setattr(
-        narrative_group_video, "stage_payload",
-        lambda *_args: {"revision": 2, "video_plan": {"revision": 1}},
-    )
+    def stage_payload(_project, _episode, group_id, stage):
+        if stage == "video":
+            return {"revision": 2, "video_plan": {"revision": 1}}
+        return {
+            "status": "completed" if group_id == "ng-02" else "pending",
+            "video_plan": {"revision": 1},
+        }
+
+    monkeypatch.setattr(narrative_group_video, "stage_payload", stage_payload)
     monkeypatch.setattr(
         narrative_group_video, "_assert_stage_revision", lambda *_a, **_k: None
     )
@@ -1269,7 +1285,8 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
         narrative_group_video, "_workflow_definition_for_payload", lambda _p: workflow
     )
     monkeypatch.setattr(
-        narrative_group_video, "load_materialized_groups", lambda *_args: [group]
+        narrative_group_video, "load_materialized_groups",
+        lambda *_args: [group, sibling_group],
     )
     monkeypatch.setattr(
         narrative_group_video, "_reference_execution_snapshot",
@@ -1298,13 +1315,17 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
         narrative_group_video, "_load_canonical_beats",
         lambda *_args: asyncio.sleep(0, result=[{"id": "s1"}]),
     )
+    def generation_beats(_project, _episode, group_id, _beats):
+        return [{"id": "sibling"}] if group_id == "ng-02" else [{"id": "s1"}]
+
     monkeypatch.setattr(
-        narrative_group_video, "generation_beats_for_group",
-        lambda *_args: [{"id": "s1"}],
+        narrative_group_video, "generation_beats_for_group", generation_beats
     )
-    monkeypatch.setattr(
-        narrative_group_video, "_build_segments", lambda *_args: [segment]
-    )
+
+    def build_segments(_payload, beats, _render):
+        return [sibling_segment] if beats[0]["id"] == "sibling" else [segment]
+
+    monkeypatch.setattr(narrative_group_video, "_build_segments", build_segments)
     monkeypatch.setattr(
         narrative_group_video, "_canonical_beats_for_segments",
         lambda *_args: [{"id": "s1", "video_prompt": "阿明走近门口。"}],
@@ -1374,6 +1395,17 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
     assert requests[-1].frozen_frames is frozen_frames
     assert replayed.entries[0].input_summary == first.entries[0].input_summary
     assert len(replayed.entries[0].attempts) == 2
+
+    replayed.entries[0].input_summary["final_wire"] = "tampered wire"
+    save_h3_director_manifest(manifest_path, replayed)
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    rebuilt = load_h3_director_manifest(manifest_path)
+
+    assert optimizer_calls == 2
+    assert requests[-1].frozen_frames is frozen_frames
+    assert rebuilt.entries[0].input_summary["first_frame_sha256"] == frozen_sha256
+    assert rebuilt.entries[0].input_summary["input_hash"] == expected_hash
+    assert len(rebuilt.entries[0].attempts) == 3
 
 
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
