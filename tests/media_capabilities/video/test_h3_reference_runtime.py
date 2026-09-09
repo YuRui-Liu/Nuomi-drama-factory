@@ -1030,6 +1030,66 @@ async def test_reference_runtime_rejects_prompt_that_did_not_come_from_wire(
 
 
 @pytest.mark.asyncio
+async def test_reference_runtime_rejects_invalid_wire_before_upload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (5, 5), "black").save(frame)
+    uploads: list[Path] = []
+
+    class Client:
+        async def upload(self, path):
+            uploads.append(Path(path))
+            return "uploaded://asset"
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        runtime,
+        "_load_runtime",
+        lambda: SimpleNamespace(
+            account=SimpleNamespace(
+                id="quality-test",
+                max_concurrency=1,
+                capability_limits={},
+                queue_limit=2,
+            ),
+            create_client=Client,
+        ),
+    )
+    wire = _reference_wire().model_copy(
+        update={"overall_soundscape": "dialogue: untrusted legacy block"}
+    )
+
+    with pytest.raises(H3PromptQualityError):
+        await runtime.generate_h3_reference_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="s1",
+                beat_number=1,
+                prompt=compile_h3_wire(wire),
+                duration_seconds=4,
+                first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"),
+            global_references=(
+                _reference(tmp_path / "deleted-reference.png", _png_bytes()),
+            ),
+            reference_limit=5,
+            workflow_id="2096502793044582401",
+            wire=wire,
+        )
+
+    assert uploads == []
+
+
+@pytest.mark.asyncio
 async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_frames(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1078,6 +1138,13 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
             captured["profile"] = kwargs["workflow_profile"]
 
         async def generate_timeline(self, request, **kwargs):
+            from novelvideo.media_capabilities.video.pipeline import (
+                _validate_transport_timeline,
+            )
+
+            _validate_transport_timeline(
+                kwargs["timeline_data"], kwargs["idempotency_input"]["segments"]
+            )
             captured["request"] = request
             captured.update(kwargs)
             callback = kwargs.get("on_provider_submitted")
@@ -1139,6 +1206,12 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
         "label": "阿明",
         "subject_description": "阿明，黑色短发",
         "sha256": hashlib.sha256(frozen_reference).hexdigest(),
+    }]
+    assert captured["idempotency_input"]["segments"] == [{
+        "id": "s1",
+        "prompt": compile_h3_wire(wire),
+        "resolved_mode": "ref2va",
+        "duration_seconds": 4,
     }]
     assert result.provider_task_id == "provider-7"
     assert submitted == ["provider-7"]

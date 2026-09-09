@@ -34,6 +34,8 @@ from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3_REFERENCE_COMPILER_VERSION,
     build_h3_reference_timeline_payload,
 )
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline
 from novelvideo.media_capabilities.video.runtime import (
     H3GenerationResult,
@@ -1346,6 +1348,15 @@ def _idempotency_input(
             }
             for entry in timeline.entries
         ],
+        "segments": [
+            {
+                "id": entry.segment.segment_id,
+                "prompt": entry.segment.prompt,
+                "resolved_mode": H3Mode.REF2VA.value,
+                "duration_seconds": entry.segment.duration_seconds,
+            }
+            for entry in timeline.entries
+        ],
         "mode": mode,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
@@ -1378,6 +1389,10 @@ async def generate_h3_reference_director_video(
         raise ValueError(
             "every H3 reference segment prompt must equal its compiled wire"
         )
+    for segment in normalized_segments:
+        inspect_h3_prompt(
+            final_wire, H3Mode.REF2VA, segment.duration_seconds
+        ).raise_for_failure()
     timeline = build_h3_timeline_data(normalized_segments, strict_first_frame=True)
     references, preflight_references, reference_suffixes, frames = _freeze_inputs(
         normalized_segments,
