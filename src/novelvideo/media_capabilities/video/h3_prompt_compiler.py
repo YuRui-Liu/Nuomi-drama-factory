@@ -35,9 +35,9 @@ def compile_h3_director_plan(plan: H3DirectorPlan) -> str:
     if plan.mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
         raise ValueError("H3 director prompt compiler supports only i2va and fl2va")
 
-    is_rigid = plan.schema_version == 2
+    is_rigid = plan.schema_version >= 2
     if is_rigid and plan.rigid_prompt is None:
-        raise ValueError("schema_version=2 requires rigid_prompt before compilation")
+        raise ValueError("schema_version>=2 requires rigid_prompt before compilation")
     description = (
         _compile_rigid_description(plan, plan.rigid_prompt)
         if is_rigid and plan.rigid_prompt is not None
@@ -359,10 +359,15 @@ def _shot_label(shot_id: str) -> str:
 def _camera_text(camera: H3CameraPlan) -> str:
     if camera.is_static:
         return f"{camera.type} camera"
-    return (
-        f"{camera.speed}, {camera.amplitude} {camera.type} "
-        f"moving {camera.direction}"
-    )
+    if camera.speed is not None and camera.amplitude is not None:
+        prefix = f"{camera.speed}, {camera.amplitude} "
+    elif camera.speed is not None:
+        prefix = f"{camera.speed} "
+    elif camera.amplitude is not None:
+        prefix = f"{camera.amplitude} "
+    else:
+        prefix = ""
+    return f"{prefix}{camera.type} moving {camera.direction}"
 
 
 def _compile_action(action: H3ActionPlan, fps: int) -> str:

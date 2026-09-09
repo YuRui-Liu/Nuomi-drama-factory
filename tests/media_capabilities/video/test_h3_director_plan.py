@@ -717,11 +717,40 @@ def test_dynamic_camera_requires_only_direction_and_preserves_official_defaults(
 
 
 @pytest.mark.parametrize("field", ("direction", "amplitude", "speed"))
-def test_static_camera_rejects_any_motion_parameter(field):
-    assert H3CameraPlan(type="static").is_static is True
+def test_v3_plan_rejects_static_camera_with_any_motion_parameter(field):
+    payload = _director_payload(H3Mode.I2VA)
+    shot_payload = _shot().model_dump()
+    shot_payload["camera"] = {"type": "static", field: "legacy value"}
+    payload["shots"] = (shot_payload,)
 
-    with pytest.raises(ValidationError, match="static camera.*motion"):
-        H3CameraPlan(type="static", **{field: "slow"})
+    with pytest.raises(ValidationError, match="schema_version=3.*static camera"):
+        H3DirectorPlan(**payload)
+
+
+@pytest.mark.parametrize("schema_version", (1, 2))
+def test_legacy_plan_round_trips_static_camera_motion_parameters(schema_version):
+    shot_payload = _shot().model_dump()
+    shot_payload["camera"] = {
+        "type": "static",
+        "direction": "legacy forward",
+        "amplitude": "legacy subtle",
+        "speed": "legacy slow",
+    }
+    payload = {
+        "schema_version": schema_version,
+        "mode": "i2va",
+        "total_frames": 101,
+        "visual_style": "cinematic realism",
+        "continuity_locks": ["identity"],
+        "shots": [shot_payload],
+        "soundscape": "door rattle",
+        "music": "low strings",
+    }
+
+    plan = H3DirectorPlan.model_validate(payload)
+
+    assert plan.shots[0].camera.direction == "legacy forward"
+    assert H3DirectorPlan.model_validate_json(plan.model_dump_json()) == plan
 
 
 def test_static_camera_classification_is_shared_on_the_dto():
@@ -1280,6 +1309,39 @@ def test_v3_l2va_allows_multiple_shots_with_terminal_convergence():
     assert len(plan.shots) == 2
 
 
+@pytest.mark.parametrize("mode", (H3Mode.FL2VA, H3Mode.L2VA))
+def test_v3_convergence_modes_reject_last_difference_before_final_settle(mode):
+    differences = (
+        H3FrameDifference(
+            description="The early pose is not yet the final convergence.",
+            convergence_frame=5,
+        ),
+    )
+
+    with pytest.raises(
+        ValidationError, match="last convergence_frame.*final.*settle"
+    ):
+        H3DirectorPlan(
+            **_director_payload(mode, frame_differences=differences)
+        )
+
+
+@pytest.mark.parametrize("mode", (H3Mode.FL2VA, H3Mode.L2VA))
+def test_v3_last_convergence_can_equal_final_settle_start(mode):
+    differences = (
+        H3FrameDifference(
+            description="The final convergence begins with the settle action.",
+            convergence_frame=12,
+        ),
+    )
+
+    plan = H3DirectorPlan(
+        **_director_payload(mode, frame_differences=differences)
+    )
+
+    assert plan.frame_differences[-1].convergence_frame == 12
+
+
 def test_v3_ref2va_requires_summary_and_subjects():
     missing_summary = _director_payload(H3Mode.REF2VA)
     missing_summary.pop("reference_summary")
@@ -1374,6 +1436,44 @@ def test_v3_ref2va_valid_subject_can_bind_a_dialogue_speaker():
     assert plan.reference_subjects[0].speaker_id == "S1"
 
 
+def _two_shot_reference_speaker_payload(subject_shot_ids):
+    dialogue = H3DialogueCue(
+        start_frame=60,
+        end_frame=80,
+        speaker="Lin Mo",
+        speaker_id="S1",
+        text="Stay back.",
+        language="English",
+    )
+    shots = (
+        _shot(end_frame=50),
+        _shot(shot_id="2", start_frame=50, end_frame=101).model_copy(
+            update={"dialogue": (dialogue,)}
+        ),
+    )
+    return _director_payload(
+        H3Mode.REF2VA,
+        shots=shots,
+        reference_subjects=(
+            _reference_subject(
+                shot_ids=subject_shot_ids,
+                speaker_id="S1",
+            ),
+        ),
+    )
+
+
+def test_v3_ref2va_speaker_must_appear_in_subject_shots():
+    with pytest.raises(ValidationError, match="speaker_id.*subject shot_ids"):
+        H3DirectorPlan(**_two_shot_reference_speaker_payload(("1",)))
+
+
+def test_v3_ref2va_speaker_can_appear_in_any_declared_subject_shot():
+    plan = H3DirectorPlan(**_two_shot_reference_speaker_payload(("1", "2")))
+
+    assert plan.reference_subjects[0].speaker_id == "S1"
+
+
 def test_frame_anchor_normalizes_sha_and_rejects_invalid_values():
     anchor = _frame_anchor()
     assert anchor.sha256 == _FIRST_SHA.lower()
@@ -1436,6 +1536,18 @@ def test_v3_ref2va_rejects_frame_anchors(field):
 def test_reference_subject_requires_positive_source_picture_indexes(indexes):
     with pytest.raises(ValidationError, match="source_picture_indexes"):
         _reference_subject(source_picture_indexes=indexes)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_picture_indexes", {1, 2}),
+        ("shot_ids", {"1", "2"}),
+    ),
+)
+def test_reference_subject_rejects_unordered_index_sets(field, value):
+    with pytest.raises(ValidationError, match=f"{field}.*ordered list or tuple"):
+        _reference_subject(**{field: value})
 
 
 @pytest.mark.parametrize("subject_index", (0, -1))
@@ -1516,6 +1628,48 @@ def test_legacy_schema_versions_reject_v3_only_modes(schema_version, mode):
 
     with pytest.raises(ValidationError, match="support only i2va and fl2va"):
         H3DirectorPlan(**payload)
+
+
+@pytest.mark.parametrize("schema_version", (1, 2))
+@pytest.mark.parametrize(
+    "field",
+    (
+        "first_frame_anchor",
+        "last_frame_anchor",
+        "reference_summary",
+        "reference_subjects",
+    ),
+)
+def test_legacy_schema_versions_reject_v3_input_fields(schema_version, field):
+    values = {
+        "first_frame_anchor": _frame_anchor(),
+        "last_frame_anchor": _frame_anchor(_LAST_SHA),
+        "reference_summary": "Preserve Lin from source picture 1.",
+        "reference_subjects": (_reference_subject(),),
+    }
+    payload = _director_payload(H3Mode.I2VA)
+    for v3_field in values:
+        payload.pop(v3_field, None)
+    payload.update(schema_version=schema_version, **{field: values[field]})
+
+    with pytest.raises(
+        ValidationError, match=f"schema_version={schema_version}.*{field}"
+    ):
+        H3DirectorPlan(**payload)
+
+
+@pytest.mark.parametrize("mode", (H3Mode.T2VA, H3Mode.I2VA, H3Mode.REF2VA))
+def test_v3_non_convergence_modes_reject_frame_differences(mode):
+    differences = (
+        H3FrameDifference(description="A stray convergence.", convergence_frame=90),
+    )
+
+    with pytest.raises(
+        ValidationError, match="frame_differences.*only.*fl2va.*l2va"
+    ):
+        H3DirectorPlan(
+            **_director_payload(mode, frame_differences=differences)
+        )
 
 
 def test_v3_carries_rigid_prompt_and_round_trips():

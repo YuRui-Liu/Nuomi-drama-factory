@@ -109,6 +109,15 @@ class H3ReferenceSubjectPlan(BaseModel):
     def trim_description_fields(cls, value: object) -> object:
         return _safe_structural_text(value)
 
+    @field_validator("source_picture_indexes", mode="before")
+    @classmethod
+    def require_ordered_source_picture_indexes(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(
+                "source_picture_indexes must be an ordered list or tuple"
+            )
+        return value
+
     @field_validator("source_picture_indexes")
     @classmethod
     def validate_source_picture_indexes(
@@ -126,7 +135,7 @@ class H3ReferenceSubjectPlan(BaseModel):
     @classmethod
     def validate_shot_ids(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
-            return value
+            raise ValueError("shot_ids must be an ordered list or tuple")
         normalized = tuple(_safe_structural_text(item) for item in value)
         if any(
             not isinstance(shot_id, str)
@@ -159,9 +168,6 @@ class H3CameraPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_dynamic_camera(self) -> "H3CameraPlan":
-        motion_parameters = (self.direction, self.amplitude, self.speed)
-        if self.is_static and any(motion_parameters):
-            raise ValueError("static camera contradicts supplied motion parameters")
         if not self.is_static and self.direction is None:
             raise ValueError("dynamic camera requires direction")
         return self
@@ -339,12 +345,15 @@ class H3DirectorPlan(BaseModel):
             H3Mode.FL2VA,
         }:
             raise ValueError("H3 director plans support only i2va and fl2va")
+        if self.schema_version < 3:
+            self._validate_legacy_schema_fields()
         if self.schema_version == 1 and self.rigid_prompt is not None:
             raise ValueError("rigid_prompt requires schema_version=2")
         self._validate_shot_coverage()
         self._validate_speaker_identity()
         self._validate_dialogue_continuations()
         if self.schema_version == 3:
+            self._validate_v3_camera_semantics()
             self._validate_v3_mode_inputs()
         if self.mode is H3Mode.I2VA:
             self._validate_i2va_anchor()
@@ -356,7 +365,35 @@ class H3DirectorPlan(BaseModel):
             self._validate_reference_subjects()
         return self
 
+    def _validate_legacy_schema_fields(self) -> None:
+        v3_fields = {
+            "first_frame_anchor": self.first_frame_anchor,
+            "last_frame_anchor": self.last_frame_anchor,
+            "reference_summary": self.reference_summary,
+            "reference_subjects": self.reference_subjects,
+        }
+        supplied = tuple(name for name, value in v3_fields.items() if value)
+        if supplied:
+            raise ValueError(
+                f"schema_version={self.schema_version} forbids v3 input fields: "
+                f"{', '.join(supplied)}"
+            )
+
+    def _validate_v3_camera_semantics(self) -> None:
+        for shot in self.shots:
+            camera = shot.camera
+            if camera.is_static and any(
+                (camera.direction, camera.amplitude, camera.speed)
+            ):
+                raise ValueError(
+                    "schema_version=3 static camera forbids motion parameters"
+                )
+
     def _validate_v3_mode_inputs(self) -> None:
+        if self.mode not in {H3Mode.FL2VA, H3Mode.L2VA} and self.frame_differences:
+            raise ValueError(
+                "frame_differences are allowed only for fl2va and l2va"
+            )
         has_references = bool(self.reference_subjects) or bool(
             self.reference_summary
         )
@@ -459,6 +496,12 @@ class H3DirectorPlan(BaseModel):
             raise ValueError(f"{mode} final action must be settle or end_lock")
         if final_action.end_frame != self.total_frames:
             raise ValueError(f"{mode} final action must converge at total_frames")
+        final_convergence = self.frame_differences[-1].convergence_frame
+        if not final_action.start_frame <= final_convergence < final_action.end_frame:
+            raise ValueError(
+                "last convergence_frame must fall inside final settle or "
+                "end_lock action"
+            )
 
     def _validate_reference_subjects(self) -> None:
         expected_indexes = tuple(range(1, len(self.reference_subjects) + 1))
@@ -470,9 +513,6 @@ class H3DirectorPlan(BaseModel):
                 "reference subject_index values must be continuous from 1"
             )
         known_shot_ids = {shot.shot_id for shot in self.shots}
-        dialogue_speaker_ids = {
-            cue.speaker_id for shot in self.shots for cue in shot.dialogue
-        }
         bound_speaker_ids: set[str] = set()
         for subject in self.reference_subjects:
             if not set(subject.shot_ids).issubset(known_shot_ids):
@@ -481,9 +521,16 @@ class H3DirectorPlan(BaseModel):
                 )
             if subject.speaker_id is None:
                 continue
-            if subject.speaker_id not in dialogue_speaker_ids:
+            subject_shot_speaker_ids = {
+                cue.speaker_id
+                for shot in self.shots
+                if shot.shot_id in subject.shot_ids
+                for cue in shot.dialogue
+            }
+            if subject.speaker_id not in subject_shot_speaker_ids:
                 raise ValueError(
-                    "reference subject speaker_id must exist in plan dialogue"
+                    "reference subject speaker_id must exist in dialogue within "
+                    "subject shot_ids"
                 )
             if subject.speaker_id in bound_speaker_ids:
                 raise ValueError(

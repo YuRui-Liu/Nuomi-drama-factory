@@ -5,6 +5,7 @@ from novelvideo.media_capabilities.video.h3_director_plan import (
     H3CameraPlan,
     H3DialogueCue,
     H3DirectorPlan,
+    H3FrameAnchor,
     H3FrameDifference,
     H3ShotPlan,
 )
@@ -318,6 +319,45 @@ def test_v2_complete_prompt_golden() -> None:
     )
 
 
+@pytest.mark.parametrize("mode", (H3Mode.I2VA, H3Mode.FL2VA))
+def test_v3_frame_conditioned_modes_compile_through_rigid_path(mode):
+    payload = {
+        "schema_version": 3,
+        "mode": mode,
+        "total_frames": 101,
+        "visual_style": "legacy style must not replace rigid prefix",
+        "continuity_locks": ("same face",),
+        "shots": (_shot(final_phase="settle" if mode is H3Mode.FL2VA else "execute"),),
+        "soundscape": "Rain and breath.",
+        "music": "this value must be ignored",
+        "rigid_prompt": _rigid_prompt(),
+        "first_frame_anchor": H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the sealed corridor door.",
+        ),
+    }
+    if mode is H3Mode.FL2VA:
+        payload.update(
+            last_frame_anchor=H3FrameAnchor(
+                sha256="b" * 64,
+                description="Lin settles with one hand on the door handle.",
+            ),
+            frame_differences=(
+                H3FrameDifference(
+                    description="His hand converges on the handle.",
+                    convergence_frame=90,
+                ),
+            ),
+        )
+    plan = H3DirectorPlan(**payload)
+
+    prompt = compile_h3_director_plan(plan)
+
+    assert "integrated_multimodal_description: SCENE CONTEXT" in prompt
+    assert "STYLE\ncinematic realism" in prompt
+    assert prompt.endswith("non_diegetic_music: No music. SFX only.")
+
+
 def test_v2_renders_blocking_optics_camera_and_timing_for_every_shot_id():
     plan = H3DirectorPlan(
         schema_version=2,
@@ -579,6 +619,34 @@ def test_compiler_never_emits_custom_frame_ranges():
     )
 
     assert "Frames " not in compile_h3_director_plan(plan)
+
+
+def test_v3_dynamic_camera_with_official_defaults_never_compiles_none():
+    shot = _shot().model_copy(
+        update={
+            "camera": H3CameraPlan(type="push-in", direction="forward")
+        }
+    )
+    plan = H3DirectorPlan(
+        schema_version=3,
+        mode=H3Mode.I2VA,
+        total_frames=101,
+        visual_style="cinematic realism",
+        continuity_locks=("same face",),
+        shots=(shot,),
+        soundscape="Rain.",
+        music="No music.",
+        rigid_prompt=_rigid_prompt(),
+        first_frame_anchor=H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the sealed corridor door.",
+        ),
+    )
+
+    prompt = compile_h3_director_plan(plan)
+
+    assert "Camera: push-in moving forward." in prompt
+    assert "None" not in prompt
 
 
 def test_compiler_rejects_non_frame_conditioned_modes_defensively():
