@@ -172,9 +172,24 @@ class H3ModeInputSnapshot(_FrozenModel):
 class H3ModeDecision(_FrozenModel):
     requested: H3RequestedMode
     mode: H3ResolvedMode | None
-    input_snapshot: H3ModeInputSnapshot | None = None
+    input_snapshot: H3ModeInputSnapshot | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     reason_codes: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def require_consistent_resolution_state(self) -> Self:
+        if self.mode is None:
+            if not self.blockers:
+                raise ValueError("blocked mode decision requires blockers")
+            if self.reason_codes:
+                raise ValueError("blocked mode decision forbids success reason codes")
+            return self
+        if self.blockers:
+            raise ValueError("resolved mode decision forbids blockers")
+        return self
 
 
 class FrameEvidence(_FrozenModel):
