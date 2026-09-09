@@ -96,7 +96,7 @@ def test_registry_resolves_default_available_workflow(tmp_path) -> None:
         adapter_key="minimax-h3",
         workflow_settings_key="video_minimax_h3",
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-        supported_modes=("auto", "i2va", "fl2va"),
+        supported_modes=("i2va", "fl2va"),
         default_mode="auto",
         is_default=True,
         parameters=(
@@ -157,7 +157,7 @@ def test_registry_registers_reference_workflow_after_legacy_h3(tmp_path) -> None
         capability_models.RunningHubWorkflowSettingsKey,
     )
     assert reference.scenes == frozenset({VideoWorkflowScene.NARRATIVE_GROUP})
-    assert reference.supported_modes == ("auto", "i2va", "fl2va")
+    assert reference.supported_modes == ("ref2va",)
     assert reference.default_mode == "auto"
     assert reference.is_default is False
     assert reference.reference_policy == workflow_registry_module.VideoReferencePolicy(
@@ -274,7 +274,7 @@ def test_registry_lists_ref_after_base_as_unavailable_local_contract(
         workflow_settings_key="video_minimax_h3_ref",
         provider_workflow_id="2096502793044582401",
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-        supported_modes=("auto", "i2va", "fl2va"),
+        supported_modes=("ref2va",),
         default_mode="auto",
         parameters=base.parameters,
         reference_policy=workflow_registry_module.VideoReferencePolicy(
@@ -330,7 +330,7 @@ def test_workflow_definition_is_frozen(tmp_path) -> None:
 def test_workflow_definition_exposes_supported_modes(tmp_path) -> None:
     definition = _configured_registry(tmp_path).list()[0]
 
-    assert definition.supported_modes == ("auto", "i2va", "fl2va")
+    assert definition.supported_modes == ("i2va", "fl2va")
     assert "modes" not in VideoWorkflowDefinition.model_fields
 
 

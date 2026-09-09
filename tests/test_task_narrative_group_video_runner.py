@@ -66,7 +66,10 @@ def _patch_test_workflow(monkeypatch, module):
         module,
         "_workflow_definition_for_payload",
         lambda _payload: SimpleNamespace(
-            id="test-minimax-h3", adapter_key="minimax-h3", provider="minimax"
+            id="test-minimax-h3",
+            adapter_key="minimax-h3",
+            provider="minimax",
+            supported_modes=("i2va", "fl2va"),
         ),
     )
     monkeypatch.setattr(
@@ -395,19 +398,43 @@ def test_group_video_builds_dialogue_from_canonical_beat_fields(tmp_path):
 def test_group_video_rejects_explicit_fl2va_without_last_frames(tmp_path):
     import pytest
 
-    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+    from novelvideo.media_capabilities.video.workflow_registry import (
+        H3ModeUnavailableError,
+        VideoWorkflowDefinition,
+        VideoWorkflowScene,
+    )
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _build_segments,
+        _resolve_workflow_modes,
+    )
 
     frame = tmp_path / "frame.png"
     frame.write_bytes(b"frame")
 
-    with pytest.raises(ValueError, match="fl2va.*last frame"):
-        _build_segments(
+    segments = _build_segments(
             {"mode": "fl2va"},
             [{"id": "beat-1", "beat_number": 1, "visual_description": "人物抬头"}],
             {
                 "beat_ids": ["beat-1"],
                 "cell_assets": [{"beat_id": "beat-1", "path": str(frame)}],
             },
+        )
+    workflow = VideoWorkflowDefinition(
+        id="runninghub:minimax-h3",
+        label="H3",
+        provider="runninghub",
+        adapter_key="minimax-h3",
+        scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
+        supported_modes=("i2va", "fl2va"),
+        default_mode="i2va",
+    )
+
+    with pytest.raises(H3ModeUnavailableError, match="h3.last_frame_required"):
+        _resolve_workflow_modes(
+            requested="fl2va",
+            segments=segments,
+            workflow=workflow,
+            references=(),
         )
 
 
@@ -706,6 +733,7 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     workflow = SimpleNamespace(
         id="runninghub:minimax-h3-ref", provider="runninghub",
         adapter_key="minimax-h3-ref", default_mode="auto",
+        supported_modes=("ref2va",),
         reference_policy=SimpleNamespace(required=True, max_images=5),
     )
     segments = [
@@ -978,13 +1006,25 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     }
     assert manifest.entries[0].director_plan["mode"] == "i2va"
     assert manifest.entries[0].quality_report["passed"] is True
-    assert manifest.entries[0].input_summary == {
+    assert manifest.entries[0].input_summary | {
+        "frozen_input_hash": "<stable>",
+        "final_wire": "<wire>",
+    } == {
         "beat_ids": ["beat-1"],
         "mode": "i2va",
         "duration_seconds": 5.0,
         "first_frame_sha256": optimization_contexts[0][1].first_frame_sha256,
         "last_frame_sha256": None,
+        "requested_mode": "auto",
+        "resolved_mode": "i2va",
+        "frozen_input_hash": "<stable>",
+        "prompt_schema_version": H3_PROMPT_PROFILE_VERSION,
+        "compiler_version": 1,
+        "final_wire": "<wire>",
+        "workflow_id": "test-minimax-h3",
     }
+    assert len(manifest.entries[0].input_summary["frozen_input_hash"]) == 64
+    assert manifest.entries[0].input_summary["final_wire"] == "优化：beat-1"
 
 
 def test_group_video_optimizer_connection_failure_fails_before_transport(tmp_path, monkeypatch):
@@ -1084,9 +1124,10 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
     assert error_payload["transport_called"] is False
     assert error_payload["quality_report"]["issues"] == [{
         "code": "vague_action",
-        "message": "bad plan",
-        "severity": "error",
-        "location": "shots.0",
+            "message": "bad plan",
+            "field": "shots.0",
+            "severity": "error",
+            "location": "shots.0",
     }]
     from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
     from novelvideo.narrative_groups.service import load_groups
@@ -1372,9 +1413,12 @@ def test_group_video_replay_appends_attempt_history_for_same_revision(
 
     _seed_group(tmp_path)
     provider_calls = 0
+    optimizer_calls = 0
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
+            nonlocal optimizer_calls
+            optimizer_calls += 1
             return _optimizer_result(f"final:{segment.segment_id}")
 
     async def get_beats(_ctx, _episode):
@@ -1416,6 +1460,7 @@ def test_group_video_replay_appends_attempt_history_for_same_revision(
     }
 
     narrative_group_video.run_narrative_group_video(envelope, ctx)
+    envelope["payload"]["mode"] = "fl2va"
     narrative_group_video.run_narrative_group_video(envelope, ctx)
     manifest = load_h3_director_manifest(
         load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
@@ -1425,6 +1470,7 @@ def test_group_video_replay_appends_attempt_history_for_same_revision(
         [1, 2], [1, 2]
     ]
     assert all(attempt.status == "completed" for entry in manifest.entries for attempt in entry.attempts)
+    assert optimizer_calls == 2
 
 
 @pytest.mark.parametrize("fail_boundary", ["callback", "completed"])

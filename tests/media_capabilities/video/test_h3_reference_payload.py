@@ -11,6 +11,12 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorSegment,
     build_h3_timeline_data,
 )
+from novelvideo.media_capabilities.video.h3_prompt import H3Mode
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    H3RetentionItem,
+    compile_h3_wire,
+)
 
 
 FIXTURE = (
@@ -56,6 +62,24 @@ def _timeline(*, first_frame: str | None = "first.png", last_frame: str | None =
                 last_frame=last_frame,
             ),
         )
+    )
+
+
+def _wire(subject_definitions: str) -> H3ReferenceWire:
+    return H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=6,
+        subject_definitions=subject_definitions,
+        summary="[reference generation] A restrained dramatic beat.",
+        retention_analysis=(
+            H3RetentionItem(
+                subject="<Subject 1> (appears in [Shot 1])",
+                retain="fully_preserved - identity and proportions",
+            ),
+        ),
+        detailed_description="[Shot 1] [0-6s] The subject turns toward camera.",
+        overall_soundscape="Quiet room tone.",
+        non_diegetic_music="N/A",
     )
 
 
@@ -188,12 +212,31 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
         _reference("ref1", "https://assets.example/woman.png", "red-coated woman"),
         _reference("ref2", "https://assets.example/robot.png", "brass service robot"),
     )
+    wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=6,
+        subject_definitions=(
+            "<Subject 1>: red-coated woman from <Picture 1>.\n"
+            "<Subject 2>: brass service robot from <Picture 2>."
+        ),
+        summary="[reference generation] The woman confronts the robot.",
+        retention_analysis=(
+            H3RetentionItem(
+                subject="<Subject 1> (appears in [Shot 1])",
+                retain="fully_preserved - face, coat, proportions",
+            ),
+        ),
+        detailed_description="[Shot 1] [0-6s] The woman turns toward the robot.",
+        overall_soundscape="Soft footsteps and a quiet servo hum.",
+        non_diegetic_music="N/A",
+    )
 
     payload = json.loads(
         _compiler().build_h3_reference_timeline_payload(
             timeline,
             references,
             max_references=3,
+            wire=wire,
         )
     )
 
@@ -232,12 +275,17 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
             "subfolder": "",
         },
     ]
-    assert payload["global"]["prompt"] == (
-        "subject_definitions:\n"
-        "<Subject 1> alias @ref1 (reference kind character) is red-coated woman "
-        "from <Picture 1>\n"
-        "<Subject 2> alias @ref2 (reference kind character) is brass service robot "
-        "from <Picture 2>"
+    assert payload["global"]["prompt"] == compile_h3_wire(wire)
+    headings = (
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+    assert [payload["global"]["prompt"].index(item) for item in headings] == sorted(
+        payload["global"]["prompt"].index(item) for item in headings
     )
     assert [item["taskType"] for item in payload["segments"]] == [
         "Ref-I2V",
@@ -269,15 +317,8 @@ def test_reference_tags_are_stable_and_used_as_subject_definition_aliases() -> N
     )
 
     tags = _compiler().build_h3_reference_tag_map(references)
-    payload = json.loads(
-        _compiler().build_h3_reference_timeline_payload(
-            _timeline(), references, max_references=2
-        )
-    )
 
     assert tags == {"Hero One": "@hero-one", "prop.case_2": "@prop.case_2"}
-    assert "<Subject 1> alias @hero-one" in payload["global"]["prompt"]
-    assert "<Subject 2> alias @prop.case_2" in payload["global"]["prompt"]
 
 
 def test_reference_tag_normalization_collision_fails_closed() -> None:
@@ -299,14 +340,16 @@ def test_reference_source_kind_is_explicit_in_the_subject_alias() -> None:
     ).model_copy(update={"source_kind": "scene_master"})
     payload = json.loads(
         _compiler().build_h3_reference_timeline_payload(
-            _timeline(), (scene,), max_references=1
+            _timeline(),
+            (scene,),
+            max_references=1,
+            wire=_wire("<Subject 1>: narrow corridor from <Picture 1>."),
         )
     )
 
-    assert (
-        "<Subject 1> alias @scene.main (reference kind location) "
-        "is narrow corridor from <Picture 1>"
-    ) in payload["global"]["prompt"]
+    assert payload["global"]["prompt"] == compile_h3_wire(
+        _wire("<Subject 1>: narrow corridor from <Picture 1>.")
+    )
 
     unsupported = scene.model_copy(update={"source_kind": "mystery"})
     with pytest.raises(ValueError, match="unsupported reference source_kind"):
@@ -327,7 +370,13 @@ def test_reference_facts_share_the_exact_provider_subject_mapping() -> None:
     facts = _compiler().build_h3_resolved_reference_facts(references)
     payload = json.loads(
         _compiler().build_h3_reference_timeline_payload(
-            _timeline(), references, max_references=2
+            _timeline(),
+            references,
+            max_references=2,
+            wire=_wire(
+                "<Subject 1>: red-coated hero from <Picture 1>.\n"
+                "<Subject 2>: narrow corridor from <Picture 2>."
+            ),
         )
     )
 
@@ -349,10 +398,8 @@ def test_reference_facts_share_the_exact_provider_subject_mapping() -> None:
             "description": "narrow corridor",
         },
     ]
-    for fact in facts:
-        assert f"{fact.provider_subject} alias {fact.tag}" in (
-            payload["global"]["prompt"]
-        )
+    assert payload["global"]["prompt"].startswith("subject_definitions:\n")
+    assert "alias @" not in payload["global"]["prompt"]
 
 
 def test_global_reference_is_frozen() -> None:
@@ -422,6 +469,7 @@ def test_rejects_zero_or_too_many_references() -> None:
                 _reference("ref2", "https://assets.example/two.png", "robot"),
             ),
             max_references=1,
+            wire=_wire("<Subject 1>: red-coated woman from <Picture 1>."),
         )
 
 
@@ -532,17 +580,14 @@ def test_trims_subject_description_without_changing_shot_prompt() -> None:
                 ),
             ),
             max_references=1,
+            wire=_wire("<Subject 1>: red-coated woman from <Picture 1>."),
         )
     )
 
-    assert data["global"]["prompt"] == (
-        "subject_definitions:\n"
-        "<Subject 1> alias @ref1 (reference kind character) is red-coated woman "
-        "from <Picture 1>"
+    assert data["global"]["prompt"] == compile_h3_wire(
+        _wire("<Subject 1>: red-coated woman from <Picture 1>.")
     )
-    assert data["segments"][0]["prompt"] == (
-        "She turns toward camera (from Shot 1)."
-    )
+    assert data["segments"][0]["prompt"] == data["global"]["prompt"]
 
 
 def test_rejects_missing_first_frame_and_explicit_fl2v_without_last_frame() -> None:

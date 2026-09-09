@@ -71,6 +71,7 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowRegistry,
     VideoWorkflowScene,
     build_video_workflow_registry,
+    resolve_h3_workflow_mode,
 )
 from novelvideo.narrative_groups.nonvisual import is_nonvisual_production_note
 from novelvideo.narrative_groups.service import (
@@ -423,6 +424,27 @@ def _mode_for(segment: H3DirectorSegment) -> H3Mode:
     return H3Mode.FL2VA if segment.last_frame else H3Mode.I2VA
 
 
+def _resolve_workflow_modes(
+    *,
+    requested: str | None,
+    segments: list[H3DirectorSegment],
+    workflow: VideoWorkflowDefinition,
+    references: tuple[object, ...],
+) -> dict[str, H3Mode]:
+    return {
+        segment.segment_id: H3Mode(
+            resolve_h3_workflow_mode(
+                requested=requested,
+                first_frame=segment.first_frame,
+                last_frame=segment.last_frame,
+                references=references,
+                supported_modes=workflow.supported_modes,
+            )
+        )
+        for segment in segments
+    }
+
+
 def _frame_sha256(path: str) -> str:
     frame = Path(path)
     if not frame.is_file():
@@ -540,6 +562,9 @@ async def _optimize_missing_prompts(
     policy: ContinuityPolicy = "legacy",
     continuity_by_segment: dict[str, PreparedContinuity] | None = None,
     global_references: tuple[object, ...] = (),
+    resolved_modes: Mapping[str, H3Mode] | None = None,
+    requested_mode: str = "auto",
+    workflow_id: str | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
@@ -645,7 +670,7 @@ async def _optimize_missing_prompts(
                 if policy == "enforce"
                 and continuity_by_segment is not None
                 and continuity_by_segment[segment.segment_id].mode_decision.mode
-                else _mode_for(segment)
+                else (resolved_modes or {}).get(segment.segment_id, _mode_for(segment))
             ),
             summary=context.visual_description or segment.prompt,
             character_anchor=segment.speaker,
@@ -670,7 +695,9 @@ async def _optimize_missing_prompts(
         bundle = None
         diagnostics: tuple[str, ...] = ()
         if prepared is not None and not prepared.risk_report.blockers:
-            current_mode = _mode_for(segment).value
+            current_mode = (resolved_modes or {}).get(
+                segment.segment_id, _mode_for(segment)
+            ).value
             proposed_mode = prepared.mode_decision.mode
             if policy in {"observe", "guard"} and proposed_mode != current_mode:
                 diagnostics = ("shadow_mode_replan_required",)
@@ -736,6 +763,23 @@ async def _optimize_missing_prompts(
                 bundle=bundle,
             )
         if evidence_by_segment is not None:
+            resolved_mode = (resolved_modes or {}).get(
+                segment.segment_id, _mode_for(segment)
+            )
+            input_summary = _input_summary(segment, context, resolved_mode)
+            input_summary.update(
+                {
+                    "requested_mode": requested_mode,
+                    "resolved_mode": resolved_mode.value,
+                    "frozen_input_hash": hashlib.sha256(
+                        _canonical_json(input_summary).encode("utf-8")
+                    ).hexdigest(),
+                    "prompt_schema_version": H3_PROMPT_PROFILE_VERSION,
+                    "compiler_version": item.compiler_version,
+                    "final_wire": item.prompt,
+                    "workflow_id": workflow_id,
+                }
+            )
             evidence_by_segment[segment.segment_id] = {
                 "director_plan": item.plan.model_dump(mode="json"),
                 "prompt_profile": {
@@ -744,17 +788,7 @@ async def _optimize_missing_prompts(
                     "compiler_version": item.compiler_version,
                 },
                 "quality_report": item.quality_report.model_dump(mode="json"),
-                "input_summary": _input_summary(
-                    segment,
-                    context,
-                    (
-                        H3Mode(prepared.mode_decision.mode)
-                        if policy == "enforce"
-                        and prepared is not None
-                        and prepared.mode_decision.mode
-                        else _mode_for(segment)
-                    ),
-                ),
+                "input_summary": input_summary,
                 **(
                     {
                         "continuity_contracts": tuple(
@@ -1038,8 +1072,8 @@ def _build_segments(
     payload: Mapping[str, Any], beat_records: list[dict[str, Any]], saved: Mapping[str, Any]
 ) -> list[H3DirectorSegment]:
     requested_mode = str(payload.get("mode") or "auto").strip().lower()
-    if requested_mode not in {"auto", "i2va", "fl2va"}:
-        raise ValueError("MiniMax H3 group mode must be auto, i2va, or fl2va")
+    if requested_mode not in {"auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"}:
+        raise ValueError("unknown MiniMax H3 group mode")
     by_id = {str(item.get("id") or item.get("beat_id") or item.get("beat_number")): item for item in beat_records}
     cells = {str(item.get("beat_id")): item for item in saved.get("cell_assets") or []}
     plan_units = list((saved.get("video_plan") or {}).get("units") or [])
@@ -1055,11 +1089,7 @@ def _build_segments(
         first = _first_frame(cell)
         if not first:
             raise ValueError(f"rendered first frame is unavailable: {beat_id}")
-        last = None if requested_mode == "i2va" else _last_frame(cell)
-        if requested_mode == "fl2va" and not last:
-            raise ValueError(
-                f"MiniMax H3 fl2va group mode requires a last frame: {beat_id}"
-            )
+        last = _last_frame(cell)
         dialogue_source = DialogueSource(str(beat.get("dialogue_source") or DialogueSource.EXTERNAL_TTS))
         segments.append(H3DirectorSegment(
             segment_id=str(beat_id), source_shot_ids=(str(beat_id),),
@@ -1838,6 +1868,45 @@ async def _execute_inner(
         )
         output = video_dir / f"{group_id}_r{revision}{segment_suffix}.mp4"
         manifest_path = output.with_suffix(".manifest.json")
+        replay_manifest = (
+            load_h3_director_manifest(manifest_path)
+            if manifest_path.is_file()
+            else None
+        )
+        replay_entries = (
+            {entry.segment.segment_id: entry for entry in replay_manifest.entries}
+            if replay_manifest is not None
+            and replay_manifest.workflow_id == workflow.id
+            and tuple(entry.segment.segment_id for entry in replay_manifest.entries)
+            == tuple(segment.segment_id for segment in raw_segments)
+            and all(
+                entry.input_summary
+                and entry.input_summary.get("frozen_input_hash")
+                and entry.segment.prompt
+                for entry in replay_manifest.entries
+            )
+            else {}
+        )
+        requested_mode = (
+            str(
+                next(iter(replay_entries.values())).input_summary.get(
+                    "requested_mode", "auto"
+                )
+            )
+            if replay_entries
+            else str(payload.get("mode") or "auto").strip().lower()
+        )
+        mode_segments = (
+            [replay_entries[segment.segment_id].segment for segment in raw_segments]
+            if replay_entries
+            else raw_segments
+        )
+        resolved_modes = _resolve_workflow_modes(
+            requested=requested_mode,
+            segments=mode_segments,
+            workflow=workflow,
+            references=global_references,
+        )
         evidence_by_segment: dict[str, dict[str, Any]] = {}
         continuity_by_segment: dict[str, PreparedContinuity] | None = None
         blocked: dict[str, tuple[str, ...]] = {}
@@ -1927,13 +1996,33 @@ async def _execute_inner(
             )
             raise error
         try:
-            if policy == "legacy":
+            if policy == "legacy" and replay_entries:
+                segments = [
+                    replay_entries[segment.segment_id].segment
+                    for segment in raw_segments
+                ]
+                evidence_by_segment.update(
+                    {
+                        segment_id: {
+                            "director_plan": entry.director_plan,
+                            "prompt_profile": entry.prompt_profile,
+                            "quality_report": entry.quality_report,
+                            "input_summary": entry.input_summary,
+                            "_final_prompt": entry.segment.prompt,
+                        }
+                        for segment_id, entry in replay_entries.items()
+                    }
+                )
+            elif policy == "legacy":
                 segments = await _optimize_missing_prompts(
                     raw_segments, segment_beats, ctx=ctx,
                     project_dir=project_dir, episode=episode,
                     evidence_by_segment=evidence_by_segment,
                     episode_beats=source_beats,
                     global_references=global_references,
+                    resolved_modes=resolved_modes,
+                    requested_mode=requested_mode,
+                    workflow_id=workflow.id,
                 )
             else:
                 legacy_segments = await _optimize_missing_prompts(
@@ -1941,6 +2030,9 @@ async def _execute_inner(
                     project_dir=project_dir, episode=episode,
                     episode_beats=source_beats,
                     global_references=global_references,
+                    resolved_modes=resolved_modes,
+                    requested_mode=requested_mode,
+                    workflow_id=workflow.id,
                 )
                 try:
                     if continuity_by_segment is None:
@@ -1953,6 +2045,9 @@ async def _execute_inner(
                         policy=policy,
                         continuity_by_segment=continuity_by_segment,
                         global_references=global_references,
+                        resolved_modes=resolved_modes,
+                        requested_mode=requested_mode,
+                        workflow_id=workflow.id,
                     )
                 except Exception as shadow_exc:
                     if not _continuity_failure_is_observational(

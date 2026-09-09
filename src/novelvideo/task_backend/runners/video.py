@@ -269,15 +269,13 @@ def _load_h3_authoritative_context(
 async def _optimize_h3_single_prompt(
     *, ctx: ProjectContext, beat_num: int, beat: dict[str, Any], config: dict[str, Any],
     first_frame: str, last_frame: str | None, duration: float, draft: str,
-    project_dir: Path, episode: int,
+    project_dir: Path, episode: int, mode: H3Mode | None = None,
 ) -> str:
     from novelvideo.media_capabilities.video.h3_beat_adapter import (
         h3_dialogue_text,
         h3_speaker_text,
         h3_tone_text,
     )
-    from novelvideo.media_capabilities.video.h3_prompt import select_mode
-
     segment = H3DirectorSegment(
         segment_id=f"single-{beat_num}", beat_number=max(1, beat_num), prompt=draft or "当前镜头动作连续推进。",
         duration_seconds=duration, first_frame=first_frame, last_frame=last_frame,
@@ -285,9 +283,7 @@ async def _optimize_h3_single_prompt(
         speaker=h3_speaker_text(beat, config),
         tone=h3_tone_text(beat, config),
     )
-    mode = select_mode(first_frame, last_frame, None)
-    if mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
-        raise ValueError("single-video H3 requires a first frame")
+    mode = mode or _resolve_h3_single_mode("auto", first_frame, last_frame)
     optimizer = create_h3_prompt_optimizer(cache_dir=ctx.state_dir / "h3_prompt_cache")
     result = await optimizer.optimize_segment(
         segment,
@@ -303,6 +299,29 @@ async def _optimize_h3_single_prompt(
         mode,
     )
     return result.prompt
+
+
+def _resolve_h3_single_mode(
+    requested: str | None,
+    first_frame: str | None,
+    last_frame: str | None,
+) -> H3Mode:
+    from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
+    from novelvideo.media_capabilities.video.workflow_registry import (
+        resolve_h3_workflow_mode,
+        supported_modes_from_profile,
+    )
+
+    return H3Mode(
+        resolve_h3_workflow_mode(
+            requested=requested,
+            first_frame=first_frame,
+            last_frame=last_frame,
+            supported_modes=supported_modes_from_profile(
+                load_h3_workflow_profile()
+            ),
+        )
+    )
 
 
 def _append_freezone_video_node_history(
@@ -387,10 +406,13 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
         if not first_frame:
             raise ValueError("H3 single-video generation requires a first frame")
         normalized_last = str(last_frame_path).strip() if last_frame_path else None
+        resolved_mode = _resolve_h3_single_mode(
+            str(config.get("h3_mode") or "auto"), first_frame, normalized_last
+        )
         optimized_prompt = await _optimize_h3_single_prompt(
             ctx=ctx, beat_num=beat_num, beat=beat, config=config, first_frame=first_frame,
             last_frame=normalized_last, duration=float(video_duration), draft=str(prompt),
-            project_dir=Path(output_dir), episode=episode,
+            project_dir=Path(output_dir), episode=episode, mode=resolved_mode,
         )
 
         generated = await generate_h3_video(
@@ -402,7 +424,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
             aspect_ratio=str(config.get("ratio") or "9:16"),
             resolution=str(config["resolution"]) if config.get("resolution") else None,
             output_path=video_path.as_posix(),
-            mode=str(config.get("h3_mode") or "auto"),
+            mode=resolved_mode.value,
         )
         video_pool_id = None
         try:
