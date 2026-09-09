@@ -137,8 +137,8 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.cache_hit is True
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
-    assert snapshot["prompt_profile_version"] == 10
-    assert snapshot["compiler_version"] == 2
+    assert snapshot["prompt_profile_version"] == 11
+    assert snapshot["compiler_version"] == 3
 
 
 @pytest.mark.asyncio
@@ -682,7 +682,8 @@ def test_compile_and_gate_merges_contract_locks_before_wire_compile():
 
     assert result.plan.continuity_locks.count("preserve identity") == 1
     assert "cup stays in right hand" in result.plan.continuity_locks
-    assert "SCENE CONTEXT" in result.prompt
+    assert "integrated_multimodal_description: [Shot 1]" in result.prompt
+    assert "SCENE CONTEXT" not in result.prompt
 
 
 @pytest.mark.asyncio

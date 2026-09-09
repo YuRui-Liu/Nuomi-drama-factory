@@ -493,7 +493,8 @@ def test_v3_rigid_plan_passes_real_gate_and_compiler_chain():
 
     assert result.quality_report.passed is True
     assert "rigid_prompt_required" not in result.quality_report.codes
-    assert "integrated_multimodal_description: SCENE CONTEXT" in result.prompt
+    assert "integrated_multimodal_description: [Shot 1]" in result.prompt
+    assert "SCENE CONTEXT" not in result.prompt
 
 
 def test_active_references_fail_when_no_real_mapping_is_available():
