@@ -331,6 +331,101 @@ async def test_mixed_timeline_request_uses_last_nonempty_segment_tail(
 
 
 @pytest.mark.asyncio
+async def test_director_runtime_uploads_frozen_frame_after_source_is_removed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video import pipeline as pipeline_module
+    from novelvideo.media_capabilities.video import runtime as runtime_module
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+
+    first = tmp_path / "first.png"
+    Image.new("RGB", (17, 19), "green").save(first)
+    segment = H3DirectorSegment(
+        segment_id="one", beat_number=1, prompt=_official_prompt(),
+        duration_seconds=5, first_frame=str(first),
+    )
+    frozen_frames = freeze_h3_reference_frames(
+        (segment,), project_root=tmp_path
+    )
+    frozen = frozen_frames[str(first)]
+    first.unlink()
+
+    runtime_dir = tmp_path / "runtime"
+    artifact = runtime_dir / "media_h3" / "artifacts" / "generated.mp4"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"video")
+    captured = {"uploads": []}
+
+    class Client:
+        async def upload(self, path):
+            uploaded = Path(path)
+            captured["uploads"].append(uploaded.read_bytes())
+            return f"uploaded://{uploaded.name}"
+
+        async def close(self):
+            captured["closed"] = True
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, request, **kwargs):
+            captured["request"] = request
+            captured["input_asset_hashes"] = kwargs["input_asset_hashes"]
+            captured["idempotency_input"] = kwargs["idempotency_input"]
+            return SimpleNamespace(
+                status=runtime_module.MediaTaskStatus.SUCCEEDED,
+                quality_issues=(),
+                artifact=SimpleNamespace(local_path="generated.mp4"),
+                provider_task_id="provider-frozen",
+            )
+
+    account = SimpleNamespace(
+        id="frozen-runtime", max_concurrency=5,
+        capability_limits={}, queue_limit=10,
+    )
+    configured = SimpleNamespace(
+        account=account, workflow_id=lambda _capability: None,
+        create_client=Client,
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_capability_store", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_credential_resolver", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_runninghub_runtime_configuration",
+        lambda *_args: configured,
+    )
+    monkeypatch.setattr(pipeline_module, "H3VideoPipeline", Pipeline)
+
+    await generate_h3_director_video(
+        SimpleNamespace(runtime_dir=runtime_dir),
+        segments=(segment,),
+        output_path=str(tmp_path / "out.mp4"),
+        frozen_frames=frozen_frames,
+    )
+
+    assert captured["uploads"] == [frozen.content]
+    assert captured["request"].first_frame == f"sha256:{frozen.sha256}"
+    assert captured["input_asset_hashes"] == (frozen.sha256,)
+    assert (
+        captured["idempotency_input"]["segments"][0]["first_frame_sha256"]
+        == hashlib.sha256(frozen.content).hexdigest()
+    )
+    assert captured["closed"] is True
+    assert not any((runtime_dir / "media_h3" / "staging").glob("*"))
+
+
+@pytest.mark.asyncio
 async def test_director_runtime_resolves_size_once_for_request_and_timeline(
     tmp_path: Path,
     monkeypatch,

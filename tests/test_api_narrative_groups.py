@@ -1379,6 +1379,7 @@ def test_h3_reference_successfully_enqueues_an_activated_snapshot(
 def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
@@ -1392,11 +1393,23 @@ def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_pat
 
     assert response.status_code == 202
     assert "reference_revision" not in backend.calls[0][1]["payload"]
+    payload = backend.calls[0][1]["payload"]
+    assert len(payload["reference_snapshot_id"]) == 32
+    assert len(payload["reference_snapshot_digest"]) == 64
+    descriptor = json.loads((
+        tmp_path / "h3_reference_input_snapshots"
+        / payload["reference_snapshot_id"] / "snapshot.json"
+    ).read_text(encoding="utf-8"))
+    assert descriptor["references"] == []
+    assert descriptor["reference_revision"] == 0
+    assert descriptor["reference_limit"] == 0
+    assert descriptor["frames"]
 
 
 def test_video_generate_rejects_stale_plan_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1513,6 +1526,7 @@ def test_video_generate_rejects_unsupported_registered_mode(monkeypatch, tmp_pat
 def test_video_generate_accepts_auto_outside_transport_modes(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1556,6 +1570,7 @@ def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_p
 def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1570,7 +1585,11 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     payload = backend.calls[0][1]["payload"]
     assert backend.calls[0][1]["task_type"] == "narrative_group_video"
     assert backend.calls[0][1]["queue_kind"] == "video"
-    assert payload == {
+    assert {
+        key: value
+        for key, value in payload.items()
+        if key not in {"reference_snapshot_id", "reference_snapshot_digest"}
+    } == {
         "episode": 1,
         "group_id": "ng-01",
         "revision": 1,
@@ -1581,11 +1600,14 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "workflow_parameters": {"resolution": "720p"},
         "settings_revision": 0,
     }
+    assert len(payload["reference_snapshot_id"]) == 32
+    assert len(payload["reference_snapshot_digest"]) == 64
 
 
 def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
 
     request = {
@@ -1609,6 +1631,7 @@ def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypa
 def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     video = tmp_path / "videos" / "prior.mp4"
     manifest = tmp_path / "videos" / "prior.manifest.json"
     stems = [tmp_path / "videos" / name for name in ("original.wav", "dialogue.wav", "ambience.wav")]
@@ -1625,6 +1648,9 @@ def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_
     before = sidecar_path(tmp_path, 1).read_bytes()
     failing = FailingBackend()
     monkeypatch.setattr(narrative_groups, "get_task_backend", lambda: failing)
+    monkeypatch.setattr(
+        narrative_groups, "_reference_enqueue_ownership", lambda **_kwargs: "unowned"
+    )
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",

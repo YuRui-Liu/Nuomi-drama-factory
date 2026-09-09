@@ -1947,6 +1947,21 @@ async def _execute_inner(
         getattr(reference_policy, "required", False)
         or workflow.adapter_key == "minimax-h3-ref"
     )
+    h3_input_snapshot_required = workflow.adapter_key in {
+        "minimax-h3",
+        "minimax-h3-ref",
+    }
+    if h3_input_snapshot_required:
+        reference_snapshot_id = str(
+            payload.get("reference_snapshot_id") or ""
+        ).strip()
+        reference_snapshot_digest = str(
+            payload.get("reference_snapshot_digest") or ""
+        ).strip()
+        if re.fullmatch(r"[0-9a-f]{32}", reference_snapshot_id) is None:
+            raise ValueError("queued H3 input snapshot ID is required")
+        if re.fullmatch(r"[0-9a-f]{64}", reference_snapshot_digest) is None:
+            raise ValueError("queued H3 input snapshot digest is required")
     if reference_required:
         contract_version = payload.get("reference_contract_version")
         if isinstance(contract_version, bool) or contract_version != 1:
@@ -1961,10 +1976,6 @@ async def _execute_inner(
         provider_workflow_id = str(payload.get("provider_workflow_id") or "").strip()
         if not provider_workflow_id:
             raise ValueError("provider_workflow_id is required")
-        reference_snapshot_id = str(payload.get("reference_snapshot_id") or "").strip()
-        reference_snapshot_digest = str(
-            payload.get("reference_snapshot_digest") or ""
-        ).strip()
         requested_reference_revision = payload.get("reference_revision")
         reference_revision = materialized_group.video_reference_settings.revision
         if (
@@ -2041,7 +2052,7 @@ async def _execute_inner(
                 "group_id": group_id, "revision": revision,
             }
             return result
-        if reference_required:
+        if h3_input_snapshot_required:
             frame_sources = tuple(
                 str(source)
                 for segment in raw_segments
@@ -2054,13 +2065,26 @@ async def _execute_inner(
                 expected_digest=reference_snapshot_digest,
                 frame_sources=frame_sources,
             )
-            if (
-                input_snapshot.reference_revision != reference_revision
-                or input_snapshot.reference_limit != reference_limit
-                or input_snapshot.provider_workflow_id != provider_workflow_id
+            if reference_required:
+                if (
+                    input_snapshot.reference_revision != reference_revision
+                    or input_snapshot.reference_limit != reference_limit
+                    or input_snapshot.provider_workflow_id != provider_workflow_id
+                    or input_snapshot.digest != reference_snapshot_digest
+                ):
+                    raise ValueError(
+                        "queued H3 reference snapshot contract does not match payload"
+                    )
+            elif (
+                input_snapshot.reference_revision != 0
+                or input_snapshot.reference_limit != 0
+                or input_snapshot.provider_workflow_id != workflow.id
+                or input_snapshot.references
                 or input_snapshot.digest != reference_snapshot_digest
             ):
-                raise ValueError("queued H3 reference snapshot contract does not match payload")
+                raise ValueError(
+                    "queued H3 frame-only snapshot contract does not match payload"
+                )
             global_references = input_snapshot.references
             frozen_frames = input_snapshot.frames
             reference_manifest_fields["global_references"] = (
@@ -2405,8 +2429,8 @@ async def _execute_inner(
             project_dir, episode, group_id, revision, plan_revision
         )
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
-        if global_references and frozen_frames is None:
-            raise ValueError("queued H3 reference frame snapshot is required")
+        if h3_input_snapshot_required and frozen_frames is None:
+            raise ValueError("queued H3 frame snapshot is required")
         evidenced_entries = _entries_with_evidence(
             timeline.entries, evidence_by_segment, default_status="submitted"
         )

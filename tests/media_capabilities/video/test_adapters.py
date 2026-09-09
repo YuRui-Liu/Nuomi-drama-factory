@@ -59,11 +59,13 @@ def test_h3_adapter_delegates_to_injected_director_generator():
         duration_seconds=5,
         first_frame="first.png",
     )
+    frozen_frames = {"first.png": object()}
     request = NarrativeGroupVideoRequest(
             segments=(segment,),
             output_path="result.mp4",
             aspect_ratio="9:16",
             resolution="1080p",
+            frozen_frames=frozen_frames,
     )
 
     result = asyncio.run(
@@ -90,6 +92,7 @@ def test_h3_adapter_delegates_to_injected_director_generator():
                 "output_path": "result.mp4",
                 "aspect_ratio": "9:16",
                 "resolution": "1080p",
+                "frozen_frames": request.frozen_frames,
             },
         )
     ]

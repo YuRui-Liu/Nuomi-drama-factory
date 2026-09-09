@@ -1865,6 +1865,10 @@ async def _enqueue_group_video(
     reference_snapshot_id: str | None = None
     resolved_references = ()
     reference_segments = ()
+    h3_input_snapshot_required = workflow.adapter_key in {
+        "minimax-h3",
+        "minimax-h3-ref",
+    }
     if workflow.reference_policy.required:
         reference_revision = source_group.video_reference_settings.revision
         provider_workflow_id = str(workflow.provider_workflow_id or "").strip()
@@ -1930,6 +1934,46 @@ async def _enqueue_group_video(
                         raise ValueError("rendered video frame path is unsafe")
         except (IndexError, OSError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if h3_input_snapshot_required and not reference_segments:
+        try:
+            from novelvideo.task_backend.runners.narrative_group_video import (
+                _build_segments,
+            )
+
+            render = source_group.stages["render"]
+            segments = _build_segments(
+                {"mode": request.mode},
+                generation_beats_for_group(
+                    resolved.project_dir, episode, group_id, beats
+                ),
+                {
+                    "beat_ids": list(source_group.beat_ids),
+                    "cell_assets": list(render.cell_assets),
+                    "video_plan": source_group.video_plan.to_dict(),
+                },
+            )
+            if segment_id:
+                segment_ids = [
+                    str(item.get("id")) for item in source_group.video_segments
+                ]
+                segments = [segments[segment_ids.index(segment_id)]]
+            reference_segments = tuple(segments)
+            for segment in segments:
+                if request.mode == "fl2va" and not segment.last_frame:
+                    raise ValueError(
+                        "MiniMax H3 fl2va mode requires a last frame"
+                    )
+                for frame_path in (segment.first_frame, segment.last_frame):
+                    if not frame_path:
+                        continue
+                    if not Path(str(frame_path)).is_file():
+                        raise ValueError("rendered video frame is unavailable")
+                    if not _asset_url(
+                        project, resolved.project_dir, str(frame_path)
+                    ):
+                        raise ValueError("rendered video frame path is unsafe")
+        except (IndexError, OSError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         project_defaults = _project_video_workflow_defaults(resolved, workflow)
         parameter_overrides = dict(settings.overrides)
@@ -1968,7 +2012,7 @@ async def _enqueue_group_video(
     }
     if segment_id:
         payload["segment_id"] = segment_id
-    if reference_revision is not None:
+    if h3_input_snapshot_required:
         try:
             frozen_frames = freeze_h3_reference_frames(
                 reference_segments,
@@ -1978,9 +2022,14 @@ async def _enqueue_group_video(
                 state_root=resolved.ctx.state_dir,
                 references=resolved_references,
                 frames=frozen_frames,
-                reference_revision=group.video_reference_settings.revision,
-                reference_limit=int(reference_limit),
-                provider_workflow_id=str(provider_workflow_id),
+                reference_revision=(
+                    group.video_reference_settings.revision
+                    if reference_revision is not None else 0
+                ),
+                reference_limit=(
+                    int(reference_limit) if reference_limit is not None else 0
+                ),
+                provider_workflow_id=str(provider_workflow_id or workflow.id),
             )
             reference_snapshot_id = persisted_snapshot.snapshot_id
         except (OSError, TypeError, ValueError) as exc:
@@ -1993,13 +2042,16 @@ async def _enqueue_group_video(
             restore_video_reservation(resolved.project_dir, episode, reservation)
             raise
         payload.update({
-            "reference_contract_version": 1,
-            "reference_revision": group.video_reference_settings.revision,
-            "provider_workflow_id": provider_workflow_id,
-            "reference_limit": reference_limit,
             "reference_snapshot_id": reference_snapshot_id,
             "reference_snapshot_digest": persisted_snapshot.digest,
         })
+        if reference_revision is not None:
+            payload.update({
+                "reference_contract_version": 1,
+                "reference_revision": group.video_reference_settings.revision,
+                "provider_workflow_id": provider_workflow_id,
+                "reference_limit": reference_limit,
+            })
     try:
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",

@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
 from novelvideo.media_capabilities.models import (
@@ -309,6 +310,7 @@ async def generate_h3_director_video(
     output_path: str,
     aspect_ratio: str = "9:16",
     resolution: str | None = None,
+    frozen_frames=None,
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> H3GenerationResult:
     """Submit all logical shots as one MiniMax H3 director workflow task."""
@@ -322,7 +324,8 @@ async def generate_h3_director_video(
     from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline, UploadedReference
     from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 
-    timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+    normalized_segments = tuple(segments)
+    timeline = build_h3_timeline_data(normalized_segments, strict_first_frame=True)
     for entry in timeline.entries:
         segment_mode = H3Mode.FL2VA if entry.segment.last_frame else H3Mode.I2VA
         inspect_h3_prompt(
@@ -352,9 +355,23 @@ async def generate_h3_director_video(
         runtime.account.queue_limit,
     )
     output_settings = _director_output_settings(aspect_ratio, resolution)
-    client = runtime.create_client()
+    client = None
+    selected_frozen_frames = None
+    staging = None
 
     async def upload(source: str) -> UploadedReference:
+        assert client is not None
+        if selected_frozen_frames is not None:
+            frame = selected_frozen_frames[source]
+            assert staging is not None
+            staged = staging / (
+                hashlib.sha256(source.encode("utf-8")).hexdigest() + frame.suffix
+            )
+            staged.write_bytes(frame.content)
+            staged.chmod(0o600)
+            return UploadedReference(
+                url=await client.upload(staged), sha256=frame.sha256
+            )
         path = Path(source)
         digest = await asyncio.to_thread(lambda: hashlib.sha256(path.read_bytes()).hexdigest())
         return UploadedReference(url=await client.upload(path), sha256=digest)
@@ -363,6 +380,18 @@ async def generate_h3_director_video(
         return await _probe_video(artifact_root / artifact.local_path)
 
     try:
+        if frozen_frames is not None:
+            from novelvideo.media_capabilities.video.h3_reference_runtime import (
+                _selected_frozen_frames,
+            )
+
+            selected_frozen_frames = _selected_frozen_frames(
+                normalized_segments, frozen_frames
+            )
+            staging = runtime_root / "staging" / uuid4().hex
+            staging.mkdir(parents=True, exist_ok=False, mode=0o700)
+            staging.chmod(0o700)
+        client = runtime.create_client()
         pipeline = H3VideoPipeline(
             store=task_store,
             executor=RunningHubExecutor(task_store, client, artifacts, concurrency),
@@ -379,15 +408,27 @@ async def generate_h3_director_video(
             for source in (entry.segment.first_frame, entry.segment.last_frame):
                 if source and source not in uploaded_frames:
                     uploaded_frames[source] = await upload(source)
-                    from PIL import Image
+                    if selected_frozen_frames is not None:
+                        frozen = selected_frozen_frames[source]
+                        width, height = frozen.width, frozen.height
+                    else:
+                        from PIL import Image
 
-                    with Image.open(source) as frame:
-                        width, height = frame.size
+                        with Image.open(source) as frame:
+                            width, height = frame.size
                     uploaded_frame_payloads[source] = {
                         "imageFile": uploaded_frames[source].url,
                         "width": width,
                         "height": height,
                     }
+        last_source = next(
+            (
+                entry.segment.last_frame
+                for entry in reversed(timeline.entries)
+                if entry.segment.last_frame
+            ),
+            None,
+        )
         request = VideoGenerationRequest(
             capability=(
                 MediaCapability.VIDEO_FL2VA
@@ -396,14 +437,18 @@ async def generate_h3_director_video(
             ),
             prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
             duration=timeline.duration_seconds,
-            first_frame=timeline.entries[0].segment.first_frame,
-            last_frame=next(
-                (
-                    entry.segment.last_frame
-                    for entry in reversed(timeline.entries)
-                    if entry.segment.last_frame
-                ),
-                None,
+            first_frame=(
+                "sha256:"
+                + selected_frozen_frames[
+                    timeline.entries[0].segment.first_frame
+                ].sha256
+                if selected_frozen_frames is not None
+                else timeline.entries[0].segment.first_frame
+            ),
+            last_frame=(
+                "sha256:" + selected_frozen_frames[last_source].sha256
+                if selected_frozen_frames is not None and last_source is not None
+                else last_source
             ),
             aspect_ratio=aspect_ratio,
             resolution=f"{output_settings['width']}x{output_settings['height']}",
@@ -477,7 +522,12 @@ async def generate_h3_director_video(
             ),
         )
     finally:
-        await client.close()
+        try:
+            if client is not None:
+                await client.close()
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
 
 
 __all__ = [

@@ -470,6 +470,124 @@ def test_reference_input_snapshot_store_round_trips_without_source_paths(
     ) is False
 
 
+def test_frame_only_input_snapshot_round_trips_after_source_is_removed(
+    tmp_path: Path,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    project = tmp_path / "project"
+    state = tmp_path / "state"
+    project.mkdir()
+    first = project / "first.png"
+    last = project / "last.png"
+    Image.new("RGB", (4, 5), "green").save(first)
+    Image.new("RGB", (4, 5), "blue").save(last)
+    segment = H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="one", duration_seconds=2,
+        first_frame=str(first), last_frame=str(last),
+    )
+    frames = runtime.freeze_h3_reference_frames((segment,), project_root=project)
+    persisted = runtime.persist_h3_reference_input_snapshot(
+        state_root=state,
+        references=(),
+        frames=frames,
+        reference_revision=0,
+        reference_limit=0,
+        provider_workflow_id="runninghub:minimax-h3",
+    )
+    first.unlink()
+    last.unlink()
+
+    loaded = runtime.load_h3_reference_input_snapshot(
+        state_root=state,
+        snapshot_id=persisted.snapshot_id,
+        expected_digest=persisted.digest,
+        frame_sources=(str(first), str(last)),
+    )
+
+    assert loaded.references == ()
+    assert loaded.reference_revision == 0
+    assert loaded.reference_limit == 0
+    assert loaded.provider_workflow_id == "runninghub:minimax-h3"
+    assert loaded.frames[str(first)].content == frames[str(first)].content
+    assert loaded.frames[str(last)].sha256 == frames[str(last)].sha256
+
+
+@pytest.mark.parametrize(
+    ("reference_revision", "reference_limit"),
+    [(1, 0), (0, 1)],
+)
+def test_frame_only_input_snapshot_rejects_non_sentinel_reference_contract(
+    tmp_path: Path, reference_revision: int, reference_limit: int,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    with pytest.raises(ValueError, match="frame-only"):
+        runtime.persist_h3_reference_input_snapshot(
+            state_root=tmp_path,
+            references=(),
+            frames={},
+            reference_revision=reference_revision,
+            reference_limit=reference_limit,
+            provider_workflow_id="runninghub:minimax-h3",
+        )
+
+
+@pytest.mark.parametrize(
+    ("reference_revision", "reference_limit", "message"),
+    [(False, 0, "revision"), (0, False, "limit")],
+)
+def test_frame_only_input_snapshot_rejects_boolean_sentinels(
+    tmp_path: Path, reference_revision, reference_limit, message: str,
+) -> None:
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    with pytest.raises(ValueError, match=message):
+        runtime.persist_h3_reference_input_snapshot(
+            state_root=tmp_path,
+            references=(),
+            frames={},
+            reference_revision=reference_revision,
+            reference_limit=reference_limit,
+            provider_workflow_id="runninghub:minimax-h3",
+        )
+
+
+def test_frame_only_input_snapshot_load_rejects_boolean_sentinel(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from novelvideo.media_capabilities.video import h3_reference_runtime as runtime
+
+    persisted = runtime.persist_h3_reference_input_snapshot(
+        state_root=tmp_path,
+        references=(),
+        frames={},
+        reference_revision=0,
+        reference_limit=0,
+        provider_workflow_id="runninghub:minimax-h3",
+    )
+    descriptor_path = (
+        tmp_path / "h3_reference_input_snapshots" / persisted.snapshot_id
+        / "snapshot.json"
+    )
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["reference_limit"] = False
+    raw = json.dumps(
+        descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    descriptor_path.write_bytes(raw)
+
+    with pytest.raises(ValueError, match="limit"):
+        runtime.load_h3_reference_input_snapshot(
+            state_root=tmp_path,
+            snapshot_id=persisted.snapshot_id,
+            expected_digest=hashlib.sha256(raw).hexdigest(),
+            frame_sources=(),
+        )
+
+
 def test_failed_attempt_can_retry_from_snapshot_after_sources_are_removed(
     tmp_path: Path,
 ) -> None:

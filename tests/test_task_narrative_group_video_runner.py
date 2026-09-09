@@ -13,10 +13,33 @@ class _JsonEvidence:
         return self.payload
 
 
-def _optimizer_result(prompt: str):
+def _optimizer_result(prompt: str, *, segment=None):
+    if segment is not None:
+        from novelvideo.media_capabilities.video.h3_wire import (
+            H3BaseWire,
+            compile_h3_wire,
+        )
+        from novelvideo.media_capabilities.video.models import H3Mode
+
+        mode = H3Mode.FL2VA if segment.last_frame else H3Mode.I2VA
+        prompt = compile_h3_wire(H3BaseWire(
+            mode=mode,
+            duration_seconds=segment.duration_seconds,
+            integrated_multimodal_description=f"[Shot 1] {prompt}",
+            overall_soundscape="Quiet room tone.",
+            non_diegetic_music="N/A",
+        ))
     return SimpleNamespace(
         prompt=prompt,
-        plan=_JsonEvidence({"mode": "i2va", "total_frames": 120, "shots": []}),
+        plan=_JsonEvidence({
+            "mode": (
+                "fl2va" if segment is not None and segment.last_frame else "i2va"
+            ),
+            "total_frames": (
+                round(segment.duration_seconds * 24) if segment is not None else 120
+            ),
+            "shots": [],
+        }),
         quality_report=_JsonEvidence({"passed": True, "issues": [], "version": 1}),
         prompt_profile_id="minimax-h3-director",
         prompt_profile_version=4,
@@ -155,7 +178,7 @@ def _patch_test_workflow(monkeypatch, module):
         "_workflow_definition_for_payload",
         lambda _payload: SimpleNamespace(
             id="test-minimax-h3",
-            adapter_key="minimax-h3",
+            adapter_key="test-minimax-h3",
             provider="minimax",
             supported_modes=("i2va", "fl2va"),
         ),
@@ -625,6 +648,7 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
     from novelvideo.media_capabilities.video.h3_wire import (
         H3ReferenceWire,
         H3RetentionItem,
+        compile_h3_wire,
     )
     from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 
@@ -644,7 +668,7 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
             subject="<Subject 1> (appears in [Shot 1])",
             retain="fully_preserved - identity and proportions",
         ),),
-        detailed_description="[Shot 1] [0-5s] 阿明走近。",
+        detailed_description="[Shot 1] [0-5s] <Subject 1> 阿明走近。",
         overall_soundscape="安静室内环境声。",
         non_diegetic_music="N/A",
     )
@@ -656,18 +680,19 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
             actual_output={"width": 736, "height": 1280},
         )
 
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="s1", beat_number=1, prompt=compile_h3_wire(wire),
+            duration_seconds=5,
+            first_frame="first.png",
+        ),),
+        output_path="out.mp4", aspect_ratio="9:16", mode="i2va",
+        reference_revision=2, global_references=(reference,), reference_limit=5,
+        provider_workflow_id="2096502793044582401",
+        reference_wire=wire,
+    )
     result = await H3ReferenceWorkflowAdapter(generator=generate).generate_narrative_group(
-        object(),
-        NarrativeGroupVideoRequest(
-            segments=(H3DirectorSegment(
-                segment_id="s1", beat_number=1, prompt="走近", duration_seconds=2,
-                first_frame="first.png",
-            ),),
-            output_path="out.mp4", aspect_ratio="9:16", mode="i2va",
-            reference_revision=2, global_references=(reference,), reference_limit=5,
-            provider_workflow_id="2096502793044582401",
-            reference_wire=wire,
-        ),
+        object(), request,
     )
 
     assert captured["global_references"] is not None
@@ -677,6 +702,18 @@ async def test_reference_adapter_forwards_frozen_arguments_and_reports_workflow(
     assert captured["mode"] == "i2va"
     assert captured["wire"] is wire
     assert result.provider_parameters["workflowId"] == "2096502793044582401"
+    assert result.actual_mode == "ref2va"
+    assert result.provider_parameters["transport_mode"] == "i2va"
+
+    async def invalid_transport(_ctx, **_kwargs):
+        return SimpleNamespace(
+            output_path="out.mp4", provider_task_id="task-2", actual_mode="ref2va",
+        )
+
+    with pytest.raises(ValueError, match="transport mode"):
+        await H3ReferenceWorkflowAdapter(
+            generator=invalid_transport
+        ).generate_narrative_group(object(), request)
 
 
 @pytest.mark.asyncio
@@ -965,7 +1002,7 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
             subject="<Subject 1> (appears in [Shot 1])",
             retain="fully_preserved - identity and proportions",
         ),),
-        detailed_description="[Shot 1] [0-4s] 阿明走近。",
+        detailed_description="[Shot 1] [0-4s] <Subject 1> 阿明走近。",
         overall_soundscape="安静的环境声。",
         non_diegetic_music="N/A",
     )
@@ -1415,6 +1452,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     _seed_group(tmp_path)
     submitted = []
     optimization_contexts = []
+    optimized_prompts = []
     active = 0
     max_active = 0
 
@@ -1426,7 +1464,11 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
             optimization_contexts.append((segment.segment_id, context, mode))
             await asyncio.sleep(0)
             active -= 1
-            return _optimizer_result(f"优化：{segment.segment_id}")
+            result = _optimizer_result(
+                f"优化：{segment.segment_id}", segment=segment
+            )
+            optimized_prompts.append(result.prompt)
+            return result
 
     async def get_beats(_ctx, _episode):
         return [
@@ -1462,9 +1504,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     assert len(submitted) == 2
     submitted_segments = [segment for call in submitted for segment in call[1]]
     assert [segment.segment_id for segment in submitted_segments] == ["beat-1", "beat-2"]
-    assert [segment.prompt for segment in submitted_segments] == [
-        "优化：beat-1", "优化：beat-2"
-    ]
+    assert [segment.prompt for segment in submitted_segments] == optimized_prompts
     assert [item[0] for item in optimization_contexts] == ["beat-1", "beat-2"]
     assert max_active == 2
     assert optimization_contexts[0][1].first_frame_sha256
@@ -1479,9 +1519,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
     )
 
     manifest = load_h3_director_manifest(state.manifest_asset)
-    assert [entry.segment.prompt for entry in manifest.entries] == [
-        "优化：beat-1", "优化：beat-2"
-    ]
+    assert [entry.segment.prompt for entry in manifest.entries] == optimized_prompts
     assert manifest.entries[0].prompt_profile == {
         "id": "minimax-h3-director",
         "version": H3_PROMPT_PROFILE_VERSION,
@@ -1509,7 +1547,7 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
         "quality_report": manifest.entries[0].quality_report,
     }
     assert len(manifest.entries[0].input_summary["frozen_input_hash"]) == 64
-    assert manifest.entries[0].input_summary["final_wire"] == "优化：beat-1"
+    assert manifest.entries[0].input_summary["final_wire"] == optimized_prompts[0]
 
 
 def test_group_video_optimizer_connection_failure_fails_before_transport(tmp_path, monkeypatch):
@@ -1646,10 +1684,15 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
 
     _seed_group(tmp_path)
     observed = []
+    optimized_prompts = []
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            result = _optimizer_result(
+                f"final:{segment.segment_id}", segment=segment
+            )
+            optimized_prompts.append(result.prompt)
+            return result
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
@@ -1660,9 +1703,9 @@ def test_group_video_saves_submission_before_transport_and_keeps_it_on_failure(
         observed.append(submission)
         assert submission.status == "submitted"
         assert all(entry.status == "submitted" for entry in submission.entries)
-        assert [entry.segment.prompt for entry in submission.entries] == [
-            "final:beat-1", "final:beat-2"
-        ]
+        assert [entry.segment.prompt for entry in submission.entries] == (
+            optimized_prompts
+        )
         raise RuntimeError("transport exploded")
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
@@ -1703,7 +1746,7 @@ def test_group_video_poll_failure_keeps_provider_task_id_in_manifest(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
@@ -1754,7 +1797,7 @@ def test_group_video_provider_submission_is_scoped_to_current_segment(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -1834,7 +1877,7 @@ def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -1916,7 +1959,7 @@ def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
         async def optimize_segment(self, segment, *_args):
             nonlocal optimizer_calls
             optimizer_calls += 1
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -2237,7 +2280,7 @@ def test_manifest_persistence_failure_is_not_recorded_as_transport_failure(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -2314,7 +2357,7 @@ def test_group_video_updates_generated_evidence_before_postprocess(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(f"final:{segment.segment_id}")
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
@@ -2370,7 +2413,7 @@ def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(segment.prompt)
+            return _optimizer_result(segment.prompt, segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
@@ -2411,7 +2454,7 @@ def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(segment.prompt)
+            return _optimizer_result(segment.prompt, segment=segment)
 
     async def get_beats(_ctx, _episode):
         return [
@@ -2458,7 +2501,7 @@ def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
 
     class Optimizer:
         async def optimize_segment(self, segment, *_args):
-            return _optimizer_result(segment.prompt)
+            return _optimizer_result(segment.prompt, segment=segment)
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
@@ -2587,7 +2630,9 @@ def test_group_video_generates_when_production_notes_have_rendered_frames(tmp_pa
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     class Optimizer:
         async def optimize_segment(self, segment, _context, _mode):
-            return _optimizer_result(f"优化：{segment.segment_id}")
+            return _optimizer_result(
+                f"优化：{segment.segment_id}", segment=segment
+            )
 
     submitted = []
 
@@ -2843,8 +2888,9 @@ def test_execute_maps_pair_to_synthetic_canonical_beat_for_optimizer(
     async def optimize(segments, beats, **kwargs):
         captured.extend(beats)
         evidence = kwargs["evidence_by_segment"]
+        optimized = []
         for segment in segments:
-            result = _optimizer_result(segment.prompt)
+            result = _optimizer_result(segment.prompt, segment=segment)
             evidence[segment.segment_id] = {
                 "director_plan": result.plan.model_dump(mode="json"),
                 "prompt_profile": {
@@ -2861,7 +2907,8 @@ def test_execute_maps_pair_to_synthetic_canonical_beat_for_optimizer(
                     "last_frame_sha256": "b" * 64 if segment.last_frame else None,
                 },
             }
-        return segments
+            optimized.append(segment.model_copy(update={"prompt": result.prompt}))
+        return optimized
 
     async def generate(_ctx, *, output_path, **_kwargs):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -2949,7 +2996,7 @@ def test_pair_optimizer_context_contains_start_and_target_director_context(
     class Optimizer:
         async def optimize_segment(self, current, context, _mode):
             captured.append(json.loads(context.director_context))
-            return _optimizer_result(current.prompt)
+            return _optimizer_result(current.prompt, segment=current)
 
     _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
     monkeypatch.setattr(

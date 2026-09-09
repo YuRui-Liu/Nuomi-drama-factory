@@ -83,6 +83,7 @@ class H3DirectorGenerator(Protocol):
         output_path: str,
         aspect_ratio: str,
         resolution: str | None,
+        frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
 
@@ -174,6 +175,7 @@ class H3WorkflowAdapter:
             "output_path": request.output_path,
             "aspect_ratio": request.aspect_ratio,
             "resolution": setting.resolution,
+            "frozen_frames": request.frozen_frames,
         }
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
@@ -262,6 +264,9 @@ class H3ReferenceWorkflowAdapter:
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
         generated = await self._generator(ctx, **kwargs)
+        transport_mode = str(generated.actual_mode)
+        if transport_mode not in {H3Mode.I2VA.value, H3Mode.FL2VA.value}:
+            raise ValueError("H3 reference provider returned an invalid transport mode")
         return NarrativeGroupVideoResult(
             output_path=str(generated.output_path),
             provider_task_id=(
@@ -269,9 +274,10 @@ class H3ReferenceWorkflowAdapter:
                 if generated.provider_task_id is not None
                 else None
             ),
-            actual_mode=str(generated.actual_mode),
+            actual_mode=H3Mode.REF2VA.value,
             provider_parameters={
                 "workflowId": request.provider_workflow_id,
+                "transport_mode": transport_mode,
                 "megapixels": setting.megapixels,
                 "multiple": setting.multiple,
                 "width": setting.width,
