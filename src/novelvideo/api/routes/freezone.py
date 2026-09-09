@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import (
     get_media_capability_store,
-    get_media_credential_store,
+    get_media_credential_resolver,
     make_cognee_store_for_context,
     make_sqlite_store,
     make_sqlite_store_for_context,
@@ -6550,14 +6550,10 @@ async def freezone_image_models(
     project: str,
     user: dict = Depends(get_api_user),
     store: MediaCapabilityStore = Depends(get_media_capability_store),
-    credentials: Any = Depends(get_media_credential_store),
+    resolver: CredentialResolver = Depends(get_media_credential_resolver),
 ):
     """图片处理：返回和 NovelVideo 图片模型下拉一致的可见模型。"""
     await _resolve_freezone_project(project, user, required_role="viewer")
-    resolver = CredentialResolver(
-        keyring_reader=credentials.get,
-        secret_reader=credentials.get,
-    )
     data = [
         {
             "id": item.id,

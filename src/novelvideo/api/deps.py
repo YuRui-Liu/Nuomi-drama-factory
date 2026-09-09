@@ -57,7 +57,10 @@ def get_media_credential_resolver():
     from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 
     credential_store = get_media_credential_store()
-    return CredentialResolver(keyring_reader=credential_store.get)
+    return CredentialResolver(
+        keyring_reader=credential_store.get,
+        secret_reader=credential_store.get,
+    )
 
 
 def get_production_store():

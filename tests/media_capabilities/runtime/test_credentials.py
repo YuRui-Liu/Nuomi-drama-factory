@@ -161,3 +161,29 @@ def test_resolver_repr_does_not_include_environment_values() -> None:
     resolver = CredentialResolver(env={"RUNNINGHUB_KEY": secret})
 
     assert secret not in repr(resolver)
+
+
+def test_api_credential_resolver_supports_keyring_and_secret_store_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.api import deps
+
+    values = {
+        "media/keyring-provider": "keyring-value",
+        "media/secret-provider": "secret-value",
+    }
+
+    class FakeCredentialStore:
+        def get(self, reference: str) -> str | None:
+            return values.get(reference)
+
+    monkeypatch.setattr(
+        deps,
+        "get_media_credential_store",
+        lambda: FakeCredentialStore(),
+    )
+
+    resolver = deps.get_media_credential_resolver()
+
+    assert resolver.resolve("keyring://media/keyring-provider") == "keyring-value"
+    assert resolver.resolve("secret://media/secret-provider") == "secret-value"

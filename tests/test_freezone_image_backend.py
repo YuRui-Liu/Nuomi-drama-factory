@@ -40,7 +40,6 @@ from novelvideo.freezone.skill_registry import (
     get_skill,
     list_skills,
 )
-from novelvideo.media_capabilities.image.catalog import list_image_models
 from novelvideo.media_capabilities.models import ProviderAccount
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
@@ -5758,22 +5757,34 @@ def test_freezone_image_models_returns_executable_catalog_without_secrets(
             return "test-only-secret" if reference == "grsai-main" else None
 
     credentials = FakeCredentialStore()
+    resolver = CredentialResolver(
+        keyring_reader=credentials.get,
+        secret_reader=credentials.get,
+    )
     expected = [
         {
-            "id": item.id,
-            "providerId": item.provider_id,
-            "provider": item.provider,
-            "apiModel": item.id,
-            "api_model": item.id,
-            "label": item.label,
+            "id": model_id,
+            "providerId": "grsai-main",
+            "provider": "grsai",
+            "apiModel": model_id,
+            "api_model": model_id,
+            "label": model_id,
         }
-        for item in list_image_models(
-            store,
-            CredentialResolver(
-                keyring_reader=credentials.get,
-                secret_reader=credentials.get,
-            ),
-        )
+        for model_id in [
+            "nano-banana-2",
+            "gpt-image-2",
+            "gpt-image-2-vip",
+            "nano-banana",
+            "nano-banana-2-2k-cl",
+            "nano-banana-2-4k-cl",
+            "nano-banana-2-cl",
+            "nano-banana-fast",
+            "nano-banana-pro",
+            "nano-banana-pro-4k-vip",
+            "nano-banana-pro-cl",
+            "nano-banana-pro-vip",
+            "nano-banana-pro-vt",
+        ]
     ]
 
     app = FastAPI()
@@ -5782,8 +5793,8 @@ def test_freezone_image_models_returns_executable_catalog_without_secrets(
         "username": "admin"
     }
     app.dependency_overrides[freezone_routes.get_media_capability_store] = lambda: store
-    app.dependency_overrides[freezone_routes.get_media_credential_store] = (
-        lambda: credentials
+    app.dependency_overrides[freezone_routes.get_media_credential_resolver] = (
+        lambda: resolver
     )
 
     response = TestClient(app).get("/api/v1/projects/58/freezone/image/models")
@@ -5824,14 +5835,20 @@ def test_freezone_image_models_returns_empty_when_catalog_is_not_executable(
         def get(self, reference: str) -> str | None:
             return credentials.get(reference)
 
+    credential_store = FakeCredentialStore()
+    resolver = CredentialResolver(
+        keyring_reader=credential_store.get,
+        secret_reader=credential_store.get,
+    )
+
     app = FastAPI()
     app.include_router(freezone_routes.router, prefix="/api/v1")
     app.dependency_overrides[freezone_routes.get_api_user] = lambda: {
         "username": "admin"
     }
     app.dependency_overrides[freezone_routes.get_media_capability_store] = lambda: store
-    app.dependency_overrides[freezone_routes.get_media_credential_store] = (
-        FakeCredentialStore
+    app.dependency_overrides[freezone_routes.get_media_credential_resolver] = (
+        lambda: resolver
     )
 
     response = TestClient(app).get("/api/v1/projects/58/freezone/image/models")
