@@ -301,6 +301,17 @@ def _explicitly_missing_image(entity: Any, *, identity: bool = False) -> bool:
     )
 
 
+def _scene_reference_available(
+    scene: Any,
+    *,
+    slot_id: str,
+    available_scene_reference_slots: frozenset[str] | None,
+) -> bool:
+    if available_scene_reference_slots is not None:
+        return slot_id in available_scene_reference_slots
+    return not _explicitly_missing_image(scene)
+
+
 @dataclass(frozen=True)
 class _ProjectedRequirement:
     kind: AssetKind
@@ -465,6 +476,7 @@ def _binding(
     episode_identity_ids: frozenset[str] = frozenset(),
     identity_default_map: Mapping[str, str] | None = None,
     available_character_portraits: frozenset[str] = frozenset(),
+    available_scene_reference_slots: frozenset[str] | None = None,
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
     resolution = "auto_matched"
@@ -524,7 +536,7 @@ def _binding(
             scene = candidates[0]
             entity_id = _text(_get(scene, "name"))
             label = entity_id
-            status = "missing_image" if _explicitly_missing_image(scene) else "ready"
+            status = "ready"
         elif len(candidates) > 1:
             status = "pending_confirmation"
         if len(candidates) == 1:
@@ -534,6 +546,13 @@ def _binding(
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
+            else:
+                if not _scene_reference_available(
+                    scene,
+                    slot_id=slot_id,
+                    available_scene_reference_slots=available_scene_reference_slots,
+                ):
+                    status = "missing_image"
         else:
             slot_id = ""
     elif requirement.kind == "scene_variant" and requirement.malformed_scene_state:
@@ -546,9 +565,25 @@ def _binding(
             if _text(_get(scene, "base_scene_id")) == base_entity_id
             and _text(_get(scene, "variant_id")) == variant_id
         ]
-        available_candidates = [
-            scene for scene in candidates if not _explicitly_missing_image(scene)
-        ]
+        available_candidates = []
+        for scene in candidates:
+            if available_scene_reference_slots is None:
+                if not _explicitly_missing_image(scene):
+                    available_candidates.append(scene)
+                continue
+            candidate_entity_id = _text(_get(scene, "name"))
+            try:
+                candidate_slot_id = scene_state_slot_id(
+                    base_entity_id, candidate_entity_id, "master"
+                )
+            except ValueError:
+                continue
+            if _scene_reference_available(
+                scene,
+                slot_id=candidate_slot_id,
+                available_scene_reference_slots=available_scene_reference_slots,
+            ):
+                available_candidates.append(scene)
         if len(available_candidates) == 1:
             scene = available_candidates[0]
             entity_id = _text(_get(scene, "name"))
@@ -577,14 +612,24 @@ def _binding(
                 and not _text(_get(scene, "variant_id"))
             ]
             if len(base_candidates) == 1:
-                base_missing_image = _explicitly_missing_image(base_candidates[0])
-                status = "missing_image" if base_missing_image else "ready"
                 try:
                     slot_id = scene_base_slot_id(base_entity_id, "master")
                 except ValueError:
                     slot_id = ""
                     status = "pending_confirmation"
                     invalid_slot = True
+                else:
+                    status = (
+                        "ready"
+                        if _scene_reference_available(
+                            base_candidates[0],
+                            slot_id=slot_id,
+                            available_scene_reference_slots=(
+                                available_scene_reference_slots
+                            ),
+                        )
+                        else "missing_image"
+                    )
             elif len(base_candidates) > 1:
                 status = "pending_confirmation"
                 slot_id = ""
@@ -702,6 +747,7 @@ def bindings_for_director_plan(
     episode_identity_ids: Iterable[str] = (),
     identity_default_map: Mapping[str, str] | None = None,
     available_character_portraits: Iterable[str] = (),
+    available_scene_reference_slots: Iterable[str] | None = None,
 ) -> tuple[PlannedReferenceBinding, ...]:
     """Project current DirectorPlan relationships without I/O or mutation."""
     group_items = _items(groups)
@@ -718,6 +764,15 @@ def bindings_for_director_plan(
         for character_name in available_character_portraits
         if _text(character_name)
     )
+    available_scene_slots = (
+        None
+        if available_scene_reference_slots is None
+        else frozenset(
+            _text(slot_id)
+            for slot_id in available_scene_reference_slots
+            if _text(slot_id)
+        )
+    )
     return _merge_projected_bindings(
         _binding(
             requirement,
@@ -730,6 +785,7 @@ def bindings_for_director_plan(
             episode_identity_ids=selected_identity_ids,
             identity_default_map=default_identity_ids,
             available_character_portraits=available_portraits,
+            available_scene_reference_slots=available_scene_slots,
         )
         for requirement in _requirements(group_items, shot_items)
     )
@@ -796,6 +852,18 @@ def _resolve_binding(
             "asset slot kind is not character_portrait",
             status="missing_asset",
         )
+    if binding.asset_kind == "scene_variant":
+        expected_slot_kind = (
+            "scene_base"
+            if binding.resolution == "explicit_fallback"
+            else "scene_state"
+        )
+        if slot.asset_kind != expected_slot_kind:
+            return _unavailable(
+                binding,
+                f"asset slot kind is not {expected_slot_kind}",
+                status="missing_asset",
+            )
     version_id = str(slot.current_version_id or "")
     version = versions.get(version_id)
     if version is None or version.slot_id != binding.asset_slot_id:

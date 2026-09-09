@@ -18,6 +18,10 @@ from novelvideo.narrative_groups.planned_binding_service import (
 )
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 from novelvideo.production_workflow import ProductionWorkflowStore
+from novelvideo.production_workflow.slot_ids import (
+    scene_base_slot_id,
+    scene_state_slot_id,
+)
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.episode_assets import _episode_asset_bindings
 
@@ -43,7 +47,11 @@ def _binding(kind: str, entity_id: str) -> PlannedReferenceBinding:
     )
 
 
-def _scene_bindings(*requirements: SimpleNamespace, scenes: tuple[object, ...]):
+def _scene_bindings(
+    *requirements: SimpleNamespace,
+    scenes: tuple[object, ...],
+    available_scene_reference_slots: frozenset[str] | None = None,
+):
     shots = tuple(
         SimpleNamespace(
             id=f"shot-{index}",
@@ -63,15 +71,20 @@ def _scene_bindings(*requirements: SimpleNamespace, scenes: tuple[object, ...]):
             for index, shot in enumerate(shots, start=1)
         ),
     )
+    values = {
+        "project_id": "owner/project",
+        "episode_number": 1,
+        "source_plan_revision_id": plan.revision_id,
+        "groups": plan.groups,
+        "shots": shots,
+        "characters": (),
+        "scenes": scenes,
+        "props": (),
+    }
+    if available_scene_reference_slots is not None:
+        values["available_scene_reference_slots"] = available_scene_reference_slots
     return bindings_for_director_plan(
-        project_id="owner/project",
-        episode_number=1,
-        source_plan_revision_id=plan.revision_id,
-        groups=plan.groups,
-        shots=shots,
-        characters=(),
-        scenes=scenes,
-        props=(),
+        **values,
     )
 
 
@@ -408,6 +421,256 @@ async def test_scene_variant_base_fallback_is_selected_in_preview(tmp_path):
     assert resolved.selected_by_default is True
     assert resolved.asset_slot_id == "scene:咖啡馆:base:master"
     assert resolved.version_id == "scene-base-v1"
+
+
+def test_real_novel_scenes_follow_available_workflow_master_slots(tmp_path):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    base = NovelScene(name="咖啡馆")
+    variant = NovelScene(
+        name="雨中咖啡馆", base_scene_id="咖啡馆", variant_id="暴雨版"
+    )
+    base_image = tmp_path / "assets" / "scenes" / "咖啡馆" / "versions" / "base.png"
+    base_image.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(base_image)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=scene_base_slot_id(base.name, "master"),
+        asset_kind="scene_base",
+        version_id="base-v1",
+        asset_path=base_image.relative_to(tmp_path).as_posix(),
+        source_attempt_id="base-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    available = _available_scene_reference_slots(ctx=ctx, scenes=(base, variant))
+    [fallback] = _scene_bindings(
+        _scene_state(),
+        scenes=(base, variant),
+        available_scene_reference_slots=available,
+    )
+
+    assert available == frozenset({scene_base_slot_id(base.name, "master")})
+    assert fallback.entity_id == base.name
+    assert fallback.asset_slot_id == scene_base_slot_id(base.name, "master")
+    assert fallback.resolution == "explicit_fallback"
+
+    variant_image = (
+        tmp_path / "assets" / "scenes" / variant.name / "versions" / "variant.png"
+    )
+    variant_image.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(variant_image)
+    workflow.register_candidate_version(
+        slot_id=scene_state_slot_id(base.name, variant.name, "master"),
+        asset_kind="scene_state",
+        version_id="variant-v1",
+        asset_path=variant_image.relative_to(tmp_path).as_posix(),
+        source_attempt_id="variant-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    available = _available_scene_reference_slots(ctx=ctx, scenes=(base, variant))
+    [direct] = _scene_bindings(
+        _scene_state(),
+        scenes=(base, variant),
+        available_scene_reference_slots=available,
+    )
+
+    assert direct.entity_id == variant.name
+    assert direct.asset_slot_id == scene_state_slot_id(
+        base.name, variant.name, "master"
+    )
+    assert direct.resolution == "auto_matched"
+
+
+def test_scene_slot_availability_materializes_safe_legacy_canonical(tmp_path):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    scene = NovelScene(name="咖啡馆")
+    canonical = tmp_path / "assets" / "scenes" / scene.name / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(scene,),
+    )
+
+    slot_id = scene_base_slot_id(scene.name, "master")
+    assert available == frozenset({slot_id})
+    slot, versions = ProductionWorkflowStore(
+        tmp_path / "state" / "production_workflow.json"
+    ).get_slot(slot_id)
+    assert slot.asset_kind == "scene_base"
+    assert versions[slot.current_version_id].asset_path == canonical.relative_to(
+        tmp_path
+    ).as_posix()
+
+
+def test_scene_slot_availability_rejects_cross_slot_current_version(tmp_path):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    scene = NovelScene(name="咖啡馆")
+    other = NovelScene(name="车站")
+    workflow_path = tmp_path / "state" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(workflow_path)
+    for item, version_id, color in (
+        (scene, "cafe-v1", "red"),
+        (other, "station-v1", "blue"),
+    ):
+        image_path = (
+            tmp_path / "assets" / "scenes" / item.name / "versions" / f"{version_id}.png"
+        )
+        image_path.parent.mkdir(parents=True)
+        Image.new("RGB", (8, 8), color).save(image_path)
+        workflow.register_candidate_version(
+            slot_id=scene_base_slot_id(item.name, "master"),
+            asset_kind="scene_base",
+            version_id=version_id,
+            asset_path=image_path.relative_to(tmp_path).as_posix(),
+            source_attempt_id=f"{version_id}-attempt",
+            qc_passed=True,
+            generation_metadata=None,
+            actor="test",
+            at=datetime.now(UTC),
+        )
+    payload = json.loads(workflow_path.read_text(encoding="utf-8"))
+    cafe_slot = payload["slots"][scene_base_slot_id(scene.name, "master")]
+    cafe_slot["current_version_id"] = "station-v1"
+    cafe_slot["version_ids"].append("station-v1")
+    workflow_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(scene,),
+    )
+
+    assert available == frozenset()
+
+
+def test_scene_slot_availability_does_not_replace_wrong_kind_with_legacy(
+    tmp_path,
+):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    scene = NovelScene(name="咖啡馆")
+    canonical = tmp_path / "assets" / "scenes" / scene.name / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+    slot_id = scene_base_slot_id(scene.name, "master")
+    workflow = ProductionWorkflowStore(
+        tmp_path / "state" / "production_workflow.json"
+    )
+    workflow.register_candidate_version(
+        slot_id=slot_id,
+        asset_kind="scene_state",
+        version_id="wrong-kind-v1",
+        asset_path=canonical.relative_to(tmp_path).as_posix(),
+        source_attempt_id="wrong-kind-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(scene,),
+    )
+
+    assert available == frozenset()
+    slot, _versions = ProductionWorkflowStore(
+        tmp_path / "state" / "production_workflow.json"
+    ).get_slot(slot_id)
+    assert slot.asset_kind == "scene_state"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("binding", "wrong_asset_kind"),
+    [
+        (
+            PlannedReferenceBinding.create(
+                project_id="owner/project",
+                episode_number=1,
+                source_plan_revision_id="director-r2",
+                asset_kind="scene_variant",
+                entity_id="雨中咖啡馆",
+                base_entity_id="咖啡馆",
+                variant_id="暴雨版",
+                asset_slot_id="scene:咖啡馆:state:雨中咖啡馆:master",
+                group_ids=("group-1",),
+                status="ready",
+                resolution="auto_matched",
+                display_label="咖啡馆 / 暴雨版",
+            ),
+            "scene_base",
+        ),
+        (
+            PlannedReferenceBinding.create(
+                project_id="owner/project",
+                episode_number=1,
+                source_plan_revision_id="director-r2",
+                asset_kind="scene_variant",
+                entity_id="咖啡馆",
+                base_entity_id="咖啡馆",
+                variant_id="暴雨版",
+                asset_slot_id="scene:咖啡馆:base:master",
+                group_ids=("group-1",),
+                status="ready",
+                resolution="explicit_fallback",
+                display_label="咖啡馆 / 暴雨版",
+            ),
+            "scene_state",
+        ),
+    ],
+)
+async def test_scene_variant_preview_rejects_incompatible_slot_kind(
+    tmp_path, binding: PlannedReferenceBinding, wrong_asset_kind: str
+):
+    image_path = tmp_path / "assets" / "scenes" / "wrong.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind=wrong_asset_kind,
+        version_id="wrong-v1",
+        asset_path=str(image_path),
+        source_attempt_id="wrong-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        workflow,
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "missing_asset"
+    assert resolved.selected_by_default is False
 
 
 def test_prop_binding_resolves_existing_asset_alias_to_canonical_id():
@@ -995,7 +1258,7 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     assert published_revision_ids == ["director-old"]
     assert activation_finished.is_set()
     assert result["binding_count"] == 1
-    assert result["binding_statuses"] == {"ready": 1}
+    assert result["binding_statuses"] == {"missing_image": 1}
 
 
 @pytest.mark.asyncio

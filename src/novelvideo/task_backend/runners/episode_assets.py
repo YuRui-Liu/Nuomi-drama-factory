@@ -5,13 +5,28 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
+from pathlib import Path
 from typing import Any
 
+from novelvideo.narrative_groups.reference_uploads import (
+    InvalidReferenceUpload,
+    validate_reference_image,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.ports import get_usage_meter
+from novelvideo.production_workflow import (
+    AdoptionStatus,
+    ProductionWorkflowStore,
+    production_workflow_project_lock,
+)
+from novelvideo.production_workflow.slot_ids import (
+    scene_base_slot_id,
+    scene_state_slot_id,
+)
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+from novelvideo.utils.path_resolver import canonical_scene_master_path
 
 _TASK_ASSET_KIND = {
     "episode_scene_planner": "scene",
@@ -43,6 +58,79 @@ def _dump_items(items: list[Any]) -> list[dict]:
     return data
 
 
+def _available_scene_reference_slots(
+    *,
+    ctx: ProjectContext,
+    scenes: tuple[Any, ...] | list[Any],
+) -> frozenset[str]:
+    """Return usable scene master slots, importing safe legacy canonicals once."""
+    root = Path(ctx.output_dir).resolve()
+    state_dir = Path(ctx.state_dir)
+    assets_root = root / "assets"
+    available: set[str] = set()
+    with production_workflow_project_lock(state_dir):
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        for scene in scenes:
+            scene_name = str(getattr(scene, "name", "") or "").strip()
+            base_scene_id = str(
+                getattr(scene, "base_scene_id", "") or ""
+            ).strip()
+            try:
+                if base_scene_id:
+                    slot_id = scene_state_slot_id(
+                        base_scene_id, scene_name, "master"
+                    )
+                    expected_kind = "scene_state"
+                else:
+                    slot_id = scene_base_slot_id(scene_name, "master")
+                    expected_kind = "scene_base"
+                canonical_path = canonical_scene_master_path(root, scene_name)
+            except ValueError:
+                continue
+
+            try:
+                slot, versions = workflow.get_slot(slot_id)
+            except KeyError:
+                try:
+                    validate_reference_image(
+                        canonical_path,
+                        allowed_roots=(assets_root,),
+                        expected_mime="image/png",
+                    )
+                    relative_path = canonical_path.resolve().relative_to(root).as_posix()
+                    slot, current = workflow.materialize_legacy_current(
+                        slot_id=slot_id,
+                        asset_kind=expected_kind,
+                        asset_path=relative_path,
+                    )
+                    versions = {current.version_id: current}
+                except (InvalidReferenceUpload, OSError, RuntimeError, ValueError):
+                    continue
+
+            if slot.asset_kind != expected_kind or not slot.current_version_id:
+                continue
+            current = versions.get(slot.current_version_id)
+            if current is None or current.slot_id != slot_id:
+                continue
+            if current.adoption_status not in {
+                AdoptionStatus.PROVISIONAL,
+                AdoptionStatus.ADOPTED,
+            }:
+                continue
+            current_path = Path(current.asset_path)
+            if not current_path.is_absolute():
+                current_path = root / current_path
+            try:
+                validate_reference_image(
+                    current_path,
+                    allowed_roots=(assets_root,),
+                )
+            except (InvalidReferenceUpload, OSError, ValueError):
+                continue
+            available.add(slot_id)
+    return frozenset(available)
+
+
 def _episode_asset_bindings(
     *,
     asset_kind: str,
@@ -53,6 +141,7 @@ def _episode_asset_bindings(
     characters: tuple[Any, ...] | list[Any],
     scenes: tuple[Any, ...] | list[Any],
     props: tuple[Any, ...] | list[Any],
+    available_scene_reference_slots: frozenset[str] | None = None,
 ):
     """Project one asset kind after overlaying the zero-write draft by name."""
     from novelvideo.narrative_groups.planned_binding_service import (
@@ -83,6 +172,7 @@ def _episode_asset_bindings(
         characters=characters,
         scenes=tuple(scene_map.values()),
         props=tuple(prop_map.values()),
+        available_scene_reference_slots=available_scene_reference_slots,
     )
     grouped = bindings_by_kind(projected)
     bindings = tuple(
@@ -224,6 +314,14 @@ async def _run_episode_asset_planner(
         for prop in props
         if str(getattr(prop, "name", "") or "").strip() in selected_prop_ids
     )
+    available_scene_reference_slots = None
+    if asset_kind == "scene":
+        scene_map = {scene.name: scene for scene in scenes}
+        scene_map.update({scene.name: scene for scene in draft.scenes})
+        available_scene_reference_slots = _available_scene_reference_slots(
+            ctx=ctx,
+            scenes=tuple(scene_map.values()),
+        )
     bindings = _episode_asset_bindings(
         asset_kind=asset_kind,
         project_id=ctx.project_id,
@@ -233,6 +331,7 @@ async def _run_episode_asset_planner(
         characters=characters,
         scenes=scenes,
         props=props,
+        available_scene_reference_slots=available_scene_reference_slots,
     )
     with director_plan_store.lock_active_revision(episode) as final_active:
         if (
