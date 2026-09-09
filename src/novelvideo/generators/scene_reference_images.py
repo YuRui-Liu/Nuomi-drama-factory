@@ -159,6 +159,8 @@ async def _call_grsai_image_api(
             raise RuntimeError("GRSAI image response missing result URL")
         response = await client.http.get(str(snapshot.results[0]["url"]))
         response.raise_for_status()
+        if not response.content:
+            raise RuntimeError("GRSAI image download returned empty image body")
         try:
             await meter.bump_model_call(
                 user_id=None,

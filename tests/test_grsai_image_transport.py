@@ -27,8 +27,9 @@ class FakeUsageMeter:
 
 
 class FakeHttp:
-    def __init__(self, *, download_error=None):
+    def __init__(self, *, download_error=None, download_content=b"image"):
         self.download_error = download_error
+        self.download_content = download_content
         self.downloads = []
         self.closed = False
 
@@ -38,7 +39,7 @@ class FakeHttp:
             raise self.download_error
         return httpx.Response(
             200,
-            content=b"image",
+            content=self.download_content,
             request=httpx.Request("GET", url),
         )
 
@@ -47,12 +48,22 @@ class FakeHttp:
 
 
 class FakeClient:
-    def __init__(self, *, submit_error=None, snapshot=None, download_error=None):
+    def __init__(
+        self,
+        *,
+        submit_error=None,
+        snapshot=None,
+        download_error=None,
+        download_content=b"image",
+    ):
         self.submit_error = submit_error
         self.snapshot = snapshot or SimpleNamespace(
             status="succeeded", results=[{"url": "https://files.test/image.png"}]
         )
-        self.http = FakeHttp(download_error=download_error)
+        self.http = FakeHttp(
+            download_error=download_error,
+            download_content=download_content,
+        )
         self.submissions = []
 
     async def submit(self, request, *, api_key):
@@ -150,6 +161,26 @@ async def test_grsai_transport_refunds_download_failure(monkeypatch):
     )
 
     assert "download failed" in result[2]
+    assert meter.refunds[0][0] == "reservation-1"
+    assert meter.confirmations == []
+
+
+@pytest.mark.asyncio
+async def test_grsai_transport_refunds_empty_successful_download(monkeypatch):
+    from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+
+    meter = FakeUsageMeter()
+    client = FakeClient(download_content=b"")
+    _patch_runtime(monkeypatch, client, meter)
+    result = await _call_grsai_image_api(
+        model="gpt-image-2-vip",
+        prompt="portrait",
+        reference_images=None,
+        image_config={"image_size": "1K"},
+    )
+
+    assert result[0] is None
+    assert "empty image body" in result[2]
     assert meter.refunds[0][0] == "reservation-1"
     assert meter.confirmations == []
 
