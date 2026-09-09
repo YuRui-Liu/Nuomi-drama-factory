@@ -26,6 +26,115 @@ beforeAll(async () => {
 beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
+  it("shows auto plus all five official modes and reports the automatic result", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame={false}
+      models={[{
+        id: "runninghub:minimax-h3",
+        label: "RunningHub MiniMax H3",
+        provider: "runninghub",
+        available: true,
+        supported_modes: ["i2va", "fl2va"],
+        default_mode: "auto",
+        parameters: [],
+      }]}
+      onModeChange={vi.fn()}
+    />);
+
+    const modeSelect = screen.getByRole("combobox", { name: "H3 视频模式" });
+    expect(modeSelect).toHaveValue("auto");
+    expect(screen.getAllByRole("option")).toHaveLength(6);
+    expect(screen.getByRole("option", { name: /自动.*I2V/ })).toBeEnabled();
+    expect(screen.getByRole("option", { name: /^T2V.*缺输入/ })).toBeDisabled();
+    expect(screen.getByRole("option", { name: /^L2V.*缺输入/ })).toBeDisabled();
+    expect(screen.getByRole("option", { name: /^Ref2V.*缺输入/ })).toBeDisabled();
+  });
+
+  it("resolves references before first and last frames in auto mode", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3-ref"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame
+      available
+      models={[{
+        id: "runninghub:minimax-h3-ref",
+        label: "RunningHub MiniMax H3 · Ref",
+        provider: "runninghub",
+        available: true,
+        supported_modes: ["ref2va"],
+        default_mode: "auto",
+        parameters: [],
+      }]}
+      reference={{ required: true, count: 2, max: 5, valid: true }}
+      onModeChange={vi.fn()}
+      onGenerate={vi.fn()}
+    />);
+
+    expect(screen.getByRole("option", { name: /自动.*Ref2V/ })).toBeEnabled();
+    expect(screen.getByText(/MiniMax H3 多参考图 · Ref2V（参考图）/)).toBeInTheDocument();
+  });
+
+  it.each([
+    { mode: "t2va" as const, first: false, last: false, supported: ["t2va"] as const },
+    { mode: "l2va" as const, first: false, last: true, supported: ["l2va"] as const },
+  ])("allows $mode without imposing a first-frame gate", ({ mode, first, last, supported }) => {
+    const generate = vi.fn();
+    render(<GroupVideoStage
+      modelId="runninghub:official-h3"
+      mode={mode}
+      hasFirstFrame={first}
+      hasLastFrame={last}
+      models={[{
+        id: "runninghub:official-h3",
+        label: "H3",
+        provider: "runninghub",
+        available: true,
+        supported_modes: [...supported],
+        default_mode: "auto",
+        parameters: [],
+      }]}
+      onModeChange={vi.fn()}
+      onGenerate={generate}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "生成组合视频" }));
+    expect(generate).toHaveBeenCalledWith({
+      video_model: "runninghub:official-h3",
+      h3_mode: mode,
+    });
+  });
+
+  it("keeps a valid Ref mode disabled when its workflow is unverified", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3-ref"
+      mode="ref2va"
+      hasFirstFrame={false}
+      hasLastFrame={false}
+      available={false}
+      unavailableReason="hybrid_input_unverified"
+      models={[{
+        id: "runninghub:minimax-h3-ref",
+        label: "RunningHub MiniMax H3 · Ref",
+        provider: "runninghub",
+        available: false,
+        unavailable_reason: "hybrid_input_unverified",
+        supported_modes: ["ref2va"],
+        default_mode: "auto",
+        parameters: [],
+      }]}
+      reference={{ required: true, count: 2, max: 5, valid: true }}
+      onModeChange={vi.fn()}
+      onGenerate={vi.fn()}
+    />);
+
+    expect(screen.getByRole("option", { name: /^Ref2V.*工作流未验证/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+  });
+
   it("shows H3 Ref in the video card but keeps an unverified workflow disabled", async () => {
     const user = userEvent.setup();
     const changeModel = vi.fn();
@@ -90,7 +199,7 @@ describe("GroupVideoStage", () => {
   it("shows inherited H3 and the actual automatic mode", () => {
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame />);
     expect(screen.getByText(/MiniMax H3/)).toBeInTheDocument();
-    expect(screen.getByText(/FL2V/)).toBeInTheDocument();
+    expect(screen.getByText(/MiniMax H3 · FL2V/)).toBeInTheDocument();
     expect(screen.getByText(/继承项目默认/)).toBeInTheDocument();
   });
 
@@ -101,12 +210,28 @@ describe("GroupVideoStage", () => {
     ])).toEqual({ allHaveFirst: true, allHaveLast: false, modes: ["fl2va", "i2va"] });
   });
 
+  it("resolves the automatic mode independently for each Beat input", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame={false}
+      inputs={[
+        { beat_id: "1", has_first_frame: true, has_last_frame: true },
+        { beat_id: "2", has_first_frame: true, has_last_frame: false },
+      ]}
+    />);
+
+    expect(screen.getByText(/Beat 1 .* FL2V（首尾帧）/)).toBeInTheDocument();
+    expect(screen.getByText(/Beat 2 .* I2V（首帧）/)).toBeInTheDocument();
+  });
+
   it("keeps a temporary override local to the generation callback", () => {
     const generate = vi.fn();
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} onGenerate={generate} />);
     fireEvent.click(screen.getByRole("button", { name: "生成组合视频" }));
     expect(generate).toHaveBeenCalledWith({ video_model: "runninghub:minimax-h3", h3_mode: "auto" });
-    expect(screen.getByText(/I2V/)).toBeInTheDocument();
+    expect(screen.getByText(/MiniMax H3 · I2V/)).toBeInTheDocument();
   });
 
   it("hides reference controls for legacy models", () => {

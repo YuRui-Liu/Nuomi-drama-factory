@@ -9,7 +9,25 @@ import type { ApiResponse } from "@/types/api";
 import type { VideoBackendOption } from "@/lib/queries/video";
 import { coerceNarrativeImageSize, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 
-export type VideoModelMode = "auto" | "i2va" | "fl2va";
+export const H3_VIDEO_MODES = [
+  "auto", "t2va", "i2va", "fl2va", "l2va", "ref2va",
+] as const;
+export type H3VideoMode = typeof H3_VIDEO_MODES[number];
+export type H3ResolvedVideoMode = Exclude<H3VideoMode, "auto">;
+export type VideoModelMode = H3VideoMode;
+
+export interface H3ModeInputs {
+  hasFirstFrame: boolean;
+  hasLastFrame: boolean;
+  referenceCount: number;
+}
+
+export interface H3ModeAvailability {
+  mode: H3VideoMode;
+  resolvedMode: H3ResolvedVideoMode;
+  available: boolean;
+  reason?: "missing_input" | "workflow_unverified" | "model_unsupported";
+}
 export interface VideoWorkflowParameterOption {
   value: string;
   label: string;
@@ -54,10 +72,69 @@ export interface VideoModelCatalogItem {
   reference_policy?: VideoReferencePolicy;
 }
 
-export function effectiveVideoMode(mode: VideoModelMode, hasFirst: boolean, hasLast: boolean) {
+export function resolveAutomaticH3Mode(inputs: H3ModeInputs): H3ResolvedVideoMode {
+  if (inputs.referenceCount > 0) return "ref2va";
+  if (inputs.hasFirstFrame && inputs.hasLastFrame) return "fl2va";
+  if (inputs.hasFirstFrame) return "i2va";
+  if (inputs.hasLastFrame) return "l2va";
+  return "t2va";
+}
+
+function h3ModeHasRequiredInputs(mode: H3VideoMode, inputs: H3ModeInputs) {
+  const hasReferences = inputs.referenceCount > 0;
+  if (mode === "auto") return true;
+  if (mode === "t2va") {
+    return !inputs.hasFirstFrame && !inputs.hasLastFrame && !hasReferences;
+  }
+  if (mode === "i2va") {
+    return inputs.hasFirstFrame && !inputs.hasLastFrame && !hasReferences;
+  }
+  if (mode === "fl2va") {
+    return inputs.hasFirstFrame && inputs.hasLastFrame && !hasReferences;
+  }
+  if (mode === "l2va") {
+    return !inputs.hasFirstFrame && inputs.hasLastFrame && !hasReferences;
+  }
+  return !inputs.hasFirstFrame && !inputs.hasLastFrame && hasReferences;
+}
+
+export function h3ModeAvailability(
+  model: VideoModelCatalogItem,
+  inputs: H3ModeInputs,
+  mode: H3VideoMode,
+): H3ModeAvailability {
+  const resolvedMode = mode === "auto" ? resolveAutomaticH3Mode(inputs) : mode;
+  if (!h3ModeHasRequiredInputs(mode, inputs)) {
+    return { mode, resolvedMode, available: false, reason: "missing_input" };
+  }
+  if (!model.available) {
+    return { mode, resolvedMode, available: false, reason: "workflow_unverified" };
+  }
+  if (!model.supported_modes.includes(resolvedMode)) {
+    return { mode, resolvedMode, available: false, reason: "model_unsupported" };
+  }
+  return { mode, resolvedMode, available: true };
+}
+
+export function h3ModeAvailabilities(
+  model: VideoModelCatalogItem,
+  inputs: H3ModeInputs,
+): H3ModeAvailability[] {
+  return H3_VIDEO_MODES.map((mode) => h3ModeAvailability(model, inputs, mode));
+}
+
+export function effectiveVideoMode(
+  mode: VideoModelMode,
+  hasFirst: boolean,
+  hasLast: boolean,
+  referenceCount = 0,
+): H3ResolvedVideoMode {
   if (mode !== "auto") return mode;
-  if (!hasFirst) return "auto";
-  return hasLast ? "fl2va" : "i2va";
+  return resolveAutomaticH3Mode({
+    hasFirstFrame: hasFirst,
+    hasLastFrame: hasLast,
+    referenceCount,
+  });
 }
 
 export function videoModelRequest(videoModel: string, videoMode: VideoModelMode) {
@@ -103,6 +180,7 @@ export function resolveVideoMode(
   savedMode: VideoModelMode,
   model: VideoModelCatalogItem,
 ): VideoModelMode {
+  if (savedMode === "auto") return "auto";
   return model.supported_modes.includes(savedMode) ? savedMode : model.default_mode;
 }
 

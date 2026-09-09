@@ -7,6 +7,7 @@ import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
 import type { ApiResponse, TaskResponse } from "@/types/api";
 import type { NarrativeImageSize } from "@/lib/narrative-image-resolution";
+import type { H3ResolvedVideoMode, H3VideoMode } from "@/lib/queries/media-models";
 
 export type NarrativeStageStatus =
   | "pending" | "queued" | "running" | "review" | "completed"
@@ -131,7 +132,7 @@ export interface NarrativeStageState {
 export interface NarrativeGroupVideoUnit {
   id?: string;
   beat_ids: [string] | [string, string];
-  mode: "i2va" | "fl2va";
+  mode: H3ResolvedVideoMode;
   duration_seconds: number;
   reason: string;
 }
@@ -368,7 +369,7 @@ export function narrativeGroupVideoDialogueSourcePath(project: string, episode: 
 
 export function narrativeGroupVideoPayload(input: {
   model: string;
-  mode: "auto" | "i2va" | "fl2va";
+  mode: H3VideoMode;
   revision: number;
   planRevision?: number;
   settingsRevision?: number;
@@ -569,7 +570,7 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
     mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
-      mode: "auto" | "i2va" | "fl2va";
+      mode: H3VideoMode;
       revision: number;
       planRevision?: number;
       settingsRevision?: number;
@@ -593,7 +594,7 @@ export function useGenerateNarrativeGroupVideoSegment(project: string, episode: 
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ groupId, segmentId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
-      groupId: string; segmentId: string; model: string; mode: "auto" | "i2va" | "fl2va";
+      groupId: string; segmentId: string; model: string; mode: H3VideoMode;
       revision: number; planRevision?: number; settingsRevision?: number; referenceRevision?: number;
       aspectRatio: "9:16" | "16:9"; resolution?: string;
     }) => api.post(

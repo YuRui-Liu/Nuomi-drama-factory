@@ -87,6 +87,18 @@ describe("narrative group query contract", () => {
     });
   });
 
+  it.each(["auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"] as const)(
+    "preserves requested H3 mode %s in the transport payload",
+    (mode) => {
+      expect(narrativeGroupVideoPayload({
+        model: "runninghub:minimax-h3",
+        mode,
+        revision: 4,
+        aspectRatio: "16:9",
+      })).toMatchObject({ mode });
+    },
+  );
+
   it("omits reference_revision from legacy video generation requests", () => {
     expect(narrativeGroupVideoPayload({
       model: "runninghub:minimax-h3", mode: "auto", revision: 4,

@@ -13,6 +13,8 @@ vi.mock("@/lib/api", () => ({
 import {
   availableVideoModels,
   effectiveVideoMode,
+  h3ModeAvailabilities,
+  resolveAutomaticH3Mode,
   resolveVideoModel,
   resolveVideoMode,
   useVideoModels,
@@ -35,6 +37,76 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("video media model contract", () => {
+  it.each([
+    { references: 1, first: true, last: true, expected: "ref2va" },
+    { references: 0, first: true, last: true, expected: "fl2va" },
+    { references: 0, first: true, last: false, expected: "i2va" },
+    { references: 0, first: false, last: true, expected: "l2va" },
+    { references: 0, first: false, last: false, expected: "t2va" },
+  ] as const)(
+    "resolves auto from frozen inputs: refs=$references first=$first last=$last",
+    ({ references, first, last, expected }) => {
+      expect(resolveAutomaticH3Mode({
+        hasFirstFrame: first,
+        hasLastFrame: last,
+        referenceCount: references,
+      })).toBe(expected);
+    },
+  );
+
+  it("prioritizes input readiness, workflow verification, then model capability", () => {
+    const unverified: VideoModelCatalogItem = {
+      id: "runninghub:minimax-h3",
+      label: "H3",
+      provider: "runninghub",
+      available: false,
+      unavailable_reason: "profile_invalid",
+      supported_modes: ["i2va"],
+      default_mode: "auto",
+      parameters: [],
+    };
+
+    expect(h3ModeAvailabilities(unverified, {
+      hasFirstFrame: false,
+      hasLastFrame: false,
+      referenceCount: 0,
+    }).find((item) => item.mode === "i2va")?.reason).toBe("missing_input");
+    expect(h3ModeAvailabilities(unverified, {
+      hasFirstFrame: true,
+      hasLastFrame: false,
+      referenceCount: 0,
+    }).find((item) => item.mode === "i2va")?.reason).toBe("workflow_unverified");
+    expect(h3ModeAvailabilities({ ...unverified, available: true, unavailable_reason: null }, {
+      hasFirstFrame: false,
+      hasLastFrame: true,
+      referenceCount: 0,
+    }).find((item) => item.mode === "l2va")?.reason).toBe("model_unsupported");
+  });
+
+  it("keeps auto selectable when registry capabilities contain resolved modes only", () => {
+    const model: VideoModelCatalogItem = {
+      id: "runninghub:minimax-h3",
+      label: "H3",
+      provider: "runninghub",
+      available: true,
+      supported_modes: ["i2va", "fl2va"],
+      default_mode: "auto",
+      parameters: [],
+    };
+
+    const automatic = h3ModeAvailabilities(model, {
+      hasFirstFrame: true,
+      hasLastFrame: false,
+      referenceCount: 0,
+    })[0];
+
+    expect(automatic).toMatchObject({
+      mode: "auto",
+      resolvedMode: "i2va",
+      available: true,
+    });
+  });
+
   it("selects FL2VA for first and last frames and I2VA for first frame only", () => {
     expect(effectiveVideoMode("auto", true, true)).toBe("fl2va");
     expect(effectiveVideoMode("auto", true, false)).toBe("i2va");
@@ -80,7 +152,7 @@ describe("video media model contract", () => {
       default_mode: "auto",
     };
 
-    expect(resolveVideoMode("auto", future)).toBe("i2va");
+    expect(resolveVideoMode("auto", future)).toBe("auto");
     expect(resolveVideoMode("i2va", future)).toBe("i2va");
     expect(resolveVideoMode("auto", h3)).toBe("auto");
   });
