@@ -1438,6 +1438,27 @@ def test_reference_subject_requires_positive_source_picture_indexes(indexes):
         _reference_subject(source_picture_indexes=indexes)
 
 
+@pytest.mark.parametrize("subject_index", (0, -1))
+def test_reference_subject_requires_positive_subject_index(subject_index):
+    with pytest.raises(ValidationError, match="subject_index"):
+        _reference_subject(subject_index=subject_index)
+
+
+@pytest.mark.parametrize("subject_indexes", ((1, 1), (1, 3)))
+def test_v3_ref2va_subject_indexes_reject_duplicates_and_gaps(subject_indexes):
+    subjects = (
+        _reference_subject(subject_index=subject_indexes[0]),
+        _reference_subject(
+            subject_index=subject_indexes[1], source_picture_indexes=(2,)
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="subject_index.*continuous from 1"):
+        H3DirectorPlan(
+            **_director_payload(H3Mode.REF2VA, reference_subjects=subjects)
+        )
+
+
 @pytest.mark.parametrize(
     ("shot_ids", "message"),
     (
