@@ -392,6 +392,129 @@ async def test_identity_portrait_fallback_rejects_wrong_workflow_slot_kind(
     assert preview.bindings[0].version_id == ""
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("asset_path", "identity_id"),
+    [
+        ("assets/characters/Other/state.png", "linmo-duty"),
+        ("assets/scenes/hall/master.png", "linmo-duty"),
+        ("assets/characters/Lin Mo/state.png", "other-identity"),
+    ],
+)
+async def test_direct_identity_preview_rejects_cross_entity_current(
+    tmp_path: Path,
+    asset_path: str,
+    identity_id: str,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("linmo-duty",),
+    )
+    image_path = tmp_path / asset_path
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="swapped-v1",
+        asset_path=asset_path,
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": identity_id},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status in {"missing_asset", "missing_image"}
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+async def test_direct_identity_preview_rejects_characters_root_symlink(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("linmo-duty",),
+    )
+    external = tmp_path / "assets" / "scenes"
+    image_path = external / "Lin Mo" / "state.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (tmp_path / "assets" / "characters").symlink_to(
+        external, target_is_directory=True
+    )
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="redirected-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "linmo-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "missing_asset"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
 def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:
     [binding] = _project(
         shots=[

@@ -1028,10 +1028,48 @@ def _resolve_binding(
             f"current version status is {adoption_status}",
             status="pending_confirmation",
         )
+    allowed_roots = (project_dir / "assets",)
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution != "explicit_fallback"
+    ):
+        parts = binding.asset_slot_id.split(":")
+        if (
+            len(parts) != 4
+            or parts[0] != "character"
+            or parts[2] != "state"
+            or parts[3] != binding.entity_id
+        ):
+            return _unavailable(
+                binding, "character state slot identity is invalid", status="missing_asset"
+            )
+        metadata_identity_id = str(
+            (version.generation_metadata or {}).get("identity_id") or ""
+        ).strip()
+        if metadata_identity_id and metadata_identity_id != binding.entity_id:
+            return _unavailable(
+                binding,
+                "character state version identity does not match binding",
+                status="missing_asset",
+            )
+        try:
+            project_root = project_dir.resolve()
+            canonical_characters_root = project_root / "assets" / "characters"
+            characters_root = canonical_characters_root.resolve(strict=False)
+            if characters_root != canonical_characters_root:
+                raise ValueError("characters root must not be redirected")
+            characters_root.relative_to(project_root)
+            character_root = (characters_root / parts[1]).resolve(strict=False)
+            character_root.relative_to(characters_root)
+        except ValueError:
+            return _unavailable(
+                binding, "character state asset root is invalid", status="missing_asset"
+            )
+        allowed_roots = (character_root,)
     try:
         validated = validate_reference_image(
             _asset_path(project_dir, version.asset_path),
-            allowed_roots=(project_dir / "assets",),
+            allowed_roots=allowed_roots,
         )
         relative_path = Path(validated.image_path).resolve().relative_to(
             project_dir.resolve()

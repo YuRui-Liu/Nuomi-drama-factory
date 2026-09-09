@@ -267,6 +267,87 @@ def test_identity_runner_materializes_safe_legacy_identity_reference(tmp_path):
     )
 
 
+def test_identity_runner_rejects_character_directory_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    external = tmp_path / "assets" / "scenes" / "villain"
+    external.mkdir(parents=True)
+    image_path = external / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    characters_root = tmp_path / "assets" / "characters"
+    characters_root.mkdir(parents=True)
+    (characters_root / "陆辰").symlink_to(external, target_is_directory=True)
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+
+
+def test_identity_runner_rejects_characters_root_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    external = tmp_path / "assets" / "scenes"
+    character_root = external / "陆辰"
+    character_root.mkdir(parents=True)
+    image_path = character_root / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (tmp_path / "assets" / "characters").symlink_to(
+        external, target_is_directory=True
+    )
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+    assert not (character_root / "identities" / "_workflow_versions").exists()
+
+
+def test_identity_legacy_snapshot_rejects_changed_copy(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners import identity as identity_runner
+
+    image_path = tmp_path / "assets" / "characters" / "陆辰" / "identities" / "legacy.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+
+    def replace_during_copy(_source, destination):
+        Image.new("RGB", (8, 8), "blue").save(destination)
+
+    monkeypatch.setattr(identity_runner.shutil, "copy2", replace_during_copy)
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert identity_runner._available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+
+
 def test_character_name_requirement_uses_only_identity_for_legacy_episode():
     only_identity = _identity("陆辰_默认", with_image=True)
 

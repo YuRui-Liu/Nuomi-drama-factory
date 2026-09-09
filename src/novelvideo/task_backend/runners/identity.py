@@ -68,7 +68,9 @@ def _immutable_legacy_identity_reference(
                 raise RuntimeError("legacy identity history content mismatch")
         else:
             shutil.copy2(image_path, stage)
-            validate_reference_image(stage, allowed_roots=(character_root,))
+            staged = validate_reference_image(stage, allowed_roots=(character_root,))
+            if staged.sha256 != validated.sha256:
+                raise RuntimeError("legacy identity changed while being copied")
             with stage.open("rb") as staged_file:
                 os.fsync(staged_file.fileno())
             os.replace(stage, immutable_path)
@@ -96,10 +98,15 @@ def _available_character_identity_ids(
                 character_name = validate_character_name(
                     str(getattr(character, "name", "") or "")
                 )
-                character_root = (
-                    root / "assets" / "characters" / character_name
-                ).resolve(strict=False)
-                character_root.relative_to(root)
+                canonical_characters_root = root / "assets" / "characters"
+                characters_root = canonical_characters_root.resolve(strict=False)
+                if characters_root != canonical_characters_root:
+                    raise ValueError("characters root must not be redirected")
+                characters_root.relative_to(root)
+                character_root = (characters_root / character_name).resolve(
+                    strict=False
+                )
+                character_root.relative_to(characters_root)
             except ValueError:
                 continue
             for identity in getattr(character, "identities", ()) or ():
