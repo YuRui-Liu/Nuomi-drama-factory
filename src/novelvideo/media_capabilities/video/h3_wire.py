@@ -7,7 +7,6 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
-    field_validator,
     model_validator,
 )
 
@@ -35,8 +34,12 @@ H3_AUDIO_RETENTION_RELATIONS = frozenset(
     {"fully_copy", "partially_copy", "reference", "weak_reference"}
 )
 H3_MAX_REFERENCE_PICTURES = 10
-_SUBJECT_TAG_PATTERN = re.compile(r"<Subject ([1-9][0-9]*)>")
-_PICTURE_TAG_PATTERN = re.compile(r"<?Picture ([1-9][0-9]*)>?", re.IGNORECASE)
+_REFERENCE_TAG_PATTERN = re.compile(
+    r"<(?P<kind>Subject|Picture|Video|Audio) (?P<index>[1-9][0-9]*)>"
+)
+_REFERENCE_LIKE_PATTERN = re.compile(
+    r"<?(?:Subject|Picture|Video|Audio) [0-9]+>?", re.IGNORECASE
+)
 _REFERENCE_IMAGE_PATTERN = re.compile(
     r"\breference image ([1-9][0-9]*)\b", re.IGNORECASE
 )
@@ -70,67 +73,121 @@ def inspect_h3_reference_semantics(
 ) -> tuple[str, ...]:
     """Return stable semantic issue names for the official Ref2VA wire."""
     issues: list[str] = []
-    definition_subjects: list[int] = []
-    defined_pictures: set[int] = set()
+    definition_labels: list[tuple[str, int]] = []
+    declared_labels: set[tuple[str, int]] = set()
     definition_lines = tuple(
         line.strip() for line in subject_definitions.splitlines() if line.strip()
     )
     for line in definition_lines:
-        subject_match = re.match(r"^<Subject ([1-9][0-9]*)>(?:\s|:)", line)
-        subject_tags = tuple(int(value) for value in _SUBJECT_TAG_PATTERN.findall(line))
-        picture_indexes = tuple(
-            int(value)
-            for value in (
-                *_PICTURE_TAG_PATTERN.findall(line),
-                *_REFERENCE_IMAGE_PATTERN.findall(line),
-            )
+        if _has_malformed_reference_label(line):
+            _append_once(issues, "reference_definition_invalid")
+            continue
+        leading = re.match(
+            r"^<(?P<kind>Subject|Picture|Video|Audio) "
+            r"(?P<index>[1-9][0-9]*)>(?:\s|:)",
+            line,
         )
-        if (
-            subject_match is None
-            or subject_tags != (int(subject_match.group(1)),)
-            or not picture_indexes
-            or len(picture_indexes) != len(set(picture_indexes))
+        labels = _reference_labels(line)
+        legacy_pictures = tuple(
+            ("Picture", int(value)) for value in _REFERENCE_IMAGE_PATTERN.findall(line)
+        )
+        if leading is None:
+            _append_once(issues, "reference_definition_invalid")
+            continue
+        label = (leading.group("kind"), int(leading.group("index")))
+        source_labels = tuple(item for item in labels if item != label)
+        if label in definition_labels or len(labels) != len(set(labels)) or (
+            label[0] == "Subject"
+            and not any(
+                kind in {"Picture", "Video"}
+                for kind, _index in (*source_labels, *legacy_pictures)
+            )
         ):
             _append_once(issues, "reference_definition_invalid")
             continue
-        definition_subjects.append(int(subject_match.group(1)))
-        defined_pictures.update(picture_indexes)
-        if any(index > H3_MAX_REFERENCE_PICTURES for index in picture_indexes):
+        definition_labels.append(label)
+        declared_labels.update((*labels, *legacy_pictures))
+        if any(
+            kind == "Picture" and index > H3_MAX_REFERENCE_PICTURES
+            for kind, index in declared_labels
+        ):
             _append_once(issues, "reference_picture_out_of_range")
-    if definition_subjects != list(range(1, len(definition_lines) + 1)):
+    definition_subjects = [
+        index for kind, index in definition_labels if kind == "Subject"
+    ]
+    if definition_subjects != list(range(1, len(definition_subjects) + 1)):
         _append_once(issues, "reference_definition_invalid")
 
-    retention_subjects: list[int] = []
+    retention_labels: list[tuple[str, int]] = []
     retention_text: list[str] = []
     for subject, retain in retention_items:
-        subject_match = re.match(r"^<Subject ([1-9][0-9]*)>\s+\S", subject)
-        subject_tags = tuple(int(value) for value in _SUBJECT_TAG_PATTERN.findall(subject))
-        if subject_match is None or subject_tags != (int(subject_match.group(1)),):
+        retention_label: tuple[str, int] | None = None
+        if _has_malformed_reference_label(subject):
             _append_once(issues, "reference_subject_mismatch")
         else:
-            retention_subjects.append(int(subject_match.group(1)))
-        if parse_h3_retention_relation(retain) is None:
+            label_match = re.match(
+                r"^<(?P<kind>Subject|Picture|Video|Audio) "
+                r"(?P<index>[1-9][0-9]*)>(?:\s+\S.*)?$",
+                subject,
+            )
+            labels = _reference_labels(subject)
+            if label_match is None or len(labels) != 1:
+                _append_once(issues, "reference_subject_mismatch")
+            else:
+                retention_label = (
+                    label_match.group("kind"),
+                    int(label_match.group("index")),
+                )
+                retention_labels.append(retention_label)
+        audio = retention_label is not None and retention_label[0] == "Audio"
+        if parse_h3_retention_relation(retain, audio=audio) is None:
             _append_once(issues, "reference_relation_invalid")
         retention_text.extend((subject, retain))
     if (
-        retention_subjects != definition_subjects
-        or len(retention_subjects) != len(set(retention_subjects))
+        retention_labels != definition_labels
+        or len(retention_labels) != len(set(retention_labels))
     ):
         _append_once(issues, "reference_subject_mismatch")
 
-    active_subjects = {
-        int(value) for value in _SUBJECT_TAG_PATTERN.findall(detailed_description)
-    }
-    if active_subjects != set(definition_subjects):
+    if _has_malformed_reference_label(detailed_description):
+        _append_once(issues, "reference_label_invalid")
+    active_labels = set(_reference_labels(detailed_description))
+    if not set(definition_labels).issubset(active_labels):
         _append_once(issues, "reference_subject_inactive")
+    if any(
+        kind == "Subject" for kind, _index in active_labels - declared_labels
+    ):
+        _append_once(issues, "reference_subject_inactive")
+    if not active_labels.issubset(declared_labels):
+        _append_once(issues, "reference_label_undefined")
 
     all_text = "\n".join(
         (subject_definitions, detailed_description, *retention_text, *additional_text)
     )
-    used_pictures = {int(value) for value in _PICTURE_TAG_PATTERN.findall(all_text)}
-    if not used_pictures.issubset(defined_pictures):
+    if _has_malformed_reference_label(all_text):
+        _append_once(issues, "reference_label_invalid")
+    used_labels = set(_reference_labels(all_text))
+    undefined_labels = used_labels - declared_labels
+    if any(kind == "Picture" for kind, _index in undefined_labels):
         _append_once(issues, "reference_picture_out_of_range")
+    if any(kind != "Picture" for kind, _index in undefined_labels):
+        _append_once(issues, "reference_label_undefined")
     return tuple(issues)
+
+
+def _reference_labels(value: str) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (match.group("kind"), int(match.group("index")))
+        for match in _REFERENCE_TAG_PATTERN.finditer(value)
+    )
+
+
+def _has_malformed_reference_label(value: str) -> bool:
+    return any(
+        ("<" in match.group(0) or ">" in match.group(0))
+        and _REFERENCE_TAG_PATTERN.fullmatch(match.group(0)) is None
+        for match in _REFERENCE_LIKE_PATTERN.finditer(value)
+    )
 
 
 def _append_once(values: list[str], value: str) -> None:
@@ -144,12 +201,13 @@ class H3RetentionItem(BaseModel):
     subject: _NonEmptyString
     retain: _NonEmptyString
 
-    @field_validator("retain")
-    @classmethod
-    def validate_visual_relation(cls, value: str) -> str:
-        if parse_h3_retention_relation(value) is None:
+    @model_validator(mode="after")
+    def validate_relation(self) -> Self:
+        label = _REFERENCE_TAG_PATTERN.match(self.subject)
+        is_audio = label is not None and label.group("kind") == "Audio"
+        if parse_h3_retention_relation(self.retain, audio=is_audio) is None:
             raise ValueError("reference_relation_invalid")
-        return value
+        return self
 
 
 class H3BaseWire(BaseModel):

@@ -526,6 +526,8 @@ def _validate_pack(
 ) -> None:
     if pack.episode != value.episode or pack.director_revision_id != value.director_revision_id:
         raise ValueError("episode prompt pack identity does not match request")
+    if any(item.director_plan.schema_version != 3 for item in pack.segments):
+        raise ValueError("live episode planner requires director_plan schema_version=3")
     actual = {item.segment_id for item in pack.segments}
     expected = expected_ids or {item.segment_id for item in value.segments}
     if actual != expected or (require_all and len(pack.segments) != len(value.segments)):

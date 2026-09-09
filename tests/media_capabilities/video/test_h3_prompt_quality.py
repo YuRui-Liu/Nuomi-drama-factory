@@ -1438,6 +1438,40 @@ def test_reference_prompt_rejects_non_official_visual_relation() -> None:
     assert "h3.reference_relation_invalid" in report.codes
 
 
+def test_reference_prompt_accepts_official_audio_relation_and_tags() -> None:
+    prompt = compile_h3_wire(
+        H3ReferenceWire(
+            mode=H3Mode.REF2VA,
+            duration_seconds=6,
+            subject_definitions=(
+                "<Subject 1> is Lin in <Picture 1>.\n"
+                "<Audio 1> is the voice reference for <Subject 1> (S1)."
+            ),
+            summary=(
+                "[reference generation + audio reference] <Subject 1> speaks "
+                "with <Audio 1>'s timbre."
+            ),
+            retention_analysis=(
+                H3RetentionItem(
+                    subject="<Subject 1> (appears in [Shot 1])",
+                    retain="fully_preserved - identity and coat",
+                ),
+                H3RetentionItem(
+                    subject="<Audio 1>",
+                    retain="reference - voice timbre without copying the signal",
+                ),
+            ),
+            detailed_description=(
+                "[Shot 1] <Subject 1> (S1) speaks using the timbre from <Audio 1>."
+            ),
+            overall_soundscape="Quiet room tone.",
+            non_diegetic_music="N/A",
+        )
+    )
+
+    assert inspect_h3_prompt(prompt, H3Mode.REF2VA, 6).passed
+
+
 @pytest.mark.parametrize(
     "replacement",
     ("remains active.", "<Subject 1> stands beside <Subject 2>."),

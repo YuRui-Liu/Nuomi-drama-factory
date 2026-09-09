@@ -42,7 +42,7 @@ def _plan(*, vague: bool = False) -> H3DirectorPlan:
         else "With a quick shoulder turn, Lin faces the door and stops with his gaze locked on its handle."
     )
     return H3DirectorPlan(
-        schema_version=2,
+        schema_version=3,
         mode=H3Mode.I2VA,
         total_frames=120,
         visual_style="2.5D ink animation",
@@ -84,6 +84,10 @@ def _plan(*, vague: bool = False) -> H3DirectorPlan:
         soundscape="Footsteps stop.",
         music="No music. SFX only.",
         rigid_prompt=_rigid_prompt(),
+        first_frame_anchor=H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the corridor door.",
+        ),
     )
 
 
@@ -342,8 +346,11 @@ def test_episode_reference_fact_description_is_only_untrusted_data():
 def test_episode_pack_accepts_official_v3_modes(mode: H3Mode):
     payload = _plan().model_dump(mode="python")
     payload.update(schema_version=3, mode=mode, music="Low strings rise.")
-    if mode is H3Mode.L2VA:
+    if mode is H3Mode.T2VA:
+        payload.update(first_frame_anchor=None)
+    elif mode is H3Mode.L2VA:
         payload.update(
+            first_frame_anchor=None,
             last_frame_anchor=H3FrameAnchor(
                 sha256="b" * 64,
                 description="Lin settles with one hand on the door handle.",
@@ -357,6 +364,7 @@ def test_episode_pack_accepts_official_v3_modes(mode: H3Mode):
         )
     elif mode is H3Mode.REF2VA:
         payload.update(
+            first_frame_anchor=None,
             reference_summary="Lin remains beside the corridor door.",
             reference_subjects=(
                 H3ReferenceSubjectPlan(
@@ -378,6 +386,18 @@ def test_episode_pack_accepts_official_v3_modes(mode: H3Mode):
     )
 
     assert validated.segments[0].director_plan.mode is mode
+
+
+def test_live_episode_pack_validation_rejects_legacy_director_schema() -> None:
+    value = _input()
+    legacy_payload = _plan().model_dump(mode="python")
+    legacy_payload.update(schema_version=2, first_frame_anchor=None)
+    legacy = H3DirectorPlan.model_validate(legacy_payload)
+    assert legacy.schema_version == 2
+    pack = _pack(tuple((entry.segment_id, legacy) for entry in value.segments))
+
+    with pytest.raises(ValueError, match="schema_version=3"):
+        episode_pack._validate_pack(pack, value, require_all=True)
 
 
 def test_repair_reference_fact_description_is_only_untrusted_data():

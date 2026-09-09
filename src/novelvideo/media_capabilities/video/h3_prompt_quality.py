@@ -54,12 +54,13 @@ _DIALOGUE_LINE_PATTERN = re.compile(
     r"(?:<scenetrans>)?<d>\[[^\]\r\n]+\][^<\r\n]+</d>(?:<cutoff>)?"
 )
 _RETENTION_ITEM_PATTERN = re.compile(
-    r"^-\s+(?P<subject><Subject [1-9][0-9]*>[^:]+):\s*(?P<retain>\S.*)$"
+    r"^-\s+(?P<subject><(?:Subject|Picture|Video|Audio) "
+    r"[1-9][0-9]*>[^:]*):\s*(?P<retain>\S.*)$"
 )
 _ANGLE_TAG_PATTERN = re.compile(r"</?[^>\r\n]+>")
 _ALLOWED_WIRE_TAG_PATTERN = re.compile(
     r"(?:<d>|</d>|<scenetrans>|<cutoff>|<Picture [1-9][0-9]*>|"
-    r"<Subject [1-9][0-9]*>)"
+    r"<Subject [1-9][0-9]*>|<Video [1-9][0-9]*>|<Audio [1-9][0-9]*>)"
 )
 _ALIGNMENT_PREFIXES = (
     "For the target video, at 0.00 seconds into the target video, ",
@@ -298,7 +299,17 @@ def inspect_h3_prompt(
             ),
             "reference_subject_inactive": (
                 "h3.reference_subject_inactive",
-                "every defined subject must appear in detailed_description without extras",
+                "every separately defined reference label must appear in detailed_description",
+                "detailed_description",
+            ),
+            "reference_label_invalid": (
+                "h3.reference_label_invalid",
+                "reference labels must use complete official tags",
+                "prompt",
+            ),
+            "reference_label_undefined": (
+                "h3.reference_label_undefined",
+                "every reference label must be declared in subject_definitions",
                 "detailed_description",
             ),
         }

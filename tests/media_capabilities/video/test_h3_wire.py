@@ -42,6 +42,73 @@ def test_audio_retention_relations_match_official_vocabulary(relation):
     )
 
 
+def test_reference_wire_accepts_official_picture_video_and_audio_references():
+    wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=6,
+        subject_definitions=(
+            "<Subject 1> is the woman in <Picture 1>.\n"
+            "<Video 1> is the source for cut and pacing structure.\n"
+            "<Audio 1> is the voice-timbre reference for <Subject 1> (S1)."
+        ),
+        summary=(
+            "[reference generation + audio reference] <Subject 1> follows "
+            "<Video 1> while <Audio 1> guides her voice."
+        ),
+        retention_analysis=(
+            H3RetentionItem(
+                subject="<Subject 1> (appears in [Shot 1])",
+                retain="fully_preserved - identity and wardrobe",
+            ),
+            H3RetentionItem(
+                subject="<Video 1> (cut and pacing structure)",
+                retain="weak_reference - cut rhythm only",
+            ),
+            H3RetentionItem(
+                subject="<Audio 1>",
+                retain="reference - voice timbre without signal copying",
+            ),
+        ),
+        detailed_description=(
+            "[Shot 1] <Subject 1> follows <Video 1>'s pacing and speaks with "
+            "the timbre referenced from <Audio 1>."
+        ),
+        overall_soundscape="Quiet room tone.",
+        non_diegetic_music="N/A",
+    )
+
+    assert "<Audio 1>: reference - voice timbre" in compile_h3_wire(wire)
+
+
+def test_reference_wire_accepts_standalone_picture_retention() -> None:
+    wire = _reference_wire(
+        subject_definitions=(
+            "<Picture 1> is the first frame of [Shot 1], showing Lin at the door."
+        ),
+        retention_analysis=(
+            H3RetentionItem(
+                subject="<Picture 1> ([Shot 1] first frame)",
+                retain="fully_preserved - composition and subject placement",
+            ),
+        ),
+        detailed_description="[Shot 1] The shot begins from <Picture 1>.",
+    )
+
+    assert wire.retention_analysis[0].subject.startswith("<Picture 1>")
+
+
+@pytest.mark.parametrize(
+    ("subject", "retain"),
+    (
+        ("<Audio 1>", "fully_preserved - waveform"),
+        ("<Subject 1> (appears in [Shot 1])", "fully_copy - identity"),
+    ),
+)
+def test_retention_relation_must_match_the_reference_label_kind(subject, retain):
+    with pytest.raises(ValidationError, match="reference_relation_invalid"):
+        H3RetentionItem(subject=subject, retain=retain)
+
+
 def _base_wire(**updates: object) -> H3BaseWire:
     values = {
         "mode": H3Mode.T2VA,
@@ -162,6 +229,25 @@ def test_reference_wire_rejects_picture_index_above_official_limit():
     with pytest.raises(ValidationError, match="reference_picture_out_of_range"):
         _reference_wire(
             subject_definitions="<Subject 1> from <Picture 99>: Lin.",
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    ("<Picture 1", "Picture 1>", "<picture 1>"),
+)
+def test_reference_wire_rejects_malformed_picture_labels(source):
+    with pytest.raises(ValidationError, match="reference_definition_invalid"):
+        _reference_wire(
+            subject_definitions=f"<Subject 1> is Lin in {source}.",
+        )
+
+
+@pytest.mark.parametrize("tag", ("<Video 2>", "<Audio 2>"))
+def test_reference_wire_rejects_undefined_video_or_audio_usage(tag):
+    with pytest.raises(ValidationError, match="reference_label_undefined"):
+        _reference_wire(
+            detailed_description=f"[Shot 1] <Subject 1> follows {tag}.",
         )
 
 
