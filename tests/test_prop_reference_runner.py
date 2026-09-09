@@ -94,9 +94,10 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "get_task_manager",
         lambda: SimpleNamespace(update_progress_for_project=lambda *_a, **_k: None),
     )
+    project_config = {"prop_image_selection": "nano-banana-pro"}
     monkeypatch.setattr(
         "novelvideo.project_config.load_project_config_file",
-        lambda *_args: {"prop_image_selection": "nano-banana-pro"},
+        lambda *_args: dict(project_config),
     )
 
     ctx = SimpleNamespace(
@@ -149,6 +150,20 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "assets/props/手机/reference_3view.png"
     )
 
+    project_config["prop_image_selection"] = "outside-catalog-model"
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await prop_reference._run_prop_reference_asset(
+            {
+                **envelope,
+                "payload": {
+                    key: value
+                    for key, value in envelope["payload"].items()
+                    if key != "model"
+                },
+            },
+            ctx,
+        )
+
 
 @pytest.mark.asyncio
 async def test_batch_prop_runner_uses_project_model_when_payload_omits_it(
@@ -194,9 +209,10 @@ async def test_batch_prop_runner_uses_project_model_when_payload_omits_it(
         "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
         lambda *_args: SimpleNamespace(model="gpt-image-2"),
     )
+    project_config = {"prop_image_selection": "nano-banana-pro-vip"}
     monkeypatch.setattr(
         "novelvideo.project_config.load_project_config_file",
-        lambda *_args: {"prop_image_selection": "nano-banana-pro-vip"},
+        lambda *_args: dict(project_config),
     )
     monkeypatch.setattr(
         prop_reference,
@@ -218,3 +234,10 @@ async def test_batch_prop_runner_uses_project_model_when_payload_omits_it(
 
     assert result == {"generated": 1}
     assert calls[0]["model"] == "nano-banana-pro-vip"
+
+    project_config["prop_image_selection"] = "outside-catalog-model"
+    (tmp_path / "assets" / "props" / prop.name / "reference_3view.png").unlink()
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await prop_reference._run_batch_prop_ref(
+            {"payload": {"output_dir": str(tmp_path)}}, ctx
+        )

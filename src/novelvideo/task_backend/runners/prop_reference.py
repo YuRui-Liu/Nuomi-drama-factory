@@ -185,6 +185,7 @@ async def _run_prop_reference_asset(
         legacy_selections = {
             *IMAGE_GENERATION_SELECTIONS,
             *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
         }
         if requested_model in GRSAI_IMAGE_MODELS:
             model = requested_model
@@ -194,8 +195,10 @@ async def _run_prop_reference_asset(
             raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
         elif project_model in GRSAI_IMAGE_MODELS:
             model = project_model
-        else:
+        elif not project_model or project_model in legacy_selections:
             model = runtime.model
+        else:
+            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
         prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
             model=model,
@@ -265,6 +268,7 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
     legacy_selections = {
         *IMAGE_GENERATION_SELECTIONS,
         *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
     }
 
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
@@ -304,8 +308,10 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
                 raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
             elif project_model in GRSAI_IMAGE_MODELS:
                 model = project_model
-            else:
+            elif not project_model or project_model in legacy_selections:
                 model = runtime.model
+            else:
+                raise ValueError(f"Unsupported GRSAI image model: {project_model}")
             visual_prompt = prop.visual_prompt or prop.description or prop.name
             prompt = _prop_reference_prompt(
                 style=style,

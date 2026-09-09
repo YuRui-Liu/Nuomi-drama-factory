@@ -240,6 +240,7 @@ async def _run_scene_reference_asset(
         legacy_selections = {
             *IMAGE_GENERATION_SELECTIONS,
             *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
         }
         if requested_model in GRSAI_IMAGE_MODELS:
             model = requested_model
@@ -249,8 +250,10 @@ async def _run_scene_reference_asset(
             raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
         elif project_model in GRSAI_IMAGE_MODELS:
             model = project_model
-        else:
+        elif not project_model or project_model in legacy_selections:
             model = grsai_runtime.model
+        else:
+            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
         candidate_path = _scene_reference_version_path(
             output_dir,
             scene_name=scene.name,

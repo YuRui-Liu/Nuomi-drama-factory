@@ -61,6 +61,8 @@ from novelvideo.character_visual.identity_sheet import (
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.config import (
+    IMAGE_GENERATION_SELECTIONS,
+    LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     character_image_selection_options,
     get_character_image_selection,
     normalize_character_image_selection,
@@ -207,8 +209,14 @@ def _resolve_character_image_model(username: str, project: str, requested_model:
         return saved_selection
     if saved_selection in options:
         return saved_selection
-    selection = normalize_character_image_selection(saved_selection)
-    return selection if selection in options else get_character_image_selection()
+    if saved_selection in LEGACY_IMAGE_GENERATION_SELECTION_ALIASES:
+        return normalize_character_image_selection(saved_selection)
+    for selection, entry in IMAGE_GENERATION_SELECTIONS.items():
+        if saved_selection == entry["model"]:
+            return normalize_character_image_selection(selection)
+    if saved_selection:
+        raise ValueError(f"Unsupported image model: {saved_selection}")
+    return get_character_image_selection()
 
 
 def _safe_asset_name(name: str) -> str:

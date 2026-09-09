@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from novelvideo.api.deps import get_media_capability_store, get_media_credential_store
 from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS, ProviderAccount
@@ -214,6 +215,21 @@ def test_portrait_async_injects_project_character_model_into_task_payload(
 
     assert response.status_code == 200
     assert captured["payload"]["model"] == "gpt-image-2-vip"
+
+
+def test_character_model_resolver_rejects_unknown_project_selection(
+    monkeypatch,
+) -> None:
+    from novelvideo.api.routes import characters
+
+    monkeypatch.setattr(
+        characters,
+        "load_project_config_file",
+        lambda *_args: {"character_image_selection": "outside-catalog-model"},
+    )
+
+    with pytest.raises(ValueError, match="Unsupported image model"):
+        characters._resolve_character_image_model("alice", "demo", None)
 
 
 def test_patch_persists_only_target_key_in_real_project_config(

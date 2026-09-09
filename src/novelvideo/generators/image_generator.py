@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from novelvideo.character_visual.identity_sheet import IDENTITY_SHEET_LAYOUT_VERSION
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
+    LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     get_character_image_selection,
     get_image_config,
     get_style_preset,
@@ -1134,7 +1135,25 @@ async def generate_character_reference_unified(
         生成的图片路径列表
     """
     # 原始 GRSAI ID 是执行模型，不是 legacy selection key，必须原样保留。
-    requested_model = str(model or get_character_image_selection()).strip()
+    explicit_model = str(model or "").strip()
+    legacy_selections = {
+        *IMAGE_GENERATION_SELECTIONS,
+        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    }
+    legacy_models = {
+        entry["model"]: selection
+        for selection, entry in IMAGE_GENERATION_SELECTIONS.items()
+    }
+    if explicit_model and (
+        explicit_model not in GRSAI_IMAGE_MODELS
+        and explicit_model not in legacy_selections
+        and explicit_model not in legacy_models
+    ):
+        raise ValueError(f"Unsupported image model: {explicit_model}")
+    requested_model = (
+        legacy_models.get(explicit_model, explicit_model)
+        or get_character_image_selection()
+    )
     model = (
         requested_model
         if requested_model in GRSAI_IMAGE_MODELS
@@ -1343,7 +1362,25 @@ async def generate_identity_image_unified(
         默认保持旧版 bool 契约；``structured=True`` 返回带 v2 元数据的字典。
     """
     # 原始 GRSAI ID 是执行模型，不是 legacy selection key，必须原样保留。
-    requested_model = str(model or get_character_image_selection()).strip()
+    explicit_model = str(model or "").strip()
+    legacy_selections = {
+        *IMAGE_GENERATION_SELECTIONS,
+        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    }
+    legacy_models = {
+        entry["model"]: selection
+        for selection, entry in IMAGE_GENERATION_SELECTIONS.items()
+    }
+    if explicit_model and (
+        explicit_model not in GRSAI_IMAGE_MODELS
+        and explicit_model not in legacy_selections
+        and explicit_model not in legacy_models
+    ):
+        raise ValueError(f"Unsupported image model: {explicit_model}")
+    requested_model = (
+        legacy_models.get(explicit_model, explicit_model)
+        or get_character_image_selection()
+    )
     model = (
         requested_model
         if requested_model in GRSAI_IMAGE_MODELS

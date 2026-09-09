@@ -320,6 +320,7 @@ async def _run_character_image(
         legacy_selections = {
             *IMAGE_GENERATION_SELECTIONS,
             *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
         }
         if requested_model in GRSAI_IMAGE_MODELS:
             model = requested_model
@@ -329,8 +330,10 @@ async def _run_character_image(
             raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
         elif project_model in GRSAI_IMAGE_MODELS:
             model = project_model
-        else:
+        elif not project_model or project_model in legacy_selections:
             model = runtime.model
+        else:
+            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
         from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
         visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(

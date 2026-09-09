@@ -141,9 +141,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
             "avoid_instructions": "text",
         },
     )
+    project_config = {"scene_image_selection": "nano-banana-2"}
     monkeypatch.setattr(
         "novelvideo.project_config.load_project_config_file",
-        lambda *_args: {"scene_image_selection": "nano-banana-2"},
+        lambda *_args: dict(project_config),
     )
 
     ctx = SimpleNamespace(
@@ -210,3 +211,16 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert calls["generate"][1]["model"] == "nano-banana-2"
     assert calls["clear_stale"] == [("大厅", "master")]
     assert calls["slot_factory"] == [("大厅", "master"), ("大厅", "master")]
+
+    project_config["scene_image_selection"] = "outside-catalog-model"
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await scene_reference._run_scene_reference_asset(
+            {
+                "payload": {
+                    "scene_name": scene.name,
+                    "kind": "master",
+                    "output_dir": str(tmp_path),
+                }
+            },
+            ctx,
+        )

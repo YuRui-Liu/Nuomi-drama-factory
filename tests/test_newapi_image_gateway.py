@@ -1460,6 +1460,93 @@ async def test_legacy_newapi_image_entry_rejects_unknown_model_before_grsai(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-image-2-vip", "outside-catalog-model"])
+async def test_newapi_gateway_fails_closed_when_grsai_runtime_is_unavailable(
+    monkeypatch, model
+):
+    from novelvideo.generators import nanobanana_grid
+    from novelvideo.media_capabilities.runtime.configuration import (
+        MediaRuntimeConfigurationError,
+    )
+
+    def fail_runtime(*_args):
+        raise MediaRuntimeConfigurationError("GRSAI credential is unavailable")
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        fail_runtime,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    expected_error = (
+        "GRSAI runtime is unavailable"
+        if model == "gpt-image-2-vip"
+        else "Unsupported GRSAI image model"
+    )
+    with pytest.raises((RuntimeError, ValueError), match=expected_error):
+        await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model=model,
+            prompt="draw a scene",
+        )
+
+
+@pytest.mark.asyncio
+async def test_newapi_gateway_preserves_raw_model_in_grsai_http_payload(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import httpx
+
+    from novelvideo.generators import nanobanana_grid
+    from novelvideo.media_capabilities.image.grsai import GrsaiClient
+
+    posted = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/api/generate":
+            posted.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-model",
+                    "status": "succeeded",
+                    "results": [{"url": "https://files.test/image.png"}],
+                },
+            )
+        if request.url.host == "files.test":
+            return httpx.Response(200, content=b"raw-model-image")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://grsai.test",
+    ) as http:
+        runtime = SimpleNamespace(
+            model="gpt-image-2",
+            api_key="grsai-key",
+            create_client=lambda: GrsaiClient(http, default_model="gpt-image-2"),
+        )
+        monkeypatch.setattr(
+            "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+            lambda *_args: runtime,
+        )
+        monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+        monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+        result = await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model="gpt-image-2-vip",
+            prompt="draw a scene",
+            image_config={"aspect_ratio": "16:9", "image_size": "2K"},
+        )
+
+    assert result == (b"raw-model-image", "", "")
+    assert posted["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
 async def test_sync_character_generator_keeps_raw_grsai_model_id(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from novelvideo.generators import image_generator, nanobanana_character
@@ -1503,3 +1590,31 @@ async def test_sync_character_generator_keeps_raw_grsai_model_id(monkeypatch, tm
     assert paths == [str(tmp_path / "reference_portrait.png")]
     assert (tmp_path / "reference_portrait.png").read_bytes() == b"portrait"
     assert captured["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generators_reject_unknown_explicit_model(monkeypatch, tmp_path):
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    class FailGenerator:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("unknown model must fail before selecting a generator")
+
+    monkeypatch.setattr(nanobanana_character, "NanoBananaCharacterGenerator", FailGenerator)
+
+    with pytest.raises(ValueError, match="Unsupported image model"):
+        await image_generator.generate_character_reference_unified(
+            character_name="小鹿",
+            appearance_prompt="black hair",
+            output_dir=str(tmp_path),
+            model="outside-catalog-model",
+        )
+
+    with pytest.raises(ValueError, match="Unsupported image model"):
+        await image_generator.generate_identity_image_unified(
+            character_name="小鹿",
+            identity_prompt="blue coat",
+            reference_image_path=str(tmp_path / "portrait.png"),
+            output_path=str(tmp_path / "identity.png"),
+            model="outside-catalog-model",
+        )

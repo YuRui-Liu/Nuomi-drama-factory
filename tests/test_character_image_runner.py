@@ -97,16 +97,17 @@ async def test_character_portrait_resolves_grsai_model_precedence(
         "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
         lambda *_args: SimpleNamespace(model="gpt-image-2"),
     )
+    project_config = {
+        "ethnicity": "Chinese",
+        **(
+            {"character_image_selection": project_selection}
+            if project_selection
+            else {}
+        ),
+    }
     monkeypatch.setattr(
         "novelvideo.project_config.load_project_config_file",
-        lambda *_args: {
-            "ethnicity": "Chinese",
-            **(
-                {"character_image_selection": project_selection}
-                if project_selection
-                else {}
-            ),
-        },
+        lambda *_args: dict(project_config),
     )
 
     ctx = SimpleNamespace(
@@ -144,6 +145,20 @@ async def test_character_portrait_resolves_grsai_model_precedence(
     assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in generated_prompt
     assert "head and shoulders" not in generated_prompt
     assert "newapi_gpt_image2" not in str(calls["grsai"])
+    if payload_model is None:
+        project_config["character_image_selection"] = "outside-catalog-model"
+        with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+            await character_image._run_character_image(
+                {
+                    "task_type": "character_portrait",
+                    "payload": {
+                        "mode": "portrait",
+                        "character_name": "小鹿",
+                        "output_dir": str(tmp_path),
+                    },
+                },
+                ctx,
+            )
 
 
 @pytest.mark.asyncio

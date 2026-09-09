@@ -3289,44 +3289,49 @@ async def _call_newapi_image_api(
     """Route legacy image callers to GRSAI when its runtime is configured."""
     import httpx
 
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    from novelvideo.media_capabilities.runtime.configuration import (
+        MediaRuntimeConfigurationError,
+        load_grsai_runtime_configuration,
+    )
+
+    requested_model = str(model or "").strip()
+    legacy_selections = {
+        *IMAGE_GENERATION_SELECTIONS,
+        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
+    }
+    if requested_model and (
+        requested_model not in GRSAI_IMAGE_MODELS
+        and requested_model not in legacy_selections
+    ):
+        raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+
     try:
         from novelvideo.api.deps import (
             get_media_capability_store,
             get_media_credential_resolver,
         )
-        from novelvideo.media_capabilities.runtime.configuration import (
-            load_grsai_runtime_configuration,
-        )
 
         grsai_runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-    except Exception:
+    except MediaRuntimeConfigurationError as exc:
+        if requested_model in GRSAI_IMAGE_MODELS:
+            raise RuntimeError("GRSAI runtime is unavailable") from exc
         grsai_runtime = None
 
     if grsai_runtime is not None:
-        from novelvideo.config import (
-            IMAGE_GENERATION_SELECTIONS,
-            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-        )
         from novelvideo.generators.scene_reference_images import _call_grsai_image_api
-        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
 
-        requested_model = str(model or "").strip()
-        legacy_selections = {
-            *IMAGE_GENERATION_SELECTIONS,
-            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-            *(
-                entry["model"]
-                for entry in IMAGE_GENERATION_SELECTIONS.values()
-            ),
-        }
         if requested_model in GRSAI_IMAGE_MODELS:
             grsai_model = requested_model
-        elif not requested_model or requested_model in legacy_selections:
-            grsai_model = grsai_runtime.model
         else:
-            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+            grsai_model = grsai_runtime.model
 
         normalized_refs: list[tuple[str, bytes, str]] = []
         for index, item in enumerate(reference_images or []):
