@@ -159,7 +159,7 @@ def inspect_h3_prompt(
     try:
         resolved_mode = H3Mode(mode)
     except ValueError:
-        _add(issues, "mode_invalid", "mode must be an official H3 mode", "mode")
+        _add(issues, "h3.mode_invalid", "mode must be an official H3 mode", "mode")
         return H3PromptQualityReport(passed=False, issues=tuple(issues))
 
     fields = _extract_wire_fields(prompt)
@@ -172,14 +172,14 @@ def inspect_h3_prompt(
     if Counter(actual_order) != Counter(expected_order):
         _add(
             issues,
-            "wire_field_set",
+            "h3.wire_field_set",
             "prompt fields must exactly match the mode-specific official wire",
             "prompt",
         )
     elif actual_order != expected_order:
         _add(
             issues,
-            "wire_field_order",
+            "h3.wire_field_order",
             "prompt fields must follow the official wire order",
             "prompt",
         )
@@ -193,7 +193,7 @@ def inspect_h3_prompt(
         ):
             _add(
                 issues,
-                "wire_field_empty",
+                "h3.wire_field_empty",
                 "official wire fields must not be empty",
                 field,
             )
@@ -203,7 +203,7 @@ def inspect_h3_prompt(
     if duration is None:
         _add(
             issues,
-            "duration_out_of_range",
+            "h3.duration_out_of_range",
             "duration_seconds must be between 4 and 15 seconds",
             "duration_seconds",
         )
@@ -228,7 +228,7 @@ def inspect_h3_prompt(
         ):
             _add(
                 issues,
-                "retention_analysis_required",
+                "h3.retention_analysis_missing",
                 "Ref2VA requires nonempty subject retention rules",
                 "retention_analysis",
             )
@@ -239,7 +239,7 @@ def inspect_h3_prompt(
     if " ".join(music.casefold().split()) in _LEGACY_NO_MUSIC:
         _add(
             issues,
-            "legacy_no_music_phrase",
+            "h3.legacy_no_music_phrase",
             'no-music semantics must use canonical "N/A"',
             "non_diegetic_music",
         )
@@ -267,14 +267,14 @@ def _inspect_field_occurrences(
     if fields.count("overall_soundscape") != 1:
         _add(
             issues,
-            "soundscape_occurrence",
+            "h3.soundscape_occurrence",
             "overall_soundscape must appear exactly once",
             "overall_soundscape",
         )
     if fields.count("non_diegetic_music") != 1:
         _add(
             issues,
-            "music_occurrence",
+            "h3.music_occurrence",
             "non_diegetic_music must appear exactly once",
             "non_diegetic_music",
         )
@@ -331,7 +331,7 @@ def _inspect_alignment(
         if has_alignment_prefix:
             _add(
                 issues,
-                "frame_anchor_forbidden",
+                "h3.frame_alignment_forbidden",
                 f"{mode.value} forbids a frame-alignment prefix",
                 "prompt",
             )
@@ -342,7 +342,7 @@ def _inspect_alignment(
         if not prompt.startswith(f"{expected}\n\n"):
             _add(
                 issues,
-                "first_frame_anchor_required",
+                "h3.first_image_alignment_missing",
                 "I2VA requires the canonical Picture 1 first-frame alignment",
                 "prompt",
             )
@@ -353,14 +353,14 @@ def _inspect_alignment(
         if not prompt.startswith(first_anchor):
             _add(
                 issues,
-                "first_frame_anchor_required",
+                "h3.first_image_alignment_missing",
                 "FL2VA requires Picture 1 at the first frame",
                 "prompt",
             )
         if not prompt.startswith(f"{expected}\n\n"):
             _add(
                 issues,
-                "last_frame_anchor_required",
+                "h3.last_image_alignment_missing",
                 "FL2VA requires Picture 2 at the declared terminal time",
                 "prompt",
             )
@@ -369,7 +369,7 @@ def _inspect_alignment(
     if not prompt.startswith(f"{expected}\n\n"):
         _add(
             issues,
-            "last_frame_anchor_required",
+            "h3.last_image_alignment_missing",
             "L2VA requires Picture 1 at the declared terminal time",
             "prompt",
         )
@@ -384,11 +384,11 @@ def _inspect_event_timestamps(
         int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
         for minutes, seconds, milliseconds in _EVENT_TIMESTAMP_PATTERN.findall(prompt)
     )
-    if any(timestamp >= duration_seconds for timestamp in timestamps):
+    if any(timestamp > duration_seconds for timestamp in timestamps):
         _add(
             issues,
-            "event_timestamp_out_of_range",
-            "event timestamps must occur before the terminal video time",
+            "h3.event_timestamp_out_of_range",
+            "event timestamps must not exceed the terminal video time",
             "prompt",
         )
 
@@ -410,7 +410,7 @@ def _inspect_action_budget(
     if action_beats > maximum:
         _add(
             issues,
-            "action_beat_overload",
+            "h3.action_beat_overload",
             f"{duration_seconds:g}s prompts allow at most {maximum} main action beats",
             "prompt",
         )
@@ -424,7 +424,7 @@ def _inspect_dialogue_and_markers(
     if any(_ALLOWED_WIRE_TAG_PATTERN.fullmatch(tag) is None for tag in tags):
         _add(
             issues,
-            "control_marker_invalid",
+            "h3.control_marker_invalid",
             "only official dialogue, scene-transition, and cutoff markers are allowed",
             "prompt",
         )
@@ -440,7 +440,7 @@ def _inspect_dialogue_and_markers(
     ):
         _add(
             issues,
-            "dialogue_format_invalid",
+            "h3.dialogue_wire_invalid",
             "dialogue requires (S1), language, text, and canonical d-tag wrapping",
             "prompt",
         )
@@ -449,7 +449,7 @@ def _inspect_dialogue_and_markers(
     if "<scenetrans>" in without_payloads or "<cutoff>" in without_payloads:
         _add(
             issues,
-            "control_marker_invalid",
+            "h3.control_marker_invalid",
             "scenetrans and cutoff markers must be attached to dialogue",
             "prompt",
         )
@@ -462,7 +462,7 @@ def _inspect_forbidden_legacy_wire(
     if re.search(r"(?mi)^\s*mode\s*:", prompt):
         _add(
             issues,
-            "mode_prefix_forbidden",
+            "h3.mode_prefix_forbidden",
             "the official wire does not include a mode prefix",
             "prompt",
         )
@@ -475,7 +475,7 @@ def _inspect_forbidden_legacy_wire(
     if raw_dialogue:
         _add(
             issues,
-            "raw_dialogue_forbidden",
+            "h3.raw_dialogue_forbidden",
             "dialogue text must use canonical d-tag wrapping",
             "prompt",
         )
@@ -485,7 +485,7 @@ def _inspect_forbidden_legacy_wire(
     ):
         _add(
             issues,
-            "internal_section_heading_forbidden",
+            "h3.internal_heading_leaked",
             "internal rigid-plan section headings must not leak into the wire prompt",
             "prompt",
         )

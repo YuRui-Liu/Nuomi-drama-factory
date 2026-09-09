@@ -1174,12 +1174,12 @@ def test_active_reference_kind_must_match_resolved_reference_fact() -> None:
 
 def test_prompt_issue_exposes_field_and_preserves_location_compatibility() -> None:
     current = H3PromptQualityIssue(
-        code="wire_field_set",
+        code="h3.wire_field_set",
         message="wrong fields",
         field="prompt",
     )
     legacy = H3PromptQualityIssue(
-        code="wire_field_set",
+        code="h3.wire_field_set",
         message="wrong fields",
         location="prompt",
     )
@@ -1207,7 +1207,7 @@ def test_prompt_fields_must_follow_canonical_base_wire_order() -> None:
         6,
     )
 
-    assert "wire_field_order" in report.codes
+    assert "h3.wire_field_order" in report.codes
 
 
 def test_prompt_fields_must_match_canonical_reference_wire_set() -> None:
@@ -1224,7 +1224,7 @@ def test_prompt_fields_must_match_canonical_reference_wire_set() -> None:
         6,
     )
 
-    assert "wire_field_set" in report.codes
+    assert "h3.wire_field_set" in report.codes
 
 
 @pytest.mark.parametrize("duration_seconds", [3.99, 15.01])
@@ -1237,7 +1237,7 @@ def test_prompt_duration_must_stay_inside_official_range(
         duration_seconds,
     )
 
-    assert "duration_out_of_range" in report.codes
+    assert "h3.duration_out_of_range" in report.codes
 
 
 @pytest.mark.parametrize("duration_seconds", [4, 15])
@@ -1250,10 +1250,24 @@ def test_prompt_duration_accepts_official_boundaries(
         duration_seconds,
     )
 
-    assert "duration_out_of_range" not in report.codes
+    assert "h3.duration_out_of_range" not in report.codes
 
 
-def test_prompt_event_timestamp_must_precede_video_end() -> None:
+def test_prompt_event_timestamp_may_equal_video_end() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "At 00:06.000, Lin raises one hand and holds it beside his face."
+        ),
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert report.passed is True
+
+
+def test_prompt_event_timestamp_cannot_exceed_video_end() -> None:
     prompt = _official_prompt(
         H3Mode.T2VA,
         description=(
@@ -1264,15 +1278,15 @@ def test_prompt_event_timestamp_must_precede_video_end() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "event_timestamp_out_of_range" in report.codes
+    assert "h3.event_timestamp_out_of_range" in report.codes
 
 
 @pytest.mark.parametrize(
     ("mode", "expected_code"),
     [
-        (H3Mode.I2VA, "first_frame_anchor_required"),
-        (H3Mode.FL2VA, "first_frame_anchor_required"),
-        (H3Mode.L2VA, "last_frame_anchor_required"),
+        (H3Mode.I2VA, "h3.first_image_alignment_missing"),
+        (H3Mode.FL2VA, "h3.first_image_alignment_missing"),
+        (H3Mode.L2VA, "h3.last_image_alignment_missing"),
     ],
 )
 def test_frame_conditioned_modes_require_canonical_alignment(
@@ -1292,7 +1306,7 @@ def test_terminal_alignment_uses_the_declared_duration(
 ) -> None:
     report = inspect_h3_prompt(_official_prompt(mode), mode, 7)
 
-    assert "last_frame_anchor_required" in report.codes
+    assert "h3.last_image_alignment_missing" in report.codes
 
 
 @pytest.mark.parametrize("mode", [H3Mode.T2VA, H3Mode.REF2VA])
@@ -1302,7 +1316,7 @@ def test_unconditioned_modes_forbid_frame_alignment_prefixes(mode: H3Mode) -> No
 
     report = inspect_h3_prompt(prompt, mode, 6)
 
-    assert "frame_anchor_forbidden" in report.codes
+    assert "h3.frame_alignment_forbidden" in report.codes
 
 
 def test_reference_wire_requires_nonempty_retention_analysis() -> None:
@@ -1315,7 +1329,7 @@ def test_reference_wire_requires_nonempty_retention_analysis() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
 
-    assert "retention_analysis_required" in report.codes
+    assert "h3.retention_analysis_missing" in report.codes
 
 
 def test_dialogue_requires_speaker_id_language_and_wrapping() -> None:
@@ -1329,7 +1343,7 @@ def test_dialogue_requires_speaker_id_language_and_wrapping() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "dialogue_format_invalid" in report.codes
+    assert "h3.dialogue_wire_invalid" in report.codes
 
 
 def test_official_dialogue_and_control_markers_pass() -> None:
@@ -1344,8 +1358,8 @@ def test_official_dialogue_and_control_markers_pass() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "dialogue_format_invalid" not in report.codes
-    assert "control_marker_invalid" not in report.codes
+    assert "h3.dialogue_wire_invalid" not in report.codes
+    assert "h3.control_marker_invalid" not in report.codes
 
 
 @pytest.mark.parametrize("marker", ["<transition>", "<scenetrans>orphan"])
@@ -1357,14 +1371,14 @@ def test_only_official_control_markers_and_placement_are_allowed(marker: str) ->
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "control_marker_invalid" in report.codes
+    assert "h3.control_marker_invalid" in report.codes
 
 
 @pytest.mark.parametrize(
     ("field", "code"),
     [
-        ("overall_soundscape", "soundscape_occurrence"),
-        ("non_diegetic_music", "music_occurrence"),
+        ("overall_soundscape", "h3.soundscape_occurrence"),
+        ("non_diegetic_music", "h3.music_occurrence"),
     ],
 )
 def test_soundscape_and_music_must_each_appear_once(field: str, code: str) -> None:
@@ -1384,7 +1398,7 @@ def test_internal_rigid_section_headings_never_leak_to_wire(heading: str) -> Non
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "internal_section_heading_forbidden" in report.codes
+    assert "h3.internal_heading_leaked" in report.codes
 
 
 def test_legacy_mode_prefix_is_forbidden() -> None:
@@ -1392,7 +1406,7 @@ def test_legacy_mode_prefix_is_forbidden() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "mode_prefix_forbidden" in report.codes
+    assert "h3.mode_prefix_forbidden" in report.codes
 
 
 def test_raw_dialogue_field_is_forbidden() -> None:
@@ -1403,7 +1417,7 @@ def test_raw_dialogue_field_is_forbidden() -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "raw_dialogue_forbidden" in report.codes
+    assert "h3.raw_dialogue_forbidden" in report.codes
 
 
 @pytest.mark.parametrize(
@@ -1415,7 +1429,7 @@ def test_legacy_no_music_phrases_are_forbidden(legacy_music: str) -> None:
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
 
-    assert "legacy_no_music_phrase" in report.codes
+    assert "h3.legacy_no_music_phrase" in report.codes
 
 
 @pytest.mark.parametrize(
@@ -1438,7 +1452,7 @@ def test_main_action_beats_obey_duration_budget(
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
 
-    assert "action_beat_overload" in report.codes
+    assert "h3.action_beat_overload" in report.codes
 
 
 @pytest.mark.parametrize(
@@ -1461,7 +1475,7 @@ def test_action_budget_accepts_the_modeled_maximum(
 
     report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
 
-    assert "action_beat_overload" not in report.codes
+    assert "h3.action_beat_overload" not in report.codes
 
 
 @pytest.mark.parametrize(
@@ -1488,4 +1502,4 @@ def test_static_and_default_camera_motion_do_not_count_as_action_beats(
         4,
     )
 
-    assert "action_beat_overload" not in report.codes
+    assert "h3.action_beat_overload" not in report.codes
