@@ -58,6 +58,7 @@ from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.quality import resolution_matches
 from novelvideo.media_capabilities.video.runtime import generate_h3_director_video
 from novelvideo.media_capabilities.video.h3_reference_runtime import (
+    H3FrozenFrame,
     delete_h3_reference_input_snapshot,
     garbage_collect_h3_reference_input_snapshots,
     generate_h3_reference_director_video,
@@ -458,6 +459,18 @@ def _frame_sha256(path: str) -> str:
     return hashlib.sha256(frame.read_bytes()).hexdigest()
 
 
+def _snapshot_frame_sha256(
+    path: str,
+    frozen_frames: Mapping[str, H3FrozenFrame] | None,
+) -> str:
+    if frozen_frames is None:
+        return _frame_sha256(path)
+    frame = frozen_frames.get(path)
+    if not isinstance(frame, H3FrozenFrame):
+        raise ValueError(f"H3 frozen frame is unavailable: {path}")
+    return frame.sha256
+
+
 def _dialogue_required(beat: Mapping[str, Any], segment: H3DirectorSegment) -> bool:
     return h3_dialogue_required(beat)
 
@@ -533,6 +546,7 @@ def _prompt_context(
     following: Mapping[str, Any] | None,
     *,
     director_context: str = "",
+    frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
 ) -> H3PromptContext:
     from novelvideo.text_runtime_settings import load_text_runtime_settings
 
@@ -541,8 +555,13 @@ def _prompt_context(
         narration=_narrative(beat),
         prev_summary=_narrative(previous) if previous else "",
         next_summary=_narrative(following) if following else "",
-        first_frame_sha256=_frame_sha256(str(segment.first_frame)),
-        last_frame_sha256=_frame_sha256(str(segment.last_frame)) if segment.last_frame else None,
+        first_frame_sha256=_snapshot_frame_sha256(
+            str(segment.first_frame), frozen_frames
+        ),
+        last_frame_sha256=(
+            _snapshot_frame_sha256(str(segment.last_frame), frozen_frames)
+            if segment.last_frame else None
+        ),
         model_id=load_text_runtime_settings().model,
         dialogue_required=_dialogue_required(beat, segment),
         director_context=director_context,
@@ -571,6 +590,7 @@ async def _optimize_missing_prompts(
     resolved_modes: Mapping[str, H3Mode] | None = None,
     requested_mode: str = "auto",
     workflow_id: str | None = None,
+    frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
@@ -624,6 +644,7 @@ async def _optimize_missing_prompts(
             director_context=_optimizer_director_context(
                 project_dir, episode, beat
             ),
+            frozen_frames=frozen_frames,
         )
         context_updates: dict[str, object] = {
             "style_prefix": style_prefix,
@@ -903,6 +924,7 @@ def _has_complete_replay_snapshot(
     current_segment: H3DirectorSegment,
     workflow: VideoWorkflowDefinition,
     references: tuple[object, ...],
+    frozen_frames: Mapping[str, H3FrozenFrame] | None,
 ) -> bool:
     summary = entry.input_summary
     if not isinstance(summary, Mapping) or not _REPLAY_SNAPSHOT_FIELDS <= summary.keys():
@@ -947,9 +969,13 @@ def _has_complete_replay_snapshot(
             "beat_ids": list(source_shot_ids_for(current_segment)),
             "mode": resolved_mode,
             "duration_seconds": current_segment.duration_seconds,
-            "first_frame_sha256": _frame_sha256(str(current_segment.first_frame)),
+            "first_frame_sha256": _snapshot_frame_sha256(
+                str(current_segment.first_frame), frozen_frames
+            ),
             "last_frame_sha256": (
-                _frame_sha256(str(current_segment.last_frame))
+                _snapshot_frame_sha256(
+                    str(current_segment.last_frame), frozen_frames
+                )
                 if current_segment.last_frame else None
             ),
         }
@@ -2056,6 +2082,7 @@ async def _execute_inner(
                     current_segment=segment,
                     workflow=workflow,
                     references=global_references,
+                    frozen_frames=frozen_frames,
                 )
                 for entry, segment in zip(
                     replay_manifest.entries, raw_segments, strict=True
@@ -2203,6 +2230,7 @@ async def _execute_inner(
                     resolved_modes=resolved_modes,
                     requested_mode=requested_mode,
                     workflow_id=workflow.id,
+                    frozen_frames=frozen_frames,
                 )
             else:
                 legacy_evidence: dict[str, dict[str, Any]] = {}
@@ -2215,6 +2243,7 @@ async def _execute_inner(
                     resolved_modes=resolved_modes,
                     requested_mode=requested_mode,
                     workflow_id=workflow.id,
+                    frozen_frames=frozen_frames,
                 )
                 try:
                     if continuity_by_segment is None:
@@ -2230,6 +2259,7 @@ async def _execute_inner(
                         resolved_modes=resolved_modes,
                         requested_mode=requested_mode,
                         workflow_id=workflow.id,
+                        frozen_frames=frozen_frames,
                     )
                 except Exception as shadow_exc:
                     if not _continuity_failure_is_observational(
@@ -2298,9 +2328,13 @@ async def _execute_inner(
                     "beat_ids": source_shot_ids_for(segment),
                     "mode": resolved_mode.value,
                     "duration_seconds": segment.duration_seconds,
-                    "first_frame_sha256": _frame_sha256(str(segment.first_frame)),
+                    "first_frame_sha256": _snapshot_frame_sha256(
+                        str(segment.first_frame), frozen_frames
+                    ),
                     "last_frame_sha256": (
-                        _frame_sha256(str(segment.last_frame))
+                        _snapshot_frame_sha256(
+                            str(segment.last_frame), frozen_frames
+                        )
                         if segment.last_frame else None
                     ),
                 }

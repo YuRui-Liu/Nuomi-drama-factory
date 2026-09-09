@@ -72,6 +72,46 @@ def _replay_i2va_plan(*, label: str, first_frame_sha256: str):
     })
 
 
+def _replay_ref_plan():
+    from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
+
+    return H3DirectorPlan.model_validate({
+        "schema_version": 3,
+        "mode": "ref2va",
+        "total_frames": 120,
+        "visual_style": "cinematic realism",
+        "continuity_locks": ["same face and black coat"],
+        "shots": [{
+            "shot_id": "1",
+            "start_frame": 0,
+            "end_frame": 120,
+            "framing": "medium shot",
+            "angle": "eye level",
+            "focus": "阿明",
+            "composition": "阿明位于画面中央",
+            "camera": {"type": "fixed"},
+            "actions": [{
+                "phase": "execute",
+                "start_frame": 0,
+                "end_frame": 120,
+                "description": "阿明走近门口。",
+                "moving_entities": ["阿明"],
+            }],
+        }],
+        "soundscape": "安静的室内环境声。",
+        "music": "N/A",
+        "reference_summary": "阿明走近门口。",
+        "reference_subjects": [{
+            "subject_index": 1,
+            "source_picture_indexes": [1],
+            "description": "阿明，黑色短发",
+            "retention_marker": "fully_preserved",
+            "retention_detail": "保留面容和身体比例。",
+            "shot_ids": ["1"],
+        }],
+    })
+
+
 def _active_style_plan():
     return SimpleNamespace(
         revision_id="rev-1",
@@ -1124,6 +1164,216 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
 
     assert requests == []
     assert len(cleanup_calls) == 1
+
+
+@pytest.mark.parametrize("source_mutation", ["delete", "replace"])
+def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
+    tmp_path: Path, monkeypatch, source_mutation: str
+) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoResult
+    from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+        H3_PROMPT_COMPILER_VERSION,
+        compile_h3_director_plan,
+    )
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        H3DirectorSegment,
+        load_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+    from novelvideo.task_backend.runners import narrative_group_video
+    from novelvideo.task_backend.runners import narrative_group_video_compose
+
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (8, 8), "black").save(frame)
+    segment = H3DirectorSegment(
+        segment_id="s1", beat_number=1, prompt="source prompt",
+        duration_seconds=5, first_frame=str(frame), dialogue_source="h3_native",
+    )
+    frozen_frames = freeze_h3_reference_frames((segment,), project_root=tmp_path)
+    frozen_sha256 = frozen_frames[str(frame)].sha256
+    reference_content = b"frozen-reference"
+    reference = ResolvedVideoReference(
+        reference_id="ref-1", source_kind="character_identity", label="阿明",
+        subject_description="阿明，黑色短发", path=tmp_path / "gone.png",
+        content=reference_content,
+        sha256=hashlib.sha256(reference_content).hexdigest(),
+    )
+    workflow = SimpleNamespace(
+        id="runninghub:minimax-h3-ref", provider="runninghub",
+        adapter_key="minimax-h3-ref", default_mode="auto",
+        supported_modes=("ref2va",),
+        reference_policy=SimpleNamespace(required=True, max_images=5),
+    )
+    group = SimpleNamespace(
+        id="ng-01", video_reference_settings=SimpleNamespace(revision=7),
+        video_segments=({"id": "durable-1"},),
+    )
+    optimizer_calls = 0
+    requests = []
+
+    class Optimizer:
+        async def optimize(self, episode_input):
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            entry = episode_input.segments[0]
+            assert entry.context.first_frame_sha256 == frozen_sha256
+            plan = _replay_ref_plan()
+            return SimpleNamespace(segments=(SimpleNamespace(
+                segment_id=entry.segment_id,
+                prompt=compile_h3_director_plan(plan),
+                plan=plan,
+                quality_report=_JsonEvidence({
+                    "passed": True, "issues": [], "version": 1
+                }),
+                compiler_version=H3_PROMPT_COMPILER_VERSION,
+            ),))
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            requests.append(request)
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id=f"provider-{len(requests)}",
+                actual_mode="ref2va",
+                provider_parameters={"width": 736, "height": 1280},
+                actual_output={"width": 736, "height": 1280},
+            )
+
+    def load_snapshot(**_kwargs):
+        return SimpleNamespace(
+            reference_revision=7,
+            reference_limit=5,
+            provider_workflow_id="2096502793044582401",
+            digest="b" * 64,
+            references=(reference,),
+            frames=frozen_frames,
+        )
+
+    monkeypatch.setattr(
+        narrative_group_video, "stage_payload",
+        lambda *_args: {"revision": 2, "video_plan": {"revision": 1}},
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_assert_stage_revision", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_workflow_definition_for_payload", lambda _p: workflow
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "load_materialized_groups", lambda *_args: [group]
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_reference_execution_snapshot",
+        lambda **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "load_h3_reference_input_snapshot", load_snapshot
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "delete_h3_reference_input_snapshot",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "create_h3_episode_pack_optimizer",
+        lambda **_kwargs: Optimizer(),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_load_active_director_plan",
+        lambda *_args: _active_style_plan(),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_load_canonical_beats",
+        lambda *_args: asyncio.sleep(0, result=[{"id": "s1"}]),
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "generation_beats_for_group",
+        lambda *_args: [{"id": "s1"}],
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_build_segments", lambda *_args: [segment]
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "_canonical_beats_for_segments",
+        lambda *_args: [{"id": "s1", "video_prompt": "阿明走近门口。"}],
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "record_stage_result", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        narrative_group_video, "record_video_segment_result", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        narrative_group_video_compose, "build_local_composition_plan",
+        lambda items: SimpleNamespace(paths=tuple(item.path for item in items)),
+    )
+    monkeypatch.setattr(
+        narrative_group_video_compose, "compose_local_segments",
+        lambda _plan, output: Path(output).write_bytes(b"composed"),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path), runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+    )
+    envelope = {"episode": 1, "payload": {
+        "group_id": "ng-01", "revision": 2, "plan_revision": 1,
+        "reference_revision": 7, "model": "runninghub:minimax-h3-ref",
+        "reference_contract_version": 1, "reference_limit": 5,
+        "provider_workflow_id": "2096502793044582401",
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+    }}
+
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    manifest_path = (
+        tmp_path / "videos" / "ep001" / "narrative_groups"
+        / "ng-01_r2.manifest.json"
+    )
+    first = load_h3_director_manifest(manifest_path)
+    summary = first.entries[0].input_summary
+    expected_base = {
+        key: summary[key]
+        for key in (
+            "beat_ids",
+            "mode",
+            "duration_seconds",
+            "first_frame_sha256",
+            "last_frame_sha256",
+        )
+    }
+    expected_hash = hashlib.sha256(
+        narrative_group_video._canonical_json(expected_base).encode("utf-8")
+    ).hexdigest()
+    assert summary["first_frame_sha256"] == frozen_sha256
+    assert summary["input_hash"] == expected_hash
+    assert summary["frozen_input_hash"] == expected_hash
+    assert requests[0].frozen_frames is frozen_frames
+
+    if source_mutation == "delete":
+        frame.unlink()
+    else:
+        Image.new("RGB", (8, 8), "white").save(frame)
+        assert hashlib.sha256(frame.read_bytes()).hexdigest() != frozen_sha256
+
+    narrative_group_video.run_narrative_group_video(envelope, ctx)
+    replayed = load_h3_director_manifest(manifest_path)
+
+    assert optimizer_calls == 1
+    assert requests[-1].frozen_frames is frozen_frames
+    assert replayed.entries[0].input_summary == first.entries[0].input_summary
+    assert len(replayed.entries[0].attempts) == 2
 
 
 def test_group_video_optimizes_each_segment_concurrently_before_one_director_submit(tmp_path, monkeypatch):
