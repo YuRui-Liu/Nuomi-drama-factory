@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,6 @@ from novelvideo.ports import get_usage_meter
 from novelvideo.production_workflow import (
     AdoptionStatus,
     ProductionWorkflowStore,
-    production_workflow_project_lock,
 )
 from novelvideo.production_workflow.slot_ids import (
     scene_base_slot_id,
@@ -27,7 +28,6 @@ from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 from novelvideo.utils.path_resolver import canonical_scene_master_path
-from novelvideo.utils.safe_paths import validate_path_segment
 
 _TASK_ASSET_KIND = {
     "episode_scene_planner": "scene",
@@ -60,9 +60,17 @@ def _dump_items(items: list[Any]) -> list[dict]:
 
 
 def _safe_scene_name(value: Any) -> str:
-    scene_name = validate_path_segment(str(value or ""), label="scene name")
-    if ":" in scene_name or any(
+    scene_name = str(value or "").strip()
+    if (
+        not scene_name
+        or scene_name in {".", ".."}
+        or Path(scene_name).is_absolute()
+        or "/" in scene_name
+        or "\\" in scene_name
+        or ":" in scene_name
+        or any(
         ord(character) < 32 or ord(character) == 127 for character in scene_name
+        )
     ):
         raise ValueError("invalid scene name")
     return scene_name
@@ -73,21 +81,16 @@ def _available_scene_reference_slots(
     ctx: ProjectContext,
     scenes: tuple[Any, ...] | list[Any],
     workflow: ProductionWorkflowStore | None = None,
-    materialize_legacy: bool = True,
 ) -> frozenset[str]:
-    """Return usable scene master slots, importing safe legacy canonicals once."""
+    """Return usable workflow or legacy scene master slots without mutation."""
     root = Path(ctx.output_dir).resolve()
     state_dir = Path(ctx.state_dir)
     if workflow is None:
-        with production_workflow_project_lock(state_dir):
-            return _available_scene_reference_slots(
-                ctx=ctx,
-                scenes=scenes,
-                workflow=ProductionWorkflowStore(
-                    state_dir / "production_workflow.json"
-                ),
-                materialize_legacy=materialize_legacy,
-            )
+        workflow = ProductionWorkflowStore(
+            state_dir / "production_workflow.json"
+        )
+    if workflow.read_only_reason:
+        return frozenset()
 
     assets_root = root / "assets"
     available: set[str] = set()
@@ -118,23 +121,16 @@ def _available_scene_reference_slots(
         try:
             slot, versions = workflow.get_slot(slot_id)
         except KeyError:
-            if not materialize_legacy:
-                continue
             try:
                 validate_reference_image(
                     canonical_path,
                     allowed_roots=(assets_root,),
                     expected_mime="image/png",
                 )
-                relative_path = canonical_path.relative_to(root).as_posix()
-                slot, current = workflow.materialize_legacy_current(
-                    slot_id=slot_id,
-                    asset_kind=expected_kind,
-                    asset_path=relative_path,
-                )
-                versions = {current.version_id: current}
-            except (InvalidReferenceUpload, OSError, RuntimeError, ValueError):
+            except (InvalidReferenceUpload, OSError, ValueError):
                 continue
+            available.add(slot_id)
+            continue
 
         if slot.asset_kind != expected_kind or not slot.current_version_id:
             continue
@@ -158,6 +154,59 @@ def _available_scene_reference_slots(
             continue
         available.add(slot_id)
     return frozenset(available)
+
+
+def _legacy_scene_reference_fingerprints(
+    *, ctx: ProjectContext, scenes: tuple[Any, ...]
+) -> dict[str, str]:
+    root = Path(ctx.output_dir).resolve()
+    legacy: dict[str, str] = {}
+    for scene in scenes:
+        try:
+            scene_name = _safe_scene_name(getattr(scene, "name", ""))
+            canonical = canonical_scene_master_path(root, scene_name)
+            expected = root / "assets" / "scenes" / scene_name / "master.png"
+            if canonical != expected:
+                continue
+            validated = validate_reference_image(
+                canonical,
+                allowed_roots=(root / "assets",),
+                expected_mime="image/png",
+            )
+        except (InvalidReferenceUpload, OSError, ValueError):
+            continue
+        legacy[scene_name] = validated.sha256
+    return legacy
+
+
+def _scene_reference_catalog_snapshot(
+    *, ctx: ProjectContext, scenes: tuple[Any, ...]
+) -> tuple[frozenset[str], str]:
+    """Read a stable workflow/canonical snapshot for optimistic binding CAS."""
+    workflow_path = Path(ctx.state_dir) / "production_workflow.json"
+    for _attempt in range(3):
+        before = workflow_path.read_bytes() if workflow_path.is_file() else b""
+        legacy_before = _legacy_scene_reference_fingerprints(
+            ctx=ctx, scenes=scenes
+        )
+        workflow = ProductionWorkflowStore(workflow_path)
+        available = _available_scene_reference_slots(
+            ctx=ctx, scenes=scenes, workflow=workflow
+        )
+        legacy_after = _legacy_scene_reference_fingerprints(ctx=ctx, scenes=scenes)
+        after = workflow_path.read_bytes() if workflow_path.is_file() else b""
+        if before == after and legacy_before == legacy_after:
+            canonical = json.dumps(
+                {
+                    "available_slots": sorted(available),
+                    "legacy": legacy_after,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            revision = hashlib.sha256(after + canonical.encode()).hexdigest()
+            return available, revision
+    raise ValueError("SCENE_REFERENCE_CATALOG_BUSY")
 
 
 def _episode_asset_bindings(
@@ -345,14 +394,17 @@ async def _run_episode_asset_planner(
     )
     scene_projection_items: tuple[Any, ...] = ()
     available_scene_reference_slots = None
+    scene_reference_revision = ""
     if asset_kind == "scene":
         scene_map = {scene.name: scene for scene in scenes}
         scene_map.update({scene.name: scene for scene in draft.scenes})
         scene_projection_items = tuple(scene_map.values())
-        available_scene_reference_slots = _available_scene_reference_slots(
+        (
+            available_scene_reference_slots,
+            scene_reference_revision,
+        ) = _scene_reference_catalog_snapshot(
             ctx=ctx,
             scenes=scene_projection_items,
-            materialize_legacy=False,
         )
     bindings = _episode_asset_bindings(
         asset_kind=asset_kind,
@@ -372,48 +424,53 @@ async def _run_episode_asset_planner(
         ):
             raise ValueError("ACTIVE_DIRECTOR_PLAN_STALE")
         if asset_kind == "scene":
-            with production_workflow_project_lock(ctx.state_dir):
-                workflow = ProductionWorkflowStore(
-                    Path(ctx.state_dir) / "production_workflow.json"
+            publication = await sqlite_store.publish_scene_plan_atomic(
+                episode_number=episode,
+                scenes=draft.scenes,
+                scene_menu=draft.scene_menu,
+                scene_baseline_digests=draft.scene_baseline_digests,
+                episode_scene_menu_baseline_digest=(
+                    draft.episode_scene_menu_baseline_digest
+                ),
+                scene_catalog_baseline_digest=scene_catalog_digest,
+                prop_catalog_baseline_digest=prop_catalog_digest,
+                bindings=bindings,
+                refresh_cache=False,
+            )
+            for _attempt in range(3):
+                (
+                    current_scene_slots,
+                    current_scene_revision,
+                ) = _scene_reference_catalog_snapshot(
+                    ctx=ctx,
+                    scenes=scene_projection_items,
                 )
-                workflow_snapshot = workflow.capture_file_snapshot()
-                try:
-                    available_scene_reference_slots = (
-                        _available_scene_reference_slots(
-                            ctx=ctx,
-                            scenes=scene_projection_items,
-                            workflow=workflow,
-                        )
-                    )
-                    bindings = _episode_asset_bindings(
-                        asset_kind=asset_kind,
-                        project_id=ctx.project_id,
-                        episode_number=episode,
-                        director_plan=final_active,
-                        changed_entities=draft.scenes,
-                        characters=characters,
-                        scenes=scenes,
-                        props=props,
-                        available_scene_reference_slots=(
-                            available_scene_reference_slots
-                        ),
-                    )
-                    publication = await sqlite_store.publish_scene_plan_atomic(
-                        episode_number=episode,
-                        scenes=draft.scenes,
-                        scene_menu=draft.scene_menu,
-                        scene_baseline_digests=draft.scene_baseline_digests,
-                        episode_scene_menu_baseline_digest=(
-                            draft.episode_scene_menu_baseline_digest
-                        ),
-                        scene_catalog_baseline_digest=scene_catalog_digest,
-                        prop_catalog_baseline_digest=prop_catalog_digest,
-                        bindings=bindings,
-                        refresh_cache=False,
-                    )
-                except BaseException:
-                    workflow.restore_file_snapshot(workflow_snapshot)
-                    raise
+                if current_scene_revision == scene_reference_revision:
+                    break
+                scene_reference_revision = current_scene_revision
+                bindings = _episode_asset_bindings(
+                    asset_kind=asset_kind,
+                    project_id=ctx.project_id,
+                    episode_number=episode,
+                    director_plan=final_active,
+                    changed_entities=draft.scenes,
+                    characters=characters,
+                    scenes=scenes,
+                    props=props,
+                    available_scene_reference_slots=current_scene_slots,
+                )
+                await sqlite_store.replace_planned_reference_bindings_atomic(
+                    episode,
+                    ("scene_base", "scene_variant"),
+                    bindings,
+                )
+            else:
+                await sqlite_store.replace_planned_reference_bindings_atomic(
+                    episode,
+                    ("scene_base", "scene_variant"),
+                    (),
+                )
+                raise ValueError("SCENE_REFERENCE_CATALOG_BUSY")
         else:
             publication = await sqlite_store.publish_prop_plan_atomic(
                 episode_number=episode,

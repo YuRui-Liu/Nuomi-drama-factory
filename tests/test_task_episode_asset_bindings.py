@@ -423,6 +423,119 @@ async def test_scene_variant_base_fallback_is_selected_in_preview(tmp_path):
     assert resolved.version_id == "scene-base-v1"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("binding", "scene_name", "expected_slot_fragment"),
+    [
+        (
+            PlannedReferenceBinding.create(
+                project_id="owner/project",
+                episode_number=1,
+                source_plan_revision_id="director-r2",
+                asset_kind="scene_variant",
+                entity_id="雨中咖啡馆",
+                base_entity_id="咖啡馆",
+                variant_id="暴雨版",
+                asset_slot_id="scene:咖啡馆:state:雨中咖啡馆:master",
+                group_ids=("group-1",),
+                status="ready",
+                resolution="auto_matched",
+                display_label="咖啡馆 / 暴雨版",
+            ),
+            "雨中咖啡馆",
+            ":state:",
+        ),
+        (
+            PlannedReferenceBinding.create(
+                project_id="owner/project",
+                episode_number=1,
+                source_plan_revision_id="director-r2",
+                asset_kind="scene_variant",
+                entity_id="咖啡馆",
+                base_entity_id="咖啡馆",
+                variant_id="暴雨版",
+                asset_slot_id="scene:咖啡馆:base:master",
+                group_ids=("group-1",),
+                status="ready",
+                resolution="explicit_fallback",
+                display_label="咖啡馆 / 暴雨版（基础场景）",
+            ),
+            "咖啡馆",
+            ":base:",
+        ),
+    ],
+)
+async def test_scene_variant_preview_reads_canonical_legacy_without_persisting(
+    tmp_path,
+    binding: PlannedReferenceBinding,
+    scene_name: str,
+    expected_slot_fragment: str,
+):
+    canonical = tmp_path / "assets" / "scenes" / scene_name / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+    workflow_path = tmp_path / "state" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(workflow_path)
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        workflow,
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "ready"
+    assert resolved.selected_by_default is True
+    assert resolved.asset_slot_id == binding.asset_slot_id
+    assert resolved.relative_path == canonical.relative_to(tmp_path).as_posix()
+    assert resolved.sha256
+    assert expected_slot_fragment in resolved.asset_slot_id
+    assert not workflow_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_scene_variant_preview_does_not_bypass_corrupt_workflow_with_legacy(
+    tmp_path,
+):
+    binding = PlannedReferenceBinding.create(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        asset_kind="scene_variant",
+        entity_id="咖啡馆",
+        base_entity_id="咖啡馆",
+        variant_id="暴雨版",
+        asset_slot_id="scene:咖啡馆:base:master",
+        group_ids=("group-1",),
+        status="ready",
+        resolution="explicit_fallback",
+        display_label="咖啡馆 / 暴雨版（基础场景）",
+    )
+    canonical = tmp_path / "assets" / "scenes" / "咖啡馆" / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+    workflow_path = tmp_path / "state" / "production_workflow.json"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text("{broken", encoding="utf-8")
+
+    preview = await resolve_planned_reference_preview(
+        _PlannedBindingStore(binding),
+        ProductionWorkflowStore(workflow_path),
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == "missing_asset"
+    assert resolved.selected_by_default is False
+    assert workflow_path.read_text(encoding="utf-8") == "{broken"
+
+
 def test_real_novel_scenes_follow_available_workflow_master_slots(tmp_path):
     from novelvideo.task_backend.runners.episode_assets import (
         _available_scene_reference_slots,
@@ -492,7 +605,9 @@ def test_real_novel_scenes_follow_available_workflow_master_slots(tmp_path):
     assert direct.resolution == "auto_matched"
 
 
-def test_scene_slot_availability_materializes_safe_legacy_canonical(tmp_path):
+def test_scene_slot_availability_reads_safe_legacy_canonical_without_writing(
+    tmp_path,
+):
     from novelvideo.task_backend.runners.episode_assets import (
         _available_scene_reference_slots,
     )
@@ -509,13 +624,29 @@ def test_scene_slot_availability_materializes_safe_legacy_canonical(tmp_path):
 
     slot_id = scene_base_slot_id(scene.name, "master")
     assert available == frozenset({slot_id})
-    slot, versions = ProductionWorkflowStore(
-        tmp_path / "state" / "production_workflow.json"
-    ).get_slot(slot_id)
-    assert slot.asset_kind == "scene_base"
-    assert versions[slot.current_version_id].asset_path == canonical.relative_to(
-        tmp_path
-    ).as_posix()
+    assert not (tmp_path / "state" / "production_workflow.json").exists()
+
+
+def test_scene_slot_availability_does_not_bypass_corrupt_workflow(tmp_path):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    scene = NovelScene(name="咖啡馆")
+    canonical = tmp_path / "assets" / "scenes" / scene.name / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+    workflow_path = tmp_path / "state" / "production_workflow.json"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text("{broken", encoding="utf-8")
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(scene,),
+    )
+
+    assert available == frozenset()
+    assert workflow_path.read_text(encoding="utf-8") == "{broken"
 
 
 def test_scene_slot_availability_rejects_cross_slot_current_version(tmp_path):
@@ -1157,9 +1288,11 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     activation_finished = threading.Event()
     published_revision_ids: list[str] = []
     published_entity_ids: list[str] = []
+    replaced_entity_ids: list[str] = []
     block_publish = False
     publish_error = ""
     inject_variant_after_read = False
+    remove_variant_after_read = False
     publish_started = asyncio.Event()
     release_publish = asyncio.Event()
 
@@ -1209,6 +1342,13 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
             if block_publish:
                 publish_started.set()
                 await release_publish.wait()
+
+        async def replace_planned_reference_bindings_atomic(
+            self, episode, asset_kinds, bindings
+        ):
+            assert episode == 1
+            assert asset_kinds == ("scene_base", "scene_variant")
+            replaced_entity_ids[:] = [binding.entity_id for binding in bindings]
 
     class FakeCogneeStore:
         def __init__(self, *args, sqlite_store, **kwargs):
@@ -1279,21 +1419,21 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     canonical.parent.mkdir(parents=True)
     Image.new("RGB", (8, 8), "red").save(canonical)
     workflow_path = tmp_path / "production_workflow.json"
-    real_availability = runner._available_scene_reference_slots
+    variant_image = (
+        tmp_path
+        / "assets"
+        / "scenes"
+        / "雨中咖啡馆"
+        / "versions"
+        / "variant.png"
+    )
+    real_snapshot = runner._scene_reference_catalog_snapshot
 
-    def observe_availability(**kwargs):
-        nonlocal inject_variant_after_read
-        available = real_availability(**kwargs)
-        if inject_variant_after_read and kwargs.get("workflow") is None:
+    def observe_snapshot(**kwargs):
+        nonlocal inject_variant_after_read, remove_variant_after_read
+        snapshot = real_snapshot(**kwargs)
+        if inject_variant_after_read:
             inject_variant_after_read = False
-            variant_image = (
-                tmp_path
-                / "assets"
-                / "scenes"
-                / "雨中咖啡馆"
-                / "versions"
-                / "variant.png"
-            )
             variant_image.parent.mkdir(parents=True)
             Image.new("RGB", (8, 8), "blue").save(variant_image)
             ProductionWorkflowStore(workflow_path).register_candidate_version(
@@ -1307,11 +1447,12 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
                 actor="test",
                 at=datetime.now(UTC),
             )
-        return available
+        elif remove_variant_after_read:
+            remove_variant_after_read = False
+            variant_image.unlink()
+        return snapshot
 
-    monkeypatch.setattr(
-        runner, "_available_scene_reference_slots", observe_availability
-    )
+    monkeypatch.setattr(runner, "_scene_reference_catalog_snapshot", observe_snapshot)
 
     task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
     await draft_started.wait()
@@ -1345,7 +1486,19 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     assert activation_finished.is_set()
     assert result["binding_count"] == 1
     assert result["binding_statuses"] == {"ready": 1}
+    assert published_entity_ids == ["咖啡馆"]
+    assert replaced_entity_ids == ["雨中咖啡馆"]
+
+    published_entity_ids.clear()
+    replaced_entity_ids.clear()
+    FakeDirectorPlanStore.active = old_plan
+    block_publish = False
+    remove_variant_after_read = True
+    result = await runner._run_episode_asset_planner(envelope, ctx)
+
+    assert result["binding_statuses"] == {"ready": 1}
     assert published_entity_ids == ["雨中咖啡馆"]
+    assert replaced_entity_ids == ["咖啡馆"]
 
     workflow_path.unlink()
     FakeDirectorPlanStore.active = old_plan
@@ -1354,6 +1507,34 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
         with pytest.raises(ValueError, match=publish_error):
             await runner._run_episode_asset_planner(envelope, ctx)
         assert not workflow_path.exists()
+
+    publish_error = ""
+    block_publish = True
+    publish_started.clear()
+    release_publish.clear()
+    task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
+    await publish_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not workflow_path.exists()
+
+    block_publish = False
+    catalog_read = 0
+
+    def always_changing_snapshot(**kwargs):
+        nonlocal catalog_read
+        available, revision = real_snapshot(**kwargs)
+        catalog_read += 1
+        return available, f"{revision}-{catalog_read}"
+
+    monkeypatch.setattr(
+        runner, "_scene_reference_catalog_snapshot", always_changing_snapshot
+    )
+    with pytest.raises(ValueError, match="SCENE_REFERENCE_CATALOG_BUSY"):
+        await runner._run_episode_asset_planner(envelope, ctx)
+    assert replaced_entity_ids == []
+    assert not workflow_path.exists()
 
 
 @pytest.mark.asyncio

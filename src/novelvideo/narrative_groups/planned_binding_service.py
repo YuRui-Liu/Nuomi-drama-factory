@@ -20,7 +20,12 @@ from novelvideo.narrative_groups.reference_uploads import (
     ReferenceUpload,
     validate_reference_image,
 )
-from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
+from novelvideo.production_workflow import (
+    AdoptionStatus,
+    AssetSlot,
+    AssetVersion,
+    ProductionWorkflowStore,
+)
 from novelvideo.production_workflow.store import production_workflow_project_lock
 
 from novelvideo.production_workflow.slot_ids import (
@@ -808,6 +813,64 @@ def _asset_path(project_dir: Path, value: str) -> Path:
     return path.absolute()
 
 
+def _safe_scene_path_segment(value: str) -> str:
+    scene_name = _text(value)
+    if (
+        not scene_name
+        or scene_name in {".", ".."}
+        or Path(scene_name).is_absolute()
+        or "/" in scene_name
+        or "\\" in scene_name
+        or ":" in scene_name
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in scene_name
+        )
+    ):
+        raise ValueError("invalid scene name")
+    return scene_name
+
+
+def _scene_binding_slot_kind(binding: PlannedReferenceBinding) -> str | None:
+    if binding.asset_kind == "scene_base":
+        return "scene_base"
+    if binding.asset_kind == "scene_variant":
+        return (
+            "scene_base"
+            if binding.resolution == "explicit_fallback"
+            else "scene_state"
+        )
+    return None
+
+
+def _read_legacy_scene_binding(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+) -> tuple[AssetSlot, dict[str, AssetVersion]]:
+    scene_name = _safe_scene_path_segment(binding.entity_id)
+    expected_kind = _scene_binding_slot_kind(binding)
+    if expected_kind == "scene_state":
+        base_scene_id = _safe_scene_path_segment(binding.base_entity_id)
+        expected_slot_id = scene_state_slot_id(
+            base_scene_id, scene_name, "master"
+        )
+    elif expected_kind == "scene_base":
+        expected_slot_id = scene_base_slot_id(scene_name, "master")
+    else:
+        raise ValueError("not a scene binding")
+    if binding.asset_slot_id != expected_slot_id:
+        raise ValueError("scene binding slot does not match its identity")
+    relative_path = Path(
+        "assets", "scenes", scene_name, "master.png"
+    ).as_posix()
+    slot, version = workflow_store.read_legacy_current(
+        slot_id=binding.asset_slot_id,
+        asset_kind=expected_kind,
+        asset_path=relative_path,
+    )
+    return slot, {version.version_id: version}
+
+
 def _unavailable(
     binding: PlannedReferenceBinding,
     warning: str,
@@ -841,7 +904,19 @@ def _resolve_binding(
     try:
         slot, versions = workflow_store.get_slot(binding.asset_slot_id)
     except KeyError:
-        return _unavailable(binding, "asset slot is unavailable", status="missing_asset")
+        if (
+            _scene_binding_slot_kind(binding) is None
+            or workflow_store.read_only_reason
+        ):
+            return _unavailable(
+                binding, "asset slot is unavailable", status="missing_asset"
+            )
+        try:
+            slot, versions = _read_legacy_scene_binding(binding, workflow_store)
+        except ValueError:
+            return _unavailable(
+                binding, "asset slot is unavailable", status="missing_asset"
+            )
     if (
         binding.asset_kind == "character_identity"
         and binding.resolution == "explicit_fallback"
@@ -852,12 +927,8 @@ def _resolve_binding(
             "asset slot kind is not character_portrait",
             status="missing_asset",
         )
-    if binding.asset_kind == "scene_variant":
-        expected_slot_kind = (
-            "scene_base"
-            if binding.resolution == "explicit_fallback"
-            else "scene_state"
-        )
+    expected_slot_kind = _scene_binding_slot_kind(binding)
+    if expected_slot_kind is not None:
         if slot.asset_kind != expected_slot_kind:
             return _unavailable(
                 binding,
