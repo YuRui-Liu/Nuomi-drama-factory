@@ -24,6 +24,10 @@ from novelvideo.media_capabilities.video.h3_prompt_profile import (
     H3_GLOBAL_CONTINUITY_PROMPT,
 )
 from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.h3_reference_payload import (
+    H3_REFERENCE_TASK_TYPE,
+    H3_REFERENCE_TIMELINE_MODE,
+)
 from novelvideo.media_capabilities.video.models import MotionSpec
 from novelvideo.media_capabilities.video.quality import (
     VideoProbe,
@@ -43,6 +47,8 @@ _H3_ASPECT_RATIO_VALUES = {
     "21:9": "21:9 (Ultrawide)",
 }
 _VOLATILE_TIMELINE_ASSET_FIELDS = frozenset({"imageFile", "videoFile"})
+_H3_I2V_TASK_TYPE = "i2v — 首帧生视频(Image-to-Video)"
+_H3_FL2V_TASK_TYPE = "fl2v — 首尾帧生视频(First-Last Frame)"
 
 
 def _required_timeline_text(value: object, *, field: str) -> str:
@@ -61,10 +67,24 @@ def _required_timeline_duration(value: object, *, field: str) -> float:
     return float(value)
 
 
+def _required_timeline_integer(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"H3 transport timeline {field} must be an integer")
+    return value
+
+
+def _timeline_image_file(value: object, *, field: str) -> str:
+    if not isinstance(value, dict):
+        raise ValueError(f"H3 transport timeline {field} must be an image mapping")
+    return _required_timeline_text(value.get("imageFile"), field=f"{field}.imageFile")
+
+
 def _transport_segment_mode(segment: Mapping[str, object]) -> str:
     task_type = segment.get("taskType")
     if task_type in {"Ref-I2V", "Ref-FL2V"}:
         return "ref2va"
+    if task_type != "":
+        raise ValueError("H3 transport timeline segment task type is not canonical")
     first = segment.get("isStartFrame")
     last = segment.get("isEndFrame")
     if not isinstance(first, bool) or not isinstance(last, bool):
@@ -90,7 +110,7 @@ def _validate_prompt_surface(
     if name in {"segments", "shots"} and len(values) != len(evidence_by_id):
         raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
     seen: list[str] = []
-    for value in values:
+    for index, value in enumerate(values):
         if not isinstance(value, dict):
             raise ValueError(f"H3 transport timeline {name} must contain mappings")
         raw_id = _required_timeline_text(value.get("id"), field=f"{name}.id")
@@ -106,6 +126,14 @@ def _validate_prompt_surface(
             raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
         if prompt != evidence["prompt"]:
             raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
+        if value.get("negativePrompt") != "":
+            raise ValueError(f"H3 transport timeline {name} negative prompt must be empty")
+        if name in {"segments", "shots"} and value.get(
+            "continuityFromPrev"
+        ) is not (index > 0):
+            raise ValueError(
+                f"H3 transport timeline {name} continuity is not canonical"
+            )
         if name in {"segments", "shots"}:
             seen.append(segment_id)
     if name in {"segments", "shots"} and seen != list(evidence_by_id):
@@ -117,43 +145,58 @@ def _validate_keyframes(
     actual_segments: list[object],
     evidence_by_id: Mapping[str, Mapping[str, object]],
 ) -> None:
-    expected: list[tuple[str, str, float]] = []
+    expected: list[dict[str, object]] = []
     for actual in actual_segments:
         if not isinstance(actual, dict):
             raise ValueError("H3 transport timeline segments must contain mappings")
         segment_id = str(actual["id"])
         evidence = evidence_by_id[segment_id]
+        start = _required_timeline_integer(actual.get("start"), field="segments.start")
+        frame_count = _required_timeline_integer(
+            actual.get("frameCount"), field="segments.frameCount"
+        )
+        half = frame_count // 2
         if actual["isStartFrame"]:
-            expected.append(
-                (f"{segment_id}_s", str(evidence["prompt"]), float(evidence["duration_seconds"]))
-            )
+            expected.append({
+                "id": f"{segment_id}_s",
+                "imageFile": _timeline_image_file(
+                    actual.get("genImage"), field="segments.genImage"
+                ),
+                "start": start,
+                "length": half,
+                "frameCount": half,
+                "durationSec": float(evidence["duration_seconds"]),
+                "prompt": str(evidence["prompt"]),
+                "negativePrompt": "",
+                "isStartFrame": True,
+                "isEndFrame": False,
+            })
         if actual["isEndFrame"]:
-            expected.append(
-                (
-                    f"{segment_id}_e",
-                    (
-                        str(evidence["prompt"])
-                        if evidence["resolved_mode"] == "ref2va"
-                        else ""
-                    ),
-                    float(evidence["duration_seconds"]),
-                )
-            )
+            remainder = frame_count - half
+            expected.append({
+                "id": f"{segment_id}_e",
+                "imageFile": _timeline_image_file(
+                    actual.get("endImage"), field="segments.endImage"
+                ),
+                "start": start + half,
+                "length": remainder,
+                "frameCount": remainder,
+                "durationSec": float(evidence["duration_seconds"]),
+                "prompt": (
+                    str(evidence["prompt"])
+                    if evidence["resolved_mode"] == "ref2va"
+                    else ""
+                ),
+                "negativePrompt": "",
+                "isStartFrame": False,
+                "isEndFrame": True,
+            })
     if not isinstance(values, list) or len(values) != len(expected):
         raise ValueError("H3 transport timeline keyframes do not match quality evidence")
-    for value, (expected_id, expected_prompt, expected_duration) in zip(
-        values, expected, strict=True
-    ):
+    for value, expected_value in zip(values, expected, strict=True):
         if not isinstance(value, dict):
             raise ValueError("H3 transport timeline keyframes must contain mappings")
-        if value.get("id") != expected_id or value.get("prompt") != expected_prompt:
-            raise ValueError(
-                "H3 transport timeline keyframes do not match quality evidence"
-            )
-        duration = _required_timeline_duration(
-            value.get("durationSec"), field="keyframes.durationSec"
-        )
-        if duration != expected_duration:
+        if any(value.get(key) != item for key, item in expected_value.items()):
             raise ValueError(
                 "H3 transport timeline keyframes do not match quality evidence"
             )
@@ -184,8 +227,11 @@ def _reject_nonfinite_json_constant(value: str) -> None:
 
 def _validate_transport_timeline(
     timeline_data: str,
-    evidence_segments: object,
+    stable_timeline: object,
 ) -> dict[str, JsonValue]:
+    if not isinstance(stable_timeline, dict):
+        raise ValueError("H3 timeline quality evidence must be a mapping")
+    evidence_segments = stable_timeline.get("segments")
     if not isinstance(evidence_segments, list) or not evidence_segments:
         raise ValueError("H3 timeline quality evidence requires segments")
     evidence_by_id: dict[str, Mapping[str, object]] = {}
@@ -225,17 +271,73 @@ def _validate_transport_timeline(
         raise ValueError("H3 transport timeline must be valid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("H3 transport timeline must be a JSON object")
+    if payload.get("version") != 5 or payload.get("editMode") != "segment":
+        raise ValueError("H3 transport timeline envelope is not canonical")
     actual_segments = payload.get("segments")
     _validate_prompt_surface("segments", actual_segments, evidence_by_id)
     assert isinstance(actual_segments, list)
     for actual in actual_segments:
         assert isinstance(actual, dict)
         segment_id = str(actual["id"])
-        if _transport_segment_mode(actual) != evidence_by_id[segment_id]["resolved_mode"]:
+        evidence = evidence_by_id[segment_id]
+        resolved_mode = _transport_segment_mode(actual)
+        if resolved_mode != evidence["resolved_mode"]:
             raise ValueError(
                 "H3 transport timeline segment mode does not match quality evidence"
             )
-    _validate_prompt_surface("shots", payload.get("shots"), evidence_by_id)
+        is_start = actual.get("isStartFrame")
+        is_end = actual.get("isEndFrame")
+        assert isinstance(is_start, bool) and isinstance(is_end, bool)
+        if resolved_mode == "i2va" and (is_start, is_end) != (True, False):
+            raise ValueError("H3 transport timeline I2VA frame flags are invalid")
+        if resolved_mode == "fl2va" and (is_start, is_end) != (True, True):
+            raise ValueError("H3 transport timeline FL2VA frame flags are invalid")
+        if resolved_mode == "ref2va" and not is_start:
+            raise ValueError("H3 transport timeline Ref2VA requires a start frame")
+        if resolved_mode not in {"i2va", "fl2va", "ref2va"}:
+            raise ValueError("H3 transport timeline mode is unsupported by node 12")
+        expected_task_type = (
+            "Ref-FL2V" if is_end else "Ref-I2V"
+        ) if resolved_mode == "ref2va" else ""
+        if actual.get("taskType") != expected_task_type:
+            raise ValueError("H3 transport timeline segment task type is not canonical")
+        if actual.get("refs") != []:
+            raise ValueError("H3 transport timeline segment refs must be empty")
+        start = _required_timeline_integer(actual.get("start"), field="segments.start")
+        length = _required_timeline_integer(actual.get("length"), field="segments.length")
+        frame_count = _required_timeline_integer(
+            actual.get("frameCount"), field="segments.frameCount"
+        )
+        if start < 0 or length <= 0 or frame_count != length:
+            raise ValueError("H3 transport timeline segment geometry is invalid")
+        if "start" in evidence and start != evidence["start"]:
+            raise ValueError("H3 transport timeline segment start does not match evidence")
+        if "frame_count" in evidence and frame_count != evidence["frame_count"]:
+            raise ValueError(
+                "H3 transport timeline segment frame count does not match evidence"
+            )
+        gen_image = actual.get("genImage")
+        end_image = actual.get("endImage")
+        if is_start:
+            _timeline_image_file(gen_image, field="segments.genImage")
+        elif gen_image is not None:
+            raise ValueError("H3 transport timeline segment start image is unexpected")
+        if is_end:
+            _timeline_image_file(end_image, field="segments.endImage")
+        elif end_image is not None:
+            raise ValueError("H3 transport timeline segment end image is unexpected")
+
+    actual_shots = payload.get("shots")
+    _validate_prompt_surface("shots", actual_shots, evidence_by_id)
+    assert isinstance(actual_shots, list)
+    for shot, segment in zip(actual_shots, actual_segments, strict=True):
+        assert isinstance(shot, dict) and isinstance(segment, dict)
+        for shot_key, segment_key in (
+            ("startImage", "genImage"),
+            ("endImage", "endImage"),
+        ):
+            if shot.get(shot_key) != segment.get(segment_key):
+                raise ValueError("H3 transport timeline shot images do not match segment")
     _validate_keyframes(payload.get("keyframes"), actual_segments, evidence_by_id)
 
     has_reference_mode = any(
@@ -261,6 +363,60 @@ def _validate_transport_timeline(
         raise ValueError(
             "H3 transport timeline global prompt does not match quality evidence"
         )
+    any_end_frame = any(
+        isinstance(segment, dict) and segment.get("isEndFrame") is True
+        for segment in actual_segments
+    )
+    expected_timeline_mode = (
+        H3_REFERENCE_TIMELINE_MODE
+        if has_reference_mode
+        else ("fl2v" if any_end_frame else "i2v")
+    )
+    if payload.get("timelineMode") != expected_timeline_mode:
+        raise ValueError("H3 transport timeline mode is not canonical")
+    expected_global_task_type = (
+        H3_REFERENCE_TASK_TYPE
+        if has_reference_mode
+        else (_H3_FL2V_TASK_TYPE if any_end_frame else _H3_I2V_TASK_TYPE)
+    )
+    if global_settings.get("taskType") != expected_global_task_type:
+        raise ValueError("H3 transport timeline global task type is not canonical")
+    refs = global_settings.get("refs")
+    if has_reference_mode:
+        expected_references = stable_timeline.get("references")
+        if not isinstance(expected_references, list) or not isinstance(refs, list):
+            raise ValueError("H3 transport timeline reference evidence is incomplete")
+        if len(refs) != len(expected_references) or not refs:
+            raise ValueError("H3 transport timeline refs do not match evidence")
+        for index, reference in enumerate(refs):
+            if not isinstance(reference, dict) or reference.get("index") != index:
+                raise ValueError("H3 transport timeline refs do not match evidence")
+            _timeline_image_file(reference, field="global.refs")
+    elif refs != []:
+        raise ValueError("H3 transport timeline base refs must be empty")
+
+    expected_duration = sum(
+        float(evidence["duration_seconds"]) for evidence in evidence_by_id.values()
+    )
+    if _required_timeline_duration(
+        payload.get("durationSec"), field="durationSec"
+    ) != expected_duration:
+        raise ValueError("H3 transport timeline duration does not match evidence")
+    for payload_key, evidence_key in (
+        ("frameRate", "frame_rate"),
+        ("totalFrames", "total_frames"),
+    ):
+        if evidence_key in stable_timeline:
+            expected_value = _required_timeline_integer(
+                stable_timeline[evidence_key], field=f"evidence.{evidence_key}"
+            )
+            actual_value = _required_timeline_integer(
+                payload.get(payload_key), field=payload_key
+            )
+            if actual_value != expected_value:
+                raise ValueError(
+                    f"H3 transport timeline {payload_key} does not match evidence"
+                )
     canonical = _canonical_transport_timeline(payload)
     assert isinstance(canonical, dict)
     return canonical
@@ -470,8 +626,9 @@ class H3VideoPipeline:
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
         stable_timeline = dict(idempotency_input)
-        segments = stable_timeline.get("segments")
-        transport_timeline = _validate_transport_timeline(timeline_data, segments)
+        transport_timeline = _validate_transport_timeline(
+            timeline_data, stable_timeline
+        )
         semantic_values: dict[str, JsonValue] = {
             **dict(director_params or {}),
             "timeline_data": timeline_data,

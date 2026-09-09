@@ -59,6 +59,79 @@ def _reference_wire(*, duration_seconds: float = 4) -> H3ReferenceWire:
     )
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    ["missing_ref", "blank_ref_asset", "global_task_type", "segment_task_type"],
+)
+def test_reference_transport_rejects_unbound_reference_semantics(tamper: str) -> None:
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        H3GlobalReference,
+        build_h3_reference_timeline_payload,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        build_h3_timeline_data,
+    )
+    from novelvideo.media_capabilities.video.pipeline import (
+        _validate_transport_timeline,
+    )
+
+    wire = _reference_wire()
+    prompt = compile_h3_wire(wire)
+    timeline = build_h3_timeline_data((H3DirectorSegment(
+        segment_id="s1",
+        beat_number=1,
+        prompt=prompt,
+        duration_seconds=4,
+        first_frame="first.png",
+    ),), strict_first_frame=True)
+    payload = json.loads(build_h3_reference_timeline_payload(
+        timeline,
+        (H3GlobalReference(
+            reference_id="ref-1",
+            source_kind="character_identity",
+            label="阿明",
+            subject_description="阿明，黑色短发",
+            uploaded_url="uploaded://ref.png",
+            sha256="a" * 64,
+        ),),
+        max_references=5,
+        wire=wire,
+        uploaded_frames={"first.png": {"imageFile": "uploaded://first.png"}},
+    ))
+    mutations = {
+        "missing_ref": lambda: payload["global"].update({"refs": []}),
+        "blank_ref_asset": lambda: payload["global"]["refs"][0].update(
+            {"imageFile": ""}
+        ),
+        "global_task_type": lambda: payload["global"].update(
+            {"taskType": "unknown-r2v"}
+        ),
+        "segment_task_type": lambda: payload["segments"][0].update(
+            {"taskType": "Ref-Unknown"}
+        ),
+    }
+    mutations[tamper]()
+    evidence = {
+        "references": [{"reference_id": "ref-1"}],
+        "frame_rate": timeline.fps,
+        "total_frames": timeline.total_frames,
+        "segments": [{
+            "id": "s1",
+            "start": timeline.entries[0].start_frame,
+            "frame_count": timeline.entries[0].frame_count,
+            "prompt": prompt,
+            "resolved_mode": "ref2va",
+            "duration_seconds": 4,
+        }],
+    }
+
+    with pytest.raises(ValueError, match="transport timeline"):
+        _validate_transport_timeline(
+            json.dumps(payload, ensure_ascii=False),
+            evidence,
+        )
+
+
 def test_task_display_metadata_persists_reference_snapshot_ownership() -> None:
     from novelvideo.ports.tasks import display_metadata_for_task
 
@@ -1143,7 +1216,7 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
             )
 
             _validate_transport_timeline(
-                kwargs["timeline_data"], kwargs["idempotency_input"]["segments"]
+                kwargs["timeline_data"], kwargs["idempotency_input"]
             )
             captured["request"] = request
             captured.update(kwargs)
@@ -1209,10 +1282,14 @@ async def test_reference_runtime_uploads_frozen_reference_bytes_and_complete_fra
     }]
     assert captured["idempotency_input"]["segments"] == [{
         "id": "s1",
+        "start": 0,
+        "frame_count": 107,
         "prompt": compile_h3_wire(wire),
         "resolved_mode": "ref2va",
         "duration_seconds": 4,
     }]
+    assert captured["idempotency_input"]["frame_rate"] == 24
+    assert captured["idempotency_input"]["total_frames"] == 107
     assert result.provider_task_id == "provider-7"
     assert submitted == ["provider-7"]
     assert Path(result.output_path).read_bytes() == b"video"

@@ -1351,12 +1351,16 @@ def _idempotency_input(
         "segments": [
             {
                 "id": entry.segment.segment_id,
+                "start": entry.start_frame,
+                "frame_count": entry.frame_count,
                 "prompt": entry.segment.prompt,
                 "resolved_mode": H3Mode.REF2VA.value,
                 "duration_seconds": entry.segment.duration_seconds,
             }
             for entry in timeline.entries
         ],
+        "frame_rate": timeline.fps,
+        "total_frames": timeline.total_frames,
         "mode": mode,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,

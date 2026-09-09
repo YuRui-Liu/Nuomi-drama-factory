@@ -29,6 +29,11 @@ from novelvideo.media_capabilities.video.pipeline import (
     UploadedReference,
     VideoCandidate,
 )
+from novelvideo.media_capabilities.video.h3_timeline import (
+    H3DirectorSegment,
+    build_h3_timeline_data,
+)
+from novelvideo.media_capabilities.video.runtime import _director_timeline_payload
 from novelvideo.media_capabilities.video.quality import VideoProbe
 
 
@@ -64,31 +69,109 @@ def _timeline_data(
     evidence = dict(segment or _timeline_segment_input())
     actual = {
         "id": evidence["id"],
+        "start": 0,
+        "length": 124,
+        "frameCount": 124,
         "prompt": evidence["prompt"],
         "durationSec": evidence["duration_seconds"],
+        "negativePrompt": "",
+        "continuityFromPrev": False,
         "genImage": {"imageFile": image_file},
+        "endImage": (
+            {"imageFile": "uploaded://last.png"}
+            if evidence["resolved_mode"] == H3Mode.FL2VA.value
+            else None
+        ),
         "isStartFrame": True,
         "isEndFrame": evidence["resolved_mode"] == H3Mode.FL2VA.value,
         "taskType": "",
+        "refs": [],
     }
+    keyframes = [{
+        "id": f"{actual['id']}_s",
+        "imageFile": image_file,
+        "start": 0,
+        "length": 62,
+        "frameCount": 62,
+        "prompt": actual["prompt"],
+        "negativePrompt": "",
+        "durationSec": actual["durationSec"],
+        "isStartFrame": True,
+        "isEndFrame": False,
+    }]
+    if actual["isEndFrame"]:
+        keyframes.append({
+            "id": f"{actual['id']}_e",
+            "imageFile": "uploaded://last.png",
+            "start": 62,
+            "length": 62,
+            "frameCount": 62,
+            "prompt": "",
+            "negativePrompt": "",
+            "durationSec": actual["durationSec"],
+            "isStartFrame": False,
+            "isEndFrame": True,
+        })
     return json.dumps(
         {
-            "global": {"prompt": H3_GLOBAL_CONTINUITY_PROMPT},
+            "global": {
+                "taskType": (
+                    "fl2v — 首尾帧生视频(First-Last Frame)"
+                    if actual["isEndFrame"]
+                    else "i2v — 首帧生视频(Image-to-Video)"
+                ),
+                "prompt": H3_GLOBAL_CONTINUITY_PROMPT,
+                "refs": [],
+            },
+            "version": 5,
+            "editMode": "segment",
             "segments": [actual],
             "shots": [{
                 "id": actual["id"],
                 "prompt": actual["prompt"],
+                "negativePrompt": "",
                 "durationSec": actual["durationSec"],
+                "startImage": actual["genImage"],
+                "endImage": actual["endImage"],
+                "continuityFromPrev": False,
             }],
-            "keyframes": [{
-                "id": f"{actual['id']}_s",
-                "prompt": actual["prompt"],
-                "durationSec": actual["durationSec"],
-            }],
+            "keyframes": keyframes,
+            "timelineMode": "fl2v" if actual["isEndFrame"] else "i2v",
+            "durationSec": actual["durationSec"],
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _production_timeline_case() -> tuple[dict[str, object], dict[str, object]]:
+    evidence_segment = {
+        **_timeline_segment_input(),
+        "start": 0,
+        "frame_count": 124,
+    }
+    source = H3DirectorSegment(
+        segment_id="one",
+        beat_number=1,
+        prompt=str(evidence_segment["prompt"]),
+        duration_seconds=5,
+        first_frame="first.png",
+    )
+    timeline = build_h3_timeline_data((source,), strict_first_frame=True)
+    payload = json.loads(
+        _director_timeline_payload(
+            timeline,
+            {"first.png": {"imageFile": "uploaded://first.png"}},
+            aspect_ratio="9:16",
+            resolution="720p",
+        )
+    )
+    evidence = {
+        "frame_rate": timeline.fps,
+        "total_frames": timeline.total_frames,
+        "segments": [evidence_segment],
+    }
+    return payload, evidence
 
 
 class FakeExecutor:
@@ -593,6 +676,121 @@ async def test_director_timeline_rejects_malformed_transport_values_before_execu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "segment_negative",
+        "shot_negative",
+        "keyframe_negative",
+        "duration",
+        "frame_rate",
+        "total_frames",
+        "timeline_mode",
+        "global_task_type",
+        "segment_task_type",
+        "segment_start",
+        "segment_length",
+        "segment_frame_count",
+        "segment_image",
+        "base_refs",
+        "shot_image",
+        "keyframe_start",
+        "keyframe_length",
+        "keyframe_frame_count",
+        "keyframe_flags",
+        "version",
+        "edit_mode",
+        "segment_continuity",
+        "shot_continuity",
+    ],
+)
+async def test_director_timeline_rejects_unbound_node_12_semantics(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    payload, evidence = _production_timeline_case()
+    mutations = {
+        "segment_negative": lambda: payload["segments"][0].update(
+            {"negativePrompt": "unsafe"}
+        ),
+        "shot_negative": lambda: payload["shots"][0].update(
+            {"negativePrompt": "unsafe"}
+        ),
+        "keyframe_negative": lambda: payload["keyframes"][0].update(
+            {"negativePrompt": "unsafe"}
+        ),
+        "duration": lambda: payload.update({"durationSec": 6}),
+        "frame_rate": lambda: payload.update({"frameRate": 30}),
+        "total_frames": lambda: payload.update({"totalFrames": 125}),
+        "timeline_mode": lambda: payload.update({"timelineMode": "prompt_batch"}),
+        "global_task_type": lambda: payload["global"].update({"taskType": "r2v"}),
+        "segment_task_type": lambda: payload["segments"][0].update(
+            {"taskType": "Ref-I2V"}
+        ),
+        "segment_start": lambda: payload["segments"][0].update({"start": 1}),
+        "segment_length": lambda: payload["segments"][0].update({"length": 123}),
+        "segment_frame_count": lambda: payload["segments"][0].update(
+            {"frameCount": 123}
+        ),
+        "segment_image": lambda: payload["segments"][0].update({"genImage": None}),
+        "base_refs": lambda: payload["global"].update(
+            {"refs": [{"index": 0, "imageFile": "uploaded://ref.png"}]}
+        ),
+        "shot_image": lambda: payload["shots"][0].update({"startImage": None}),
+        "keyframe_start": lambda: payload["keyframes"][0].update({"start": 1}),
+        "keyframe_length": lambda: payload["keyframes"][0].update({"length": 63}),
+        "keyframe_frame_count": lambda: payload["keyframes"][0].update(
+            {"frameCount": 63}
+        ),
+        "keyframe_flags": lambda: payload["keyframes"][0].update(
+            {"isStartFrame": False}
+        ),
+        "version": lambda: payload.update({"version": 4}),
+        "edit_mode": lambda: payload.update({"editMode": "free"}),
+        "segment_continuity": lambda: payload["segments"][0].update(
+            {"continuityFromPrev": True}
+        ),
+        "shot_continuity": lambda: payload["shots"][0].update(
+            {"continuityFromPrev": True}
+        ),
+    }
+    mutations[tamper]()
+    store = TaskStore(tmp_path / "tasks.db")
+    executor = FakeExecutor(store)
+    pipeline = H3VideoPipeline(
+        store=store,
+        executor=executor,
+        workflow_profile=WorkflowProfile(
+            id="minimax-h3-video",
+            version=1,
+            workflow_id="workflow-1",
+            capabilities=[MediaCapability.VIDEO_I2VA],
+            bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+        ),
+        provider_account_id="runninghub-main",
+        upload_reference=FakeUploader(),
+        probe_video=lambda _artifact: None,
+        register_candidate=lambda _: None,
+        prompt_profile={"id": "minimax-h3", "version": 1},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA,
+        prompt="director",
+        duration=5,
+        first_frame="first.png",
+    )
+
+    with pytest.raises(ValueError, match="transport timeline"):
+        await pipeline.generate_timeline(
+            request,
+            timeline_data=json.dumps(payload, ensure_ascii=False),
+            idempotency_input=evidence,
+        )
+
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
 async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload_url(
     tmp_path: Path,
 ) -> None:
@@ -655,7 +853,7 @@ async def test_director_timeline_idempotency_uses_stable_asset_digest_not_upload
         input_asset_hashes=("a" * 64,), idempotency_input=stable_input,
     )
     changed_timeline = json.loads(_timeline_data(stable_input["segments"][0]))
-    changed_timeline["editMode"] = "changed-provider-semantics"
+    changed_timeline["providerExtension"] = "changed-provider-semantics"
     third = await pipeline.generate_timeline(
         request,
         timeline_data=json.dumps(changed_timeline, ensure_ascii=False),
