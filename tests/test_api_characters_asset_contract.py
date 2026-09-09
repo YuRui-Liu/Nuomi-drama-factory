@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +56,12 @@ def _client(monkeypatch, tmp_path, store: _CharacterStore):
 
     async def fake_resolve_project(project: str, user: dict, *, required_role: str = "editor"):
         return (
-            SimpleNamespace(project_id="proj_demo", output_dir=project_dir, is_home_node=True),
+            SimpleNamespace(
+                project_id="proj_demo",
+                output_dir=project_dir,
+                state_dir=tmp_path / "state" / "admin" / "demo",
+                is_home_node=True,
+            ),
             "admin",
             "demo",
             project_dir,
@@ -352,3 +358,51 @@ def test_delete_character_route_removes_character(monkeypatch, tmp_path):
         "data": {"name": "秦昭", "deleted": True},
     }
     assert store.get_character("秦昭") is None
+
+
+def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    state_path = (
+        tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    )
+    existing_workflow = ProductionWorkflowStore(state_path)
+    existing_workflow.register_candidate_version(
+        slot_id="character:林昭:portrait",
+        asset_kind="character_portrait",
+        version_id="previous-v1",
+        asset_path="assets/characters/林昭/previous.png",
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    workflow = ProductionWorkflowStore(state_path)
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    assert slot.asset_kind == "character_portrait"
+    assert slot.current_version_id
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/林昭/portrait_versions/portrait-"
+    )
+    assert current.adoption_status.value == "adopted"
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    assert (project_dir / current.asset_path).read_bytes() == (
+        project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    ).read_bytes()

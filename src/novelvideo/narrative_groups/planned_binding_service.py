@@ -464,6 +464,7 @@ def _binding(
     props: tuple[Any, ...],
     episode_identity_ids: frozenset[str] = frozenset(),
     identity_default_map: Mapping[str, str] | None = None,
+    available_character_portraits: frozenset[str] = frozenset(),
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
     resolution = "auto_matched"
@@ -504,6 +505,8 @@ def _binding(
                 if missing_identity_image:
                     resolution = "explicit_fallback"
                     label = f"{label}（基础头像）"
+                    if character_name not in available_character_portraits:
+                        status = "missing_image"
         elif candidates or force_pending:
             slot_id = ""
             status = "pending_confirmation"
@@ -670,6 +673,7 @@ def bindings_for_director_plan(
     props: Iterable[Any] | Mapping[Any, Any],
     episode_identity_ids: Iterable[str] = (),
     identity_default_map: Mapping[str, str] | None = None,
+    available_character_portraits: Iterable[str] = (),
 ) -> tuple[PlannedReferenceBinding, ...]:
     """Project current DirectorPlan relationships without I/O or mutation."""
     group_items = _items(groups)
@@ -681,6 +685,11 @@ def bindings_for_director_plan(
         _text(identity_id) for identity_id in episode_identity_ids if _text(identity_id)
     )
     default_identity_ids = identity_default_map or {}
+    available_portraits = frozenset(
+        _text(character_name)
+        for character_name in available_character_portraits
+        if _text(character_name)
+    )
     return _merge_projected_bindings(
         _binding(
             requirement,
@@ -692,6 +701,7 @@ def bindings_for_director_plan(
             props=prop_items,
             episode_identity_ids=selected_identity_ids,
             identity_default_map=default_identity_ids,
+            available_character_portraits=available_portraits,
         )
         for requirement in _requirements(group_items, shot_items)
     )
@@ -748,6 +758,16 @@ def _resolve_binding(
         slot, versions = workflow_store.get_slot(binding.asset_slot_id)
     except KeyError:
         return _unavailable(binding, "asset slot is unavailable", status="missing_asset")
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution == "explicit_fallback"
+        and slot.asset_kind != "character_portrait"
+    ):
+        return _unavailable(
+            binding,
+            "asset slot kind is not character_portrait",
+            status="missing_asset",
+        )
     version_id = str(slot.current_version_id or "")
     version = versions.get(version_id)
     if version is None or version.slot_id != binding.asset_slot_id:

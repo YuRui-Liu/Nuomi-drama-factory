@@ -23,10 +23,14 @@ from novelvideo.character_visual.identity_sheet import (
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.project_context import ProjectContext
 from novelvideo.production_workflow import production_workflow_project_lock
+from novelvideo.production_workflow.character_portraits import (
+    commit_character_portrait_current,
+)
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+from novelvideo.utils.safe_paths import validate_path_segment
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +336,11 @@ async def _run_character_image(
                 scope=str(scope or ""),
                 update=update,
                 compiled_prompt=portrait_prompt,
+                ctx=ctx,
+                source_attempt_id=str(
+                    envelope.get("task_id") or envelope.get("job_id") or ""
+                )
+                or None,
             )
         elif mode == "identity_portrait":
             output_path = await _generate_identity_portrait(
@@ -408,12 +417,16 @@ async def _generate_character_portrait(
     scope: str,
     update,
     compiled_prompt: str | None = None,
+    ctx: ProjectContext | None = None,
+    source_attempt_id: str | None = None,
 ) -> Path:
     if not str(compiled_prompt or "").strip():
         raise _visual_bible_required_error(character.name)
+    if ctx is None:
+        raise RuntimeError("project context is required for portrait publication")
     face_prompt = str(compiled_prompt).strip()
-    char_assets_dir = output_dir / "assets" / "characters" / character.name
-    portrait_path = char_assets_dir / "portrait.png"
+    safe_name = validate_path_segment(character.name, label="character name")
+    char_assets_dir = output_dir / "assets" / "characters" / safe_name
     temp_dir = char_assets_dir / f".tmp_portrait_{_asset_suffix()}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -429,7 +442,14 @@ async def _generate_character_portrait(
             output_path=temp_dir / "reference_01.png",
             aspect_ratio="1:1",
         )
-        return _replace_canonical_asset(generated, portrait_path)
+        return commit_character_portrait_current(
+            state_dir=ctx.state_dir,
+            project_dir=output_dir,
+            character_name=safe_name,
+            image_bytes=generated.read_bytes(),
+            actor=str(getattr(ctx, "requester_username", "") or "system"),
+            source_attempt_id=source_attempt_id,
+        )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

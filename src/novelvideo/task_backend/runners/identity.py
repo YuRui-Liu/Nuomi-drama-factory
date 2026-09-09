@@ -5,14 +5,92 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
+from pathlib import Path
 from typing import Any
 
+from novelvideo.narrative_groups.reference_uploads import (
+    InvalidReferenceUpload,
+    validate_reference_image,
+)
 from novelvideo.project_context import ProjectContext
+from novelvideo.production_workflow import (
+    ProductionWorkflowStore,
+    production_workflow_project_lock,
+)
+from novelvideo.production_workflow.slot_ids import character_portrait_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
+from novelvideo.utils.path_resolver import canonical_portrait_path
+from novelvideo.utils.safe_paths import resolve_under_root, validate_path_segment
 
 logger = logging.getLogger(__name__)
+
+
+def _available_character_portraits(
+    *,
+    ctx: ProjectContext,
+    characters,
+) -> frozenset[str]:
+    root = Path(ctx.output_dir).resolve()
+    characters_root = root / "assets" / "characters"
+    state_dir = Path(ctx.state_dir)
+    available: set[str] = set()
+    with production_workflow_project_lock(state_dir):
+        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+        for character in characters:
+            try:
+                character_name = validate_path_segment(
+                    str(getattr(character, "name", "") or ""),
+                    label="character name",
+                )
+                character_root = resolve_under_root(characters_root, character_name)
+            except ValueError:
+                continue
+            try:
+                slot_id = character_portrait_slot_id(character_name)
+            except ValueError:
+                continue
+            try:
+                slot, versions = workflow.get_slot(slot_id)
+            except KeyError:
+                portrait_path = canonical_portrait_path(root, character_name)
+                try:
+                    validate_reference_image(
+                        portrait_path,
+                        allowed_roots=(character_root,),
+                    )
+                except (InvalidReferenceUpload, OSError, ValueError):
+                    continue
+                workflow.materialize_legacy_current(
+                    slot_id=slot_id,
+                    asset_kind="character_portrait",
+                    asset_path=portrait_path.relative_to(root).as_posix(),
+                )
+                slot, versions = workflow.get_slot(slot_id)
+            if slot.asset_kind != "character_portrait":
+                logger.warning(
+                    "ignoring incompatible character portrait slot kind",
+                    extra={"slot_id": slot_id, "asset_kind": slot.asset_kind},
+                )
+                continue
+            version = versions.get(str(slot.current_version_id or ""))
+            if version is None or version.slot_id != slot_id:
+                continue
+            if version.adoption_status.value not in {"provisional", "adopted"}:
+                continue
+            image_path = Path(version.asset_path)
+            if not image_path.is_absolute():
+                image_path = root / image_path
+            try:
+                validate_reference_image(
+                    image_path,
+                    allowed_roots=(character_root,),
+                )
+            except (InvalidReferenceUpload, OSError, ValueError):
+                continue
+            available.add(character_name)
+    return frozenset(available)
 
 
 async def _refresh_identity_caches(cognee_store: Any) -> bool:
@@ -62,6 +140,7 @@ def _character_identity_bindings(
     characters,
     scenes,
     props,
+    available_character_portraits=(),
 ):
     """Project only identity bindings, overlaying the zero-write draft snapshot."""
     from novelvideo.narrative_groups.planned_binding_service import (
@@ -88,6 +167,7 @@ def _character_identity_bindings(
         props=props,
         episode_identity_ids=draft.episode_identity_ids,
         identity_default_map=draft.identity_default_map,
+        available_character_portraits=available_character_portraits,
     )
     return bindings_by_kind(bindings).get("character_identity", ())
 
@@ -151,6 +231,15 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         update(log=message)
 
     draft = await planner.build_identity_plan_draft(episode_obj, on_log=on_log)
+    persisted_characters = tuple(cognee_store.get_all_characters())
+    portrait_characters = {character.name: character for character in persisted_characters}
+    portrait_characters.update(
+        {character.name: character for character in draft.characters}
+    )
+    available_character_portraits = _available_character_portraits(
+        ctx=ctx,
+        characters=tuple(portrait_characters.values()),
+    )
 
     from novelvideo.director_plan.store import DirectorPlanStore
 
@@ -163,9 +252,10 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
             episode_number=episode,
             director_plan=director_plan,
             draft=draft,
-            characters=tuple(cognee_store.get_all_characters()),
+            characters=persisted_characters,
             scenes=tuple(await sqlite_store.list_scenes()),
             props=tuple(await sqlite_store.list_props()),
+            available_character_portraits=available_character_portraits,
         )
         publication = await sqlite_store.publish_identity_plan_atomic(
             episode_number=episode,
