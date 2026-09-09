@@ -819,6 +819,76 @@ def test_positive_count_preserves_non_count_director_semantics(assertion):
     )
 
 
+@pytest.mark.parametrize(
+    "assertion,count,target,canonical",
+    (
+        (
+            "Show exactly two characters",
+            1,
+            "characters",
+            "Keep exactly one character visible.",
+        ),
+        (
+            "Use a pair of references",
+            1,
+            "references",
+            "Keep exactly one reference visible.",
+        ),
+    ),
+)
+def test_target_count_directive_is_replaced_by_structured_canonical_fact(
+    assertion, count, target, canonical
+):
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion=assertion,
+        count=count,
+        target=target,
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert canonical in wire.integrated_multimodal_description
+    assert assertion not in wire.integrated_multimodal_description
+
+
+def test_target_count_directive_with_specific_object_semantics_is_preserved():
+    assertion = "Show exactly one red umbrella in his right hand"
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion=assertion,
+        count=1,
+        target="props",
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert (
+        f"{assertion}. Keep exactly one prop visible."
+        in wire.integrated_multimodal_description
+    )
+
+
 def test_shot_intro_selects_article_and_preserves_existing_framing_article():
     plan = _v3_plan(H3Mode.T2VA)
     shot = plan.shots[0].model_copy(

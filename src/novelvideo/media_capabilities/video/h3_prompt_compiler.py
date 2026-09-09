@@ -283,7 +283,10 @@ def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
         return constraint.assertion
     assertion = _strip_terminal(constraint.assertion)
     semantic_assertion = (
-        "" if _PURE_COUNT_ASSERTION_RE.fullmatch(assertion) else assertion
+        ""
+        if _PURE_COUNT_ASSERTION_RE.fullmatch(assertion)
+        or _is_target_count_directive(assertion, constraint.target)
+        else assertion
     )
     semantic = (
         _sentence(_capitalize_initial(semantic_assertion))
@@ -300,6 +303,27 @@ def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     target = target_forms[constraint.target][constraint.count != 1]
     count_fact = f"Keep exactly {count} {target} visible."
     return f"{semantic} {count_fact}".strip()
+
+
+def _is_target_count_directive(assertion: str, target: str) -> bool:
+    target_nouns = {
+        "characters": ("character", "characters"),
+        "references": ("reference", "references"),
+        "props": ("prop", "props"),
+        "other": ("item", "items"),
+    }[target]
+    noun_pattern = "|".join(re.escape(noun) for noun in target_nouns)
+    return (
+        re.fullmatch(
+            rf"(?:show|keep|use|preserve)\s+(?:exactly\s+)?"
+            rf"(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|two|"
+            rf"three|four|five|six|seven|eight|nine|ten|[0-9]+)\s+"
+            rf"(?:{noun_pattern})",
+            assertion,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
