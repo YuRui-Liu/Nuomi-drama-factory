@@ -898,25 +898,97 @@ _REPLAY_SNAPSHOT_FIELDS = frozenset({
 
 
 def _has_complete_replay_snapshot(
-    entry: H3TimelineEntry, *, workflow_id: str
+    entry: H3TimelineEntry,
+    *,
+    current_segment: H3DirectorSegment,
+    workflow: VideoWorkflowDefinition,
+    references: tuple[object, ...],
 ) -> bool:
     summary = entry.input_summary
     if not isinstance(summary, Mapping) or not _REPLAY_SNAPSHOT_FIELDS <= summary.keys():
         return False
+    profile = entry.prompt_profile
+    if not isinstance(profile, Mapping) or profile.get("id") != H3_PROMPT_PROFILE_ID:
+        return False
+    schema_version = summary.get("prompt_schema_version")
+    compiler_version = summary.get("compiler_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or isinstance(compiler_version, bool)
+        or not isinstance(compiler_version, int)
+        or profile.get("version") != schema_version
+        or profile.get("compiler_version") != compiler_version
+    ):
+        return False
+    if entry.format_version == 1:
+        if not (
+            1 <= schema_version <= H3_PROMPT_PROFILE_VERSION
+            and 1 <= compiler_version <= H3_PROMPT_COMPILER_VERSION
+        ):
+            return False
+    elif (
+        schema_version != H3_PROMPT_PROFILE_VERSION
+        or compiler_version != H3_PROMPT_COMPILER_VERSION
+    ):
+        return False
+    requested_mode = summary.get("requested_mode")
+    if not isinstance(requested_mode, str):
+        return False
+    try:
+        resolved_mode = resolve_h3_workflow_mode(
+            requested=requested_mode,
+            first_frame=current_segment.first_frame,
+            last_frame=current_segment.last_frame,
+            references=references,
+            supported_modes=workflow.supported_modes,
+        )
+        base_summary = {
+            "beat_ids": list(source_shot_ids_for(current_segment)),
+            "mode": resolved_mode,
+            "duration_seconds": current_segment.duration_seconds,
+            "first_frame_sha256": _frame_sha256(str(current_segment.first_frame)),
+            "last_frame_sha256": (
+                _frame_sha256(str(current_segment.last_frame))
+                if current_segment.last_frame else None
+            ),
+        }
+    except (OSError, TypeError, ValueError):
+        return False
+    expected_hash = hashlib.sha256(
+        _canonical_json(base_summary).encode("utf-8")
+    ).hexdigest()
     frozen_hash = summary.get("frozen_input_hash")
     final_wire = summary.get("final_wire")
+    plan_payload = entry.director_plan
+    if not isinstance(plan_payload, Mapping) or not plan_payload:
+        return False
+    try:
+        plan = H3DirectorPlan.model_validate(plan_payload)
+        compiled_plan = compile_h3_wire(project_director_plan_to_wire(plan))
+    except (TypeError, ValueError):
+        return False
     return (
         isinstance(frozen_hash, str)
-        and re.fullmatch(r"[0-9a-f]{64}", frozen_hash) is not None
-        and summary.get("input_hash") == frozen_hash
+        and frozen_hash == expected_hash
+        and summary.get("input_hash") == expected_hash
+        and summary.get("resolved_mode") == resolved_mode
+        and summary.get("mode") == resolved_mode
+        and summary.get("beat_ids") == base_summary["beat_ids"]
+        and summary.get("duration_seconds") == base_summary["duration_seconds"]
+        and summary.get("first_frame_sha256") == base_summary["first_frame_sha256"]
+        and summary.get("last_frame_sha256") == base_summary["last_frame_sha256"]
         and isinstance(final_wire, str)
         and bool(final_wire)
-        and summary.get("workflow_id") == workflow_id
+        and final_wire == entry.segment.prompt
+        and (
+            compiler_version < H3_PROMPT_COMPILER_VERSION
+            or final_wire == compiled_plan
+        )
+        and plan.mode.value == resolved_mode
+        and summary.get("workflow_id") == workflow.id
         and isinstance(summary.get("quality_report"), Mapping)
         and summary.get("quality_report") == entry.quality_report
-        and bool(entry.segment.prompt)
-        and isinstance(entry.director_plan, Mapping)
-        and isinstance(entry.prompt_profile, Mapping)
     )
 
 
@@ -1979,8 +2051,15 @@ async def _execute_inner(
             and tuple(entry.segment.segment_id for entry in replay_manifest.entries)
             == tuple(segment.segment_id for segment in raw_segments)
             and all(
-                _has_complete_replay_snapshot(entry, workflow_id=workflow.id)
-                for entry in replay_manifest.entries
+                _has_complete_replay_snapshot(
+                    entry,
+                    current_segment=segment,
+                    workflow=workflow,
+                    references=global_references,
+                )
+                for entry, segment in zip(
+                    replay_manifest.entries, raw_segments, strict=True
+                )
             )
             else {}
         )

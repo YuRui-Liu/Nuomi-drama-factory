@@ -24,6 +24,54 @@ def _optimizer_result(prompt: str):
     )
 
 
+def _replay_i2va_plan(*, label: str, first_frame_sha256: str):
+    from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
+
+    return H3DirectorPlan.model_validate({
+        "schema_version": 3,
+        "mode": "i2va",
+        "total_frames": 120,
+        "visual_style": "cinematic realism",
+        "continuity_locks": ["same face and room geometry"],
+        "shots": [{
+            "shot_id": "1",
+            "start_frame": 0,
+            "end_frame": 120,
+            "framing": "medium shot",
+            "angle": "eye level",
+            "focus": label,
+            "composition": f"{label} remains centered in the room",
+            "camera": {
+                "type": "push in",
+                "direction": "forward",
+                "amplitude": "subtle",
+                "speed": "slow",
+            },
+            "actions": [
+                {
+                    "phase": "establish",
+                    "start_frame": 0,
+                    "end_frame": 24,
+                    "description": f"Hold the exact {label} opening pose.",
+                },
+                {
+                    "phase": "execute",
+                    "start_frame": 24,
+                    "end_frame": 120,
+                    "description": f"{label} takes one measured step forward.",
+                    "moving_entities": [label],
+                },
+            ],
+        }],
+        "soundscape": "Quiet room tone and one footstep.",
+        "music": "N/A",
+        "first_frame_anchor": {
+            "sha256": first_frame_sha256,
+            "description": f"{label} stands centered in the room.",
+        },
+    })
+
+
 def _active_style_plan():
     return SimpleNamespace(
         revision_id="rev-1",
@@ -1641,12 +1689,33 @@ def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
     assert optimizer_calls == 4
 
 
-@pytest.mark.parametrize("policy", ["legacy", "observe", "guard", "enforce"])
-def test_same_revision_replay_reuses_prompt_wire_and_decision_without_optimizer(
-    tmp_path, monkeypatch, policy
+@pytest.mark.parametrize(
+    ("policy", "tamper"),
+    [
+        ("legacy", None),
+        ("observe", None),
+        ("guard", None),
+        ("enforce", None),
+        ("observe", "final_wire"),
+        ("observe", "mode"),
+        ("observe", "version"),
+        ("observe", "empty_plan"),
+        ("observe", "input_hash"),
+    ],
+)
+def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result(
+    tmp_path, monkeypatch, policy, tamper
 ):
+    from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+        H3_PROMPT_COMPILER_VERSION,
+        compile_h3_director_plan,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_profile import (
+        H3_PROMPT_PROFILE_VERSION,
+    )
     from novelvideo.media_capabilities.video.h3_timeline import (
         load_h3_director_manifest,
+        save_h3_director_manifest,
     )
     from novelvideo.narrative_groups.service import load_groups
     from novelvideo.shot_continuity import (
@@ -1705,46 +1774,60 @@ def test_same_revision_replay_reuses_prompt_wire_and_decision_without_optimizer(
         nonlocal optimizer_calls
         optimizer_calls += 1
         prefix = "continuity" if continuity_by_segment is not None else "legacy"
-        selected_prefix = "continuity" if policy == "enforce" else "legacy"
         if evidence_by_segment is not None:
             for segment in segments:
                 resolved_mode = resolved_modes[segment.segment_id].value
-                selected_prompt = f"{selected_prefix}:{segment.segment_id}"
-                summary = {
+                first_frame_sha256 = narrative_group_video._frame_sha256(
+                    str(segment.first_frame)
+                )
+                plan = _replay_i2va_plan(
+                    label=f"{prefix}-{segment.segment_id}",
+                    first_frame_sha256=first_frame_sha256,
+                )
+                selected_prompt = compile_h3_director_plan(plan)
+                quality_report = {
+                    "passed": True, "issues": [], "version": 1
+                }
+                base_summary = {
                     "beat_ids": [segment.segment_id],
                     "mode": resolved_mode,
                     "duration_seconds": segment.duration_seconds,
-                    "first_frame_sha256": narrative_group_video._frame_sha256(
-                        str(segment.first_frame)
-                    ),
+                    "first_frame_sha256": first_frame_sha256,
                     "last_frame_sha256": None,
-                    "requested_mode": requested_mode,
-                    "resolved_mode": resolved_mode,
-                    "input_hash": "a" * 64,
-                    "frozen_input_hash": "a" * 64,
-                    "prompt_schema_version": 4,
-                    "compiler_version": 1,
-                    "final_wire": selected_prompt,
-                    "workflow_id": workflow_id,
-                    "quality_report": {
-                        "passed": True, "issues": [], "version": 1
-                    },
                 }
+                summary = narrative_group_video._snapshot_input_summary(
+                    base_summary,
+                    requested_mode=requested_mode,
+                    resolved_mode=resolved_mode,
+                    compiler_version=H3_PROMPT_COMPILER_VERSION,
+                    final_wire=selected_prompt,
+                    workflow_id=workflow_id,
+                    quality_report=quality_report,
+                )
                 evidence_by_segment.setdefault(segment.segment_id, {}).update({
-                    "director_plan": {"mode": resolved_mode, "shots": []},
+                    "director_plan": plan.model_dump(mode="json"),
                     "prompt_profile": {
                         "id": "minimax-h3-director",
-                        "version": 4,
-                        "compiler_version": 1,
+                        "version": H3_PROMPT_PROFILE_VERSION,
+                        "compiler_version": H3_PROMPT_COMPILER_VERSION,
                     },
-                    "quality_report": summary["quality_report"],
+                    "quality_report": quality_report,
                     "input_summary": summary,
                     "_final_prompt": selected_prompt,
                 })
-        return [
-            segment.model_copy(update={"prompt": f"{prefix}:{segment.segment_id}"})
-            for segment in segments
-        ]
+        optimized = []
+        for segment in segments:
+            first_frame_sha256 = narrative_group_video._frame_sha256(
+                str(segment.first_frame)
+            )
+            plan = _replay_i2va_plan(
+                label=f"{prefix}-{segment.segment_id}",
+                first_frame_sha256=first_frame_sha256,
+            )
+            optimized.append(segment.model_copy(update={
+                "prompt": compile_h3_director_plan(plan)
+            }))
+        return optimized
 
     async def generate(_ctx, *, output_path, **_kwargs):
         nonlocal provider_calls
@@ -1804,12 +1887,32 @@ def test_same_revision_replay_reuses_prompt_wire_and_decision_without_optimizer(
     first_optimizer_calls = optimizer_calls
     first_prepare_calls = prepare_calls
 
-    envelope["payload"]["mode"] = "fl2va"
+    if tamper is not None:
+        entry = first.entries[0]
+        if tamper == "final_wire":
+            entry.input_summary["final_wire"] = "tampered wire"
+        elif tamper == "mode":
+            entry.input_summary["resolved_mode"] = "fl2va"
+        elif tamper == "version":
+            entry.input_summary["prompt_schema_version"] = 999
+            entry.input_summary["compiler_version"] = 999
+            entry.prompt_profile["version"] = 999
+            entry.prompt_profile["compiler_version"] = 999
+        elif tamper == "empty_plan":
+            entry.director_plan.clear()
+        elif tamper == "input_hash":
+            entry.input_summary["input_hash"] = "b" * 64
+            entry.input_summary["frozen_input_hash"] = "b" * 64
+        save_h3_director_manifest(manifest_path, first)
     narrative_group_video.run_narrative_group_video(envelope, ctx)
     replayed = load_h3_director_manifest(manifest_path)
 
-    assert optimizer_calls == first_optimizer_calls
-    assert prepare_calls == first_prepare_calls
+    if tamper is None:
+        assert optimizer_calls == first_optimizer_calls
+        assert prepare_calls == first_prepare_calls
+    else:
+        assert optimizer_calls == first_optimizer_calls + 2
+        assert prepare_calls == first_prepare_calls + 1
     assert tuple(
         (
             entry.segment.prompt,
