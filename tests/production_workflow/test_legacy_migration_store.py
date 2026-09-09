@@ -80,6 +80,25 @@ def test_new_candidate_does_not_replace_materialized_legacy_current(tmp_path):
     assert candidate.adoption_status == AdoptionStatus.CANDIDATE
 
 
+def test_candidate_origin_can_record_an_uploaded_asset(tmp_path):
+    store = ProductionWorkflowStore(tmp_path / "production_workflow.json")
+
+    _slot, candidate, _event = store.register_candidate_version(
+        slot_id="character:lin-mo:portrait",
+        asset_kind="character_portrait",
+        version_id="uploaded-1",
+        asset_path="assets/characters/lin-mo/uploaded-1.png",
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="lin-mo",
+        at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        origin=AssetOrigin.UPLOADED,
+    )
+
+    assert candidate.origin == AssetOrigin.UPLOADED
+
+
 def test_manual_adoption_persists_selected_candidate(tmp_path):
     state_path = tmp_path / "production_workflow.json"
     store = ProductionWorkflowStore(state_path)

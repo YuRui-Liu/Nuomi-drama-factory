@@ -156,6 +156,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         "assets/characters/小鹿/portrait_versions/portrait-"
     )
     assert current.adoption_status.value == "adopted"
+    assert current.origin.value == "generated"
     assert (tmp_path / current.asset_path).read_bytes() == Path(result["path"]).read_bytes()
 
 

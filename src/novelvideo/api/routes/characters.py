@@ -59,7 +59,9 @@ from novelvideo.character_visual.identity_sheet import (
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
 from novelvideo.production_workflow.character_portraits import (
     commit_character_portrait_current,
+    validate_character_name,
 )
+from novelvideo.production_workflow.models import AssetOrigin
 from novelvideo.production_workflow.slot_ids import (
     character_state_slot_id,
 )
@@ -86,7 +88,6 @@ from novelvideo.utils.path_resolver import (
     canonical_identity_costume_path,
     canonical_identity_portrait_path,
 )
-from novelvideo.utils.safe_paths import validate_path_segment
 from novelvideo.seedance2_i2v.character_voice_storage import (
     AGE_GROUP_SLOTS as VOICE_AGE_GROUP_SLOTS,
     ALL_SLOTS as VOICE_SAMPLE_SLOTS,
@@ -1615,7 +1616,7 @@ async def generate_single_portrait(
     if character is None:
         return {"ok": False, "error": f"Character '{name}' not found"}
     try:
-        safe_name = validate_path_segment(name, label="character name")
+        safe_name = validate_character_name(name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1667,7 +1668,7 @@ async def upload_portrait(
     if character is None:
         return {"ok": False, "error": f"Character '{name}' not found"}
     try:
-        safe_name = validate_path_segment(name, label="character name")
+        safe_name = validate_character_name(name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1678,6 +1679,7 @@ async def upload_portrait(
         character_name=safe_name,
         image_bytes=content,
         actor=str(getattr(ctx, "requester_username", "") or username),
+        origin=AssetOrigin.UPLOADED,
     )
 
     portrait_url = _asset_url(ctx, project_dir, portrait_path)

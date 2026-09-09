@@ -194,6 +194,7 @@ class ProductionWorkflowStore:
         at: datetime,
         soft_issues: list[str] | None = None,
         technical_error: str | None = None,
+        origin: AssetOrigin = AssetOrigin.GENERATED,
     ) -> tuple[AssetSlot, AssetVersion, AdoptionEvent]:
         if self.read_only_reason:
             raise RuntimeError(self.read_only_reason)
@@ -210,7 +211,7 @@ class ProductionWorkflowStore:
             slot_id=slot_id,
             source_attempt_id=source_attempt_id,
             asset_path=asset_path,
-            origin=AssetOrigin.GENERATED,
+            origin=origin,
             generation_metadata=generation_metadata,
             qc_passed=qc_passed,
             soft_issues=soft_issues or [],

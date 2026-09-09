@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import io
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -7,7 +8,9 @@ from PIL import Image
 from novelvideo.production_workflow import ProductionWorkflowStore
 from novelvideo.production_workflow.character_portraits import (
     commit_character_portrait_current,
+    reconcile_character_portrait_canonical,
 )
+from novelvideo.production_workflow.store import production_workflow_project_lock
 
 
 def _png(color: str) -> bytes:
@@ -89,3 +92,56 @@ def test_concurrent_portrait_commits_keep_current_version_and_canonical_aligned(
     canonical = tmp_path / "assets" / "characters" / "林昭" / "portrait.png"
     assert current.adoption_status.value == "adopted"
     assert canonical.read_bytes() == version_path.read_bytes()
+
+
+def test_interrupted_canonical_mirror_is_reconciled_from_immutable_current(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / "state"
+    canonical = commit_character_portrait_current(
+        state_dir=state_dir,
+        project_dir=tmp_path,
+        character_name="林昭",
+        image_bytes=_png("blue"),
+        actor="test",
+    )
+    original_replace = __import__(
+        "novelvideo.production_workflow.character_portraits", fromlist=["os"]
+    ).os.replace
+    interrupted = False
+
+    def interrupt_once(source, destination):
+        nonlocal interrupted
+        if Path(destination) == canonical and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt("simulated process interruption")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(
+        "novelvideo.production_workflow.character_portraits.os.replace",
+        interrupt_once,
+    )
+    with pytest.raises(KeyboardInterrupt, match="simulated process interruption"):
+        commit_character_portrait_current(
+            state_dir=state_dir,
+            project_dir=tmp_path,
+            character_name="林昭",
+            image_bytes=_png("red"),
+            actor="test",
+        )
+    monkeypatch.setattr(
+        "novelvideo.production_workflow.character_portraits.os.replace",
+        original_replace,
+    )
+
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    current_path = tmp_path / versions[slot.current_version_id].asset_path
+    assert current_path.read_bytes() != canonical.read_bytes()
+    with production_workflow_project_lock(state_dir):
+        assert reconcile_character_portrait_canonical(
+            workflow=workflow,
+            project_dir=tmp_path,
+            character_name="林昭",
+        )
+    assert canonical.read_bytes() == current_path.read_bytes()

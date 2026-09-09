@@ -8,21 +8,20 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from novelvideo.narrative_groups.reference_uploads import (
-    InvalidReferenceUpload,
-    validate_reference_image,
-)
 from novelvideo.project_context import ProjectContext
 from novelvideo.production_workflow import (
     ProductionWorkflowStore,
     production_workflow_project_lock,
 )
+from novelvideo.production_workflow.character_portraits import (
+    materialize_legacy_character_portrait,
+    reconcile_character_portrait_canonical,
+    validate_character_name,
+)
 from novelvideo.production_workflow.slot_ids import character_portrait_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
-from novelvideo.utils.path_resolver import canonical_portrait_path
-from novelvideo.utils.safe_paths import resolve_under_root, validate_path_segment
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +32,15 @@ def _available_character_portraits(
     characters,
 ) -> frozenset[str]:
     root = Path(ctx.output_dir).resolve()
-    characters_root = root / "assets" / "characters"
     state_dir = Path(ctx.state_dir)
     available: set[str] = set()
     with production_workflow_project_lock(state_dir):
         workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
         for character in characters:
             try:
-                character_name = validate_path_segment(
-                    str(getattr(character, "name", "") or ""),
-                    label="character name",
+                character_name = validate_character_name(
+                    str(getattr(character, "name", "") or "")
                 )
-                character_root = resolve_under_root(characters_root, character_name)
             except ValueError:
                 continue
             try:
@@ -52,44 +48,41 @@ def _available_character_portraits(
             except ValueError:
                 continue
             try:
-                slot, versions = workflow.get_slot(slot_id)
+                slot, _versions = workflow.get_slot(slot_id)
             except KeyError:
-                portrait_path = canonical_portrait_path(root, character_name)
-                try:
-                    validate_reference_image(
-                        portrait_path,
-                        allowed_roots=(character_root,),
-                    )
-                except (InvalidReferenceUpload, OSError, ValueError):
-                    continue
-                workflow.materialize_legacy_current(
-                    slot_id=slot_id,
-                    asset_kind="character_portrait",
-                    asset_path=portrait_path.relative_to(root).as_posix(),
+                slot = None
+            if slot is not None and slot.asset_kind != "character_portrait":
+                logger.warning(
+                    "ignoring incompatible character portrait slot kind",
+                    extra={"slot_id": slot_id, "asset_kind": slot.asset_kind},
                 )
-                slot, versions = workflow.get_slot(slot_id)
+                continue
+            try:
+                if not materialize_legacy_character_portrait(
+                    workflow=workflow,
+                    project_dir=root,
+                    character_name=character_name,
+                ):
+                    continue
+                slot, _versions = workflow.get_slot(slot_id)
+            except (OSError, ValueError, RuntimeError):
+                continue
             if slot.asset_kind != "character_portrait":
                 logger.warning(
                     "ignoring incompatible character portrait slot kind",
                     extra={"slot_id": slot_id, "asset_kind": slot.asset_kind},
                 )
                 continue
-            version = versions.get(str(slot.current_version_id or ""))
-            if version is None or version.slot_id != slot_id:
-                continue
-            if version.adoption_status.value not in {"provisional", "adopted"}:
-                continue
-            image_path = Path(version.asset_path)
-            if not image_path.is_absolute():
-                image_path = root / image_path
             try:
-                validate_reference_image(
-                    image_path,
-                    allowed_roots=(character_root,),
+                usable = reconcile_character_portrait_canonical(
+                    workflow=workflow,
+                    project_dir=root,
+                    character_name=character_name,
                 )
-            except (InvalidReferenceUpload, OSError, ValueError):
+            except (OSError, ValueError):
                 continue
-            available.add(character_name)
+            if usable:
+                available.add(character_name)
     return frozenset(available)
 
 

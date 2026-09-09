@@ -25,12 +25,12 @@ from novelvideo.project_context import ProjectContext
 from novelvideo.production_workflow import production_workflow_project_lock
 from novelvideo.production_workflow.character_portraits import (
     commit_character_portrait_current,
+    validate_character_name,
 )
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
-from novelvideo.utils.safe_paths import validate_path_segment
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +425,7 @@ async def _generate_character_portrait(
     if ctx is None:
         raise RuntimeError("project context is required for portrait publication")
     face_prompt = str(compiled_prompt).strip()
-    safe_name = validate_path_segment(character.name, label="character name")
+    safe_name = validate_character_name(character.name)
     char_assets_dir = output_dir / "assets" / "characters" / safe_name
     temp_dir = char_assets_dir / f".tmp_portrait_{_asset_suffix()}"
     temp_dir.mkdir(parents=True, exist_ok=True)

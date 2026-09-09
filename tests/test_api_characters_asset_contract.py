@@ -361,29 +361,29 @@ def test_delete_character_route_removes_character(monkeypatch, tmp_path):
 
 
 def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_path):
-    from datetime import UTC, datetime
-
     from PIL import Image
 
     from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
 
     store = _CharacterStore([NovelCharacter(name="林昭")])
     client = _client(monkeypatch, tmp_path, store)
     state_path = (
         tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
     )
-    existing_workflow = ProductionWorkflowStore(state_path)
-    existing_workflow.register_candidate_version(
-        slot_id="character:林昭:portrait",
-        asset_kind="character_portrait",
-        version_id="previous-v1",
-        asset_path="assets/characters/林昭/previous.png",
-        source_attempt_id=None,
-        qc_passed=True,
-        generation_metadata=None,
-        actor="test",
-        at=datetime.now(UTC),
-    )
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    assert _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=project_dir, state_dir=state_path.parent),
+        characters=(NovelCharacter(name="林昭"),),
+    ) == frozenset({"林昭"})
+    legacy_workflow = ProductionWorkflowStore(state_path)
+    legacy_slot, legacy_versions = legacy_workflow.get_slot("character:林昭:portrait")
+    legacy_path = project_dir / legacy_versions[legacy_slot.current_version_id].asset_path
+    legacy_bytes = legacy_path.read_bytes()
+    assert legacy_path != canonical
     image = io.BytesIO()
     Image.new("RGB", (8, 8), "red").save(image, format="PNG")
 
@@ -402,7 +402,8 @@ def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_p
         "assets/characters/林昭/portrait_versions/portrait-"
     )
     assert current.adoption_status.value == "adopted"
-    project_dir = tmp_path / "output" / "admin" / "demo"
+    assert current.origin.value == "uploaded"
+    assert legacy_path.read_bytes() == legacy_bytes
     assert (project_dir / current.asset_path).read_bytes() == (
         project_dir / "assets" / "characters" / "林昭" / "portrait.png"
     ).read_bytes()

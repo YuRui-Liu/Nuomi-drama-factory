@@ -413,9 +413,88 @@ def test_identity_runner_materializes_safe_legacy_character_portrait(tmp_path):
     ).get_slot(character_portrait_slot_id("陆辰"))
     assert slot.asset_kind == "character_portrait"
     assert slot.current_version_id
-    assert versions[slot.current_version_id].asset_path == (
-        "assets/characters/陆辰/portrait.png"
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/陆辰/portrait_versions/legacy-"
     )
+    immutable_path = tmp_path / current.asset_path
+    assert immutable_path.read_bytes() == portrait.read_bytes()
+
+
+def test_identity_runner_migrates_mutable_legacy_current_before_reconcile(tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    original_bytes = portrait.read_bytes()
+    state_dir = tmp_path / "state"
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    workflow.materialize_legacy_current(
+        slot_id=character_portrait_slot_id("陆辰"),
+        asset_kind="character_portrait",
+        asset_path="assets/characters/陆辰/portrait.png",
+    )
+
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=state_dir)
+    assert _available_character_portraits(
+        ctx=ctx,
+        characters=(_character("陆辰"),),
+    ) == frozenset({"陆辰"})
+    migrated = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    slot, versions = migrated.get_slot(character_portrait_slot_id("陆辰"))
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/陆辰/portrait_versions/legacy-"
+    )
+    immutable_path = tmp_path / current.asset_path
+    assert immutable_path.read_bytes() == original_bytes
+
+    Image.new("RGB", (8, 8), "blue").save(portrait)
+    assert _available_character_portraits(
+        ctx=ctx,
+        characters=(_character("陆辰"),),
+    ) == frozenset({"陆辰"})
+    assert portrait.read_bytes() == original_bytes
+
+
+def test_identity_runner_does_not_readopt_rejected_mutable_legacy_current(tmp_path):
+    import json
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    state_dir = tmp_path / "state"
+    state_path = state_dir / "production_workflow.json"
+    workflow = ProductionWorkflowStore(state_path)
+    workflow.materialize_legacy_current(
+        slot_id=character_portrait_slot_id("陆辰"),
+        asset_kind="character_portrait",
+        asset_path="assets/characters/陆辰/portrait.png",
+    )
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["versions"][0]["adoption_status"] = "rejected"
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    available = _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=state_dir),
+        characters=(_character("陆辰"),),
+    )
+
+    assert available == frozenset()
+    slot, versions = ProductionWorkflowStore(state_path).get_slot(
+        character_portrait_slot_id("陆辰")
+    )
+    assert versions[slot.current_version_id].adoption_status.value == "rejected"
+    assert versions[slot.current_version_id].asset_path.endswith("/portrait.png")
 
 
 def test_identity_runner_does_not_overwrite_wrong_kind_portrait_slot(tmp_path):
