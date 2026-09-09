@@ -600,6 +600,34 @@ def test_scene_slot_availability_does_not_replace_wrong_kind_with_legacy(
     assert slot.asset_kind == "scene_state"
 
 
+@pytest.mark.parametrize(
+    "unsafe_name",
+    ["..", "../车站", "咖啡馆/二楼", "咖啡馆\\二楼", "咖啡馆:二楼", "咖啡馆\x1f"],
+)
+def test_scene_slot_availability_rejects_non_segment_scene_names(
+    tmp_path, unsafe_name: str
+):
+    from novelvideo.task_backend.runners.episode_assets import (
+        _available_scene_reference_slots,
+    )
+
+    cross_scene = tmp_path / "assets" / "scenes" / "车站" / "master.png"
+    cross_scene.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(cross_scene)
+    if "/" not in unsafe_name and "\\" not in unsafe_name:
+        candidate = tmp_path / "assets" / "scenes" / unsafe_name / "master.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), "blue").save(candidate)
+
+    available = _available_scene_reference_slots(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        scenes=(SimpleNamespace(name=unsafe_name, base_scene_id=""),),
+    )
+
+    assert available == frozenset()
+    assert not (tmp_path / "state" / "production_workflow.json").exists()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("binding", "wrong_asset_kind"),
@@ -1110,7 +1138,12 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     import novelvideo.sqlite_store as sqlite_module
     import novelvideo.task_backend.runners.episode_assets as runner
 
-    requirement = SimpleNamespace(kind="scene_base", entity_key="咖啡馆", required=True)
+    requirement = SimpleNamespace(
+        kind="scene_state",
+        entity_key="咖啡馆",
+        visible_change="暴雨版",
+        required=True,
+    )
     shot = SimpleNamespace(
         id="shot-1", dramatic_beat_ids=("beat-1",), asset_requirements=(requirement,)
     )
@@ -1123,7 +1156,10 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     release_draft = asyncio.Event()
     activation_finished = threading.Event()
     published_revision_ids: list[str] = []
+    published_entity_ids: list[str] = []
     block_publish = False
+    publish_error = ""
+    inject_variant_after_read = False
     publish_started = asyncio.Event()
     release_publish = asyncio.Event()
 
@@ -1146,7 +1182,7 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
 
     class FakeSQLiteStore:
         def __init__(self, *args, **kwargs):
-            self.scenes = [NovelScene(name="全量旧场景")]
+            self.scenes = [NovelScene(name="咖啡馆")]
 
         async def initialize(self):
             pass
@@ -1161,10 +1197,15 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
             return []
 
         async def publish_scene_plan_atomic(self, **kwargs):
-            nonlocal block_publish
+            nonlocal block_publish, publish_error
             published_revision_ids.extend(
                 binding.source_plan_revision_id for binding in kwargs["bindings"]
             )
+            published_entity_ids.extend(
+                binding.entity_id for binding in kwargs["bindings"]
+            )
+            if publish_error:
+                raise ValueError(publish_error)
             if block_publish:
                 publish_started.set()
                 await release_publish.wait()
@@ -1194,7 +1235,13 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
             draft_started.set()
             await release_draft.wait()
             return compiler_module.ScenePlanDraft(
-                scenes=(NovelScene(name="咖啡馆"),),
+                scenes=(
+                    NovelScene(
+                        name="雨中咖啡馆",
+                        base_scene_id="咖啡馆",
+                        variant_id="暴雨版",
+                    ),
+                ),
                 scene_menu=(SceneMenuItem(scene_id="咖啡馆"),),
                 new_count=1,
                 scene_baseline_digests={},
@@ -1228,6 +1275,43 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
         "episode": 1,
         "payload": {"asset_kind": "scene"},
     }
+    canonical = tmp_path / "assets" / "scenes" / "咖啡馆" / "master.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(canonical)
+    workflow_path = tmp_path / "production_workflow.json"
+    real_availability = runner._available_scene_reference_slots
+
+    def observe_availability(**kwargs):
+        nonlocal inject_variant_after_read
+        available = real_availability(**kwargs)
+        if inject_variant_after_read and kwargs.get("workflow") is None:
+            inject_variant_after_read = False
+            variant_image = (
+                tmp_path
+                / "assets"
+                / "scenes"
+                / "雨中咖啡馆"
+                / "versions"
+                / "variant.png"
+            )
+            variant_image.parent.mkdir(parents=True)
+            Image.new("RGB", (8, 8), "blue").save(variant_image)
+            ProductionWorkflowStore(workflow_path).register_candidate_version(
+                slot_id=scene_state_slot_id("咖啡馆", "雨中咖啡馆", "master"),
+                asset_kind="scene_state",
+                version_id="variant-v1",
+                asset_path=variant_image.relative_to(tmp_path).as_posix(),
+                source_attempt_id="concurrent-variant",
+                qc_passed=True,
+                generation_metadata=None,
+                actor="test",
+                at=datetime.now(UTC),
+            )
+        return available
+
+    monkeypatch.setattr(
+        runner, "_available_scene_reference_slots", observe_availability
+    )
 
     task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
     await draft_started.wait()
@@ -1241,10 +1325,12 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     await asyncio.to_thread(activator.join, 5)
 
     assert published_revision_ids == []
+    assert not workflow_path.exists()
 
     FakeDirectorPlanStore.active = old_plan
     activation_finished.clear()
     block_publish = True
+    inject_variant_after_read = True
     task = asyncio.create_task(runner._run_episode_asset_planner(envelope, ctx))
     await publish_started.wait()
     activator = threading.Thread(target=FakeDirectorPlanStore(tmp_path).activate_new)
@@ -1258,7 +1344,16 @@ async def test_runner_long_draft_does_not_block_activation_and_stale_revision_is
     assert published_revision_ids == ["director-old"]
     assert activation_finished.is_set()
     assert result["binding_count"] == 1
-    assert result["binding_statuses"] == {"missing_image": 1}
+    assert result["binding_statuses"] == {"ready": 1}
+    assert published_entity_ids == ["雨中咖啡馆"]
+
+    workflow_path.unlink()
+    FakeDirectorPlanStore.active = old_plan
+    block_publish = False
+    for publish_error in ("scene catalog conflict", "binding insert failed"):
+        with pytest.raises(ValueError, match=publish_error):
+            await runner._run_episode_asset_planner(envelope, ctx)
+        assert not workflow_path.exists()
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,7 @@ from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 from novelvideo.utils.path_resolver import canonical_scene_master_path
+from novelvideo.utils.safe_paths import validate_path_segment
 
 _TASK_ASSET_KIND = {
     "episode_scene_planner": "scene",
@@ -58,76 +59,104 @@ def _dump_items(items: list[Any]) -> list[dict]:
     return data
 
 
+def _safe_scene_name(value: Any) -> str:
+    scene_name = validate_path_segment(str(value or ""), label="scene name")
+    if ":" in scene_name or any(
+        ord(character) < 32 or ord(character) == 127 for character in scene_name
+    ):
+        raise ValueError("invalid scene name")
+    return scene_name
+
+
 def _available_scene_reference_slots(
     *,
     ctx: ProjectContext,
     scenes: tuple[Any, ...] | list[Any],
+    workflow: ProductionWorkflowStore | None = None,
+    materialize_legacy: bool = True,
 ) -> frozenset[str]:
     """Return usable scene master slots, importing safe legacy canonicals once."""
     root = Path(ctx.output_dir).resolve()
     state_dir = Path(ctx.state_dir)
+    if workflow is None:
+        with production_workflow_project_lock(state_dir):
+            return _available_scene_reference_slots(
+                ctx=ctx,
+                scenes=scenes,
+                workflow=ProductionWorkflowStore(
+                    state_dir / "production_workflow.json"
+                ),
+                materialize_legacy=materialize_legacy,
+            )
+
     assets_root = root / "assets"
     available: set[str] = set()
-    with production_workflow_project_lock(state_dir):
-        workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
-        for scene in scenes:
-            scene_name = str(getattr(scene, "name", "") or "").strip()
-            base_scene_id = str(
+    for scene in scenes:
+        try:
+            scene_name = _safe_scene_name(getattr(scene, "name", ""))
+            raw_base_scene_id = str(
                 getattr(scene, "base_scene_id", "") or ""
             ).strip()
-            try:
-                if base_scene_id:
-                    slot_id = scene_state_slot_id(
-                        base_scene_id, scene_name, "master"
-                    )
-                    expected_kind = "scene_state"
-                else:
-                    slot_id = scene_base_slot_id(scene_name, "master")
-                    expected_kind = "scene_base"
-                canonical_path = canonical_scene_master_path(root, scene_name)
-            except ValueError:
+            base_scene_id = (
+                _safe_scene_name(raw_base_scene_id) if raw_base_scene_id else ""
+            )
+            if base_scene_id:
+                slot_id = scene_state_slot_id(base_scene_id, scene_name, "master")
+                expected_kind = "scene_state"
+            else:
+                slot_id = scene_base_slot_id(scene_name, "master")
+                expected_kind = "scene_base"
+            canonical_path = canonical_scene_master_path(root, scene_name)
+            expected_canonical_path = (
+                root / "assets" / "scenes" / scene_name / "master.png"
+            )
+            if canonical_path != expected_canonical_path:
                 continue
+        except ValueError:
+            continue
 
-            try:
-                slot, versions = workflow.get_slot(slot_id)
-            except KeyError:
-                try:
-                    validate_reference_image(
-                        canonical_path,
-                        allowed_roots=(assets_root,),
-                        expected_mime="image/png",
-                    )
-                    relative_path = canonical_path.resolve().relative_to(root).as_posix()
-                    slot, current = workflow.materialize_legacy_current(
-                        slot_id=slot_id,
-                        asset_kind=expected_kind,
-                        asset_path=relative_path,
-                    )
-                    versions = {current.version_id: current}
-                except (InvalidReferenceUpload, OSError, RuntimeError, ValueError):
-                    continue
-
-            if slot.asset_kind != expected_kind or not slot.current_version_id:
+        try:
+            slot, versions = workflow.get_slot(slot_id)
+        except KeyError:
+            if not materialize_legacy:
                 continue
-            current = versions.get(slot.current_version_id)
-            if current is None or current.slot_id != slot_id:
-                continue
-            if current.adoption_status not in {
-                AdoptionStatus.PROVISIONAL,
-                AdoptionStatus.ADOPTED,
-            }:
-                continue
-            current_path = Path(current.asset_path)
-            if not current_path.is_absolute():
-                current_path = root / current_path
             try:
                 validate_reference_image(
-                    current_path,
+                    canonical_path,
                     allowed_roots=(assets_root,),
+                    expected_mime="image/png",
                 )
-            except (InvalidReferenceUpload, OSError, ValueError):
+                relative_path = canonical_path.relative_to(root).as_posix()
+                slot, current = workflow.materialize_legacy_current(
+                    slot_id=slot_id,
+                    asset_kind=expected_kind,
+                    asset_path=relative_path,
+                )
+                versions = {current.version_id: current}
+            except (InvalidReferenceUpload, OSError, RuntimeError, ValueError):
                 continue
-            available.add(slot_id)
+
+        if slot.asset_kind != expected_kind or not slot.current_version_id:
+            continue
+        current = versions.get(slot.current_version_id)
+        if current is None or current.slot_id != slot_id:
+            continue
+        if current.adoption_status not in {
+            AdoptionStatus.PROVISIONAL,
+            AdoptionStatus.ADOPTED,
+        }:
+            continue
+        current_path = Path(current.asset_path)
+        if not current_path.is_absolute():
+            current_path = root / current_path
+        try:
+            validate_reference_image(
+                current_path,
+                allowed_roots=(assets_root,),
+            )
+        except (InvalidReferenceUpload, OSError, ValueError):
+            continue
+        available.add(slot_id)
     return frozenset(available)
 
 
@@ -314,13 +343,16 @@ async def _run_episode_asset_planner(
         for prop in props
         if str(getattr(prop, "name", "") or "").strip() in selected_prop_ids
     )
+    scene_projection_items: tuple[Any, ...] = ()
     available_scene_reference_slots = None
     if asset_kind == "scene":
         scene_map = {scene.name: scene for scene in scenes}
         scene_map.update({scene.name: scene for scene in draft.scenes})
+        scene_projection_items = tuple(scene_map.values())
         available_scene_reference_slots = _available_scene_reference_slots(
             ctx=ctx,
-            scenes=tuple(scene_map.values()),
+            scenes=scene_projection_items,
+            materialize_legacy=False,
         )
     bindings = _episode_asset_bindings(
         asset_kind=asset_kind,
@@ -340,19 +372,48 @@ async def _run_episode_asset_planner(
         ):
             raise ValueError("ACTIVE_DIRECTOR_PLAN_STALE")
         if asset_kind == "scene":
-            publication = await sqlite_store.publish_scene_plan_atomic(
-                episode_number=episode,
-                scenes=draft.scenes,
-                scene_menu=draft.scene_menu,
-                scene_baseline_digests=draft.scene_baseline_digests,
-                episode_scene_menu_baseline_digest=(
-                    draft.episode_scene_menu_baseline_digest
-                ),
-                scene_catalog_baseline_digest=scene_catalog_digest,
-                prop_catalog_baseline_digest=prop_catalog_digest,
-                bindings=bindings,
-                refresh_cache=False,
-            )
+            with production_workflow_project_lock(ctx.state_dir):
+                workflow = ProductionWorkflowStore(
+                    Path(ctx.state_dir) / "production_workflow.json"
+                )
+                workflow_snapshot = workflow.capture_file_snapshot()
+                try:
+                    available_scene_reference_slots = (
+                        _available_scene_reference_slots(
+                            ctx=ctx,
+                            scenes=scene_projection_items,
+                            workflow=workflow,
+                        )
+                    )
+                    bindings = _episode_asset_bindings(
+                        asset_kind=asset_kind,
+                        project_id=ctx.project_id,
+                        episode_number=episode,
+                        director_plan=final_active,
+                        changed_entities=draft.scenes,
+                        characters=characters,
+                        scenes=scenes,
+                        props=props,
+                        available_scene_reference_slots=(
+                            available_scene_reference_slots
+                        ),
+                    )
+                    publication = await sqlite_store.publish_scene_plan_atomic(
+                        episode_number=episode,
+                        scenes=draft.scenes,
+                        scene_menu=draft.scene_menu,
+                        scene_baseline_digests=draft.scene_baseline_digests,
+                        episode_scene_menu_baseline_digest=(
+                            draft.episode_scene_menu_baseline_digest
+                        ),
+                        scene_catalog_baseline_digest=scene_catalog_digest,
+                        prop_catalog_baseline_digest=prop_catalog_digest,
+                        bindings=bindings,
+                        refresh_cache=False,
+                    )
+                except BaseException:
+                    workflow.restore_file_snapshot(workflow_snapshot)
+                    raise
         else:
             publication = await sqlite_store.publish_prop_plan_atomic(
                 episode_number=episode,
