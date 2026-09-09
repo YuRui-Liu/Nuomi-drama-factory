@@ -705,7 +705,7 @@ def test_rigid_facts_render_as_stable_complete_natural_sentences():
     ) in description
     assert "Image quality must preserve stable identity." in description
     assert "Image quality must preserve stable corridor geometry." in description
-    assert "exactly one Lin remains visible." in description
+    assert "Lin remains visible. Keep exactly one character visible." in description
     for awkward in (
         "Exactly 1 visible characters",
         "fixture. one overhead",
@@ -733,6 +733,73 @@ def test_rigid_character_count_uses_plural_grammar():
         "Exactly 2 visible characters, lin and mei, are present without duplicates."
         in wire.integrated_multimodal_description
     )
+
+
+@pytest.mark.parametrize(
+    "assertion,target,expected,forbidden",
+    (
+        (
+            "Lin remains visible",
+            "characters",
+            "Lin remains visible. Keep exactly one character visible.",
+            "1 characters",
+        ),
+        (
+            "Exactly two props remain visible",
+            "props",
+            "Props remain visible. Keep exactly one prop visible.",
+            "Exactly two props",
+        ),
+        (
+            "Someone remains visible",
+            "characters",
+            "Someone remains visible. Keep exactly one character visible.",
+            "one characters",
+        ),
+    ),
+)
+def test_positive_count_uses_structured_count_and_target_as_truth(
+    assertion, target, expected, forbidden
+):
+    plan = _v3_plan(H3Mode.T2VA)
+    rigid = plan.rigid_prompt
+    assert rigid is not None
+    constraint = H3PositiveConstraint(
+        assertion=assertion,
+        count=1,
+        target=target,
+    )
+    plan = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={"positive_constraints": (constraint,)}
+            )
+        }
+    )
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert expected in wire.integrated_multimodal_description
+    assert forbidden not in wire.integrated_multimodal_description
+
+
+def test_shot_intro_selects_article_and_preserves_existing_framing_article():
+    plan = _v3_plan(H3Mode.T2VA)
+    shot = plan.shots[0].model_copy(
+        update={"framing": "an extreme close-up"}
+    )
+    plan = plan.model_copy(update={"visual_style": "anime", "shots": (shot,)})
+
+    wire = h3_prompt_compiler.project_director_plan_to_wire(plan)
+
+    assert isinstance(wire, H3BaseWire)
+    assert wire.integrated_multimodal_description.startswith(
+        "[Shot 1] Render in an anime visual style. "
+        "Frame Lin Mo in an extreme close-up from eye level;"
+    )
+    assert "a anime" not in wire.integrated_multimodal_description
+    assert "a an extreme close-up" not in wire.integrated_multimodal_description
 
 
 def test_rigid_description_is_natural_playback_without_internal_labels_or_motives():

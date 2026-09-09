@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TypeVar
 
 from .h3_director_plan import (
@@ -37,6 +38,11 @@ H3_PROMPT_COMPILER_VERSION = 3
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
 _NO_MUSIC = frozenset(
     {"", "n/a", "none", "none.", "no music", "no music.", "no music. sfx only."}
+)
+_ASSERTION_COUNT_RE = re.compile(
+    r"\b(?:exactly\s+)?(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|"
+    r"two|three|four|five|six|seven|eight|nine|ten|[0-9]+)\b\s*",
+    flags=re.IGNORECASE,
 )
 
 
@@ -131,14 +137,16 @@ def _compile_shot_intro(
     label = _shot_label(shot.shot_id)
     if first:
         opening = (
-            f"[{label}] Render in a {plan.visual_style} visual style. "
-            f"Frame {shot.focus} in a {shot.framing} from {shot.angle}; "
+            f"[{label}] Render in {_with_indefinite_article(plan.visual_style)} "
+            f"visual style. Frame {shot.focus} in "
+            f"{_with_indefinite_article(shot.framing)} from {shot.angle}; "
             f"{_sentence(shot.composition)}"
         )
     else:
         opening = (
             f"[{label}] At {_timestamp(shot.start_frame, plan.fps)}, "
-            f"cut to a {shot.framing} from {shot.angle}, focused on {shot.focus}; "
+            f"cut to {_with_indefinite_article(shot.framing)} from {shot.angle}, "
+            f"focused on {shot.focus}; "
             f"{_sentence(shot.composition)}"
         )
     parts = [f"{opening} The {_camera_text(shot.camera)}."]
@@ -271,12 +279,25 @@ def _compile_acting_fact(
 def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     if constraint.count is None:
         return constraint.assertion
-    if _assertion_contains_count(constraint.assertion, constraint.count):
-        return constraint.assertion
-    return (
-        f"{_strip_terminal(constraint.assertion)}; keep exactly {constraint.count} "
-        f"{constraint.target} visible"
+    semantic_assertion = _ASSERTION_COUNT_RE.sub(
+        "", _strip_terminal(constraint.assertion)
+    ).strip()
+    semantic_assertion = re.sub(r"\s{2,}", " ", semantic_assertion)
+    semantic = (
+        _sentence(_capitalize_initial(semantic_assertion))
+        if semantic_assertion
+        else ""
     )
+    count = {0: "zero", 1: "one"}.get(constraint.count, str(constraint.count))
+    target_forms = {
+        "characters": ("character", "characters"),
+        "references": ("reference", "references"),
+        "props": ("prop", "props"),
+        "other": ("item", "items"),
+    }
+    target = target_forms[constraint.target][constraint.count != 1]
+    count_fact = f"Keep exactly {count} {target} visible."
+    return f"{semantic} {count_fact}".strip()
 
 
 def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
@@ -514,15 +535,12 @@ def _natural_list(values: tuple[str, ...]) -> str:
     return f"{', '.join(values[:-1])}, and {values[-1]}"
 
 
-def _assertion_contains_count(assertion: str, count: int) -> bool:
-    words = {
-        0: ("0", "zero", "no "),
-        1: ("1", "one", "single"),
-        2: ("2", "two", "pair"),
-        3: ("3", "three"),
-    }.get(count, (str(count),))
-    normalized = assertion.casefold()
-    return "exactly" in normalized or any(word in normalized for word in words)
+def _with_indefinite_article(value: str) -> str:
+    normalized = value.strip()
+    if re.match(r"^(?:a|an|the)\s+", normalized, flags=re.IGNORECASE):
+        return normalized
+    article = "an" if normalized[:1].casefold() in "aeiou" else "a"
+    return f"{article} {normalized}"
 
 
 def _shot_label(shot_id: str) -> str:
