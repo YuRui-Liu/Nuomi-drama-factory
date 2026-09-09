@@ -30,7 +30,12 @@ from novelvideo.production_workflow.slot_ids import (
     scene_state_slot_id,
 )
 
-from .planned_bindings import AssetKind, BindingStatus, PlannedReferenceBinding
+from .planned_bindings import (
+    AssetKind,
+    BindingResolution,
+    BindingStatus,
+    PlannedReferenceBinding,
+)
 from .reference_requirements import structured_scene_requirement
 
 
@@ -604,6 +609,50 @@ def _binding(
     )
 
 
+def _merge_projected_bindings(
+    bindings: Iterable[PlannedReferenceBinding],
+) -> tuple[PlannedReferenceBinding, ...]:
+    status_priority: dict[BindingStatus, int] = {
+        "ready": 0,
+        "missing_image": 1,
+        "missing_asset": 2,
+        "pending_confirmation": 3,
+    }
+    resolution_priority: dict[BindingResolution, int] = {
+        "manually_confirmed": 0,
+        "auto_matched": 1,
+        "explicit_fallback": 2,
+    }
+    merged: list[PlannedReferenceBinding] = []
+    positions: dict[str, int] = {}
+    for binding in bindings:
+        position = positions.get(binding.binding_id)
+        if position is None:
+            positions[binding.binding_id] = len(merged)
+            merged.append(binding)
+            continue
+        current = merged[position]
+        status = max(
+            (current.status, binding.status), key=status_priority.__getitem__
+        )
+        resolution = max(
+            (current.resolution, binding.resolution),
+            key=resolution_priority.__getitem__,
+        )
+        merged[position] = PlannedReferenceBinding.model_validate(
+            {
+                **current.model_dump(),
+                "group_ids": _append_unique(current.group_ids, binding.group_ids),
+                "beat_ids": _append_unique(current.beat_ids, binding.beat_ids),
+                "shot_ids": _append_unique(current.shot_ids, binding.shot_ids),
+                "required": current.required or binding.required,
+                "status": status,
+                "resolution": resolution,
+            }
+        )
+    return tuple(merged)
+
+
 def bindings_for_director_plan(
     *,
     project_id: str,
@@ -627,7 +676,7 @@ def bindings_for_director_plan(
         _text(identity_id) for identity_id in episode_identity_ids if _text(identity_id)
     )
     default_identity_ids = identity_default_map or {}
-    return tuple(
+    return _merge_projected_bindings(
         _binding(
             requirement,
             project_id=project_id,

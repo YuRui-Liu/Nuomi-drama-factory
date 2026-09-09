@@ -164,6 +164,51 @@ def test_planned_phase_alias_resolves_only_within_same_character():
     assert binding.status == "ready"
 
 
+def test_resolved_duplicate_bindings_merge_scope_and_required():
+    identity = _identity("陆辰_青年时期", with_image=True)
+    shot_one = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity", entity_key="陆辰", required=False
+            ),
+        ),
+    )
+    shot_two = SimpleNamespace(
+        id="shot-2",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity", entity_key="陆辰_青年期", required=True
+            ),
+        ),
+    )
+
+    bindings = bindings_for_director_plan(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        groups=(
+            SimpleNamespace(id="group-1", beat_ids=("beat-1",), shots=(shot_one,)),
+            SimpleNamespace(id="group-2", beat_ids=("beat-2",), shots=(shot_two,)),
+        ),
+        shots=(shot_one, shot_two),
+        characters=(_character("陆辰", identity),),
+        scenes=(),
+        props=(),
+        episode_identity_ids=(identity.identity_id,),
+        identity_default_map={"陆辰": identity.identity_id},
+    )
+
+    assert len(bindings) == 1
+    assert bindings[0].entity_id == identity.identity_id
+    assert bindings[0].group_ids == ("group-1", "group-2")
+    assert bindings[0].beat_ids == ("beat-1", "beat-2")
+    assert bindings[0].shot_ids == ("shot-1", "shot-2")
+    assert bindings[0].required is True
+
+
 def test_exact_identity_id_keeps_matching_outside_episode_selection():
     exact = _identity("陆辰_少年时期", with_image=True)
 
