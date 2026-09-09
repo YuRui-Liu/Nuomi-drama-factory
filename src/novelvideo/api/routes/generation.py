@@ -64,6 +64,10 @@ from novelvideo.generators.nanobanana_grid import (
 )
 from novelvideo.generators.render_identity_guard import render_ai_detection_error
 from novelvideo.manual_shots import pick_beats_by_number
+from novelvideo.media_capabilities.video.backends import (
+    H3_VIDEO_BACKEND,
+    normalize_video_backend,
+)
 from novelvideo.render_plan.ref_image_hash import RefImageHasher
 from novelvideo.seedance2_i2v.pipeline import (
     is_huimeng_seedance2_backend,
@@ -4169,7 +4173,7 @@ async def generate_single_video(
     is_seedance2 = _is_seedance2_backend(body.video_backend)
     is_happyhorse = _is_happyhorse_backend(body.video_backend)
     is_grok_video = _is_grok_video_backend(body.video_backend)
-    is_h3 = body.video_backend == "runninghub:minimax-h3"
+    is_h3 = normalize_video_backend(body.video_backend) == H3_VIDEO_BACKEND
     h3_requested_capability = None
     if is_h3:
         from novelvideo.media_capabilities.video.catalog import (

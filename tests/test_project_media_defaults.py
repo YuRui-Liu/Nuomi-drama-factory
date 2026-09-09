@@ -2,7 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from novelvideo.api.routes import projects
@@ -148,6 +148,147 @@ def test_api_project_and_single_video_schemas_accept_official_h3_modes(mode):
     ).h3_mode == mode
     assert ProjectUpdate(h3_mode=mode).h3_mode == mode
     assert SingleVideoRequest(h3_mode=mode).h3_mode == mode
+
+
+def _install_h3_single_video_route(monkeypatch, tmp_path):
+    from novelvideo.api.routes import generation
+    from novelvideo.media_capabilities.video import catalog
+
+    ctx = SimpleNamespace(project_id="demo", state_dir=tmp_path)
+
+    class Store:
+        async def get_beats_as_dicts(self, episode):
+            assert episode == 1
+            return [
+                {
+                    "beat_number": 1,
+                    "video_mode": "first_frame",
+                    "video_prompt": "A stable shot.",
+                }
+            ]
+
+    async def resolve_project(*args, **kwargs):
+        return SimpleNamespace(
+            ctx=ctx,
+            username="tester",
+            project_name="demo",
+            output_dir=str(tmp_path),
+        )
+
+    async def make_store(resolved_ctx):
+        assert resolved_ctx is ctx
+        return Store()
+
+    async def audio_duration(*args, **kwargs):
+        return None
+
+    enqueue_calls = []
+
+    async def enqueue(*args, **kwargs):
+        enqueue_calls.append((args, kwargs))
+        return SimpleNamespace(
+            task_state=SimpleNamespace(task_id="task-1"),
+            backend="celery",
+            queue="video",
+        )
+
+    monkeypatch.setattr(generation, "_resolve_generation_project", resolve_project)
+    monkeypatch.setattr(generation, "make_sqlite_store_for_context", make_store)
+    monkeypatch.setattr(generation, "_api_audio_duration_seconds", audio_duration)
+    monkeypatch.setattr(
+        generation,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=enqueue),
+    )
+    monkeypatch.setattr(generation, "get_media_capability_store", lambda: object())
+    monkeypatch.setattr(generation, "get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        catalog,
+        "list_video_models",
+        lambda *args: (
+            SimpleNamespace(
+                id="runninghub:minimax-h3",
+                available=True,
+                unavailable_reason=None,
+                supported_modes=("i2va", "fl2va"),
+            ),
+        ),
+    )
+    frame = tmp_path / "frames" / "ep001" / "beat_01.png"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"frame")
+    return generation, enqueue_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend",
+    (
+        pytest.param(None, id="default-underscore"),
+        "runninghub-minimax-h3",
+        "runninghub:minimax-h3",
+    ),
+)
+@pytest.mark.parametrize("mode", ("t2va", "l2va", "ref2va"))
+async def test_single_video_h3_aliases_reject_unverified_modes_before_enqueue(
+    monkeypatch, tmp_path, backend, mode
+):
+    generation, enqueue_calls = _install_h3_single_video_route(
+        monkeypatch, tmp_path
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        body = SingleVideoRequest(h3_mode=mode)
+        if backend is not None:
+            body = SingleVideoRequest(video_backend=backend, h3_mode=mode)
+        await generation.generate_single_video(
+            project="demo",
+            episode_num=1,
+            beat_num=1,
+            body=body,
+            user={"username": "tester"},
+        )
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail == {
+        "code": "h3.mode_unsupported_by_workflow",
+        "mode": mode,
+        "workflow": "runninghub:minimax-h3",
+    }
+    assert enqueue_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend",
+    (
+        pytest.param(None, id="default-underscore"),
+        "runninghub-minimax-h3",
+        "runninghub:minimax-h3",
+    ),
+)
+async def test_single_video_h3_aliases_prepare_explicit_fl_tail_before_enqueue(
+    monkeypatch, tmp_path, backend
+):
+    generation, enqueue_calls = _install_h3_single_video_route(
+        monkeypatch, tmp_path
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        body = SingleVideoRequest(h3_mode="fl2va")
+        if backend is not None:
+            body = SingleVideoRequest(video_backend=backend, h3_mode="fl2va")
+        await generation.generate_single_video(
+            project="demo",
+            episode_num=1,
+            beat_num=1,
+            body=body,
+            user={"username": "tester"},
+        )
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "MiniMax H3 fl2va mode requires a last frame"
+    assert enqueue_calls == []
 
 
 def test_media_defaults_use_vip_2k_default_and_preserve_explicit_size():
