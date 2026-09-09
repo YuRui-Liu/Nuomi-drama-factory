@@ -308,7 +308,10 @@ async def _run_character_image(
             IMAGE_GENERATION_SELECTIONS,
             LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
         )
-        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+        from novelvideo.media_capabilities.image.catalog import (
+            legacy_image_model_values,
+            resolve_grsai_image_model,
+        )
 
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
@@ -317,23 +320,16 @@ async def _run_character_image(
         project_model = str(
             project_config.get("character_image_selection") or ""
         ).strip()
-        legacy_selections = {
-            *IMAGE_GENERATION_SELECTIONS,
-            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
-        }
-        if requested_model in GRSAI_IMAGE_MODELS:
-            model = requested_model
-        elif requested_model in legacy_selections:
-            model = runtime.model
-        elif requested_model:
-            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
-        elif project_model in GRSAI_IMAGE_MODELS:
-            model = project_model
-        elif not project_model or project_model in legacy_selections:
-            model = runtime.model
-        else:
-            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
+        resolution = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model=project_model,
+            runtime_model=runtime.model,
+            legacy_values=legacy_image_model_values(
+                IMAGE_GENERATION_SELECTIONS,
+                LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            ),
+        )
+        model = resolution.model
         from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
         visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
@@ -410,6 +406,10 @@ async def _run_character_image(
             "identity_id": identity_id,
             "identity_name": identity_name,
             "path": str(output_path),
+            "provider": "grsai",
+            "requested_model": resolution.requested_model,
+            "resolved_model": resolution.model,
+            "resolution_source": resolution.resolution_source,
         }
         if mode == "identity_image":
             result.update(workflow_result)

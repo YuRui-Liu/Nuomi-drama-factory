@@ -53,6 +53,9 @@ def _register_scene_reference_candidate(
     canonical_path: Path,
     source_attempt_id: str | None,
     recipe_revision: str,
+    requested_model: str = "",
+    resolved_model: str = "",
+    resolution_source: str = "",
 ) -> tuple[dict[str, str], bool]:
     from novelvideo.production_workflow import (
         ProductionWorkflowStore,
@@ -103,6 +106,10 @@ def _register_scene_reference_candidate(
                     "time_of_day": str(getattr(scene, "time_of_day", "") or ""),
                     "anchor_kind": kind,
                     "recipe_revision": recipe_revision,
+                    "provider": "grsai",
+                    "requested_model": requested_model or resolved_model,
+                    "resolved_model": resolved_model,
+                    "resolution_source": resolution_source,
                     "canonical_path": canonical_path.resolve().relative_to(root).as_posix(),
                 },
                 actor=str(getattr(ctx, "requester_username", "") or "system"),
@@ -227,7 +234,10 @@ async def _run_scene_reference_asset(
             IMAGE_GENERATION_SELECTIONS,
             LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
         )
-        from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+        from novelvideo.media_capabilities.image.catalog import (
+            legacy_image_model_values,
+            resolve_grsai_image_model,
+        )
         from novelvideo.project_config import load_project_config_file
 
         requested_model = str(payload.get("model") or "").strip()
@@ -237,23 +247,16 @@ async def _run_scene_reference_asset(
             )
             or ""
         ).strip()
-        legacy_selections = {
-            *IMAGE_GENERATION_SELECTIONS,
-            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
-        }
-        if requested_model in GRSAI_IMAGE_MODELS:
-            model = requested_model
-        elif requested_model in legacy_selections:
-            model = grsai_runtime.model
-        elif requested_model:
-            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
-        elif project_model in GRSAI_IMAGE_MODELS:
-            model = project_model
-        elif not project_model or project_model in legacy_selections:
-            model = grsai_runtime.model
-        else:
-            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
+        resolution = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model=project_model,
+            runtime_model=grsai_runtime.model,
+            legacy_values=legacy_image_model_values(
+                IMAGE_GENERATION_SELECTIONS,
+                LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            ),
+        )
+        model = resolution.model
         candidate_path = _scene_reference_version_path(
             output_dir,
             scene_name=scene.name,
@@ -290,6 +293,9 @@ async def _run_scene_reference_asset(
             )
             or None,
             recipe_revision=str(payload.get("recipe_revision") or "1"),
+            requested_model=resolution.requested_model,
+            resolved_model=resolution.model,
+            resolution_source=resolution.resolution_source,
         )
         if (
             canonical_updated

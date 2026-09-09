@@ -101,3 +101,66 @@ def test_catalog_is_empty_when_credential_reader_fails(tmp_path) -> None:
     )
 
     assert list_image_models(store, resolver) == ()
+
+
+def test_model_selection_classifier_and_resolver_are_fail_closed() -> None:
+    from novelvideo.media_capabilities.image.catalog import (
+        ImageModelSelectionKind,
+        classify_image_model_selection,
+        resolve_grsai_image_model,
+    )
+
+    legacy_values = {"newapi_gpt_image2", "LingShan-G2"}
+    assert classify_image_model_selection(
+        "", legacy_values=legacy_values
+    ) is ImageModelSelectionKind.EMPTY
+    assert classify_image_model_selection(
+        "gpt-image-2-vip", legacy_values=legacy_values
+    ) is ImageModelSelectionKind.GRSAI
+    assert classify_image_model_selection(
+        "LingShan-G2", legacy_values=legacy_values
+    ) is ImageModelSelectionKind.LEGACY
+    assert classify_image_model_selection(
+        "outside", legacy_values=legacy_values
+    ) is ImageModelSelectionKind.UNKNOWN
+
+    explicit = resolve_grsai_image_model(
+        requested_model="gpt-image-2-vip",
+        project_model="nano-banana-pro",
+        runtime_model="gpt-image-2",
+        legacy_values=legacy_values,
+    )
+    assert (explicit.model, explicit.requested_model, explicit.resolution_source) == (
+        "gpt-image-2-vip",
+        "gpt-image-2-vip",
+        "explicit",
+    )
+    project = resolve_grsai_image_model(
+        requested_model="",
+        project_model="nano-banana-pro",
+        runtime_model="gpt-image-2",
+        legacy_values=legacy_values,
+    )
+    assert (project.model, project.requested_model, project.resolution_source) == (
+        "nano-banana-pro",
+        "nano-banana-pro",
+        "project",
+    )
+    runtime = resolve_grsai_image_model(
+        requested_model="newapi_gpt_image2",
+        project_model="nano-banana-pro",
+        runtime_model="gpt-image-2",
+        legacy_values=legacy_values,
+    )
+    assert (runtime.model, runtime.requested_model, runtime.resolution_source) == (
+        "gpt-image-2",
+        "newapi_gpt_image2",
+        "runtime",
+    )
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        resolve_grsai_image_model(
+            requested_model="",
+            project_model="outside",
+            runtime_model="gpt-image-2",
+            legacy_values=legacy_values,
+        )

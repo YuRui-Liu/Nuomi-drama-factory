@@ -190,6 +190,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert version.generation_metadata["canonical_path"] == (
         "assets/scenes/大厅/master.png"
     )
+    assert version.generation_metadata["provider"] == "grsai"
+    assert version.generation_metadata["requested_model"] == "gpt-image-2-vip"
+    assert version.generation_metadata["resolved_model"] == "gpt-image-2-vip"
+    assert version.generation_metadata["resolution_source"] == "explicit"
 
     second = await scene_reference._run_scene_reference_asset(
         {
@@ -209,6 +213,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert second["version_id"] != result["version_id"]
     assert second_slot.current_version_id == result["version_id"]
     assert calls["generate"][1]["model"] == "nano-banana-2"
+    second_version = _second_versions[second["version_id"]]
+    assert second_version.generation_metadata["requested_model"] == "nano-banana-2"
+    assert second_version.generation_metadata["resolved_model"] == "nano-banana-2"
+    assert second_version.generation_metadata["resolution_source"] == "project"
     assert calls["clear_stale"] == [("大厅", "master")]
     assert calls["slot_factory"] == [("大厅", "master"), ("大厅", "master")]
 

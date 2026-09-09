@@ -68,8 +68,12 @@ from novelvideo.config import (
     normalize_character_image_selection,
 )
 from novelvideo.image_request_usage import get_image_usage_summary
-from novelvideo.media_capabilities.image.catalog import list_image_models
-from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+from novelvideo.media_capabilities.image.catalog import (
+    ImageModelSelectionKind,
+    classify_image_model_selection,
+    legacy_image_model_values,
+    list_image_models,
+)
 from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.project_config import (
     load_project_config,
@@ -196,8 +200,18 @@ def _validate_asset_image_source_kind(asset_kind: str) -> str | None:
 
 def _resolve_character_image_model(username: str, project: str, requested_model: str | None) -> str:
     model = str(requested_model or "").strip()
-    if model:
+    legacy_values = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    model_kind = classify_image_model_selection(model, legacy_values=legacy_values)
+    if model_kind in {
+        ImageModelSelectionKind.GRSAI,
+        ImageModelSelectionKind.LEGACY,
+    }:
         return model
+    if model_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported image model: {model}")
     options = character_image_selection_options()
     saved_selection = str(
         load_project_config_file(username, project).get(
@@ -205,7 +219,11 @@ def _resolve_character_image_model(username: str, project: str, requested_model:
         )
         or ""
     ).strip()
-    if saved_selection in GRSAI_IMAGE_MODELS:
+    saved_kind = classify_image_model_selection(
+        saved_selection,
+        legacy_values=legacy_values,
+    )
+    if saved_kind is ImageModelSelectionKind.GRSAI:
         return saved_selection
     if saved_selection in options:
         return saved_selection
@@ -214,7 +232,7 @@ def _resolve_character_image_model(username: str, project: str, requested_model:
     for selection, entry in IMAGE_GENERATION_SELECTIONS.items():
         if saved_selection == entry["model"]:
             return normalize_character_image_selection(selection)
-    if saved_selection:
+    if saved_kind is ImageModelSelectionKind.UNKNOWN:
         raise ValueError(f"Unsupported image model: {saved_selection}")
     return get_character_image_selection()
 

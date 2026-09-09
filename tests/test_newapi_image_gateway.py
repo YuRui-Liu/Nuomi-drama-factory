@@ -1493,6 +1493,70 @@ async def test_newapi_gateway_fails_closed_when_grsai_runtime_is_unavailable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "should_fallback"),
+    [("LingShan-G2", True), ("gpt-image-2-vip", False)],
+)
+async def test_newapi_gateway_handles_runtime_infrastructure_failure_by_model_kind(
+    monkeypatch, model, should_fallback
+):
+    from novelvideo.generators import nanobanana_grid
+
+    def fail_runtime(*_args):
+        raise OSError("settings database unavailable")
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        fail_runtime,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    if not should_fallback:
+        with pytest.raises(RuntimeError, match="GRSAI runtime is unavailable"):
+            await nanobanana_grid._call_newapi_image_api(
+                api_key="legacy-key",
+                model=model,
+                prompt="draw a scene",
+            )
+        return
+
+    posted = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"legacy").decode()}]}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **kwargs):
+            posted.update(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda **_kwargs: FakeClient())
+    result = await nanobanana_grid._call_newapi_image_api(
+        api_key="legacy-key",
+        model=model,
+        prompt="draw a scene",
+        base_url="https://legacy.test/v1",
+    )
+
+    assert result == (b"legacy", "", "")
+    assert posted["model"] == "LingShan-G2"
+
+
+@pytest.mark.asyncio
 async def test_newapi_gateway_preserves_raw_model_in_grsai_http_payload(monkeypatch):
     import json
     from types import SimpleNamespace
@@ -1618,3 +1682,60 @@ async def test_sync_character_generators_reject_unknown_explicit_model(monkeypat
             output_path=str(tmp_path / "identity.png"),
             model="outside-catalog-model",
         )
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generators_prefer_raw_grsai_id_over_legacy_model_mapping(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    configs = []
+
+    class FakeGenerator:
+        def __init__(self, *, config=None, selection=None, **_kwargs):
+            assert selection is None
+            configs.append(config)
+
+        async def generate_character_portrait(self, **_kwargs):
+            return SimpleNamespace(success=True, reference_paths=["portrait.png"], error=None)
+
+        async def generate_identity_with_reference(self, **_kwargs):
+            return SimpleNamespace(success=True, error=None)
+
+    colliding_legacy = {
+        "newapi_gpt_image2": {
+            "label": "legacy",
+            "provider": "newapi",
+            "model": "gpt-image-2",
+        }
+    }
+    monkeypatch.setattr(image_generator, "IMAGE_GENERATION_SELECTIONS", colliding_legacy)
+    monkeypatch.setattr(nanobanana_character, "NanoBananaCharacterGenerator", FakeGenerator)
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(
+            model="nano-banana-pro",
+            api_key="secret",
+            account=SimpleNamespace(base_url="https://grsai.test"),
+        ),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    await image_generator.generate_character_reference_unified(
+        character_name="小鹿",
+        appearance_prompt="black hair",
+        output_dir=str(tmp_path),
+        model="gpt-image-2",
+    )
+    await image_generator.generate_identity_image_unified(
+        character_name="小鹿",
+        identity_prompt="blue coat",
+        reference_image_path=str(tmp_path / "portrait.png"),
+        output_path=str(tmp_path / "identity.png"),
+        model="gpt-image-2",
+    )
+
+    assert [config["model"] for config in configs] == ["gpt-image-2", "gpt-image-2"]

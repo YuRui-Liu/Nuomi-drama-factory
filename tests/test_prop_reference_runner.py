@@ -149,6 +149,21 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert versions[second["version_id"]].generation_metadata["canonical_path"] == (
         "assets/props/手机/reference_3view.png"
     )
+    assert versions[first["version_id"]].generation_metadata["requested_model"] == (
+        "gpt-image-2-vip"
+    )
+    assert versions[first["version_id"]].generation_metadata["resolved_model"] == (
+        "gpt-image-2-vip"
+    )
+    assert versions[first["version_id"]].generation_metadata["resolution_source"] == (
+        "explicit"
+    )
+    assert versions[second["version_id"]].generation_metadata["requested_model"] == (
+        "nano-banana-pro"
+    )
+    assert versions[second["version_id"]].generation_metadata["resolution_source"] == (
+        "project"
+    )
 
     project_config["prop_image_selection"] = "outside-catalog-model"
     with pytest.raises(ValueError, match="Unsupported GRSAI image model"):

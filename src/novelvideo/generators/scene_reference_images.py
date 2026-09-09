@@ -109,12 +109,13 @@ async def _call_grsai_image_api(
     from novelvideo.media_capabilities.runtime.configuration import (
         load_grsai_runtime_configuration,
     )
+    from novelvideo.ports import get_usage_meter
 
     runtime = load_grsai_runtime_configuration(
         get_media_capability_store(),
         get_media_credential_resolver(),
     )
-    client = runtime.create_client()
+    resolved_model = model or runtime.model
     references = [
         f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
         for _name, data, mime_type in (reference_images or [])
@@ -122,12 +123,26 @@ async def _call_grsai_image_api(
     request = ImageGenerationRequest(
         capability=MediaCapability.IMAGE_SINGLE,
         prompt=prompt,
-        model=model or runtime.model,
+        model=resolved_model,
         references=references,
         aspect_ratio=image_config.get("aspect_ratio") or "16:9",
         image_size=image_config.get("image_size") or "1K",
     )
+    meter = get_usage_meter()
+    billing_params = {"size": str(request.image_size).strip().lower()}
+    quality = str(image_config.get("quality") or "").strip().lower()
+    if quality:
+        billing_params["quality"] = quality
+    reservation_id = await meter.reserve_current_model_call_credit(
+        model=resolved_model,
+        billing_kind="image",
+        billing_params=billing_params,
+        metadata={"source": "grsai_image_api"},
+    )
+    client = None
+    task_id = ""
     try:
+        client = runtime.create_client()
         task_id = await _submit_grsai_image(
             client,
             request,
@@ -139,16 +154,38 @@ async def _call_grsai_image_api(
             api_key=runtime.api_key,
         )
         if snapshot.status in {"failed", "violation"}:
-            return None, "", f"GRSAI image generation {snapshot.status}"
+            raise RuntimeError(f"GRSAI image generation {snapshot.status}")
         if not snapshot.results or not snapshot.results[0].get("url"):
-            return None, "", "GRSAI image response missing result URL"
+            raise RuntimeError("GRSAI image response missing result URL")
         response = await client.http.get(str(snapshot.results[0]["url"]))
         response.raise_for_status()
+        try:
+            await meter.bump_model_call(
+                user_id=None,
+                model=resolved_model,
+                provider_request_id=task_id,
+                provider_task_id=task_id,
+                credit_reservation_id=reservation_id,
+                metadata={"source": "grsai_image_api"},
+            )
+        except Exception:
+            pass
         return response.content, "", ""
     except Exception as exc:
+        try:
+            await meter.refund_model_call_credit_reservation(
+                reservation_id,
+                metadata={
+                    "source": "grsai_image_api",
+                    "error": _grsai_error_detail(exc)[:200],
+                },
+            )
+        except Exception:
+            pass
         return None, "", f"GRSAI image generation failed: {_grsai_error_detail(exc)}"
     finally:
-        await client.http.aclose()
+        if client is not None:
+            await client.http.aclose()
 
 
 def _scene_dir(project_dir: Path, scene_name: str) -> Path:

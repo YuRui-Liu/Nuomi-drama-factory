@@ -145,6 +145,14 @@ async def test_character_portrait_resolves_grsai_model_precedence(
     assert "no chest, lower shoulders, torso, large areas of clothing, hands, or props" in generated_prompt
     assert "head and shoulders" not in generated_prompt
     assert "newapi_gpt_image2" not in str(calls["grsai"])
+    assert result["provider"] == "grsai"
+    assert result["requested_model"] == (payload_model or project_selection or "gpt-image-2")
+    assert result["resolved_model"] == expected_model
+    assert result["resolution_source"] == (
+        "explicit" if payload_model == "gpt-image-2-vip" else
+        "project" if project_selection else
+        "runtime"
+    )
     if payload_model is None:
         project_config["character_image_selection"] = "outside-catalog-model"
         with pytest.raises(ValueError, match="Unsupported GRSAI image model"):

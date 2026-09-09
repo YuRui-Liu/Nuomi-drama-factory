@@ -50,6 +50,9 @@ def _register_prop_candidate(
     prompt: str,
     model: str,
     source_attempt_id: str | None,
+    requested_model: str = "",
+    resolved_model: str = "",
+    resolution_source: str = "",
 ) -> dict[str, str]:
     from novelvideo.production_workflow import (
         ProductionWorkflowStore,
@@ -89,6 +92,9 @@ def _register_prop_candidate(
                     "prop_type": str(getattr(prop, "prop_type", "") or "object"),
                     "provider": "grsai",
                     "model": model,
+                    "requested_model": requested_model or model,
+                    "resolved_model": resolved_model or model,
+                    "resolution_source": resolution_source,
                     "aspect_ratio": "16:9",
                     "panel_layout": ["front", "side", "back"],
                     "prompt_snapshot": prompt,
@@ -141,7 +147,10 @@ async def _run_prop_reference_asset(
         IMAGE_GENERATION_SELECTIONS,
         LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     )
-    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    from novelvideo.media_capabilities.image.catalog import (
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
     from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.task_backend.runners.character_image import _generate_grsai_image
@@ -182,23 +191,16 @@ async def _run_prop_reference_asset(
             )
             or ""
         ).strip()
-        legacy_selections = {
-            *IMAGE_GENERATION_SELECTIONS,
-            *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-            *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
-        }
-        if requested_model in GRSAI_IMAGE_MODELS:
-            model = requested_model
-        elif requested_model in legacy_selections:
-            model = runtime.model
-        elif requested_model:
-            raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
-        elif project_model in GRSAI_IMAGE_MODELS:
-            model = project_model
-        elif not project_model or project_model in legacy_selections:
-            model = runtime.model
-        else:
-            raise ValueError(f"Unsupported GRSAI image model: {project_model}")
+        resolution = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model=project_model,
+            runtime_model=runtime.model,
+            legacy_values=legacy_image_model_values(
+                IMAGE_GENERATION_SELECTIONS,
+                LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            ),
+        )
+        model = resolution.model
         prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
             model=model,
@@ -220,6 +222,9 @@ async def _run_prop_reference_asset(
                 envelope.get("task_id") or envelope.get("job_id") or ""
             )
             or None,
+            requested_model=resolution.requested_model,
+            resolved_model=resolution.model,
+            resolution_source=resolution.resolution_source,
         )
         return {
             "prop_name": prop.name,
@@ -248,7 +253,10 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
         LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     )
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
-    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    from novelvideo.media_capabilities.image.catalog import (
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
     from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
@@ -265,11 +273,10 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
         or ""
     ).strip()
     requested_model = str(payload.get("model") or "").strip()
-    legacy_selections = {
-        *IMAGE_GENERATION_SELECTIONS,
-        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-        *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
-    }
+    legacy_selections = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
 
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
@@ -300,18 +307,13 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             runtime = load_grsai_runtime_configuration(
                 get_media_capability_store(), get_media_credential_resolver()
             )
-            if requested_model in GRSAI_IMAGE_MODELS:
-                model = requested_model
-            elif requested_model in legacy_selections:
-                model = runtime.model
-            elif requested_model:
-                raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
-            elif project_model in GRSAI_IMAGE_MODELS:
-                model = project_model
-            elif not project_model or project_model in legacy_selections:
-                model = runtime.model
-            else:
-                raise ValueError(f"Unsupported GRSAI image model: {project_model}")
+            resolution = resolve_grsai_image_model(
+                requested_model=requested_model,
+                project_model=project_model,
+                runtime_model=runtime.model,
+                legacy_values=legacy_selections,
+            )
+            model = resolution.model
             visual_prompt = prop.visual_prompt or prop.description or prop.name
             prompt = _prop_reference_prompt(
                 style=style,
@@ -337,6 +339,9 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
                         envelope.get("task_id") or envelope.get("job_id") or ""
                     )
                     or None,
+                    requested_model=resolution.requested_model,
+                    resolved_model=resolution.model,
+                    resolution_source=resolution.resolution_source,
                 )
                 generated += 1
         return {"generated": generated}

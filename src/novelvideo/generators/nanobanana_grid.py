@@ -3293,22 +3293,26 @@ async def _call_newapi_image_api(
         IMAGE_GENERATION_SELECTIONS,
         LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     )
-    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    from novelvideo.media_capabilities.image.catalog import (
+        ImageModelSelectionKind,
+        classify_image_model_selection,
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
     from novelvideo.media_capabilities.runtime.configuration import (
-        MediaRuntimeConfigurationError,
         load_grsai_runtime_configuration,
     )
 
     requested_model = str(model or "").strip()
-    legacy_selections = {
-        *IMAGE_GENERATION_SELECTIONS,
-        *LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
-        *(entry["model"] for entry in IMAGE_GENERATION_SELECTIONS.values()),
-    }
-    if requested_model and (
-        requested_model not in GRSAI_IMAGE_MODELS
-        and requested_model not in legacy_selections
-    ):
+    legacy_selections = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    requested_kind = classify_image_model_selection(
+        requested_model,
+        legacy_values=legacy_selections,
+    )
+    if requested_kind is ImageModelSelectionKind.UNKNOWN:
         raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
 
     try:
@@ -3320,18 +3324,26 @@ async def _call_newapi_image_api(
         grsai_runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-    except MediaRuntimeConfigurationError as exc:
-        if requested_model in GRSAI_IMAGE_MODELS:
+    except Exception as exc:
+        if requested_kind is ImageModelSelectionKind.GRSAI:
             raise RuntimeError("GRSAI runtime is unavailable") from exc
+        logger.warning(
+            "GRSAI runtime unavailable for legacy image selection %r; "
+            "falling back to DramaClawAPI: %s",
+            requested_model,
+            exc,
+        )
         grsai_runtime = None
 
     if grsai_runtime is not None:
         from novelvideo.generators.scene_reference_images import _call_grsai_image_api
 
-        if requested_model in GRSAI_IMAGE_MODELS:
-            grsai_model = requested_model
-        else:
-            grsai_model = grsai_runtime.model
+        grsai_model = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model="",
+            runtime_model=grsai_runtime.model,
+            legacy_values=legacy_selections,
+        ).model
 
         normalized_refs: list[tuple[str, bytes, str]] = []
         for index, item in enumerate(reference_images or []):
