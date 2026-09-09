@@ -3602,6 +3602,15 @@ class RunningHubMiniMaxH3VideoGenerator(VideoGeneratorBase):
         on_log = kwargs.get("on_log") or (lambda _message: None)
         on_progress = kwargs.get("on_progress") or (lambda _value: None)
         try:
+            from novelvideo.media_capabilities.video.h3_prompt_quality import (
+                inspect_h3_prompt,
+            )
+            from novelvideo.media_capabilities.video.models import H3Mode
+
+            resolved_mode = (
+                H3Mode.FL2VA if kwargs.get("last_frame_path") else H3Mode.I2VA
+            )
+            inspect_h3_prompt(prompt, resolved_mode, duration).raise_for_failure()
             on_log("提交 RunningHub MiniMax H3 视频任务...")
             on_progress(0.05)
             if self.runtime_loader is not None:

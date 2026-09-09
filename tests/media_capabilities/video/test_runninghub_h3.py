@@ -23,6 +23,8 @@ from novelvideo.media_capabilities.video.runninghub_h3 import (
 from novelvideo.media_capabilities.video.h3_prompt_profile import (
     H3_GLOBAL_CONTINUITY_PROMPT,
 )
+from novelvideo.media_capabilities.video.h3_prompt import compile_h3
+from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
 from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
 
 
@@ -77,6 +79,14 @@ def runtime_with() -> RunningHubRuntimeConfiguration:
     )
 
 
+def _official_prompt(*, last_frame: bool = False) -> str:
+    return compile_h3(
+        MotionSpec(action="女孩快速从门口跑到窗边并停稳。"),
+        H3Mode.FL2VA if last_frame else H3Mode.I2VA,
+        duration_seconds=5,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -120,11 +130,12 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
         ]
     )
 
+    prompt = _official_prompt(last_frame=last_frame is not None)
     result = await generate_minimax_h3_video(
         runtime_with(),
         first_frame=first_frame,
         last_frame=last_frame,
-        prompt="女孩从门口跑到窗边",
+        prompt=prompt,
         duration=5,
         aspect_ratio=aspect_ratio,
         seed=7,
@@ -160,7 +171,7 @@ async def test_generate_minimax_h3_video_wraps_legacy_call_as_director_segment(
     assert payload["totalFrames"] == 124
     assert len(payload["segments"]) == 1
     segment = payload["segments"][0]
-    assert segment["prompt"] == "女孩从门口跑到窗边"
+    assert segment["prompt"] == prompt
     assert segment["genImage"] == {"imageFile": "uploaded/first.png"}
     assert segment["endImage"] == (
         {"imageFile": "uploaded/last.png"} if last_frame else None
@@ -180,11 +191,39 @@ async def test_generate_minimax_h3_video_rejects_missing_first_frame() -> None:
             runtime_with(),
             first_frame=None,
             last_frame=None,
-            prompt="镜头缓慢推进",
+            prompt=_official_prompt(),
             duration=5,
             aspect_ratio="9:16",
             client_factory=lambda: client,
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_minimax_h3_video_rejects_non_wire_before_client_factory(
+) -> None:
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+
+    factory_calls = 0
+
+    def client_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return FakeClient([])
+
+    with pytest.raises(H3PromptQualityError):
+        await generate_minimax_h3_video(
+            runtime_with(),
+            first_frame="first.png",
+            last_frame=None,
+            prompt="裸 prompt",
+            duration=5,
+            aspect_ratio="9:16",
+            client_factory=client_factory,
+        )
+
+    assert factory_calls == 0
 
 
 @pytest.mark.asyncio
@@ -196,7 +235,7 @@ async def test_generate_minimax_h3_video_times_out() -> None:
             runtime_with(),
             first_frame="first.png",
             last_frame=None,
-            prompt="镜头缓慢推进",
+            prompt=_official_prompt(),
             duration=5,
             aspect_ratio="9:16",
             poll_interval=0,

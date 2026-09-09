@@ -19,6 +19,9 @@ from novelvideo.media_capabilities.models import (
 )
 from novelvideo.media_capabilities.task_store import TaskStore
 from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_GLOBAL_CONTINUITY_PROMPT,
+)
 from novelvideo.media_capabilities.video.h3_prompt import compile_h3
 from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
 from novelvideo.media_capabilities.video.pipeline import (
@@ -70,6 +73,7 @@ def _timeline_data(
     }
     return json.dumps(
         {
+            "global": {"prompt": H3_GLOBAL_CONTINUITY_PROMPT},
             "segments": [actual],
             "shots": [{
                 "id": actual["id"],
@@ -471,7 +475,15 @@ async def test_director_timeline_rejects_missing_quality_evidence_before_executo
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tamper",
-    ["segment_prompt", "shot_prompt", "keyframe_prompt", "duration", "mode"],
+    [
+        "segment_prompt",
+        "shot_prompt",
+        "keyframe_prompt",
+        "duration",
+        "mode",
+        "global_prompt",
+        "missing_keyframes",
+    ],
 )
 async def test_director_timeline_rejects_payload_not_bound_to_evidence(
     tmp_path: Path,
@@ -489,8 +501,12 @@ async def test_director_timeline_rejects_payload_not_bound_to_evidence(
         payload["keyframes"][0]["prompt"] = "unvalidated transport prompt"
     elif tamper == "duration":
         payload["segments"][0]["durationSec"] = 6
-    else:
+    elif tamper == "mode":
         payload["segments"][0]["isStartFrame"] = False
+    elif tamper == "global_prompt":
+        payload["global"]["prompt"] = "unvalidated global prompt"
+    else:
+        payload["keyframes"] = []
     pipeline = H3VideoPipeline(
         store=store,
         executor=executor,

@@ -20,6 +20,9 @@ from novelvideo.media_capabilities.models import (
 )
 from novelvideo.media_capabilities.task_store import TaskStore
 from novelvideo.media_capabilities.video.h3_prompt import compile_h3, select_mode
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_GLOBAL_CONTINUITY_PROMPT,
+)
 from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 from novelvideo.media_capabilities.video.models import MotionSpec
 from novelvideo.media_capabilities.video.quality import (
@@ -91,14 +94,7 @@ def _validate_prompt_surface(
         if not isinstance(value, dict):
             raise ValueError(f"H3 transport timeline {name} must contain mappings")
         raw_id = _required_timeline_text(value.get("id"), field=f"{name}.id")
-        if name == "keyframes":
-            if not raw_id.endswith(("_s", "_e")):
-                raise ValueError(
-                    "H3 transport timeline keyframes do not match quality evidence"
-                )
-            segment_id = raw_id[:-2]
-        else:
-            segment_id = raw_id
+        segment_id = raw_id
         evidence = evidence_by_id.get(segment_id)
         if evidence is None:
             raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
@@ -108,18 +104,59 @@ def _validate_prompt_surface(
         )
         if duration != evidence["duration_seconds"]:
             raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
-        if name == "keyframes" and prompt == "":
-            if raw_id.endswith("_e") and evidence["resolved_mode"] != "ref2va":
-                continue
-            raise ValueError(
-                "H3 transport timeline keyframes do not match quality evidence"
-            )
         if prompt != evidence["prompt"]:
             raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
         if name in {"segments", "shots"}:
             seen.append(segment_id)
     if name in {"segments", "shots"} and seen != list(evidence_by_id):
         raise ValueError(f"H3 transport timeline {name} do not match quality evidence")
+
+
+def _validate_keyframes(
+    values: object,
+    actual_segments: list[object],
+    evidence_by_id: Mapping[str, Mapping[str, object]],
+) -> None:
+    expected: list[tuple[str, str, float]] = []
+    for actual in actual_segments:
+        if not isinstance(actual, dict):
+            raise ValueError("H3 transport timeline segments must contain mappings")
+        segment_id = str(actual["id"])
+        evidence = evidence_by_id[segment_id]
+        if actual["isStartFrame"]:
+            expected.append(
+                (f"{segment_id}_s", str(evidence["prompt"]), float(evidence["duration_seconds"]))
+            )
+        if actual["isEndFrame"]:
+            expected.append(
+                (
+                    f"{segment_id}_e",
+                    (
+                        str(evidence["prompt"])
+                        if evidence["resolved_mode"] == "ref2va"
+                        else ""
+                    ),
+                    float(evidence["duration_seconds"]),
+                )
+            )
+    if not isinstance(values, list) or len(values) != len(expected):
+        raise ValueError("H3 transport timeline keyframes do not match quality evidence")
+    for value, (expected_id, expected_prompt, expected_duration) in zip(
+        values, expected, strict=True
+    ):
+        if not isinstance(value, dict):
+            raise ValueError("H3 transport timeline keyframes must contain mappings")
+        if value.get("id") != expected_id or value.get("prompt") != expected_prompt:
+            raise ValueError(
+                "H3 transport timeline keyframes do not match quality evidence"
+            )
+        duration = _required_timeline_duration(
+            value.get("durationSec"), field="keyframes.durationSec"
+        )
+        if duration != expected_duration:
+            raise ValueError(
+                "H3 transport timeline keyframes do not match quality evidence"
+            )
 
 
 def _canonical_transport_timeline(value: object) -> JsonValue:
@@ -199,20 +236,31 @@ def _validate_transport_timeline(
                 "H3 transport timeline segment mode does not match quality evidence"
             )
     _validate_prompt_surface("shots", payload.get("shots"), evidence_by_id)
-    _validate_prompt_surface("keyframes", payload.get("keyframes"), evidence_by_id)
+    _validate_keyframes(payload.get("keyframes"), actual_segments, evidence_by_id)
 
-    if any(
+    has_reference_mode = any(
+        evidence["resolved_mode"] == "ref2va"
+        for evidence in evidence_by_id.values()
+    )
+    if has_reference_mode and not all(
         evidence["resolved_mode"] == "ref2va"
         for evidence in evidence_by_id.values()
     ):
-        global_settings = payload.get("global")
-        if not isinstance(global_settings, dict):
-            raise ValueError("H3 reference transport timeline requires global settings")
+        raise ValueError("H3 transport timeline cannot mix reference and base evidence")
+    global_settings = payload.get("global")
+    if not isinstance(global_settings, dict):
+        raise ValueError("H3 transport timeline requires global settings")
+    if has_reference_mode:
         expected_prompts = {evidence["prompt"] for evidence in evidence_by_id.values()}
-        if len(expected_prompts) != 1 or global_settings.get("prompt") not in expected_prompts:
-            raise ValueError(
-                "H3 transport timeline global prompt does not match quality evidence"
-            )
+        expected_global_prompt = (
+            next(iter(expected_prompts)) if len(expected_prompts) == 1 else None
+        )
+    else:
+        expected_global_prompt = H3_GLOBAL_CONTINUITY_PROMPT
+    if global_settings.get("prompt") != expected_global_prompt:
+        raise ValueError(
+            "H3 transport timeline global prompt does not match quality evidence"
+        )
     canonical = _canonical_transport_timeline(payload)
     assert isinstance(canonical, dict)
     return canonical
