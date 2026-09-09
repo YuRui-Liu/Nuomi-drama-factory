@@ -456,8 +456,8 @@ def _binding(
     characters: tuple[Any, ...],
     scenes: tuple[Any, ...],
     props: tuple[Any, ...],
-    episode_identity_ids: frozenset[str],
-    identity_default_map: Mapping[str, str],
+    episode_identity_ids: frozenset[str] = frozenset(),
+    identity_default_map: Mapping[str, str] | None = None,
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
     resolution = "auto_matched"
@@ -472,7 +472,7 @@ def _binding(
             requirement.entity_key,
             characters,
             episode_identity_ids,
-            identity_default_map,
+            identity_default_map or {},
         )
         if len(candidates) == 1 and not force_pending:
             character, identity = candidates[0]

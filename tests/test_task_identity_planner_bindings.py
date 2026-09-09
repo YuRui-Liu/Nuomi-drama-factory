@@ -11,6 +11,8 @@ from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 from novelvideo.narrative_groups.planned_binding_service import (
+    _ProjectedRequirement,
+    _binding as _project_binding,
     bindings_for_director_plan,
 )
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
@@ -169,6 +171,23 @@ def test_exact_identity_id_keeps_matching_outside_episode_selection():
         exact.identity_id,
         characters=(_character("陆辰", exact),),
         episode_identity_ids=(),
+    )
+
+    assert binding.entity_id == exact.identity_id
+    assert binding.status == "ready"
+
+
+def test_internal_binding_keeps_legacy_call_signature():
+    exact = _identity("陆辰_少年时期", with_image=True)
+
+    binding = _project_binding(
+        _ProjectedRequirement(kind="character_identity", entity_key=exact.identity_id),
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        characters=(_character("陆辰", exact),),
+        scenes=(),
+        props=(),
     )
 
     assert binding.entity_id == exact.identity_id
