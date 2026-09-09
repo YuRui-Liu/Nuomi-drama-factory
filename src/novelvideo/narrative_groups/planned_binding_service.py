@@ -200,6 +200,71 @@ def _identities(character: Any) -> tuple[Any, ...]:
     return ()
 
 
+def _identity_phase_key(identity_id: str) -> str:
+    if identity_id.endswith("_青年时期"):
+        return identity_id.removesuffix("时期") + "期"
+    return identity_id
+
+
+def _character_identity_candidates(
+    entity_key: str,
+    characters: tuple[Any, ...],
+    episode_identity_ids: frozenset[str],
+    identity_default_map: Mapping[str, str],
+) -> tuple[list[tuple[Any, Any]], bool]:
+    exact = [
+        (character, identity)
+        for character in characters
+        for identity in _identities(character)
+        if _text(_get(identity, "identity_id")) == entity_key
+    ]
+    if exact:
+        return exact, False
+
+    named_characters = [
+        character
+        for character in characters
+        if _text(_get(character, "name")) == entity_key
+    ]
+    if named_characters:
+        episode_candidates = [
+            (character, identity)
+            for character in named_characters
+            for identity in _identities(character)
+            if _text(_get(identity, "identity_id")) in episode_identity_ids
+        ]
+        if entity_key in identity_default_map:
+            default_id = _text(identity_default_map[entity_key])
+            default_candidates = [
+                candidate
+                for candidate in episode_candidates
+                if _text(_get(candidate[1], "identity_id")) == default_id
+            ]
+            if len(default_candidates) == 1:
+                return default_candidates, False
+            return episode_candidates, True
+        if not episode_identity_ids:
+            return [
+                (character, identity)
+                for character in named_characters
+                for identity in _identities(character)
+                if _text(_get(identity, "identity_id"))
+            ], False
+        return episode_candidates, False
+
+    phase_key = _identity_phase_key(entity_key)
+    return (
+        [
+            (character, identity)
+            for character in characters
+            for identity in _identities(character)
+            if _text(_get(identity, "identity_id")) in episode_identity_ids
+            and _identity_phase_key(_text(_get(identity, "identity_id"))) == phase_key
+        ],
+        False,
+    )
+
+
 def _explicitly_missing_image(entity: Any, *, identity: bool = False) -> bool:
     if _get(entity, "has_reference_image", None) is False:
         return True
@@ -391,6 +456,8 @@ def _binding(
     characters: tuple[Any, ...],
     scenes: tuple[Any, ...],
     props: tuple[Any, ...],
+    episode_identity_ids: frozenset[str],
+    identity_default_map: Mapping[str, str],
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
     resolution = "auto_matched"
@@ -401,13 +468,13 @@ def _binding(
     invalid_slot = False
 
     if requirement.kind == "character_identity":
-        candidates = [
-            (character, identity)
-            for character in characters
-            for identity in _identities(character)
-            if _text(_get(identity, "identity_id")) == requirement.entity_key
-        ]
-        if len(candidates) == 1:
+        candidates, force_pending = _character_identity_candidates(
+            requirement.entity_key,
+            characters,
+            episode_identity_ids,
+            identity_default_map,
+        )
+        if len(candidates) == 1 and not force_pending:
             character, identity = candidates[0]
             entity_id = _text(_get(identity, "identity_id"))
             character_name = _text(_get(character, "name")) or _text(
@@ -427,7 +494,7 @@ def _binding(
                     if _explicitly_missing_image(identity, identity=True)
                     else "ready"
                 )
-        elif len(candidates) > 1:
+        elif candidates or force_pending:
             slot_id = ""
             status = "pending_confirmation"
         else:
@@ -547,6 +614,8 @@ def bindings_for_director_plan(
     characters: Iterable[Any] | Mapping[Any, Any],
     scenes: Iterable[Any] | Mapping[Any, Any],
     props: Iterable[Any] | Mapping[Any, Any],
+    episode_identity_ids: Iterable[str] = (),
+    identity_default_map: Mapping[str, str] | None = None,
 ) -> tuple[PlannedReferenceBinding, ...]:
     """Project current DirectorPlan relationships without I/O or mutation."""
     group_items = _items(groups)
@@ -554,6 +623,10 @@ def bindings_for_director_plan(
     character_items = _items(characters)
     scene_items = _items(scenes)
     prop_items = _items(props)
+    selected_identity_ids = frozenset(
+        _text(identity_id) for identity_id in episode_identity_ids if _text(identity_id)
+    )
+    default_identity_ids = identity_default_map or {}
     return tuple(
         _binding(
             requirement,
@@ -563,6 +636,8 @@ def bindings_for_director_plan(
             characters=character_items,
             scenes=scene_items,
             props=prop_items,
+            episode_identity_ids=selected_identity_ids,
+            identity_default_map=default_identity_ids,
         )
         for requirement in _requirements(group_items, shot_items)
     )

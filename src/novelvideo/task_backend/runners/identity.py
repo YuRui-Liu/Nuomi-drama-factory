@@ -86,6 +86,8 @@ def _character_identity_bindings(
         characters=tuple(characters_by_name.values()),
         scenes=scenes,
         props=props,
+        episode_identity_ids=draft.episode_identity_ids,
+        identity_default_map=draft.identity_default_map,
     )
     return bindings_by_kind(bindings).get("character_identity", ())
 

@@ -10,6 +10,9 @@ from novelvideo.agents.identity_planner import IdentityPlanDraft, IdentityPlanne
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+from novelvideo.narrative_groups.planned_binding_service import (
+    bindings_for_director_plan,
+)
 from novelvideo.production_workflow.slot_ids import character_state_slot_id
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.identity import (
@@ -50,13 +53,139 @@ def _binding(identity_id: str, *, revision: str) -> PlannedReferenceBinding:
     )
 
 
-def test_character_binding_projection_uses_new_identity_from_draft():
+def _project_character_binding(
+    entity_key: str,
+    *,
+    characters: tuple[NovelCharacter, ...],
+    episode_identity_ids: tuple[str, ...] = (),
+    identity_default_map: dict[str, str] | None = None,
+) -> PlannedReferenceBinding:
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity",
+                entity_key=entity_key,
+                required=True,
+            ),
+        ),
+    )
+    return bindings_for_director_plan(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        groups=(),
+        shots=(shot,),
+        characters=characters,
+        scenes=(),
+        props=(),
+        episode_identity_ids=episode_identity_ids,
+        identity_default_map=identity_default_map or {},
+    )[0]
+
+
+def test_character_name_requirement_uses_episode_default_identity():
+    default_identity = _identity("陆辰_青年时期", with_image=True)
+    alternate_identity = _identity("陆辰_战斗装", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", default_identity, alternate_identity),),
+        episode_identity_ids=(
+            default_identity.identity_id,
+            alternate_identity.identity_id,
+        ),
+        identity_default_map={"陆辰": default_identity.identity_id},
+    )
+
+    assert binding.entity_id == default_identity.identity_id
+    assert binding.status == "ready"
+    assert binding.asset_slot_id == "character:陆辰:state:陆辰_青年时期"
+
+
+def test_character_name_requirement_uses_only_episode_identity_without_default():
+    prior_identity = _identity("陆辰_少年时期", with_image=True)
+    episode_identity = _identity("陆辰_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", prior_identity, episode_identity),),
+        episode_identity_ids=(episode_identity.identity_id,),
+    )
+
+    assert binding.entity_id == episode_identity.identity_id
+    assert binding.status == "ready"
+
+
+def test_character_name_requirement_uses_only_identity_for_legacy_episode():
+    only_identity = _identity("陆辰_默认", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", only_identity),),
+    )
+
+    assert binding.entity_id == only_identity.identity_id
+    assert binding.status == "ready"
+
+
+def test_character_name_requirement_does_not_guess_between_episode_identities():
+    young = _identity("陆辰_青年时期", with_image=True)
+    fighter = _identity("陆辰_战斗装", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", young, fighter),),
+        episode_identity_ids=(young.identity_id, fighter.identity_id),
+    )
+
+    assert binding.entity_id == "陆辰"
+    assert binding.status == "pending_confirmation"
+    assert binding.asset_slot_id == ""
+
+
+def test_planned_phase_alias_resolves_only_within_same_character():
+    matching = _identity("陆辰_青年时期", with_image=True)
+    other_character = _identity("沈砚_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰_青年期",
+        characters=(
+            _character("陆辰", matching),
+            _character("沈砚", other_character),
+        ),
+        episode_identity_ids=(matching.identity_id, other_character.identity_id),
+    )
+
+    assert binding.entity_id == matching.identity_id
+    assert binding.status == "ready"
+
+
+def test_exact_identity_id_keeps_matching_outside_episode_selection():
+    exact = _identity("陆辰_少年时期", with_image=True)
+
+    binding = _project_character_binding(
+        exact.identity_id,
+        characters=(_character("陆辰", exact),),
+        episode_identity_ids=(),
+    )
+
+    assert binding.entity_id == exact.identity_id
+    assert binding.status == "ready"
+
+
+def test_character_binding_projection_uses_default_identity_from_draft():
+    alternate_identity = _identity("陆辰_日常装", with_image=True)
     new_identity = _identity("陆辰_战斗装", with_image=True)
     draft = IdentityPlanDraft(
         new_count=1,
         resolved_count=1,
-        characters=(_character("陆辰", new_identity),),
-        episode_identity_ids=(new_identity.identity_id,),
+        characters=(_character("陆辰", alternate_identity, new_identity),),
+        episode_identity_ids=(
+            alternate_identity.identity_id,
+            new_identity.identity_id,
+        ),
         identity_default_map={"陆辰": new_identity.identity_id},
         identity_baseline_digests={"陆辰": "baseline"},
         episode_identity_baseline_digest="episode-baseline",
@@ -67,7 +196,7 @@ def test_character_binding_projection_uses_new_identity_from_draft():
         asset_requirements=(
             SimpleNamespace(
                 kind="character_identity",
-                entity_key=new_identity.identity_id,
+                entity_key="陆辰",
                 required=True,
             ),
         ),
