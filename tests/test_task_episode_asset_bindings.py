@@ -180,6 +180,54 @@ def test_scene_variant_with_reference_image_keeps_real_variant_state_slot():
     assert binding.resolution == "auto_matched"
 
 
+def test_scene_variant_prefers_only_candidate_with_reference_image():
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="雨中咖啡馆-旧",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="",
+            ),
+            SimpleNamespace(
+                name="雨中咖啡馆-可用",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="assets/scenes/cafe-rain.png",
+            ),
+        ),
+    )
+
+    assert binding.entity_id == "雨中咖啡馆-可用"
+    assert binding.asset_slot_id == "scene:咖啡馆:state:雨中咖啡馆-可用:master"
+    assert binding.status == "ready"
+    assert binding.resolution == "auto_matched"
+
+
+def test_scene_variant_with_multiple_reference_images_requires_confirmation():
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="雨中咖啡馆-A",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="assets/scenes/cafe-rain-a.png",
+            ),
+            SimpleNamespace(
+                name="雨中咖啡馆-B",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="assets/scenes/cafe-rain-b.png",
+            ),
+        ),
+    )
+
+    assert binding.status == "pending_confirmation"
+    assert binding.asset_slot_id == ""
+
+
 @pytest.mark.parametrize("include_empty_variant", [False, True])
 def test_unavailable_scene_variant_falls_back_to_exact_base_scene(
     include_empty_variant: bool,
@@ -209,6 +257,31 @@ def test_unavailable_scene_variant_falls_back_to_exact_base_scene(
     assert binding.entity_id == "咖啡馆"
     assert binding.asset_slot_id == "scene:咖啡馆:base:master"
     assert binding.status == "ready"
+    assert binding.resolution == "explicit_fallback"
+
+
+def test_empty_scene_variant_and_empty_base_keep_base_fallback_identity():
+    [binding] = _scene_bindings(
+        _scene_state(),
+        scenes=(
+            SimpleNamespace(
+                name="咖啡馆",
+                base_scene_id="",
+                variant_id="",
+                master_image="",
+            ),
+            SimpleNamespace(
+                name="雨中咖啡馆",
+                base_scene_id="咖啡馆",
+                variant_id="暴雨版",
+                master_image="",
+            ),
+        ),
+    )
+
+    assert binding.entity_id == "咖啡馆"
+    assert binding.asset_slot_id == "scene:咖啡馆:base:master"
+    assert binding.status == "missing_image"
     assert binding.resolution == "explicit_fallback"
 
 

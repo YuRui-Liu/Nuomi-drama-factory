@@ -566,7 +566,7 @@ def test_empty_matched_metadata_falls_back_only_for_pending_binding_record(
     assert normal.asset_slot_id == "prop:normal:reference"
 
 
-def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
+def test_explicit_missing_variant_and_base_images_keep_base_fallback_slot() -> None:
     result = _project(
         shots=[
             _shot(
@@ -598,8 +598,13 @@ def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
     )
 
     assert [binding.status for binding in result] == ["missing_image"] * 3
-    assert [binding.resolution for binding in result] == ["auto_matched"] * 3
-    assert result[1].asset_slot_id == "scene:hall:state:hall-night:master"
+    assert [binding.resolution for binding in result] == [
+        "auto_matched",
+        "explicit_fallback",
+        "auto_matched",
+    ]
+    assert result[1].entity_id == "hall"
+    assert result[1].asset_slot_id == "scene:hall:base:master"
 
 
 def test_projection_does_not_mutate_inputs_or_call_write_entry_points(

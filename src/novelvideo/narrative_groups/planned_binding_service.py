@@ -546,21 +546,24 @@ def _binding(
             if _text(_get(scene, "base_scene_id")) == base_entity_id
             and _text(_get(scene, "variant_id")) == variant_id
         ]
-        if len(candidates) == 1 and not _explicitly_missing_image(candidates[0]):
-            scene = candidates[0]
+        available_candidates = [
+            scene for scene in candidates if not _explicitly_missing_image(scene)
+        ]
+        if len(available_candidates) == 1:
+            scene = available_candidates[0]
             entity_id = _text(_get(scene, "name"))
             label = " / ".join((base_entity_id, variant_id))
             status = "ready"
-        elif len(candidates) > 1:
+        elif len(available_candidates) > 1:
             status = "pending_confirmation"
-        if len(candidates) == 1 and status == "ready":
+        if len(available_candidates) == 1:
             try:
                 slot_id = scene_state_slot_id(base_entity_id, entity_id, "master")
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
-        elif len(candidates) > 1:
+        elif len(available_candidates) > 1:
             slot_id = ""
         else:
             resolution = "explicit_fallback"
@@ -575,27 +578,13 @@ def _binding(
             ]
             if len(base_candidates) == 1:
                 base_missing_image = _explicitly_missing_image(base_candidates[0])
-                if len(candidates) == 1 and base_missing_image:
-                    scene = candidates[0]
-                    entity_id = _text(_get(scene, "name"))
-                    resolution = "auto_matched"
-                    status = "missing_image"
-                    try:
-                        slot_id = scene_state_slot_id(
-                            base_entity_id, entity_id, "master"
-                        )
-                    except ValueError:
-                        slot_id = ""
-                        status = "pending_confirmation"
-                        invalid_slot = True
-                else:
-                    status = "missing_image" if base_missing_image else "ready"
-                    try:
-                        slot_id = scene_base_slot_id(base_entity_id, "master")
-                    except ValueError:
-                        slot_id = ""
-                        status = "pending_confirmation"
-                        invalid_slot = True
+                status = "missing_image" if base_missing_image else "ready"
+                try:
+                    slot_id = scene_base_slot_id(base_entity_id, "master")
+                except ValueError:
+                    slot_id = ""
+                    status = "pending_confirmation"
+                    invalid_slot = True
             elif len(base_candidates) > 1:
                 status = "pending_confirmation"
                 slot_id = ""
