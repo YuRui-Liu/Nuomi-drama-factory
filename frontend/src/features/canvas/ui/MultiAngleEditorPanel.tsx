@@ -20,6 +20,7 @@ import {
   NODE_CREDIT_PILL_FLAT_CLASS,
   NODE_FLOATING_PANEL_SURFACE_CLASS,
   NODE_GENERATE_BUTTON_BASE_CLASS,
+  NODE_GENERATE_BUTTON_DISABLED_CLASS,
   NODE_GENERATE_BUTTON_ENABLED_CLASS,
 } from '@/features/canvas/ui/nodeControlStyles';
 import {
@@ -414,8 +415,13 @@ export function MultiAngleEditorPanel({ imageSource, onClose, onSubmit }: MultiA
   const [promptOverrideEnabled, setPromptOverrideEnabled] = useState(false);
   const [promptOverride, setPromptOverride] = useState('');
   const [imageSize, setImageSize] = useState<MultiAngleImageSize>(DEFAULT_MULTI_ANGLE_IMAGE_SIZE);
-  const { models: imageModels } = useFreezoneImageModels();
+  const { models: imageModels, isLoading: imageModelsLoading } = useFreezoneImageModels();
   const selectedModel = imageModels[0];
+  const modelAvailabilityReason = !selectedModel
+    ? t(imageModelsLoading
+      ? 'characters.imageSource.loading'
+      : 'characters.imageSource.unavailable')
+    : null;
   const creditCost = useGenerationCreditCost('image_selection', selectedModel?.apiModel ?? null, {
     surface: 'canvas',
     params: imageModelSupportsQuality(selectedModel?.apiModel)
@@ -669,9 +675,14 @@ export function MultiAngleEditorPanel({ imageSource, onClose, onSubmit }: MultiA
             <button
               type="button"
               disabled={!selectedModel}
-              className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
+              className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${
+                selectedModel
+                  ? NODE_GENERATE_BUTTON_ENABLED_CLASS
+                  : NODE_GENERATE_BUTTON_DISABLED_CLASS
+              }`}
               onClick={handleSubmit}
-              aria-label={t('multiAngleEditor.submit')}
+              aria-label={modelAvailabilityReason ?? t('multiAngleEditor.submit')}
+              title={modelAvailabilityReason ?? t('multiAngleEditor.submit')}
             >
               <ArrowUp className="h-4 w-4" />
             </button>

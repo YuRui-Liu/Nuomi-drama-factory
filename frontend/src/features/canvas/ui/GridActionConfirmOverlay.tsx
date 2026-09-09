@@ -26,6 +26,11 @@ import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import { readUrl } from '@/lib/url-params';
 import { NODE_TOOLBAR_CLASS } from './nodeToolbarConfig';
 import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
+import {
+  NODE_GENERATE_BUTTON_BASE_CLASS,
+  NODE_GENERATE_BUTTON_DISABLED_CLASS,
+  NODE_GENERATE_BUTTON_ENABLED_CLASS,
+} from './nodeControlStyles';
 
 export type GridActionKey =
   | 'multiCameraGrid'
@@ -95,8 +100,13 @@ export const GridActionConfirmOverlay = memo(
     const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
     const findNodePosition = useCanvasStore((state) => state.findNodePosition);
     const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-    const { models: imageModels } = useFreezoneImageModels();
+    const { models: imageModels, isLoading: imageModelsLoading } = useFreezoneImageModels();
     const selectedModel = imageModels[0];
+    const modelAvailabilityReason = !selectedModel
+      ? t(imageModelsLoading
+        ? 'characters.imageSource.loading'
+        : 'characters.imageSource.unavailable')
+      : null;
     const gridActionCost = useGenerationCreditCost(
       'image_selection',
       selectedModel?.apiModel ?? null,
@@ -217,9 +227,14 @@ export const GridActionConfirmOverlay = memo(
           <button
             type="button"
             disabled={!selectedModel}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-bg-dark transition-colors hover:bg-white/90"
+            className={`${NODE_GENERATE_BUTTON_BASE_CLASS} shrink-0 ${
+              selectedModel
+                ? NODE_GENERATE_BUTTON_ENABLED_CLASS
+                : NODE_GENERATE_BUTTON_DISABLED_CLASS
+            }`}
             onClick={handleSubmit}
-            title={t('nodeToolbar.gridMenu.confirmBar.submit')}
+            aria-label={modelAvailabilityReason ?? t('nodeToolbar.gridMenu.confirmBar.submit')}
+            title={modelAvailabilityReason ?? t('nodeToolbar.gridMenu.confirmBar.submit')}
           >
             <ArrowUp className="h-4 w-4" />
           </button>

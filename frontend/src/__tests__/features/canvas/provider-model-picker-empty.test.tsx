@@ -54,5 +54,7 @@ describe("ProviderModelPicker empty catalog", () => {
 
     expect(source).toContain("if (!selectedModel) return;");
     expect(source).toContain(disabledProp);
+    expect(source).toContain("modelAvailabilityReason");
+    expect(source).toContain("NODE_GENERATE_BUTTON_DISABLED_CLASS");
   });
 });
