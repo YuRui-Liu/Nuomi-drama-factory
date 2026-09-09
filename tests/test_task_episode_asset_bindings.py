@@ -13,6 +13,7 @@ from PIL import Image
 
 from novelvideo.models import NovelEpisode, NovelProp, NovelScene, PropMenuItem, SceneMenuItem
 from novelvideo.narrative_groups.planned_binding_service import (
+    ReadOnlyPlannedBindingStore,
     bindings_for_director_plan,
     resolve_planned_reference_preview,
 )
@@ -499,6 +500,91 @@ async def test_preview_only_rejects_fallback_for_exact_metadata_variant(
     assert resolved.selected_by_default is selected_by_default
     if not selected_by_default:
         assert "re-run scene planning" in resolved.warning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("catalog_variant_id", "symlink_scene_root", "expected_status"),
+    [
+        ("暴雨版", False, "pending_confirmation"),
+        ("夜景版", False, "ready"),
+        ("暴雨版", True, "ready"),
+    ],
+)
+async def test_readonly_preview_uses_exact_safe_canonical_variant_catalog(
+    tmp_path,
+    catalog_variant_id: str,
+    symlink_scene_root: bool,
+    expected_status: str,
+):
+    sqlite_store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path / "state")
+    )
+    await sqlite_store.initialize()
+    await sqlite_store.add_episode(NovelEpisode(number=1, title="第一集"))
+    await sqlite_store.add_scene(NovelScene(name="咖啡馆"))
+    await sqlite_store.add_scene(
+        NovelScene(
+            name="雨中咖啡馆",
+            base_scene_id="咖啡馆",
+            variant_id=catalog_variant_id,
+        )
+    )
+    binding = PlannedReferenceBinding.create(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        asset_kind="scene_variant",
+        entity_id="咖啡馆",
+        base_entity_id="咖啡馆",
+        variant_id="暴雨版",
+        asset_slot_id=scene_base_slot_id("咖啡馆", "master"),
+        group_ids=("group-1",),
+        status="ready",
+        resolution="explicit_fallback",
+        display_label="咖啡馆 / 暴雨版（基础场景）",
+    )
+    await sqlite_store.replace_planned_reference_bindings_atomic(
+        1, ("scene_base", "scene_variant"), (binding,)
+    )
+
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    base_image = tmp_path / "assets" / "scenes" / "咖啡馆" / "master.png"
+    base_image.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(base_image)
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="scene_base",
+        version_id="base-v1",
+        asset_path=base_image.relative_to(tmp_path).as_posix(),
+        source_attempt_id="base-attempt",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    variant_root = tmp_path / "assets" / "scenes" / "雨中咖啡馆"
+    if symlink_scene_root:
+        redirected = tmp_path / "assets" / "scenes" / "redirected"
+        redirected.mkdir(parents=True)
+        Image.new("RGB", (8, 8), "blue").save(redirected / "master.png")
+        variant_root.symlink_to(redirected, target_is_directory=True)
+    else:
+        variant_root.mkdir(parents=True)
+        Image.new("RGB", (8, 8), "blue").save(variant_root / "master.png")
+
+    preview = await resolve_planned_reference_preview(
+        ReadOnlyPlannedBindingStore(tmp_path / "state" / "data.db"),
+        workflow,
+        project_id="owner/project",
+        episode_number=1,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    [resolved] = preview.bindings
+    assert resolved.status == expected_status
+    assert resolved.selected_by_default is (expected_status == "ready")
 
 
 @pytest.mark.asyncio

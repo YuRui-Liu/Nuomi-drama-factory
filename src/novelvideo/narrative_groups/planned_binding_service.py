@@ -121,6 +121,27 @@ class ReadOnlyPlannedBindingStore:
             return bindings
         return [item for item in bindings if group_id in item.group_ids]
 
+    async def list_scenes(self) -> list[dict[str, str]]:
+        if not self.database_path.is_file():
+            return []
+        uri = f"{self.database_path.as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    "SELECT name, base_scene_id, variant_id FROM scenes ORDER BY name"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "name": _text(row["name"]),
+                "base_scene_id": _text(row["base_scene_id"]),
+                "variant_id": _text(row["variant_id"]),
+            }
+            for row in rows
+        ]
+
 
 class ResolvedPlannedReference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -893,22 +914,23 @@ def _available_scene_state_supersedes_fallback(
     binding: PlannedReferenceBinding,
     workflow_store: ProductionWorkflowStore,
     project_dir: Path,
+    scenes: Sequence[Any],
 ) -> bool:
-    """Conservatively reject a base fallback after any base state becomes usable."""
-    if workflow_store.read_only_reason:
-        return False
+    """Reject a fallback only from exact structured workflow/catalog evidence."""
     try:
         base_scene_id = _safe_scene_path_segment(binding.base_entity_id)
     except ValueError:
         return False
-    prefix = f"scene:{base_scene_id}:state:"
-    for state_slot in workflow_store.list_slots():
-        if (
-            state_slot.slot_id.startswith(prefix)
-            and state_slot.slot_id.endswith(":master")
-            and state_slot.asset_kind == "scene_state"
-            and state_slot.current_version_id
-        ):
+    if not workflow_store.read_only_reason:
+        prefix = f"scene:{base_scene_id}:state:"
+        for state_slot in workflow_store.list_slots():
+            if (
+                not state_slot.slot_id.startswith(prefix)
+                or not state_slot.slot_id.endswith(":master")
+                or state_slot.asset_kind != "scene_state"
+                or not state_slot.current_version_id
+            ):
+                continue
             try:
                 loaded_slot, versions = workflow_store.get_slot(state_slot.slot_id)
             except KeyError:
@@ -921,10 +943,9 @@ def _available_scene_state_supersedes_fallback(
                 or version.slot_id != state_slot.slot_id
                 or version.adoption_status
                 not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
+                or _text((version.generation_metadata or {}).get("variant_id"))
+                != binding.variant_id
             ):
-                continue
-            metadata = version.generation_metadata or {}
-            if _text(metadata.get("variant_id")) != binding.variant_id:
                 continue
             try:
                 validate_reference_image(
@@ -934,6 +955,39 @@ def _available_scene_state_supersedes_fallback(
             except (InvalidReferenceUpload, OSError, ValueError):
                 continue
             return True
+
+    candidates = [
+        scene
+        for scene in scenes
+        if _text(_get(scene, "base_scene_id")) == base_scene_id
+        and _text(_get(scene, "variant_id")) == binding.variant_id
+    ]
+    if len(candidates) > 1:
+        return True
+    if len(candidates) != 1:
+        return False
+    try:
+        scene_name = _safe_scene_path_segment(_get(candidates[0], "name"))
+        root = project_dir.resolve()
+        scenes_root = root / "assets" / "scenes"
+        scene_root = scenes_root / scene_name
+        canonical = scene_root / "master.png"
+        if (
+            scenes_root.is_symlink()
+            or scenes_root.resolve(strict=False) != scenes_root
+            or scene_root.is_symlink()
+            or scene_root.resolve(strict=False) != scene_root
+            or canonical.is_symlink()
+        ):
+            return False
+        validate_reference_image(
+            canonical,
+            allowed_roots=(root / "assets",),
+            expected_mime="image/png",
+        )
+    except (InvalidReferenceUpload, OSError, ValueError):
+        return False
+    return True
     return False
 
 
@@ -965,6 +1019,7 @@ def _resolve_binding(
     binding: PlannedReferenceBinding,
     workflow_store: ProductionWorkflowStore,
     project_dir: Path,
+    scenes: Sequence[Any] = (),
 ) -> ResolvedPlannedReference:
     if binding.status != "ready":
         return _unavailable(binding, f"planned binding status is {binding.status}")
@@ -1094,7 +1149,7 @@ def _resolve_binding(
         binding.asset_kind == "scene_variant"
         and binding.resolution == "explicit_fallback"
         and _available_scene_state_supersedes_fallback(
-            binding, workflow_store, project_dir
+            binding, workflow_store, project_dir, scenes
         )
     ):
         return _unavailable(
@@ -1158,6 +1213,8 @@ async def resolve_planned_reference_preview(
     bindings = await store.list_planned_reference_bindings(
         episode_number, group_id=group_id
     )
+    list_scenes = getattr(store, "list_scenes", None)
+    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
     return _preview_from_bindings(
         bindings,
         workflow_store,
@@ -1165,6 +1222,7 @@ async def resolve_planned_reference_preview(
         episode_number=episode_number,
         group_id=group_id,
         project_dir=project_dir,
+        scenes=scenes,
         max_images=max_images,
         active_plan_revision_id=active_plan_revision_id,
         required_binding_keys=required_binding_keys,
@@ -1180,6 +1238,7 @@ def _preview_from_bindings(
     group_id: str,
     project_dir: Path,
     max_images: int,
+    scenes: Sequence[Any] = (),
     active_plan_revision_id: str | None = None,
     required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
@@ -1213,7 +1272,9 @@ def _preview_from_bindings(
                 f"当前导演方案仍有未规划的必需引用: {labels}"
             )
     root = Path(project_dir).resolve(strict=False)
-    resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
+    resolved = tuple(
+        _resolve_binding(item, workflow_store, root, scenes) for item in bindings
+    )
     return PlannedReferencePreview(
         reference_revision=_reference_revision(bindings, resolved),
         bindings=resolved,
@@ -1273,6 +1334,8 @@ async def build_planned_reference_snapshot(
     bindings = await store.list_planned_reference_bindings(
         episode_number, group_id=group_id
     )
+    list_scenes = getattr(store, "list_scenes", None)
+    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
     with production_workflow_project_lock(workflow_store.state_path.parent):
         current_workflow = ProductionWorkflowStore(workflow_store.state_path)
         preview = _preview_from_bindings(
@@ -1282,6 +1345,7 @@ async def build_planned_reference_snapshot(
             episode_number=episode_number,
             group_id=group_id,
             project_dir=project_dir,
+            scenes=scenes,
             max_images=max_images,
             active_plan_revision_id=active_plan_revision_id,
             required_binding_keys=required_binding_keys,
