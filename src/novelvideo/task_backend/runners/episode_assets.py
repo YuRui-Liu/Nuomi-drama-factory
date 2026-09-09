@@ -52,16 +52,20 @@ async def _refresh_asset_caches(sqlite_store: Any, cognee_store: Any) -> bool:
 async def _shield_scene_publication(operation: Any) -> Any:
     """Wait for scene publication to settle even if its caller is cancelled."""
     task = asyncio.create_task(operation)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
+    cancelled = False
+    while not task.done():
         try:
-            await task
-        except BaseException:
-            # Consume and propagate the publication outcome instead of orphaning a
-            # background task whose exception would otherwise be lost.
-            raise
-        raise
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            continue
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 def _dump_items(items: list[Any]) -> list[dict]:

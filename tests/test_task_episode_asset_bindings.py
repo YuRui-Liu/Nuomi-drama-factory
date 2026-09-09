@@ -424,7 +424,20 @@ async def test_scene_variant_base_fallback_is_selected_in_preview(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_fallback_when_variant_appears_after_planning(tmp_path):
+@pytest.mark.parametrize(
+    ("published_variant_id", "expected_status", "selected_by_default"),
+    [
+        ("暴雨版", "pending_confirmation", False),
+        ("夜景版", "ready", True),
+        (None, "ready", True),
+    ],
+)
+async def test_preview_only_rejects_fallback_for_exact_metadata_variant(
+    tmp_path,
+    published_variant_id: str | None,
+    expected_status: str,
+    selected_by_default: bool,
+):
     [binding] = _scene_bindings(
         _scene_state(),
         scenes=(
@@ -463,7 +476,11 @@ async def test_preview_rejects_fallback_when_variant_appears_after_planning(tmp_
             asset_path=relative_path,
             source_attempt_id=f"{version_id}-attempt",
             qc_passed=True,
-            generation_metadata=None,
+            generation_metadata=(
+                {"variant_id": published_variant_id}
+                if asset_kind == "scene_state" and published_variant_id is not None
+                else None
+            ),
             actor="test",
             at=datetime.now(UTC),
         )
@@ -478,9 +495,10 @@ async def test_preview_rejects_fallback_when_variant_appears_after_planning(tmp_
     )
 
     [resolved] = preview.bindings
-    assert resolved.status == "pending_confirmation"
-    assert resolved.selected_by_default is False
-    assert "re-run scene planning" in resolved.warning
+    assert resolved.status == expected_status
+    assert resolved.selected_by_default is selected_by_default
+    if not selected_by_default:
+        assert "re-run scene planning" in resolved.warning
 
 
 @pytest.mark.asyncio
@@ -1144,6 +1162,9 @@ async def test_cancel_during_real_sqlite_scene_reconcile_waits_for_final_binding
         _shield_scene_publication(reconcile_after_commit())
     )
     await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
     task.cancel()
     await asyncio.sleep(0)
     assert not task.done()

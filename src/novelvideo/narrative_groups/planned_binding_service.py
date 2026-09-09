@@ -905,6 +905,9 @@ def _available_scene_state_supersedes_fallback(
                 not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
             ):
                 continue
+            metadata = version.generation_metadata or {}
+            if _text(metadata.get("variant_id")) != binding.variant_id:
+                continue
             try:
                 validate_reference_image(
                     _asset_path(project_dir, version.asset_path),
