@@ -749,7 +749,10 @@ async def update_project_character_image_selection(
     update_project_config_file(username, project_name, _apply)
     return {
         "ok": True,
-        "data": _character_image_selection_payload(username, project_name, options),
+        "data": {
+            "character_image_selection": selection,
+            "options": options,
+        },
     }
 
 
@@ -817,12 +820,11 @@ async def update_project_asset_image_source_selection(
     update_project_config_file(username, project_name, _apply)
     return {
         "ok": True,
-        "data": _asset_image_source_selection_payload(
-            username,
-            project_name,
-            normalized_kind,
-            options,
-        ),
+        "data": {
+            "asset_kind": normalized_kind,
+            "image_source_selection": selection,
+            "options": options,
+        },
     }
 
 

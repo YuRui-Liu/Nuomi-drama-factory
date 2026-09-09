@@ -26,8 +26,10 @@ def _client(
     provider_model: str = "gpt-image-2",
     provider_enabled: bool = True,
     credential_available: bool = True,
+    real_project_config: bool = False,
 ) -> tuple[TestClient, dict[str, object]]:
     from novelvideo.api.routes import characters
+    from novelvideo import project_config
 
     current_config = dict(config or {})
     store = MediaCapabilityStore(tmp_path / "settings.db")
@@ -66,16 +68,24 @@ def _client(
         apply(current_config)
 
     monkeypatch.setattr(characters, "_resolve_character_project", fake_resolve_project)
-    monkeypatch.setattr(
-        characters,
-        "load_project_config_file",
-        lambda username, project: dict(current_config),
-    )
-    monkeypatch.setattr(
-        characters,
-        "update_project_config_file",
-        fake_update_project_config,
-    )
+    if real_project_config:
+        monkeypatch.setattr(project_config, "OUTPUT_DIR", tmp_path / "project-state")
+        project_config.update_project_config_file(
+            "alice",
+            "demo",
+            lambda persisted: persisted.update(current_config),
+        )
+    else:
+        monkeypatch.setattr(
+            characters,
+            "load_project_config_file",
+            lambda username, project: dict(current_config),
+        )
+        monkeypatch.setattr(
+            characters,
+            "update_project_config_file",
+            fake_update_project_config,
+        )
 
     app = FastAPI()
     app.include_router(characters.router, prefix="/api/v1")
@@ -141,6 +151,68 @@ def test_patch_keeps_asset_selections_independent_and_does_not_change_render(
         "scene_image_selection": "nano-banana-2",
         "prop_image_selection": "nano-banana-pro",
     }
+
+
+def test_patch_response_uses_the_selection_written_by_this_request(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo.api.routes import characters
+
+    client, config = _client(monkeypatch, tmp_path)
+
+    def save_then_simulate_racing_write(username: str, project: str, apply) -> None:
+        apply(config)
+        config["scene_image_selection"] = "gpt-image-2"
+
+    monkeypatch.setattr(
+        characters,
+        "update_project_config_file",
+        save_then_simulate_racing_write,
+    )
+
+    response = client.patch(
+        "/api/v1/projects/demo/image-source-selection/scene",
+        json={"image_source_selection": "nano-banana-2"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["image_source_selection"] == "nano-banana-2"
+
+
+def test_patch_persists_only_target_key_in_real_project_config(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo import project_config
+
+    initial = {
+        "character_image_selection": "gpt-image-2-vip",
+        "scene_image_selection": "gpt-image-2",
+        "prop_image_selection": "nano-banana-pro",
+        "render_image_selection": "newapi_nanobanana2",
+        "unrelated_setting": {"keep": True},
+    }
+    client, _config = _client(
+        monkeypatch,
+        tmp_path,
+        config=initial,
+        real_project_config=True,
+    )
+
+    patch_response = client.patch(
+        "/api/v1/projects/demo/image-source-selection/scene",
+        json={"image_source_selection": "nano-banana-2"},
+    )
+
+    assert patch_response.status_code == 200
+    assert patch_response.json()["data"]["image_source_selection"] == "nano-banana-2"
+    assert project_config.load_project_config_file("alice", "demo") == {
+        **initial,
+        "scene_image_selection": "nano-banana-2",
+    }
+
+    get_response = client.get("/api/v1/projects/demo/image-source-selection/scene")
+    assert get_response.status_code == 200
+    assert get_response.json()["data"]["image_source_selection"] == "nano-banana-2"
 
 
 def test_get_falls_back_to_first_catalog_item_for_stale_selection(
