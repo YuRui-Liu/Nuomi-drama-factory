@@ -7,7 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
 from novelvideo.media_capabilities.video.h3_prompt_profile import H3_GLOBAL_CONTINUITY_PROMPT
 from novelvideo.media_capabilities.video.h3_size_settings import resolve_h3_size_setting
 from novelvideo.media_capabilities.video.quality import VideoProbe
+from novelvideo.shot_continuity.mode_selector import select_h3_mode
 
 
 _PROFILE_PATH = Path(__file__).with_name("profiles") / "minimax_h3.json"
@@ -63,19 +64,28 @@ def resolve_h3_mode(
     requested: str | None,
     first_frame: str | None,
     last_frame: str | None,
+    *,
+    references: Sequence[object] = (),
+    supported_modes: Collection[str] | None = None,
 ) -> H3Mode:
     requested_mode = str(requested or "auto").strip().lower()
-    if not first_frame:
-        raise ValueError("MiniMax H3 requires a first frame")
-    if requested_mode == "auto":
-        return H3Mode.FL2VA if last_frame else H3Mode.I2VA
-    if requested_mode == H3Mode.I2VA.value:
-        return H3Mode.I2VA
-    if requested_mode == H3Mode.FL2VA.value:
-        if not last_frame:
-            raise ValueError("MiniMax H3 fl2va mode requires a last frame")
-        return H3Mode.FL2VA
-    raise ValueError("MiniMax H3 mode must be auto, i2va, or fl2va")
+    decision = select_h3_mode(
+        requested=requested_mode,  # type: ignore[arg-type]
+        has_first_frame=bool(first_frame),
+        has_last_frame=bool(last_frame),
+        has_references=bool(references),
+        supported_modes=supported_modes,  # type: ignore[arg-type]
+        exact_terminal_state=False,
+        endpoint_reachable=True,
+        motion_level=0,
+    )
+    if decision.blockers:
+        raise ValueError(
+            f"MiniMax H3 mode blocked: {', '.join(decision.blockers)}"
+        )
+    if decision.mode is None:
+        raise ValueError("MiniMax H3 mode resolution returned no mode")
+    return H3Mode(decision.mode)
 
 
 async def _probe_video(path: Path) -> VideoProbe:

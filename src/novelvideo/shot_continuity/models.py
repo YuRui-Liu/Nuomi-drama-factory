@@ -16,6 +16,8 @@ from .hashing import canonical_sha256
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+H3RequestedMode = Literal["auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"]
+H3ResolvedMode = Literal["t2va", "i2va", "fl2va", "l2va", "ref2va"]
 
 
 class _FrozenModel(BaseModel):
@@ -161,9 +163,16 @@ class ShotRiskReport(_FrozenModel):
         return self
 
 
+class H3ModeInputSnapshot(_FrozenModel):
+    has_first_frame: bool
+    has_last_frame: bool
+    reference_count: int = Field(ge=0)
+
+
 class H3ModeDecision(_FrozenModel):
-    requested: Literal["auto", "i2va", "fl2va"]
-    mode: Literal["i2va", "fl2va"] | None
+    requested: H3RequestedMode
+    mode: H3ResolvedMode | None
+    input_snapshot: H3ModeInputSnapshot | None = None
     reason_codes: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
 
@@ -183,16 +192,16 @@ class H3ReferenceBinding(_FrozenModel):
 
 
 class CompiledShotBundle(_FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     segment_id: NonEmptyStr
     source_shot_ids: Annotated[tuple[NonEmptyStr, ...], Field(min_length=1, max_length=2)]
     contracts: Annotated[tuple[ContractRef, ...], Field(min_length=1, max_length=2)]
     compiler_id: Literal["minimax-h3-shot-compiler"] = "minimax-h3-shot-compiler"
     compiler_version: int = Field(gt=0)
     adapter: Literal["base-h3", "h3-ref"]
-    mode: Literal["i2va", "fl2va"]
+    mode: H3ResolvedMode
     prompt: NonEmptyStr
-    first_frame: FrameEvidence
+    first_frame: FrameEvidence | None = None
     last_frame: FrameEvidence | None = None
     control_frames: tuple[FrameEvidence, ...] = ()
     references: tuple[H3ReferenceBinding, ...] = ()
@@ -210,11 +219,62 @@ class CompiledShotBundle(_FrozenModel):
             raise ValueError("compiled bundle requires a resolved mode decision")
         if self.mode_decision.mode != self.mode:
             raise ValueError("mode decision must match the compiled bundle mode")
+
+        if self.schema_version == 1:
+            self._validate_v1_contract()
+        else:
+            self._validate_v2_contract()
+
+        payload = self.model_dump(mode="json", exclude={"bundle_sha256"})
+        valid_digests = {canonical_sha256(payload)}
+        if self.schema_version == 1 and self.mode_decision.input_snapshot is None:
+            legacy_payload = dict(payload)
+            legacy_decision = dict(legacy_payload["mode_decision"])
+            legacy_decision.pop("input_snapshot", None)
+            legacy_payload["mode_decision"] = legacy_decision
+            valid_digests.add(canonical_sha256(legacy_payload))
+        if self.bundle_sha256 not in valid_digests:
+            raise ValueError("bundle sha256 must match the canonical bundle payload")
+        return self
+
+    def _validate_v1_contract(self) -> None:
+        if self.mode not in {"i2va", "fl2va"}:
+            raise ValueError("schema v1 only supports i2va and fl2va modes")
+        if self.first_frame is None:
+            raise ValueError("schema v1 requires a first frame")
         if self.mode == "fl2va" and self.last_frame is None:
             raise ValueError("fl2va mode requires a last frame")
         if self.adapter == "h3-ref" and not self.references:
             raise ValueError("h3-ref adapter requires references")
-        payload = self.model_dump(mode="json", exclude={"bundle_sha256"})
-        if self.bundle_sha256 != canonical_sha256(payload):
-            raise ValueError("bundle sha256 must match the canonical bundle payload")
-        return self
+
+    def _validate_v2_contract(self) -> None:
+        expected_adapter = "h3-ref" if self.mode == "ref2va" else "base-h3"
+        if self.adapter != expected_adapter:
+            raise ValueError(f"{self.mode} mode requires the {expected_adapter} adapter")
+
+        requires_first = self.mode in {"i2va", "fl2va"}
+        requires_last = self.mode in {"fl2va", "l2va"}
+        requires_references = self.mode == "ref2va"
+        if (self.first_frame is not None) != requires_first:
+            requirement = "requires" if requires_first else "forbids"
+            raise ValueError(f"{self.mode} mode {requirement} a first frame")
+        if (self.last_frame is not None) != requires_last:
+            requirement = "requires" if requires_last else "forbids"
+            raise ValueError(f"{self.mode} mode {requirement} a last frame")
+        if bool(self.references) != requires_references:
+            requirement = "requires" if requires_references else "forbids"
+            raise ValueError(f"{self.mode} mode {requirement} references")
+
+        snapshot = self.mode_decision.input_snapshot
+        if snapshot is None:
+            raise ValueError("schema v2 requires an input snapshot")
+        if snapshot.reference_count != len(self.references):
+            raise ValueError("input snapshot must match bundle inputs")
+        reference_priority_snapshot = (
+            self.mode == "ref2va" and self.mode_decision.requested == "auto"
+        )
+        if not reference_priority_snapshot and (
+            snapshot.has_first_frame != (self.first_frame is not None)
+            or snapshot.has_last_frame != (self.last_frame is not None)
+        ):
+            raise ValueError("input snapshot must match bundle inputs")

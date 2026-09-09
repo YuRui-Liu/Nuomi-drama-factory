@@ -67,18 +67,76 @@ async def test_single_video_api_wraps_one_director_segment(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("requested", "last_frame", "expected"),
-    [("auto", "last.png", "fl2va"), ("auto", None, "i2va"), ("i2va", None, "i2va")],
+    ("requested", "first_frame", "last_frame", "references", "expected"),
+    [
+        ("auto", None, None, (), "t2va"),
+        ("auto", "first.png", None, (), "i2va"),
+        ("auto", "first.png", "last.png", (), "fl2va"),
+        ("auto", None, "last.png", (), "l2va"),
+        ("auto", None, None, (object(),), "ref2va"),
+        ("auto", "first.png", "last.png", (object(),), "ref2va"),
+        ("t2va", None, None, (), "t2va"),
+        ("i2va", "first.png", None, (), "i2va"),
+        ("fl2va", "first.png", "last.png", (), "fl2va"),
+        ("l2va", None, "last.png", (), "l2va"),
+        ("ref2va", None, None, (object(),), "ref2va"),
+    ],
 )
-def test_h3_mode_uses_actual_frame_inputs(requested, last_frame, expected) -> None:
-    assert resolve_h3_mode(requested, "first.png", last_frame).value == expected
+def test_h3_mode_uses_the_shared_five_mode_input_matrix(
+    requested,
+    first_frame,
+    last_frame,
+    references,
+    expected,
+) -> None:
+    assert resolve_h3_mode(
+        requested,
+        first_frame,
+        last_frame,
+        references=references,
+    ).value == expected
 
 
-def test_h3_mode_rejects_missing_first_or_required_last_frame() -> None:
-    with pytest.raises(ValueError, match="first frame"):
-        resolve_h3_mode("auto", None, None)
-    with pytest.raises(ValueError, match="last frame"):
-        resolve_h3_mode("fl2va", "first.png", None)
+@pytest.mark.parametrize(
+    ("requested", "first_frame", "last_frame", "references", "code"),
+    [
+        ("i2va", None, None, (), "h3.first_frame_required"),
+        ("fl2va", "first.png", None, (), "h3.last_frame_required"),
+        ("ref2va", None, None, (), "h3.references_required"),
+        ("t2va", "first.png", None, (), "h3.first_frame_forbidden"),
+        ("l2va", "first.png", "last.png", (), "h3.first_frame_forbidden"),
+        ("ref2va", None, "last.png", (object(),), "h3.last_frame_forbidden"),
+        ("i2va", "first.png", None, (object(),), "h3.references_forbidden"),
+    ],
+)
+def test_h3_mode_errors_expose_stable_blocker_codes(
+    requested,
+    first_frame,
+    last_frame,
+    references,
+    code,
+) -> None:
+    with pytest.raises(ValueError, match=code):
+        resolve_h3_mode(
+            requested,
+            first_frame,
+            last_frame,
+            references=references,
+        )
+
+
+def test_h3_mode_supported_modes_never_falls_back() -> None:
+    with pytest.raises(ValueError, match="h3.mode_unsupported_by_workflow"):
+        resolve_h3_mode(
+            "auto",
+            "first.png",
+            "last.png",
+            supported_modes={"i2va"},
+        )
+
+
+def test_h3_mode_existing_three_positional_argument_call_remains_compatible() -> None:
+    assert resolve_h3_mode("auto", "first.png", None).value == "i2va"
 
 
 def test_h3_concurrency_is_shared_process_wide_per_provider() -> None:
