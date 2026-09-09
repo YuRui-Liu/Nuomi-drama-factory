@@ -338,6 +338,79 @@ async def test_identity_portrait_fallback_requires_valid_workflow_version(
 
 
 @pytest.mark.asyncio
+async def test_identity_portrait_fallback_is_rejected_when_state_becomes_available(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": [],
+                    }
+                ],
+            }
+        ],
+        available_character_portraits=("Lin Mo",),
+        available_character_identity_ids=(),
+    )
+    character_root = tmp_path / "assets" / "characters" / "Lin Mo"
+    portrait_path = character_root / "portrait.png"
+    state_path = character_root / "state.png"
+    character_root.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait_path)
+    Image.new("RGB", (8, 8), "blue").save(state_path)
+    workflow_path = tmp_path / "state" / "workflow.json"
+    publisher = ProductionWorkflowStore(workflow_path)
+    publisher.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_portrait",
+        version_id="portrait-v1",
+        asset_path=portrait_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    stale_reader = ProductionWorkflowStore(workflow_path)
+    concurrent_publisher = ProductionWorkflowStore(workflow_path)
+    concurrent_publisher.register_candidate_version(
+        slot_id="character:Lin Mo:state:linmo-duty",
+        asset_kind="character_state",
+        version_id="state-v1",
+        asset_path=state_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "linmo-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        stale_reader,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "pending_confirmation"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+@pytest.mark.asyncio
 async def test_identity_portrait_fallback_rejects_wrong_workflow_slot_kind(
     tmp_path: Path,
 ) -> None:

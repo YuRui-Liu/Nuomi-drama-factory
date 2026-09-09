@@ -50,8 +50,19 @@ def _resolve_under_root(root: Path, relative: str | Path) -> Path:
 
 def _character_paths(project_dir: str | Path, character_name: str) -> tuple[Path, Path, Path]:
     root = Path(project_dir).resolve(strict=False)
-    characters_root = _resolve_under_root(root, Path("assets") / "characters")
-    character_root = _resolve_under_root(characters_root, validate_character_name(character_name))
+    canonical_characters_root = root / "assets" / "characters"
+    if canonical_characters_root.is_symlink():
+        raise ValueError("characters root must not be redirected")
+    characters_root = canonical_characters_root.resolve(strict=False)
+    if characters_root != canonical_characters_root:
+        raise ValueError("characters root must preserve physical identity")
+    safe_name = validate_character_name(character_name)
+    canonical_character_root = characters_root / safe_name
+    if canonical_character_root.is_symlink():
+        raise ValueError("character root must not be redirected")
+    character_root = canonical_character_root.resolve(strict=False)
+    if character_root != canonical_character_root:
+        raise ValueError("character root must preserve physical identity")
     canonical_path = _resolve_under_root(character_root, "portrait.png")
     versions_root = _resolve_under_root(character_root, "portrait_versions")
     return root, canonical_path, versions_root

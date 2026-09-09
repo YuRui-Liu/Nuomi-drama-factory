@@ -221,6 +221,7 @@ async def test_preview_does_not_fall_back_to_named_asset_for_candidate_version(
     workflow._versions[version.version_id] = version.model_copy(  # noqa: SLF001
         update={"adoption_status": AdoptionStatus.CANDIDATE}
     )
+    workflow._save()  # noqa: SLF001 - persist the deliberately corrupted live state
     _image(tmp_path / "assets" / "characters" / "alice-youth.png", "blue")
 
     preview = await resolve_planned_reference_preview(
@@ -261,6 +262,7 @@ async def test_preview_derives_unavailable_status_from_live_workflow_state(
     missing_current._slots[binding.asset_slot_id] = slot.model_copy(  # noqa: SLF001
         update={"current_version_id": "deleted-version"}
     )
+    missing_current._save()  # noqa: SLF001 - persist the deliberately corrupted state
     missing_current_preview = await resolve_planned_reference_preview(
         _BindingStore([binding]),
         missing_current,

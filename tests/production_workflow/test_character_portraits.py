@@ -33,6 +33,26 @@ def test_portrait_commit_rejects_unsafe_character_name_before_writing(tmp_path):
     assert not (tmp_path / "state").exists()
 
 
+def test_portrait_commit_rejects_sibling_character_symlink(tmp_path):
+    characters_root = tmp_path / "assets" / "characters"
+    other_root = characters_root / "Other"
+    other_root.mkdir(parents=True)
+    (characters_root / "Lin").symlink_to(other_root, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="character root must not be redirected"):
+        commit_character_portrait_current(
+            state_dir=tmp_path / "state",
+            project_dir=tmp_path,
+            character_name="Lin",
+            image_bytes=_png("red"),
+            actor="test",
+        )
+
+    assert not (other_root / "portrait.png").exists()
+    assert not (other_root / "portrait_versions").exists()
+    assert not (tmp_path / "state" / "production_workflow.json").exists()
+
+
 def test_portrait_commit_rolls_back_workflow_and_canonical_on_adopt_failure(
     tmp_path, monkeypatch
 ):

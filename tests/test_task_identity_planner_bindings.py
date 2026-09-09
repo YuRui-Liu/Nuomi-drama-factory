@@ -23,6 +23,7 @@ from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.identity import (
     _build_identity_planner_result,
     _character_identity_bindings,
+    _character_identity_bindings_for_publish,
 )
 from tests.director_plan.test_store import make_revision
 
@@ -767,6 +768,110 @@ def test_identity_runner_result_aggregates_binding_statuses():
 
     assert result["binding_count"] == 3
     assert result["binding_statuses"] == {"ready": 2, "missing_image": 1}
+
+
+@pytest.mark.asyncio
+async def test_identity_publish_rechecks_state_availability_before_projection(tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    identity = _identity("陆辰_青年时期")
+    character = _character("陆辰", identity)
+    episode = NovelEpisode(
+        number=1,
+        title="第一集",
+        character_names=["陆辰"],
+        identity_ids=[identity.identity_id],
+        identity_default_map={"陆辰": identity.identity_id},
+    )
+    draft = IdentityPlanDraft(
+        new_count=0,
+        resolved_count=1,
+        characters=(character,),
+        episode_identity_ids=(identity.identity_id,),
+        identity_default_map={"陆辰": identity.identity_id},
+        identity_baseline_digests={
+            "陆辰": hashlib.sha256(character.identities_json.encode()).hexdigest()
+        },
+        episode_identity_baseline_digest=SQLiteStore.identity_episode_baseline_digest(
+            episode.identity_ids, episode.identity_default_map
+        ),
+    )
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity",
+                entity_key=identity.identity_id,
+                required=True,
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        revision_id="director-r2",
+        groups=(SimpleNamespace(id="group-1", beat_ids=(), shots=(shot,)),),
+    )
+    ctx = SimpleNamespace(
+        output_dir=tmp_path,
+        state_dir=tmp_path / "state",
+        project_id="owner/project",
+    )
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(character,)
+    ) == frozenset()
+
+    state_path = tmp_path / "assets" / "characters" / "陆辰" / "state.png"
+    state_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(state_path)
+    workflow = ProductionWorkflowStore(ctx.state_dir / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=character_state_slot_id("陆辰", identity.identity_id),
+        asset_kind="character_state",
+        version_id="state-v1",
+        asset_path=state_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": identity.identity_id},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    bindings = _character_identity_bindings_for_publish(
+        ctx=ctx,
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        draft=draft,
+        characters=(character,),
+        scenes=(),
+        props=(),
+    )
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(ctx.state_dir)
+    )
+    await store.initialize()
+    await store.add_character(character)
+    await store.add_episode(episode)
+    await store.publish_identity_plan_atomic(
+        episode_number=1,
+        characters=draft.characters,
+        episode_identity_ids=draft.episode_identity_ids,
+        identity_default_map=draft.identity_default_map,
+        identity_baseline_digests=draft.identity_baseline_digests,
+        episode_identity_baseline_digest=draft.episode_identity_baseline_digest,
+        bindings=bindings,
+    )
+
+    [persisted] = await store.list_planned_reference_bindings(1)
+    assert persisted.asset_slot_id == character_state_slot_id(
+        "陆辰", identity.identity_id
+    )
+    assert persisted.resolution == "auto_matched"
+    assert persisted.status == "ready"
 
 
 @pytest.mark.asyncio

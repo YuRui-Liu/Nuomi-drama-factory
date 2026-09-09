@@ -852,6 +852,26 @@ def _asset_path(project_dir: Path, value: str) -> Path:
     return path.absolute()
 
 
+def _physical_character_root(project_dir: Path, character_name: str) -> Path:
+    project_root = project_dir.resolve()
+    canonical_characters_root = project_root / "assets" / "characters"
+    if canonical_characters_root.is_symlink():
+        raise ValueError("characters root must not be redirected")
+    characters_root = canonical_characters_root.resolve(strict=False)
+    if characters_root != canonical_characters_root:
+        raise ValueError("characters root must preserve physical identity")
+    characters_root.relative_to(project_root)
+    safe_name = validate_character_name(character_name)
+    canonical_character_root = characters_root / safe_name
+    if canonical_character_root.is_symlink():
+        raise ValueError("character root must not be redirected")
+    character_root = canonical_character_root.resolve(strict=False)
+    if character_root != canonical_character_root:
+        raise ValueError("character root must preserve physical identity")
+    character_root.relative_to(characters_root)
+    return character_root
+
+
 def _safe_scene_path_segment(value: str) -> str:
     scene_name = _text(value)
     if (
@@ -991,6 +1011,52 @@ def _available_scene_state_supersedes_fallback(
     return False
 
 
+def _available_character_state_supersedes_fallback(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+    project_dir: Path,
+) -> bool:
+    """Return true only for the exact, currently usable identity state asset."""
+
+    parts = binding.asset_slot_id.split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != "character"
+        or parts[2] != "portrait"
+    ):
+        return False
+    try:
+        character_name = validate_character_name(parts[1])
+        state_slot_id = character_state_slot_id(character_name, binding.entity_id)
+        slot, versions = workflow_store.get_slot(state_slot_id)
+        if (
+            slot.slot_id != state_slot_id
+            or slot.asset_kind != "character_state"
+            or not slot.current_version_id
+        ):
+            return False
+        version = versions.get(str(slot.current_version_id))
+        if (
+            version is None
+            or version.slot_id != state_slot_id
+            or version.adoption_status
+            not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
+        ):
+            return False
+        metadata_identity_id = _text(
+            (version.generation_metadata or {}).get("identity_id")
+        )
+        if metadata_identity_id and metadata_identity_id != binding.entity_id:
+            return False
+        validate_reference_image(
+            _asset_path(project_dir, version.asset_path),
+            allowed_roots=(_physical_character_root(project_dir, character_name),),
+        )
+    except (InvalidReferenceUpload, KeyError, OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def _unavailable(
     binding: PlannedReferenceBinding,
     warning: str,
@@ -1111,20 +1177,7 @@ def _resolve_binding(
                 status="missing_asset",
             )
         try:
-            project_root = project_dir.resolve()
-            canonical_characters_root = project_root / "assets" / "characters"
-            characters_root = canonical_characters_root.resolve(strict=False)
-            if characters_root != canonical_characters_root:
-                raise ValueError("characters root must not be redirected")
-            characters_root.relative_to(project_root)
-            character_name = validate_character_name(parts[1])
-            canonical_character_root = characters_root / character_name
-            if canonical_character_root.is_symlink():
-                raise ValueError("character root must not be redirected")
-            character_root = canonical_character_root.resolve(strict=False)
-            if character_root != canonical_character_root:
-                raise ValueError("character root must preserve physical identity")
-            character_root.relative_to(characters_root)
+            character_root = _physical_character_root(project_dir, parts[1])
         except (OSError, RuntimeError, ValueError):
             return _unavailable(
                 binding, "character state asset root is invalid", status="missing_asset"
@@ -1145,6 +1198,18 @@ def _resolve_binding(
         )
     # Final consumer-side invariant: a fallback observed before a concurrent state
     # publication must never remain selected merely because planning already ended.
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution == "explicit_fallback"
+        and _available_character_state_supersedes_fallback(
+            binding, workflow_store, project_dir
+        )
+    ):
+        return _unavailable(
+            binding,
+            "character identity became available; re-run identity planning",
+            status="pending_confirmation",
+        )
     if (
         binding.asset_kind == "scene_variant"
         and binding.resolution == "explicit_fallback"
@@ -1215,18 +1280,23 @@ async def resolve_planned_reference_preview(
     )
     list_scenes = getattr(store, "list_scenes", None)
     scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
-    return _preview_from_bindings(
-        bindings,
-        workflow_store,
-        project_id=project_id,
-        episode_number=episode_number,
-        group_id=group_id,
-        project_dir=project_dir,
-        scenes=scenes,
-        max_images=max_images,
-        active_plan_revision_id=active_plan_revision_id,
-        required_binding_keys=required_binding_keys,
-    )
+    # Async binding/catalog reads above may yield while another publisher advances
+    # workflow state. Reload under the project lock and resolve synchronously so a
+    # stale caller-owned store cannot select a superseded fallback.
+    with production_workflow_project_lock(workflow_store.state_path.parent):
+        current_workflow = ProductionWorkflowStore(workflow_store.state_path)
+        return _preview_from_bindings(
+            bindings,
+            current_workflow,
+            project_id=project_id,
+            episode_number=episode_number,
+            group_id=group_id,
+            project_dir=project_dir,
+            scenes=scenes,
+            max_images=max_images,
+            active_plan_revision_id=active_plan_revision_id,
+            required_binding_keys=required_binding_keys,
+        )
 
 
 def _preview_from_bindings(

@@ -331,6 +331,39 @@ def _character_identity_bindings(
     return bindings_by_kind(bindings).get("character_identity", ())
 
 
+def _character_identity_bindings_for_publish(
+    *,
+    ctx: ProjectContext,
+    project_id: str,
+    episode_number: int,
+    director_plan,
+    draft,
+    characters,
+    scenes,
+    props,
+):
+    """Re-read workflow availability immediately before binding publication."""
+
+    merged = {character.name: character for character in characters}
+    merged.update({character.name: character for character in draft.characters})
+    current_characters = tuple(merged.values())
+    return _character_identity_bindings(
+        project_id=project_id,
+        episode_number=episode_number,
+        director_plan=director_plan,
+        draft=draft,
+        characters=characters,
+        scenes=scenes,
+        props=props,
+        available_character_portraits=_available_character_portraits(
+            ctx=ctx, characters=current_characters
+        ),
+        available_character_identity_ids=_available_character_identity_ids(
+            ctx=ctx, characters=current_characters
+        ),
+    )
+
+
 def run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
     return asyncio.run(
         await_envelope_with_cancel_watch(
@@ -403,6 +436,15 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         ctx=ctx,
         characters=tuple(portrait_characters.values()),
     )
+    logger.debug(
+        "sampled identity assets before final publication check",
+        extra={
+            "portrait_count": len(available_character_portraits),
+            "identity_count": len(available_character_identity_ids),
+        },
+    )
+    scenes = tuple(await sqlite_store.list_scenes())
+    props = tuple(await sqlite_store.list_props())
 
     from novelvideo.director_plan.store import DirectorPlanStore
 
@@ -410,16 +452,15 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
     with director_plan_store.lock_active_revision(episode) as director_plan:
         if director_plan is None:
             raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
-        bindings = _character_identity_bindings(
+        bindings = _character_identity_bindings_for_publish(
+            ctx=ctx,
             project_id=ctx.project_id,
             episode_number=episode,
             director_plan=director_plan,
             draft=draft,
             characters=persisted_characters,
-            scenes=tuple(await sqlite_store.list_scenes()),
-            props=tuple(await sqlite_store.list_props()),
-            available_character_portraits=available_character_portraits,
-            available_character_identity_ids=available_character_identity_ids,
+            scenes=scenes,
+            props=props,
         )
         publication = await sqlite_store.publish_identity_plan_atomic(
             episode_number=episode,
