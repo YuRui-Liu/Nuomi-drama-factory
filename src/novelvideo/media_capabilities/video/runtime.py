@@ -320,8 +320,16 @@ async def generate_h3_director_video(
     from novelvideo.media_capabilities.runtime.executor import RunningHubExecutor
     from novelvideo.media_capabilities.task_store import TaskStore
     from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline, UploadedReference
+    from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 
     timeline = build_h3_timeline_data(segments, strict_first_frame=True)
+    for entry in timeline.entries:
+        segment_mode = H3Mode.FL2VA if entry.segment.last_frame else H3Mode.I2VA
+        inspect_h3_prompt(
+            entry.segment.prompt,
+            segment_mode,
+            entry.segment.duration_seconds,
+        ).raise_for_failure()
     actual_mode = H3Mode.FL2VA if any(e.segment.last_frame for e in timeline.entries) else H3Mode.I2VA
     runtime = load_runninghub_runtime_configuration(
         get_media_capability_store(), get_media_credential_resolver()
@@ -425,6 +433,12 @@ async def generate_h3_director_video(
                         "start": entry.start_frame,
                         "frame_count": entry.frame_count,
                         "prompt": entry.segment.prompt,
+                        "resolved_mode": (
+                            H3Mode.FL2VA.value
+                            if entry.segment.last_frame
+                            else H3Mode.I2VA.value
+                        ),
+                        "duration_seconds": entry.segment.duration_seconds,
                         "first_frame_sha256": (
                             uploaded_frames[entry.segment.first_frame].sha256
                             if entry.segment.first_frame else None

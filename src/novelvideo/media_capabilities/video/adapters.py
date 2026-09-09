@@ -10,6 +10,8 @@ from typing import Protocol
 from novelvideo.media_capabilities.video.h3_reference_runtime import H3FrozenFrame
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.media_capabilities.video.h3_wire import H3ReferenceWire
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.media_capabilities.video.runtime import H3GenerationResult
 from novelvideo.media_capabilities.video.workflow_registry import (
@@ -149,6 +151,18 @@ class H3WorkflowAdapter:
         from novelvideo.media_capabilities.video.h3_size_settings import (
             resolve_h3_size_setting,
         )
+        from novelvideo.media_capabilities.video.runtime import resolve_h3_mode
+
+        for segment in request.segments:
+            resolved_mode = resolve_h3_mode(
+                request.mode,
+                segment.first_frame,
+                segment.last_frame,
+                supported_modes=(H3Mode.I2VA.value, H3Mode.FL2VA.value),
+            )
+            inspect_h3_prompt(
+                segment.prompt, resolved_mode, segment.duration_seconds
+            ).raise_for_failure()
 
         try:
             resolution = request.workflow_parameters["resolution"]
@@ -225,6 +239,10 @@ class H3ReferenceWorkflowAdapter:
             raise ValueError("H3 reference workflow requires a provider workflow ID")
         if not isinstance(request.reference_wire, H3ReferenceWire):
             raise ValueError("H3 reference workflow requires an H3ReferenceWire")
+        for segment in request.segments:
+            inspect_h3_prompt(
+                segment.prompt, H3Mode.REF2VA, segment.duration_seconds
+            ).raise_for_failure()
         resolution = request.workflow_parameters.get("resolution")
         if resolution is None:
             raise ValueError("H3 workflow parameter 'resolution' is required")

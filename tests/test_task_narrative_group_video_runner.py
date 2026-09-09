@@ -1983,6 +1983,8 @@ def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
         ("observe", "version"),
         ("observe", "empty_plan"),
         ("observe", "input_hash"),
+        ("observe", "quality_failed"),
+        ("observe", "invalid_wire"),
     ],
 )
 def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result(
@@ -2171,6 +2173,7 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
 
     if tamper is not None:
         entry = first.entries[0]
+        replacement = entry
         if tamper == "final_wire":
             entry.input_summary["final_wire"] = "tampered wire"
         elif tamper == "mode":
@@ -2185,6 +2188,20 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
         elif tamper == "input_hash":
             entry.input_summary["input_hash"] = "b" * 64
             entry.input_summary["frozen_input_hash"] = "b" * 64
+        elif tamper == "quality_failed":
+            failed_report = {"passed": False, "issues": [], "version": 1}
+            entry.input_summary["quality_report"] = failed_report
+            replacement = entry.model_copy(update={"quality_report": failed_report})
+        elif tamper == "invalid_wire":
+            entry.input_summary["final_wire"] = "人物转身"
+            entry.input_summary["compiler_version"] = 1
+            entry.prompt_profile["compiler_version"] = 1
+            replacement = entry.model_copy(update={
+                "segment": entry.segment.model_copy(update={"prompt": "人物转身"})
+            })
+        first = first.model_copy(update={
+            "entries": (replacement, *first.entries[1:])
+        })
         save_h3_director_manifest(manifest_path, first)
     narrative_group_video.run_narrative_group_video(envelope, ctx)
     replayed = load_h3_director_manifest(manifest_path)

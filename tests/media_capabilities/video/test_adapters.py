@@ -8,6 +8,17 @@ from novelvideo.media_capabilities.video.workflow_registry import (
 )
 
 
+def _official_prompt(mode: str = "i2va", duration: float = 5) -> str:
+    from novelvideo.media_capabilities.video.h3_prompt import compile_h3
+    from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+
+    return compile_h3(
+        MotionSpec(action="人物缓慢向前走并停稳。"),
+        H3Mode(mode),
+        duration_seconds=duration,
+    )
+
+
 def test_default_adapters_resolve_h3_and_reject_unknown_key():
     from novelvideo.media_capabilities.video.adapters import (
         H3WorkflowAdapter,
@@ -44,7 +55,7 @@ def test_h3_adapter_delegates_to_injected_director_generator():
     segment = H3DirectorSegment(
         segment_id="segment-1",
         beat_number=1,
-        prompt="人物转身",
+        prompt=_official_prompt(),
         duration_seconds=5,
         first_frame="first.png",
     )
@@ -103,7 +114,7 @@ def test_h3_adapter_forwards_provider_submission_callback():
         return None
 
     segment = H3DirectorSegment(
-        segment_id="segment-1", beat_number=1, prompt="move",
+        segment_id="segment-1", beat_number=1, prompt=_official_prompt(),
         duration_seconds=5, first_frame="first.png",
     )
     request = NarrativeGroupVideoRequest(
@@ -114,6 +125,83 @@ def test_h3_adapter_forwards_provider_submission_callback():
     asyncio.run(H3WorkflowAdapter(generator=generate).generate_narrative_group(object(), request))
 
     assert captured["on_provider_submitted"] is on_provider_submitted
+
+
+def test_h3_adapter_rejects_non_wire_prompt_before_generator() -> None:
+    from novelvideo.media_capabilities.video.adapters import (
+        H3WorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    calls = []
+
+    async def generate(*_args, **_kwargs):
+        calls.append(True)
+
+    request = NarrativeGroupVideoRequest(
+        segments=(H3DirectorSegment(
+            segment_id="segment-1", beat_number=1, prompt="人物转身",
+            duration_seconds=5, first_frame="first.png",
+        ),),
+        output_path="result.mp4",
+        aspect_ratio="9:16",
+    )
+
+    with pytest.raises(H3PromptQualityError):
+        asyncio.run(
+            H3WorkflowAdapter(generator=generate).generate_narrative_group(
+                object(), request
+            )
+        )
+
+    assert calls == []
+
+
+def test_h3_adapter_rejects_later_segment_using_its_resolved_mode() -> None:
+    from novelvideo.media_capabilities.video.adapters import (
+        H3WorkflowAdapter,
+        NarrativeGroupVideoRequest,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    calls = []
+
+    async def generate(_ctx, **_kwargs):
+        calls.append(True)
+        return SimpleNamespace(
+            output_path="result.mp4", provider_task_id=None, actual_mode="fl2va"
+        )
+
+    segments = (
+        H3DirectorSegment(
+            segment_id="i", beat_number=1, prompt=_official_prompt("i2va", 5),
+            duration_seconds=5, first_frame="first.png",
+        ),
+        H3DirectorSegment(
+            segment_id="fl", beat_number=2, prompt=_official_prompt("i2va", 6),
+            duration_seconds=6, first_frame="first.png", last_frame="last.png",
+        ),
+    )
+    request = NarrativeGroupVideoRequest(
+        segments=segments, output_path="result.mp4", aspect_ratio="9:16"
+    )
+
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+
+    with pytest.raises(H3PromptQualityError):
+        asyncio.run(
+            H3WorkflowAdapter(generator=generate).generate_narrative_group(
+                object(), request
+            )
+        )
+
+    assert calls == []
 
 
 def test_adapter_protocol_exposes_typed_request_and_result_contract():

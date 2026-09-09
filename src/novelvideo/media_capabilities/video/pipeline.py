@@ -19,6 +19,7 @@ from novelvideo.media_capabilities.models import (
 )
 from novelvideo.media_capabilities.task_store import TaskStore
 from novelvideo.media_capabilities.video.h3_prompt import compile_h3, select_mode
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 from novelvideo.media_capabilities.video.models import MotionSpec
 from novelvideo.media_capabilities.video.quality import (
     VideoProbe,
@@ -240,6 +241,28 @@ class H3VideoPipeline:
     ) -> VideoCandidate:
         """Run the director workflow with one serialized multi-shot timeline."""
         stable_timeline = dict(idempotency_input)
+        segments = stable_timeline.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise ValueError("H3 timeline quality evidence requires segments")
+        for segment in segments:
+            if not isinstance(segment, dict):
+                raise ValueError("H3 timeline quality evidence must be mappings")
+            prompt = segment.get("prompt")
+            resolved_mode = segment.get("resolved_mode")
+            duration_seconds = segment.get("duration_seconds")
+            if (
+                not isinstance(prompt, str)
+                or not isinstance(resolved_mode, str)
+                or isinstance(duration_seconds, bool)
+                or not isinstance(duration_seconds, (int, float))
+            ):
+                raise ValueError(
+                    "H3 timeline quality evidence requires prompt, resolved mode, "
+                    "and duration"
+                )
+            inspect_h3_prompt(
+                prompt, resolved_mode, float(duration_seconds)
+            ).raise_for_failure()
         semantic_values: dict[str, JsonValue] = {
             **dict(director_params or {}),
             "timeline_data": timeline_data,

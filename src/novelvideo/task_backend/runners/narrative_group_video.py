@@ -35,6 +35,7 @@ from novelvideo.media_capabilities.video.h3_prompt_compiler import (
 )
 from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
 from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityError
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
 from novelvideo.media_capabilities.video.h3_beat_adapter import (
     h3_dialogue_required,
     h3_dialogue_text,
@@ -986,6 +987,20 @@ def _has_complete_replay_snapshot(
     ).hexdigest()
     frozen_hash = summary.get("frozen_input_hash")
     final_wire = summary.get("final_wire")
+    quality_report = summary.get("quality_report")
+    if (
+        not isinstance(final_wire, str)
+        or not final_wire
+        or not isinstance(quality_report, Mapping)
+        or quality_report.get("passed") is not True
+        or quality_report != entry.quality_report
+    ):
+        return False
+    wire_report = inspect_h3_prompt(
+        final_wire, resolved_mode, current_segment.duration_seconds
+    )
+    if not wire_report.passed:
+        return False
     plan_payload = entry.director_plan
     if not isinstance(plan_payload, Mapping) or not plan_payload:
         return False
@@ -1004,8 +1019,6 @@ def _has_complete_replay_snapshot(
         and summary.get("duration_seconds") == base_summary["duration_seconds"]
         and summary.get("first_frame_sha256") == base_summary["first_frame_sha256"]
         and summary.get("last_frame_sha256") == base_summary["last_frame_sha256"]
-        and isinstance(final_wire, str)
-        and bool(final_wire)
         and final_wire == entry.segment.prompt
         and (
             compiler_version < H3_PROMPT_COMPILER_VERSION
@@ -1013,8 +1026,6 @@ def _has_complete_replay_snapshot(
         )
         and plan.mode.value == resolved_mode
         and summary.get("workflow_id") == workflow.id
-        and isinstance(summary.get("quality_report"), Mapping)
-        and summary.get("quality_report") == entry.quality_report
     )
 
 

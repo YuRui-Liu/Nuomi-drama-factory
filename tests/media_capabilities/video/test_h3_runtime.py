@@ -17,6 +17,17 @@ from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_da
 from novelvideo.media_capabilities.video.runtime import _director_timeline_payload
 
 
+def _official_prompt(mode: str = "i2va", duration: float = 5) -> str:
+    from novelvideo.media_capabilities.video.h3_prompt import compile_h3
+    from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+
+    return compile_h3(
+        MotionSpec(action="人物缓慢向前走并停稳。"),
+        H3Mode(mode),
+        duration_seconds=duration,
+    )
+
+
 def test_production_profile_is_packaged_and_workflow_can_be_overridden() -> None:
     profile = load_h3_workflow_profile(workflow_id="9001")
 
@@ -80,6 +91,7 @@ async def test_single_video_api_wraps_one_director_segment(monkeypatch) -> None:
         ("fl2va", "first.png", "last.png", (), "fl2va"),
         ("l2va", None, "last.png", (), "l2va"),
         ("ref2va", None, None, (object(),), "ref2va"),
+        ("ref2va", "first.png", "last.png", (object(),), "ref2va"),
     ],
 )
 def test_h3_mode_uses_the_shared_five_mode_input_matrix(
@@ -105,7 +117,6 @@ def test_h3_mode_uses_the_shared_five_mode_input_matrix(
         ("ref2va", None, None, (), "h3.references_required"),
         ("t2va", "first.png", None, (), "h3.first_frame_forbidden"),
         ("l2va", "first.png", "last.png", (), "h3.first_frame_forbidden"),
-        ("ref2va", None, "last.png", (object(),), "h3.last_frame_forbidden"),
         ("i2va", "first.png", None, (object(),), "h3.references_forbidden"),
     ],
 )
@@ -156,6 +167,75 @@ def test_h3_mode_uses_reference_sequence_length_not_truthiness() -> None:
 
 def test_h3_concurrency_is_shared_process_wide_per_provider() -> None:
     assert get_h3_concurrency_coordinator("runninghub-main") is get_h3_concurrency_coordinator("runninghub-main")
+
+
+@pytest.mark.asyncio
+async def test_director_runtime_rejects_invalid_wire_before_upload_or_pipeline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video import pipeline as pipeline_module
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+
+    frame = tmp_path / "first.png"
+    Image.new("RGB", (16, 16)).save(frame)
+    upload_calls = 0
+    executor_calls = 0
+
+    class Client:
+        async def upload(self, _path):
+            nonlocal upload_calls
+            upload_calls += 1
+            return "uploaded://first.png"
+
+        async def close(self):
+            return None
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, *_args, **_kwargs):
+            nonlocal executor_calls
+            executor_calls += 1
+            raise AssertionError("pipeline transport must not run")
+
+    account = SimpleNamespace(
+        id="invalid-wire", max_concurrency=5,
+        capability_limits={}, queue_limit=10,
+    )
+    configured = SimpleNamespace(
+        account=account, workflow_id=lambda _capability: None,
+        create_client=Client,
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_capability_store", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_credential_resolver", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_runninghub_runtime_configuration",
+        lambda *_args: configured,
+    )
+    monkeypatch.setattr(pipeline_module, "H3VideoPipeline", Pipeline)
+
+    with pytest.raises(H3PromptQualityError):
+        await generate_h3_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="one", beat_number=1, prompt="人物转身",
+                duration_seconds=5, first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"),
+        )
+
+    assert upload_calls == 0
+    assert executor_calls == 0
 
 
 @pytest.mark.asyncio
@@ -228,16 +308,16 @@ async def test_mixed_timeline_request_uses_last_nonempty_segment_tail(
             H3DirectorSegment(
                 segment_id="fl2va",
                 beat_number=1,
-                prompt="first",
-                duration_seconds=3,
+                prompt=_official_prompt("fl2va", 5),
+                duration_seconds=5,
                 first_frame=str(first),
                 last_frame=str(tail),
             ),
             H3DirectorSegment(
                 segment_id="i2va",
                 beat_number=2,
-                prompt="second",
-                duration_seconds=3,
+                prompt=_official_prompt("i2va", 5),
+                duration_seconds=5,
                 first_frame=str(middle),
             ),
         ),
@@ -319,7 +399,8 @@ async def test_director_runtime_resolves_size_once_for_request_and_timeline(
     await generate_h3_director_video(
         SimpleNamespace(runtime_dir=runtime_dir),
         segments=(H3DirectorSegment(
-            segment_id="one", beat_number=1, prompt="move", duration_seconds=3,
+            segment_id="one", beat_number=1, prompt=_official_prompt(),
+            duration_seconds=5,
             first_frame=str(first),
         ),),
         output_path=str(tmp_path / "out.mp4"),
@@ -384,7 +465,8 @@ async def test_director_runtime_forwards_provider_submission_callback(
     await generate_h3_director_video(
         SimpleNamespace(runtime_dir=runtime_dir),
         segments=(H3DirectorSegment(
-            segment_id="one", beat_number=1, prompt="move", duration_seconds=3,
+            segment_id="one", beat_number=1, prompt=_official_prompt(),
+            duration_seconds=5,
             first_frame=str(first),
         ),),
         output_path=str(tmp_path / "out.mp4"),
