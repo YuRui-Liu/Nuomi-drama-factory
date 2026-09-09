@@ -99,6 +99,30 @@ def test_candidate_origin_can_record_an_uploaded_asset(tmp_path):
     assert candidate.origin == AssetOrigin.UPLOADED
 
 
+def test_store_can_retarget_multiple_versions_without_changing_their_status(tmp_path):
+    state_path = tmp_path / "production_workflow.json"
+    store = ProductionWorkflowStore(state_path)
+    slot, legacy = store.materialize_legacy_current(
+        slot_id="character:lin-mo:portrait",
+        asset_kind="character_portrait",
+        asset_path="assets/characters/lin-mo/portrait.png",
+    )
+
+    updated = store.retarget_version_asset_paths(
+        slot_id=slot.slot_id,
+        version_ids=(legacy.version_id,),
+        asset_path="assets/characters/lin-mo/portrait_versions/legacy-blue.png",
+    )
+
+    assert updated[legacy.version_id].asset_path.endswith("/legacy-blue.png")
+    assert updated[legacy.version_id].adoption_status == AdoptionStatus.PROVISIONAL
+    reloaded_slot, reloaded_versions = ProductionWorkflowStore(state_path).get_slot(
+        slot.slot_id
+    )
+    assert reloaded_slot.current_version_id == legacy.version_id
+    assert reloaded_versions[legacy.version_id].asset_path.endswith("/legacy-blue.png")
+
+
 def test_manual_adoption_persists_selected_candidate(tmp_path):
     state_path = tmp_path / "production_workflow.json"
     store = ProductionWorkflowStore(state_path)

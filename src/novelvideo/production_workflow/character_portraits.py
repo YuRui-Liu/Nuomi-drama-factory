@@ -150,6 +150,103 @@ def reconcile_character_portrait_canonical(
     return True
 
 
+def _immutable_legacy_snapshot(
+    *,
+    canonical_path: Path,
+    versions_root: Path,
+) -> tuple[Path, bool]:
+    character_root = canonical_path.parent
+    validated = validate_reference_image(
+        canonical_path,
+        allowed_roots=(character_root,),
+        expected_mime="image/png",
+    )
+    version_path = _resolve_under_root(
+        versions_root, f"legacy-{validated.sha256[:20]}.png"
+    )
+    stage = _resolve_under_root(
+        versions_root, f".legacy-{validated.sha256[:20]}-{uuid.uuid4().hex}.stage.png"
+    )
+    created = False
+    try:
+        versions_root.mkdir(parents=True, exist_ok=True)
+        if version_path.is_file():
+            existing = validate_reference_image(
+                version_path,
+                allowed_roots=(character_root,),
+                expected_mime="image/png",
+            )
+            if existing.sha256 != validated.sha256:
+                raise RuntimeError("legacy portrait history content mismatch")
+        else:
+            shutil.copy2(canonical_path, stage)
+            validate_reference_image(
+                stage,
+                allowed_roots=(character_root,),
+                expected_mime="image/png",
+            )
+            os.replace(stage, version_path)
+            created = True
+    finally:
+        stage.unlink(missing_ok=True)
+    return version_path, created
+
+
+def archive_mutable_character_portrait_versions(
+    *,
+    workflow: ProductionWorkflowStore,
+    project_dir: str | Path,
+    character_name: str,
+) -> bool:
+    """Freeze every version still pointing at the mutable canonical mirror."""
+
+    safe_name = validate_character_name(character_name)
+    root, canonical_path, versions_root = _character_paths(project_dir, safe_name)
+    slot_id = character_portrait_slot_id(safe_name)
+    try:
+        slot, versions = workflow.get_slot(slot_id)
+    except KeyError:
+        return True
+    if slot.asset_kind != "character_portrait":
+        return False
+    mutable_version_ids: list[str] = []
+    for version in versions.values():
+        try:
+            version_path = _resolve_under_root(root, version.asset_path)
+        except ValueError:
+            continue
+        if version_path == canonical_path:
+            mutable_version_ids.append(version.version_id)
+    if not mutable_version_ids:
+        return True
+    if canonical_path.exists():
+        try:
+            immutable_path, created = _immutable_legacy_snapshot(
+                canonical_path=canonical_path,
+                versions_root=versions_root,
+            )
+        except (OSError, ValueError):
+            return False
+    else:
+        immutable_path = _resolve_under_root(
+            versions_root, f"missing-legacy-{uuid.uuid4().hex}.png"
+        )
+        created = False
+    workflow_snapshot = workflow.capture_file_snapshot()
+    try:
+        workflow.retarget_version_asset_paths(
+            slot_id=slot_id,
+            version_ids=tuple(mutable_version_ids),
+            asset_path=immutable_path.relative_to(root).as_posix(),
+        )
+    except Exception:
+        workflow.restore_file_snapshot(workflow_snapshot)
+        if created:
+            immutable_path.unlink(missing_ok=True)
+        raise
+    return True
+
+
 def materialize_legacy_character_portrait(
     *,
     workflow: ProductionWorkflowStore,
@@ -160,7 +257,6 @@ def materialize_legacy_character_portrait(
 
     safe_name = validate_character_name(character_name)
     root, canonical_path, versions_root = _character_paths(project_dir, safe_name)
-    character_root = canonical_path.parent
     slot_id = character_portrait_slot_id(safe_name)
     existing_slot = None
     try:
@@ -184,75 +280,30 @@ def materialize_legacy_character_portrait(
             return False
         if current_path != canonical_path:
             return True
+        return archive_mutable_character_portrait_versions(
+            workflow=workflow,
+            project_dir=root,
+            character_name=safe_name,
+        )
     try:
-        validated = validate_reference_image(
-            canonical_path,
-            allowed_roots=(character_root,),
-            expected_mime="image/png",
+        version_path, created = _immutable_legacy_snapshot(
+            canonical_path=canonical_path,
+            versions_root=versions_root,
         )
     except (OSError, ValueError):
         return False
-    version_path = _resolve_under_root(
-        versions_root, f"legacy-{validated.sha256[:20]}.png"
-    )
-    stage = _resolve_under_root(
-        versions_root, f".legacy-{validated.sha256[:20]}-{uuid.uuid4().hex}.stage.png"
-    )
-    created = False
     workflow_snapshot = workflow.capture_file_snapshot()
     try:
-        versions_root.mkdir(parents=True, exist_ok=True)
-        if version_path.is_file():
-            existing = validate_reference_image(
-                version_path,
-                allowed_roots=(character_root,),
-                expected_mime="image/png",
-            )
-            if existing.sha256 != validated.sha256:
-                raise RuntimeError("legacy portrait history content mismatch")
-        else:
-            shutil.copy2(canonical_path, stage)
-            validate_reference_image(
-                stage,
-                allowed_roots=(character_root,),
-                expected_mime="image/png",
-            )
-            os.replace(stage, version_path)
-            created = True
-        relative_version_path = version_path.relative_to(root).as_posix()
-        if existing_slot is None:
-            workflow.materialize_legacy_current(
-                slot_id=slot_id,
-                asset_kind="character_portrait",
-                asset_path=relative_version_path,
-            )
-        else:
-            _slot, version, _event = workflow.register_candidate_version(
-                slot_id=slot_id,
-                asset_kind="character_portrait",
-                version_id=f"legacy-migrated-{uuid.uuid4().hex}",
-                asset_path=relative_version_path,
-                source_attempt_id=None,
-                qc_passed=True,
-                generation_metadata={"migrated_from": current.asset_path},
-                actor="legacy-migration",
-                at=datetime.now(timezone.utc),
-                origin=AssetOrigin.LEGACY_IMPORT,
-            )
-            workflow.adopt_version(
-                slot_id=slot_id,
-                version_id=version.version_id,
-                actor="legacy-migration",
-                reason="migrate mutable legacy portrait current",
-                at=datetime.now(timezone.utc),
-            )
+        workflow.materialize_legacy_current(
+            slot_id=slot_id,
+            asset_kind="character_portrait",
+            asset_path=version_path.relative_to(root).as_posix(),
+        )
     except Exception:
         workflow.restore_file_snapshot(workflow_snapshot)
         if created:
             version_path.unlink(missing_ok=True)
         raise
-    finally:
-        stage.unlink(missing_ok=True)
     return True
 
 
@@ -293,6 +344,13 @@ def commit_character_portrait_current(
                 raise RuntimeError(
                     f"production workflow slot {slot_id} has incompatible asset kind"
                 )
+            archived = archive_mutable_character_portrait_versions(
+                workflow=workflow,
+                project_dir=root,
+                character_name=safe_name,
+            )
+            if not archived:
+                raise RuntimeError("mutable character portrait history could not be archived")
             reconcile_character_portrait_canonical(
                 workflow=workflow,
                 project_dir=root,

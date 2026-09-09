@@ -20,7 +20,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     from novelvideo.production_workflow import ProductionWorkflowStore
     from novelvideo.task_backend.runners import character_image
 
-    previous_portrait = tmp_path / "assets" / "characters" / "小鹿" / "previous.png"
+    previous_portrait = tmp_path / "assets" / "characters" / "小鹿" / "portrait.png"
     previous_portrait.parent.mkdir(parents=True)
     Image.new("RGB", (8, 8), "blue").save(previous_portrait)
     existing_workflow = ProductionWorkflowStore(
@@ -30,7 +30,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         slot_id="character:小鹿:portrait",
         asset_kind="character_portrait",
         version_id="previous-v1",
-        asset_path="assets/characters/小鹿/previous.png",
+        asset_path="assets/characters/小鹿/portrait.png",
         source_attempt_id="previous-attempt",
         qc_passed=True,
         generation_metadata=None,
@@ -158,6 +158,10 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert current.adoption_status.value == "adopted"
     assert current.origin.value == "generated"
     assert (tmp_path / current.asset_path).read_bytes() == Path(result["path"]).read_bytes()
+    archived = versions["previous-v1"]
+    assert archived.adoption_status.value == "superseded"
+    assert archived.asset_path != "assets/characters/小鹿/portrait.png"
+    assert (tmp_path / archived.asset_path).read_bytes() != Path(result["path"]).read_bytes()
 
 
 @pytest.mark.asyncio

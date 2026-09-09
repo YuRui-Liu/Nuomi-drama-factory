@@ -438,6 +438,8 @@ def test_identity_runner_migrates_mutable_legacy_current_before_reconcile(tmp_pa
         asset_kind="character_portrait",
         asset_path="assets/characters/陆辰/portrait.png",
     )
+    old_slot, _old_versions = workflow.get_slot(character_portrait_slot_id("陆辰"))
+    old_version_id = old_slot.current_version_id
 
     ctx = SimpleNamespace(output_dir=tmp_path, state_dir=state_dir)
     assert _available_character_portraits(
@@ -452,6 +454,7 @@ def test_identity_runner_migrates_mutable_legacy_current_before_reconcile(tmp_pa
     )
     immutable_path = tmp_path / current.asset_path
     assert immutable_path.read_bytes() == original_bytes
+    assert versions[old_version_id].asset_path == current.asset_path
 
     Image.new("RGB", (8, 8), "blue").save(portrait)
     assert _available_character_portraits(

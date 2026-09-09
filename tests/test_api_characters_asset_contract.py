@@ -407,3 +407,41 @@ def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_p
     assert (project_dir / current.asset_path).read_bytes() == (
         project_dir / "assets" / "characters" / "林昭" / "portrait.png"
     ).read_bytes()
+
+
+def test_portrait_upload_archives_mutable_current_without_identity_planning(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    old_bytes = canonical.read_bytes()
+    state_path = tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(state_path)
+    old_slot, old_version = workflow.materialize_legacy_current(
+        slot_id="character:林昭:portrait",
+        asset_kind="character_portrait",
+        asset_path="assets/characters/林昭/portrait.png",
+    )
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    reloaded_slot, versions = ProductionWorkflowStore(state_path).get_slot(old_slot.slot_id)
+    archived = versions[old_version.version_id]
+    assert archived.adoption_status.value == "superseded"
+    assert archived.asset_path != "assets/characters/林昭/portrait.png"
+    assert (project_dir / archived.asset_path).read_bytes() == old_bytes
+    assert reloaded_slot.current_version_id != old_version.version_id

@@ -230,6 +230,34 @@ class ProductionWorkflowStore:
         self._save()
         return updated_slot, updated_version, event
 
+    def retarget_version_asset_paths(
+        self,
+        *,
+        slot_id: str,
+        version_ids: tuple[str, ...],
+        asset_path: str,
+    ) -> dict[str, AssetVersion]:
+        """Atomically redirect existing version records to one immutable asset."""
+
+        if self.read_only_reason:
+            raise RuntimeError(self.read_only_reason)
+        normalized_path = str(asset_path or "").strip()
+        if not normalized_path:
+            raise ValueError("asset path is required")
+        _slot, versions = self.get_slot(slot_id)
+        requested_ids = tuple(dict.fromkeys(version_ids))
+        updated: dict[str, AssetVersion] = {}
+        for version_id in requested_ids:
+            version = versions.get(version_id)
+            if version is None or version.slot_id != slot_id:
+                raise ValueError("asset version does not belong to slot")
+            updated[version_id] = AssetVersion.model_validate(
+                {**version.model_dump(), "asset_path": normalized_path}
+            )
+        self._versions.update(updated)
+        self._save()
+        return updated
+
     def adopt_version(
         self,
         *,
