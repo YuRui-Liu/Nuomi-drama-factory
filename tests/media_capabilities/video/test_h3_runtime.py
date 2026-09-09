@@ -139,6 +139,21 @@ def test_h3_mode_existing_three_positional_argument_call_remains_compatible() ->
     assert resolve_h3_mode("auto", "first.png", None).value == "i2va"
 
 
+def test_h3_mode_uses_reference_sequence_length_not_truthiness() -> None:
+    class FalseyReferences(tuple):
+        def __bool__(self) -> bool:
+            return False
+
+    references = FalseyReferences((object(), object()))
+
+    assert resolve_h3_mode(
+        "auto",
+        None,
+        None,
+        references=references,
+    ).value == "ref2va"
+
+
 def test_h3_concurrency_is_shared_process_wide_per_provider() -> None:
     assert get_h3_concurrency_coordinator("runninghub-main") is get_h3_concurrency_coordinator("runninghub-main")
 

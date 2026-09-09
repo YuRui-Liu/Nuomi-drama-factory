@@ -73,7 +73,7 @@ def resolve_h3_mode(
         requested=requested_mode,  # type: ignore[arg-type]
         has_first_frame=bool(first_frame),
         has_last_frame=bool(last_frame),
-        has_references=bool(references),
+        reference_count=len(references),
         supported_modes=supported_modes,  # type: ignore[arg-type]
         exact_terminal_state=False,
         endpoint_reachable=True,

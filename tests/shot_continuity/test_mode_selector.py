@@ -277,3 +277,73 @@ def test_legacy_call_shape_remains_valid_and_still_freezes_a_snapshot() -> None:
         has_last_frame=False,
         reference_count=0,
     )
+
+
+def test_reference_count_freezes_the_actual_number_of_references() -> None:
+    decision = select_h3_mode(
+        requested="auto",
+        has_first_frame=False,
+        has_last_frame=False,
+        has_references=True,
+        reference_count=2,
+        endpoint_reachable=True,
+        exact_terminal_state=False,
+        motion_level=0,
+    )
+
+    assert decision.mode == "ref2va"
+    assert decision.input_snapshot == H3ModeInputSnapshot(
+        has_first_frame=False,
+        has_last_frame=False,
+        reference_count=2,
+    )
+
+
+def test_reference_count_can_derive_reference_presence() -> None:
+    decision = select_h3_mode(
+        requested="auto",
+        has_first_frame=False,
+        has_last_frame=False,
+        reference_count=2,
+        endpoint_reachable=True,
+        exact_terminal_state=False,
+        motion_level=0,
+    )
+
+    assert decision.mode == "ref2va"
+    assert decision.input_snapshot is not None
+    assert decision.input_snapshot.reference_count == 2
+
+
+@pytest.mark.parametrize(
+    ("has_references", "reference_count"),
+    [(True, 0), (False, 2)],
+)
+def test_reference_presence_and_count_must_agree(
+    has_references: bool,
+    reference_count: int,
+) -> None:
+    with pytest.raises(ValueError, match="h3.reference_input_mismatch"):
+        select_h3_mode(
+            requested="auto",
+            has_first_frame=False,
+            has_last_frame=False,
+            has_references=has_references,
+            reference_count=reference_count,
+            endpoint_reachable=True,
+            exact_terminal_state=False,
+            motion_level=0,
+        )
+
+
+def test_reference_count_cannot_be_negative() -> None:
+    with pytest.raises(ValueError, match="h3.reference_count_invalid"):
+        select_h3_mode(
+            requested="auto",
+            has_first_frame=False,
+            has_last_frame=False,
+            reference_count=-1,
+            endpoint_reachable=True,
+            exact_terminal_state=False,
+            motion_level=0,
+        )

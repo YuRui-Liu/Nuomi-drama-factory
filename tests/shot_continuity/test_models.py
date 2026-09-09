@@ -24,6 +24,7 @@ from novelvideo.shot_continuity import (
     canonical_sha256,
 )
 from novelvideo.shot_continuity.hashing import canonical_json
+from novelvideo.shot_continuity.mode_selector import select_h3_mode
 from novelvideo.shot_continuity.models import H3ModeInputSnapshot
 
 
@@ -473,6 +474,34 @@ def test_v2_auto_reference_bundle_preserves_reference_priority_snapshot() -> Non
     assert bundle.first_frame is None
     assert bundle.last_frame is None
     assert bundle.mode_decision.input_snapshot == decision.input_snapshot
+
+
+def test_v2_reference_bundle_accepts_a_decision_with_two_frozen_references() -> None:
+    first_reference = _reference()
+    second_reference = first_reference.model_copy(
+        update={"reference_id": "reference-2", "picture_index": 2}
+    )
+    references = (first_reference, second_reference)
+    decision = select_h3_mode(
+        requested="auto",
+        has_first_frame=False,
+        has_last_frame=False,
+        has_references=True,
+        reference_count=len(references),
+        endpoint_reachable=True,
+        exact_terminal_state=False,
+        motion_level=0,
+    )
+
+    bundle = _v2_bundle(
+        "ref2va",
+        references=references,
+        mode_decision=decision,
+    )
+
+    assert bundle.references == references
+    assert bundle.mode_decision.input_snapshot is not None
+    assert bundle.mode_decision.input_snapshot.reference_count == 2
 
 
 def test_v2_explicit_reference_bundle_cannot_claim_discarded_frames() -> None:

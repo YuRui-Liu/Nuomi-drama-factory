@@ -21,7 +21,8 @@ def select_h3_mode(
     exact_terminal_state: bool,
     endpoint_reachable: bool,
     motion_level: Literal[0, 1, 2],
-    has_references: bool = False,
+    has_references: bool | None = None,
+    reference_count: int | None = None,
     supported_modes: Collection[H3ResolvedMode] | None = None,
 ) -> H3ModeDecision:
     """Resolve explicit or automatic mode selection with stable blocker priority."""
@@ -29,13 +30,25 @@ def select_h3_mode(
     if requested not in valid_requested:
         raise ValueError("h3.requested_mode_invalid")
 
+    if reference_count is not None and reference_count < 0:
+        raise ValueError("h3.reference_count_invalid")
+    frozen_reference_count = (
+        int(bool(has_references)) if reference_count is None else reference_count
+    )
+    references_present = frozen_reference_count > 0
+    if (
+        has_references is not None
+        and bool(has_references) != references_present
+    ):
+        raise ValueError("h3.reference_input_mismatch")
+
     snapshot = H3ModeInputSnapshot(
         has_first_frame=has_first_frame,
         has_last_frame=has_last_frame,
-        reference_count=int(has_references),
+        reference_count=frozen_reference_count,
     )
     if requested == "auto":
-        if has_references:
+        if references_present:
             mode: H3ResolvedMode = "ref2va"
             reason = "h3.auto_references"
         elif has_first_frame and has_last_frame:
@@ -62,7 +75,7 @@ def select_h3_mode(
             requested != "auto" and mode in {"fl2va", "l2va"} and not has_last_frame
         ),
         "h3.references_required": (
-            requested != "auto" and mode == "ref2va" and not has_references
+            requested != "auto" and mode == "ref2va" and not references_present
         ),
         "h3.first_frame_forbidden": (
             requested != "auto"
@@ -75,7 +88,7 @@ def select_h3_mode(
             and has_last_frame
         ),
         "h3.references_forbidden": (
-            requested != "auto" and mode != "ref2va" and has_references
+            requested != "auto" and mode != "ref2va" and references_present
         ),
         "h3.unreachable_motion": (
             mode in {"fl2va", "l2va"}
