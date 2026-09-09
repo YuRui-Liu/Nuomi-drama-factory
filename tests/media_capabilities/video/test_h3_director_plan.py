@@ -240,7 +240,7 @@ def test_v1_rejects_rigid_prompt_but_v2_missing_prompt_is_schema_valid() -> None
         music="low strings",
     )
 
-    with pytest.raises(ValidationError, match="schema_version=2"):
+    with pytest.raises(ValidationError, match="schema_version>=2"):
         H3DirectorPlan(**payload, rigid_prompt=_rigid_prompt())
 
     assert H3DirectorPlan(**payload, schema_version=2).rigid_prompt is None

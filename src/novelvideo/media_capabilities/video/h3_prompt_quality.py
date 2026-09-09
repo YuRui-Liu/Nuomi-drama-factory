@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from .h3_timeline import H3DirectorSegment
 
 
-H3_PROMPT_QUALITY_VERSION = 6
+H3_PROMPT_QUALITY_VERSION = 7
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 _VAGUE_ACTION_PATTERNS = (
     re.compile(r"\bmoves? naturally\b", re.IGNORECASE),
@@ -183,11 +183,11 @@ def inspect_h3_plan(
             _add(issues, "first_frame_anchor", "Picture 1 hash is required", "context.first_frame_sha256")
         if plan.mode is H3Mode.FL2VA and not context.last_frame_sha256:
             _add(issues, "last_frame_anchor", "Picture 2 hash is required for FL2VA", "context.last_frame_sha256")
-        if plan.schema_version != 2 or plan.rigid_prompt is None:
+        if plan.schema_version < 2 or plan.rigid_prompt is None:
             _add(
                 issues,
                 "rigid_prompt_required",
-                "paid H3 generation requires a schema_version=2 rigid prompt",
+                "paid H3 generation requires a schema_version>=2 rigid prompt",
                 "rigid_prompt",
             )
 

@@ -4,19 +4,25 @@ from novelvideo.media_capabilities.video.h3_director_plan import (
     H3ActionPlan,
     H3CameraPlan,
     H3DirectorPlan,
+    H3FrameAnchor,
     H3ShotPlan,
 )
 from novelvideo.media_capabilities.video.h3_prompt_quality import (
+    H3_PROMPT_QUALITY_VERSION,
     H3PromptQualityError,
     inspect_h3_plan,
     normalize_h3_action_timeline,
 )
-from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+    H3PromptContext,
+    compile_and_gate_h3_plan,
+)
 from novelvideo.media_capabilities.video.h3_rigid_prompt import H3RigidPromptPlan
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3ResolvedReferenceFact,
 )
 from novelvideo.media_capabilities.video.models import H3Mode
+from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 
 
 def _plan(*, description: str, action_end: int = 120) -> H3DirectorPlan:
@@ -455,7 +461,39 @@ def test_rigid_quality_gate_passes_complete_v2_plan():
     report = inspect_h3_plan(_rigid_plan(), context=_context())
 
     assert report.passed is True
-    assert report.version == 6
+    assert report.version == 7
+    assert H3_PROMPT_QUALITY_VERSION == 7
+
+
+def test_v3_rigid_plan_passes_real_gate_and_compiler_chain():
+    payload = _rigid_plan().model_dump(mode="python")
+    payload.update(
+        schema_version=3,
+        first_frame_anchor=H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the corridor door.",
+        ),
+    )
+    plan = H3DirectorPlan.model_validate(payload)
+    segment = H3DirectorSegment(
+        segment_id="segment-1",
+        beat_number=1,
+        prompt="Lin turns toward the corridor door.",
+        duration_seconds=5,
+        first_frame="first-frame.png",
+    )
+
+    result = compile_and_gate_h3_plan(
+        plan,
+        segment=segment,
+        context=_context(),
+        mode=H3Mode.I2VA,
+        input_hash="f" * 64,
+    )
+
+    assert result.quality_report.passed is True
+    assert "rigid_prompt_required" not in result.quality_report.codes
+    assert "integrated_multimodal_description: SCENE CONTEXT" in result.prompt
 
 
 def test_active_references_fail_when_no_real_mapping_is_available():

@@ -348,7 +348,7 @@ class H3DirectorPlan(BaseModel):
         if self.schema_version < 3:
             self._validate_legacy_schema_fields()
         if self.schema_version == 1 and self.rigid_prompt is not None:
-            raise ValueError("rigid_prompt requires schema_version=2")
+            raise ValueError("rigid_prompt requires schema_version>=2")
         self._validate_shot_coverage()
         self._validate_speaker_identity()
         self._validate_dialogue_continuations()
