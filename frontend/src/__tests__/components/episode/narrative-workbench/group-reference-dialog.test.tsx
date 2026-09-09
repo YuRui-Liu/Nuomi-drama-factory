@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GroupReferenceDialog } from "@/components/episode/narrative-workbench/group-reference-dialog";
-import type { PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
+import type { NarrativeReferenceUpload, PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
 
 const preview: PlannedNarrativeGroupReferencePreview = {
   reference_revision: "director-plan-r7",
@@ -71,6 +71,56 @@ describe("GroupReferenceDialog planned references", () => {
     }));
   });
 
+  it("prioritizes a direct required reference when a fallback appears first at the limit", () => {
+    const constrainedPreview: PlannedNarrativeGroupReferencePreview = {
+      reference_revision: "director-plan-constrained",
+      max_images: 1,
+      bindings: [
+        {
+          ...preview.bindings[1],
+          binding_id: "scene:fallback",
+          required: true,
+          resolution: "explicit_fallback",
+          selected_by_default: true,
+        },
+        preview.bindings[0],
+      ],
+    };
+    const { onSubmit } = renderDialog({ preview: constrainedPreview });
+
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ }))
+      .toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "使用 1 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: ["identity:hero:young"],
+    }));
+  });
+
+  it("blocks submission when direct required references exceed the limit", () => {
+    const overflowPreview: PlannedNarrativeGroupReferencePreview = {
+      reference_revision: "director-plan-overflow",
+      max_images: 1,
+      bindings: [
+        preview.bindings[0],
+        {
+          ...preview.bindings[0],
+          binding_id: "identity:second:young",
+          display_label: "沈砚 / 青年时期",
+        },
+      ],
+    };
+    const { onSubmit } = renderDialog({ preview: overflowPreview });
+
+    expect(screen.getByText("已选 2 张 / 上限 1 张")).toBeInTheDocument();
+    expect(screen.getByText("必选引用数量超过参考图上限，请返回规划调整。")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "使用 2 张参考图生成" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("keeps style independent from the image count", () => {
     const { onSubmit } = renderDialog();
     fireEvent.click(screen.getByRole("checkbox", { name: "使用项目风格" }));
@@ -89,6 +139,118 @@ describe("GroupReferenceDialog planned references", () => {
     expect(screen.getByLabelText("上传临时参考图")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "使用 3 张参考图生成" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ uploadIds: ["upload-1"] }));
+  });
+
+  it("restores planned selection intent after a temporary upload is removed", async () => {
+    let finishUpload!: (value: NarrativeReferenceUpload) => void;
+    const onUploadReference = vi.fn(() => new Promise<NarrativeReferenceUpload>((resolve) => { finishUpload = resolve; }));
+    const constrainedPreview = {
+      ...preview,
+      max_images: 2,
+      bindings: [preview.bindings[0], { ...preview.bindings[1], selected_by_default: false }],
+    };
+    renderDialog({ preview: constrainedPreview, onUploadReference });
+    const file = new File(["image"], "临时构图.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }));
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }))
+      .toHaveAttribute("aria-pressed", "true");
+
+    await act(async () => finishUpload({
+      upload_id: "upload-delayed", mime_type: "image/png", size_bytes: 10,
+      temporary: true, persisted: false, persistence_warning: "", url: "/temporary/delayed",
+    }));
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }))
+      .toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "删除临时参考图 临时构图.png" }));
+    expect(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("preserves hidden selection intent when another category is cleared", async () => {
+    let finishUpload!: (value: NarrativeReferenceUpload) => void;
+    const onUploadReference = vi.fn(() => new Promise<NarrativeReferenceUpload>((resolve) => { finishUpload = resolve; }));
+    const prop = {
+      ...preview.bindings[1],
+      binding_id: "prop:optional",
+      asset_kind: "prop" as const,
+      display_label: "旧灯笼",
+      selected_by_default: false,
+    };
+    const constrainedPreview = {
+      ...preview,
+      max_images: 3,
+      bindings: [preview.bindings[0], { ...preview.bindings[1], selected_by_default: false }, prop],
+    };
+    renderDialog({ preview: constrainedPreview, onUploadReference });
+    const file = new File(["image"], "临时构图.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: /谢家碑坊 \/ 暴雨天井/ }));
+    fireEvent.click(screen.getByRole("button", { name: /旧灯笼/ }));
+
+    await act(async () => finishUpload({
+      upload_id: "upload-delayed", mime_type: "image/png", size_bytes: 10,
+      temporary: true, persisted: false, persistence_warning: "", url: "/temporary/delayed",
+    }));
+    expect(screen.getByRole("button", { name: /旧灯笼/ })).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "清空场景与变体" }));
+
+    expect(screen.getByRole("button", { name: /旧灯笼/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("ignores an upload that finishes after the preview revision changes", async () => {
+    let finishUpload!: (value: NarrativeReferenceUpload) => void;
+    const onUploadReference = vi.fn(() => new Promise<NarrativeReferenceUpload>((resolve) => { finishUpload = resolve; }));
+    const { rerender, props, onSubmit } = renderDialog({ onUploadReference });
+    const file = new File(["image"], "旧版本构图.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [file] } });
+    await waitFor(() => expect(onUploadReference).toHaveBeenCalledOnce());
+    rerender(<GroupReferenceDialog
+      {...props}
+      preview={{ ...preview, reference_revision: "director-plan-r8" }}
+    />);
+
+    await act(async () => finishUpload({
+      upload_id: "upload-stale", mime_type: "image/png", size_bytes: 10,
+      temporary: true, persisted: false, persistence_warning: "", url: "/temporary/stale",
+    }));
+
+    expect(screen.queryByText("旧版本构图.png")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      referenceRevision: "director-plan-r8",
+      uploadIds: [],
+    }));
+  });
+
+  it("blocks conflicting duplicate binding IDs instead of hiding direct requirements", () => {
+    const duplicatePreview: PlannedNarrativeGroupReferencePreview = {
+      reference_revision: "director-plan-duplicate",
+      max_images: 2,
+      bindings: [
+        {
+          ...preview.bindings[1],
+          binding_id: "duplicate-binding",
+          required: false,
+          resolution: "explicit_fallback",
+        },
+        {
+          ...preview.bindings[0],
+          binding_id: "duplicate-binding",
+          required: true,
+          resolution: "auto_matched",
+        },
+      ],
+    };
+    const { onSubmit } = renderDialog({ preview: duplicatePreview });
+
+    expect(screen.getByText("规划引用包含重复 ID，请返回规划重新生成。")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: /张参考图生成/ });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("shows a retryable inline error when a temporary upload fails", async () => {

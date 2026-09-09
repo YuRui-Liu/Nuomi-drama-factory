@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { coerceNarrativeImageSize, defaultNarrativeImageSize, supportedNarrativeImageSizes, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 import type { NarrativeReferenceUpload, PlannedNarrativeGroupGenerationSelection, PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
-import { isPlannedReferenceAvailable, PlannedReferencePicker } from "./planned-reference-picker";
+import { isPlannedReferenceAvailable, normalizePlannedReferenceSelection, PlannedReferencePicker } from "./planned-reference-picker";
 import { TemporaryReferencePicker, type TemporaryReferenceSelection } from "./temporary-reference-picker";
 
 export interface GroupReferenceDialogProps {
@@ -41,8 +41,14 @@ type ReferenceSelectionState = {
 
 function readyDefaults(preview?: PlannedNarrativeGroupReferencePreview | null) {
   if (!preview) return [];
-  return [...new Set(preview.bindings.filter((item) => isPlannedReferenceAvailable(item) && (item.required || item.selected_by_default)).map((item) => item.binding_id))]
-    .slice(0, preview.max_images);
+  const defaults = preview.bindings.filter((item) => (
+    isPlannedReferenceAvailable(item) && (item.required || item.selected_by_default)
+  )).map((item) => item.binding_id);
+  return normalizePlannedReferenceSelection(
+    preview.bindings,
+    defaults,
+    preview.max_images,
+  ).selectedIds;
 }
 
 export function GroupReferenceDialog({
@@ -74,6 +80,7 @@ export function GroupReferenceDialog({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const wasOpen = useRef(false);
   const previousRevision = useRef<string | null>(null);
+  const uploadContext = useRef({ open: false, revision: null as string | null, generation: 0 });
 
   useEffect(() => {
     const justOpened = open && !wasOpen.current;
@@ -90,28 +97,42 @@ export function GroupReferenceDialog({
     }
     wasOpen.current = open;
     if (preview) previousRevision.current = preview.reference_revision;
+    const revision = preview?.reference_revision ?? null;
+    if (uploadContext.current.open !== open || uploadContext.current.revision !== revision) {
+      uploadContext.current = {
+        open,
+        revision,
+        generation: uploadContext.current.generation + 1,
+      };
+    }
   }, [open, preview, defaultProvider, defaultModel, defaultImageSize]);
 
-  const imageCount = references.selectedBindingIds.length + references.temporaryUploads.length;
   const maxImages = preview?.max_images ?? 0;
+  const normalizedSelection = normalizePlannedReferenceSelection(
+    preview?.bindings ?? [],
+    references.selectedBindingIds,
+    maxImages,
+    references.temporaryUploads.length,
+  );
+  const imageCount = normalizedSelection.selectedIds.length + references.temporaryUploads.length;
   const errorMessage = typeof error === "string" ? error : error?.message;
   const uploading = uploadingReference;
-  const hasRequiredUnavailable = preview?.bindings.some(
-    (item) => item.required && !isPlannedReferenceAvailable(item),
-  ) ?? false;
 
   const uploadTemporary = async (file: File): Promise<TemporaryReferenceSelection | null> => {
+    const uploadGeneration = uploadContext.current.generation;
     setUploadError(null);
     onResetUploadError?.();
     try {
       const response = onUploadReference ? await onUploadReference(file) : null;
       if (!response) throw new Error("临时参考图上传失败，请重新选择");
+      if (!uploadContext.current.open || uploadContext.current.generation !== uploadGeneration) return null;
       const selected = { uploadId: response.upload_id, fileName: file.name, previewUrl: response.url };
       setReferences((current) => current.temporaryUploads.some((item) => item.uploadId === selected.uploadId)
         ? current
         : { ...current, temporaryUploads: [...current.temporaryUploads, selected] });
       return selected;
     } catch (caught) {
+      if (!uploadContext.current.open || uploadContext.current.generation !== uploadGeneration) return null;
       setUploadError(caught instanceof Error ? caught.message : "临时参考图上传失败，请重试");
       return null;
     }
@@ -145,7 +166,7 @@ export function GroupReferenceDialog({
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={loading || !!errorMessage || !preview || submitting || hasRequiredUnavailable || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: references.selectedBindingIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+        <Button disabled={loading || !!errorMessage || !preview || submitting || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>
