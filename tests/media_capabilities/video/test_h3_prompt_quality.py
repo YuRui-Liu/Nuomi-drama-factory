@@ -53,6 +53,11 @@ def _official_prompt(
         "non_diegetic_music": music,
     }
     if mode is H3Mode.REF2VA:
+        detailed_description = (
+            description
+            if "<Subject 1>" in description
+            else f"{description} <Subject 1> remains active."
+        )
         return compile_h3_wire(
             H3ReferenceWire(
                 **common,
@@ -66,7 +71,7 @@ def _official_prompt(
                         retain="fully_preserved - face, coat, and proportions",
                     ),
                 ),
-                detailed_description=description,
+                detailed_description=detailed_description,
             )
         )
     return compile_h3_wire(
@@ -460,8 +465,6 @@ def _plan_with_quality_issue(code: str) -> H3DirectorPlan:
                 )
             }
         )
-    elif code == "non_diegetic_music_forbidden":
-        plan = plan.model_copy(update={"music": "Low strings."})
     elif code == "character_acting_missing":
         rigid = rigid.model_copy(update={"character_acting": ()})
     elif code == "style_prefix_mismatch":
@@ -496,7 +499,6 @@ def test_paid_context_requires_schema_v2_rigid_prompt():
         "format_duration_mismatch",
         "optics_shot_mismatch",
         "lighting_source_conflict",
-        "non_diegetic_music_forbidden",
         "character_acting_missing",
         "style_prefix_mismatch",
         "physics_required",
@@ -513,8 +515,8 @@ def test_rigid_quality_gate_passes_complete_v2_plan():
     report = inspect_h3_plan(_rigid_plan(), context=_context())
 
     assert report.passed is True
-    assert report.version == 8
-    assert H3_PROMPT_QUALITY_VERSION == 8
+    assert report.version == 9
+    assert H3_PROMPT_QUALITY_VERSION == 9
 
 
 def test_v3_rigid_plan_passes_real_gate_and_compiler_chain():
@@ -763,15 +765,20 @@ def test_each_structured_dialogue_line_is_forbidden_from_action_timing() -> None
     assert "dialogue_in_action_timing" in report.codes
 
 
-def test_v2_music_contract_rejects_appended_text():
-    report = inspect_h3_plan(
-        _rigid_plan().model_copy(
-            update={"music": "No music. SFX only. Add low strings."}
-        ),
-        context=_context(),
+def test_typed_plan_quality_allows_real_non_diegetic_music():
+    plan = _rigid_plan().model_copy(update={"music": "Low strings rise."})
+
+    assert inspect_h3_plan(plan, context=_context()).passed
+    assert compile_h3_director_plan(plan).endswith(
+        "non_diegetic_music: Low strings rise."
     )
 
-    assert "non_diegetic_music_forbidden" in report.codes
+
+def test_typed_plan_legacy_no_music_is_compiled_as_na():
+    plan = _rigid_plan().model_copy(update={"music": "No music. SFX only."})
+
+    assert inspect_h3_plan(plan, context=_context()).passed
+    assert compile_h3_director_plan(plan).endswith("non_diegetic_music: N/A")
 
 
 def test_location_map_requires_landmarks():
@@ -1407,6 +1414,43 @@ def test_reference_subject_definitions_and_retention_must_match(prompt: str) -> 
     report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
 
     assert "h3.reference_subject_mismatch" in report.codes
+
+
+def test_reference_prompt_rejects_picture_outside_declared_mappings() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "<Subject 1> remains active.",
+        "<Subject 1> copies styling from <Picture 99>.",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_picture_out_of_range" in report.codes
+
+
+def test_reference_prompt_rejects_non_official_visual_relation() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "fully_preserved - face, coat, and proportions",
+        "totally_invented_relation - face, coat, and proportions",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_relation_invalid" in report.codes
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    ("remains active.", "<Subject 1> stands beside <Subject 2>."),
+)
+def test_reference_prompt_rejects_missing_or_extra_active_subject(replacement):
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "<Subject 1> remains active.",
+        replacement,
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_subject_inactive" in report.codes
 
 
 def test_dialogue_requires_speaker_id_language_and_wrapping() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -66,18 +67,25 @@ def _timeline(*, first_frame: str | None = "first.png", last_frame: str | None =
 
 
 def _wire(subject_definitions: str) -> H3ReferenceWire:
+    subject_indexes = tuple(
+        int(value) for value in re.findall(r"<Subject ([1-9][0-9]*)>", subject_definitions)
+    )
     return H3ReferenceWire(
         mode=H3Mode.REF2VA,
         duration_seconds=6,
         subject_definitions=subject_definitions,
         summary="[reference generation] A restrained dramatic beat.",
-        retention_analysis=(
+        retention_analysis=tuple(
             H3RetentionItem(
-                subject="<Subject 1> (appears in [Shot 1])",
+                subject=f"<Subject {index}> (appears in [Shot 1])",
                 retain="fully_preserved - identity and proportions",
-            ),
+            )
+            for index in subject_indexes
         ),
-        detailed_description="[Shot 1] [0-6s] The subject turns toward camera.",
+        detailed_description=(
+            f"[Shot 1] [0-6s] {' '.join(f'<Subject {index}>' for index in subject_indexes)} "
+            "turn toward camera."
+        ),
         overall_soundscape="Quiet room tone.",
         non_diegetic_music="N/A",
     )
@@ -225,8 +233,14 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
                 subject="<Subject 1> (appears in [Shot 1])",
                 retain="fully_preserved - face, coat, proportions",
             ),
+            H3RetentionItem(
+                subject="<Subject 2> (appears in [Shot 1])",
+                retain="fully_preserved - body shell and proportions",
+            ),
         ),
-        detailed_description="[Shot 1] [0-6s] The woman turns toward the robot.",
+        detailed_description=(
+            "[Shot 1] [0-6s] <Subject 1> turns toward <Subject 2>."
+        ),
         overall_soundscape="Soft footsteps and a quiet servo hum.",
         non_diegetic_music="N/A",
     )

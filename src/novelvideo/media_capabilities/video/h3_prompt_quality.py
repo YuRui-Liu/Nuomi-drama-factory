@@ -12,7 +12,12 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .h3_director_plan import H3DirectorPlan
 from .h3_rigid_prompt import H3_RIGID_SECTION_ORDER
-from .h3_wire import H3BaseWire, H3ReferenceWire, compile_h3_wire
+from .h3_wire import (
+    H3BaseWire,
+    H3ReferenceWire,
+    compile_h3_wire,
+    inspect_h3_reference_semantics,
+)
 from .models import H3Mode
 
 if TYPE_CHECKING:
@@ -20,7 +25,7 @@ if TYPE_CHECKING:
     from .h3_timeline import H3DirectorSegment
 
 
-H3_PROMPT_QUALITY_VERSION = 8
+H3_PROMPT_QUALITY_VERSION = 9
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 _WIRE_METADATA_FIELDS = frozenset({"mode", "duration_seconds", "final_shot_number"})
 _BASE_WIRE_FIELD_ORDER = tuple(
@@ -47,6 +52,9 @@ _DIALOGUE_PAYLOAD_PATTERN = re.compile(
 _DIALOGUE_LINE_PATTERN = re.compile(
     r"\(S[1-9][0-9]*\).*:\s*"
     r"(?:<scenetrans>)?<d>\[[^\]\r\n]+\][^<\r\n]+</d>(?:<cutoff>)?"
+)
+_RETENTION_ITEM_PATTERN = re.compile(
+    r"^-\s+(?P<subject><Subject [1-9][0-9]*>[^:]+):\s*(?P<retain>\S.*)$"
 )
 _ANGLE_TAG_PATTERN = re.compile(r"</?[^>\r\n]+>")
 _ALLOWED_WIRE_TAG_PATTERN = re.compile(
@@ -239,26 +247,63 @@ def inspect_h3_prompt(
     if resolved_mode is H3Mode.REF2VA:
         definitions = _first_field_value(values_by_field, "subject_definitions")
         retention = _first_field_value(values_by_field, "retention_analysis")
-        if not retention or not all(
-            re.match(r"^-\s+<Subject [1-9][0-9]*>.+:\s*\S", line)
-            for line in retention.splitlines()
-            if line.strip()
-        ):
+        retention_lines = tuple(
+            line for line in retention.splitlines() if line.strip()
+        )
+        retention_matches = tuple(
+            match
+            for line in retention_lines
+            if (match := _RETENTION_ITEM_PATTERN.match(line)) is not None
+        )
+        if not retention_lines or len(retention_matches) != len(retention_lines):
             _add(
                 issues,
                 "h3.retention_analysis_missing",
                 "Ref2VA requires nonempty subject retention rules",
                 "retention_analysis",
             )
-        defined_subjects = set(re.findall(r"<Subject ([1-9][0-9]*)>", definitions))
-        retained_subjects = set(re.findall(r"<Subject ([1-9][0-9]*)>", retention))
-        if defined_subjects != retained_subjects:
-            _add(
-                issues,
-                "h3.reference_subject_mismatch",
-                "subject definitions and retention analysis must name the same subjects",
+        semantic_issues = inspect_h3_reference_semantics(
+            definitions,
+            tuple(
+                (match.group("subject"), match.group("retain"))
+                for match in retention_matches
+            ),
+            description,
+            additional_text=(
+                _first_field_value(values_by_field, "summary"),
+                _first_field_value(values_by_field, "overall_soundscape"),
+                _first_field_value(values_by_field, "non_diegetic_music"),
+            ),
+        )
+        semantic_issue_details = {
+            "reference_definition_invalid": (
+                "h3.reference_definition_invalid",
+                "subject definitions must be unique, continuous, and map source pictures",
+                "subject_definitions",
+            ),
+            "reference_picture_out_of_range": (
+                "h3.reference_picture_out_of_range",
+                "every Picture tag must be declared by a subject definition",
+                "detailed_description",
+            ),
+            "reference_relation_invalid": (
+                "h3.reference_relation_invalid",
+                "retention relations must use the official visual relation vocabulary",
                 "retention_analysis",
-            )
+            ),
+            "reference_subject_mismatch": (
+                "h3.reference_subject_mismatch",
+                "subject definitions and retention analysis must match one-to-one",
+                "retention_analysis",
+            ),
+            "reference_subject_inactive": (
+                "h3.reference_subject_inactive",
+                "every defined subject must appear in detailed_description without extras",
+                "detailed_description",
+            ),
+        }
+        for semantic_issue in semantic_issues:
+            _add(issues, *semantic_issue_details[semantic_issue])
 
     _inspect_dialogue_and_markers(prompt, issues)
     _inspect_forbidden_legacy_wire(prompt, issues)
@@ -943,15 +988,6 @@ def _inspect_rigid_prompt(
                     f"lighting {field} conflicts with continuity facts",
                     f"rigid_prompt.lighting.{field}",
                 )
-
-    music = " ".join(plan.music.casefold().split())
-    if music != "no music. sfx only.":
-        _add(
-            issues,
-            "non_diegetic_music_forbidden",
-            "H3 generation permits SFX only and no non-diegetic music",
-            "music",
-        )
 
     acting_ids = tuple(item.character_id for item in rigid.character_acting)
     if set(acting_ids) != active_set or len(acting_ids) != len(set(acting_ids)):

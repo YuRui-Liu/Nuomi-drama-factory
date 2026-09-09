@@ -1,7 +1,15 @@
 import re
+from collections.abc import Sequence
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from .models import H3Mode
 
@@ -15,6 +23,23 @@ _DurationSeconds = Annotated[float, Field(ge=4, le=15)]
 _NO_MUSIC_VALUES = frozenset(
     {"", "n/a", "none", "none.", "no music", "no music.", "no music. sfx only."}
 )
+H3_VISUAL_RETENTION_RELATIONS = frozenset(
+    {
+        "fully_preserved",
+        "partially_preserved",
+        "attribute_transfer",
+        "weak_reference",
+    }
+)
+H3_AUDIO_RETENTION_RELATIONS = frozenset(
+    {"fully_copy", "partially_copy", "reference", "weak_reference"}
+)
+H3_MAX_REFERENCE_PICTURES = 10
+_SUBJECT_TAG_PATTERN = re.compile(r"<Subject ([1-9][0-9]*)>")
+_PICTURE_TAG_PATTERN = re.compile(r"<?Picture ([1-9][0-9]*)>?", re.IGNORECASE)
+_REFERENCE_IMAGE_PATTERN = re.compile(
+    r"\breference image ([1-9][0-9]*)\b", re.IGNORECASE
+)
 
 
 def normalize_h3_music(value: str | None) -> str:
@@ -23,11 +48,108 @@ def normalize_h3_music(value: str | None) -> str:
     return "N/A" if semantic_value in _NO_MUSIC_VALUES else normalized
 
 
+def parse_h3_retention_relation(value: str, *, audio: bool = False) -> str | None:
+    relation, separator, detail = value.strip().partition(" - ")
+    allowed = H3_AUDIO_RETENTION_RELATIONS if audio else H3_VISUAL_RETENTION_RELATIONS
+    return relation if separator and detail.strip() and relation in allowed else None
+
+
+def normalize_h3_visual_retention(value: str) -> str:
+    normalized = value.strip()
+    if parse_h3_retention_relation(normalized) is not None:
+        return normalized
+    return f"fully_preserved - {normalized}"
+
+
+def inspect_h3_reference_semantics(
+    subject_definitions: str,
+    retention_items: Sequence[tuple[str, str]],
+    detailed_description: str,
+    *,
+    additional_text: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Return stable semantic issue names for the official Ref2VA wire."""
+    issues: list[str] = []
+    definition_subjects: list[int] = []
+    defined_pictures: set[int] = set()
+    definition_lines = tuple(
+        line.strip() for line in subject_definitions.splitlines() if line.strip()
+    )
+    for line in definition_lines:
+        subject_match = re.match(r"^<Subject ([1-9][0-9]*)>(?:\s|:)", line)
+        subject_tags = tuple(int(value) for value in _SUBJECT_TAG_PATTERN.findall(line))
+        picture_indexes = tuple(
+            int(value)
+            for value in (
+                *_PICTURE_TAG_PATTERN.findall(line),
+                *_REFERENCE_IMAGE_PATTERN.findall(line),
+            )
+        )
+        if (
+            subject_match is None
+            or subject_tags != (int(subject_match.group(1)),)
+            or not picture_indexes
+            or len(picture_indexes) != len(set(picture_indexes))
+        ):
+            _append_once(issues, "reference_definition_invalid")
+            continue
+        definition_subjects.append(int(subject_match.group(1)))
+        defined_pictures.update(picture_indexes)
+        if any(index > H3_MAX_REFERENCE_PICTURES for index in picture_indexes):
+            _append_once(issues, "reference_picture_out_of_range")
+    if definition_subjects != list(range(1, len(definition_lines) + 1)):
+        _append_once(issues, "reference_definition_invalid")
+
+    retention_subjects: list[int] = []
+    retention_text: list[str] = []
+    for subject, retain in retention_items:
+        subject_match = re.match(r"^<Subject ([1-9][0-9]*)>\s+\S", subject)
+        subject_tags = tuple(int(value) for value in _SUBJECT_TAG_PATTERN.findall(subject))
+        if subject_match is None or subject_tags != (int(subject_match.group(1)),):
+            _append_once(issues, "reference_subject_mismatch")
+        else:
+            retention_subjects.append(int(subject_match.group(1)))
+        if parse_h3_retention_relation(retain) is None:
+            _append_once(issues, "reference_relation_invalid")
+        retention_text.extend((subject, retain))
+    if (
+        retention_subjects != definition_subjects
+        or len(retention_subjects) != len(set(retention_subjects))
+    ):
+        _append_once(issues, "reference_subject_mismatch")
+
+    active_subjects = {
+        int(value) for value in _SUBJECT_TAG_PATTERN.findall(detailed_description)
+    }
+    if active_subjects != set(definition_subjects):
+        _append_once(issues, "reference_subject_inactive")
+
+    all_text = "\n".join(
+        (subject_definitions, detailed_description, *retention_text, *additional_text)
+    )
+    used_pictures = {int(value) for value in _PICTURE_TAG_PATTERN.findall(all_text)}
+    if not used_pictures.issubset(defined_pictures):
+        _append_once(issues, "reference_picture_out_of_range")
+    return tuple(issues)
+
+
+def _append_once(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
 class H3RetentionItem(BaseModel):
     model_config = _MODEL_CONFIG
 
     subject: _NonEmptyString
     retain: _NonEmptyString
+
+    @field_validator("retain")
+    @classmethod
+    def validate_visual_relation(cls, value: str) -> str:
+        if parse_h3_retention_relation(value) is None:
+            raise ValueError("reference_relation_invalid")
+        return value
 
 
 class H3BaseWire(BaseModel):
@@ -76,6 +198,22 @@ class H3ReferenceWire(BaseModel):
     detailed_description: _NonEmptyString
     overall_soundscape: _NonEmptyString
     non_diegetic_music: _NonEmptyString
+
+    @model_validator(mode="after")
+    def validate_reference_semantics(self) -> Self:
+        issues = inspect_h3_reference_semantics(
+            self.subject_definitions,
+            tuple((item.subject, item.retain) for item in self.retention_analysis),
+            self.detailed_description,
+            additional_text=(
+                self.summary,
+                self.overall_soundscape,
+                self.non_diegetic_music,
+            ),
+        )
+        if issues:
+            raise ValueError(", ".join(issues))
+        return self
 
 
 H3Wire = H3BaseWire | H3ReferenceWire

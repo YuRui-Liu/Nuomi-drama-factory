@@ -12,6 +12,7 @@ from .h3_wire import (
     H3Wire,
     compile_h3_wire,
     normalize_h3_music,
+    normalize_h3_visual_retention,
 )
 from .models import H3Mode, MotionSpec
 
@@ -117,9 +118,11 @@ def _project_motion_spec_to_wire(
             speaker=speaker,
             tone=tone,
         )
-        retention = spec.retention_analysis or (
-            "identity - retain the visible identity and appearance from its "
-            "source picture"
+        retention = normalize_h3_visual_retention(
+            spec.retention_analysis
+            or (
+                "retain the visible identity and appearance from its source picture"
+            )
         )
         summary = str(spec.summary or spec.action).strip()
         if not summary.startswith("[reference generation] "):

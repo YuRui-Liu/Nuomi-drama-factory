@@ -95,7 +95,10 @@ def test_legacy_reference_mode_equals_the_canonical_six_section_wire():
             retention_analysis=(
                 H3RetentionItem(
                     subject="<Subject 1> (appears in [Shot 1])",
-                    retain="identity - keep the red coat and short black hair",
+                    retain=(
+                        "fully_preserved - identity - keep the red coat and short "
+                        "black hair"
+                    ),
                 ),
             ),
             detailed_description=(

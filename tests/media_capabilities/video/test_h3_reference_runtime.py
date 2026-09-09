@@ -52,7 +52,7 @@ def _reference_wire(*, duration_seconds: float = 4) -> H3ReferenceWire:
             ),
         ),
         detailed_description=(
-            f"[Shot 1] [0-{duration_seconds:g}s] 阿明走近。"
+            f"[Shot 1] [0-{duration_seconds:g}s] <Subject 1> 阿明走近。"
         ),
         overall_soundscape="安静的室内环境声。",
         non_diegetic_music="N/A",

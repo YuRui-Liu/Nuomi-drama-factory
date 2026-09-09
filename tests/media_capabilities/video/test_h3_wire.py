@@ -9,8 +9,11 @@ from novelvideo.media_capabilities.video.h3_wire import (
     H3ReferenceWire,
     H3RetentionItem,
     H3Wire,
+    H3_AUDIO_RETENTION_RELATIONS,
+    H3_VISUAL_RETENTION_RELATIONS,
     compile_h3_wire,
     normalize_h3_music,
+    parse_h3_retention_relation,
 )
 
 
@@ -24,6 +27,19 @@ OFFICIAL_SKILL_COMMIT = "d21241f0a4b3acbb34c97dae47fa417b7065e438"
 )
 def test_canonical_music_normalizer_maps_no_music_values_to_na(value):
     assert normalize_h3_music(value) == "N/A"
+
+
+@pytest.mark.parametrize("relation", sorted(H3_VISUAL_RETENTION_RELATIONS))
+def test_visual_retention_relations_match_official_vocabulary(relation):
+    assert parse_h3_retention_relation(f"{relation} - stable detail") == relation
+
+
+@pytest.mark.parametrize("relation", sorted(H3_AUDIO_RETENTION_RELATIONS))
+def test_audio_retention_relations_match_official_vocabulary(relation):
+    assert (
+        parse_h3_retention_relation(f"{relation} - stable detail", audio=True)
+        == relation
+    )
 
 
 def _base_wire(**updates: object) -> H3BaseWire:
@@ -50,7 +66,7 @@ def _reference_wire(**updates: object) -> H3ReferenceWire:
                 retain="fully_preserved - identity, wardrobe",
             ),
         ),
-        "detailed_description": "[Shot 1] [0-6s] Static medium shot.",
+        "detailed_description": "[Shot 1] [0-6s] <Subject 1> holds a static pose.",
         "overall_soundscape": "Rain taps the glass.",
         "non_diegetic_music": "N/A",
     }
@@ -118,6 +134,83 @@ def test_reference_wire_matches_official_fixture() -> None:
     assert compile_h3_wire(wire) + "\n" == (
         FIXTURE_DIR / "ref2va_prompt.txt"
     ).read_text()
+
+
+@pytest.mark.parametrize(
+    "subject_definitions",
+    (
+        "<Subject 1> from <Picture 1>: Lin.\n<Subject 1> from <Picture 2>: Kai.",
+        "<Subject 1> from <Picture 1>: Lin.\n<Subject 3> from <Picture 3>: Kai.",
+        "<Subject 1>: Lin without a source picture.",
+    ),
+)
+def test_reference_wire_rejects_invalid_subject_definitions(subject_definitions):
+    with pytest.raises(ValidationError, match="reference_definition_invalid"):
+        _reference_wire(subject_definitions=subject_definitions)
+
+
+def test_reference_wire_rejects_undefined_picture_usage():
+    with pytest.raises(ValidationError, match="reference_picture_out_of_range"):
+        _reference_wire(
+            detailed_description=(
+                "[Shot 1] <Subject 1> copies styling from <Picture 99>."
+            )
+        )
+
+
+def test_reference_wire_rejects_picture_index_above_official_limit():
+    with pytest.raises(ValidationError, match="reference_picture_out_of_range"):
+        _reference_wire(
+            subject_definitions="<Subject 1> from <Picture 99>: Lin.",
+        )
+
+
+def test_retention_item_rejects_non_official_visual_relation():
+    with pytest.raises(ValidationError, match="reference_relation_invalid"):
+        H3RetentionItem(
+            subject="<Subject 1> identity and appearance",
+            retain="totally_invented_relation - preserve everything",
+        )
+
+
+@pytest.mark.parametrize(
+    "retention_analysis",
+    (
+        (
+            H3RetentionItem(
+                subject="<Subject 2> identity and appearance",
+                retain="fully_preserved - face and coat",
+            ),
+        ),
+        (
+            H3RetentionItem(
+                subject="<Subject 1> identity and appearance",
+                retain="fully_preserved - face and coat",
+            ),
+            H3RetentionItem(
+                subject="<Subject 2> identity and appearance",
+                retain="weak_reference - silhouette only",
+            ),
+        ),
+    ),
+)
+def test_reference_wire_rejects_missing_or_extra_retention_subjects(
+    retention_analysis,
+):
+    with pytest.raises(ValidationError, match="reference_subject_mismatch"):
+        _reference_wire(retention_analysis=retention_analysis)
+
+
+@pytest.mark.parametrize(
+    "description",
+    (
+        "[Shot 1] No stable subject tag appears.",
+        "[Shot 1] <Subject 1> stands beside <Subject 2>.",
+    ),
+)
+def test_reference_wire_rejects_missing_or_extra_active_subjects(description):
+    with pytest.raises(ValidationError, match="reference_subject_inactive"):
+        _reference_wire(detailed_description=description)
 
 
 @pytest.mark.parametrize("duration_seconds", [3.99, 15.01])
@@ -264,7 +357,10 @@ def test_reference_wire_rejects_empty_retention_analysis() -> None:
 
 @pytest.mark.parametrize("field", ["subject", "retain"])
 def test_retention_item_rejects_empty_fields(field: str) -> None:
-    values = {"subject": "(S1)", "retain": "identity"}
+    values = {
+        "subject": "<Subject 1> identity and appearance",
+        "retain": "fully_preserved - identity",
+    }
     values[field] = "   "
 
     with pytest.raises(ValidationError):
@@ -282,7 +378,10 @@ def test_wire_union_uses_lowercase_official_mode_values() -> None:
 @pytest.mark.parametrize(
     "model",
     [
-        H3RetentionItem(subject="(S1)", retain="identity"),
+        H3RetentionItem(
+            subject="<Subject 1> identity and appearance",
+            retain="fully_preserved - identity",
+        ),
         _base_wire(),
         _reference_wire(),
     ],
