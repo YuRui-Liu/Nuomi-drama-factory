@@ -267,7 +267,14 @@ async def test_three_shots_submit_concurrently_and_quality_failure_is_isolated(
         assert task.input_snapshot["source_motion_spec"]["action"].endswith(
             f"第 {index} 个连续动作"
         )
-        assert task.input_snapshot["compiled_prompt"].startswith("mode: fl2va")
+        compiled_prompt = task.input_snapshot["compiled_prompt"]
+        assert compiled_prompt.startswith(
+            "How the reference pictures align with the target video"
+        )
+        assert "integrated_multimodal_description:" in compiled_prompt
+        assert "overall_soundscape: N/A" in compiled_prompt
+        assert "non_diegetic_music: N/A" in compiled_prompt
+        assert "mode:" not in compiled_prompt
         assert attempt.workflow_version == {
             "id": profile.id,
             "version": profile.version,
