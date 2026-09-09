@@ -481,6 +481,7 @@ def _binding(
     episode_identity_ids: frozenset[str] = frozenset(),
     identity_default_map: Mapping[str, str] | None = None,
     available_character_portraits: frozenset[str] = frozenset(),
+    available_character_identity_ids: frozenset[str] | None = None,
     available_scene_reference_slots: frozenset[str] | None = None,
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
@@ -506,12 +507,16 @@ def _binding(
             )
             identity_name = _text(_get(identity, "identity_name"))
             label = " / ".join(item for item in (character_name, identity_name) if item)
-            missing_identity_image = _explicitly_missing_image(identity, identity=True)
+            identity_available = (
+                not _explicitly_missing_image(identity, identity=True)
+                if available_character_identity_ids is None
+                else entity_id in available_character_identity_ids
+            )
             try:
                 slot_id = (
-                    character_portrait_slot_id(character_name)
-                    if missing_identity_image
-                    else character_state_slot_id(character_name, entity_id)
+                    character_state_slot_id(character_name, entity_id)
+                    if identity_available
+                    else character_portrait_slot_id(character_name)
                 )
             except ValueError:
                 slot_id = ""
@@ -519,7 +524,7 @@ def _binding(
                 invalid_slot = True
             else:
                 status = "ready"
-                if missing_identity_image:
+                if not identity_available:
                     resolution = "explicit_fallback"
                     label = f"{label}（基础头像）"
                     if character_name not in available_character_portraits:
@@ -752,6 +757,7 @@ def bindings_for_director_plan(
     episode_identity_ids: Iterable[str] = (),
     identity_default_map: Mapping[str, str] | None = None,
     available_character_portraits: Iterable[str] = (),
+    available_character_identity_ids: Iterable[str] | None = None,
     available_scene_reference_slots: Iterable[str] | None = None,
 ) -> tuple[PlannedReferenceBinding, ...]:
     """Project current DirectorPlan relationships without I/O or mutation."""
@@ -768,6 +774,15 @@ def bindings_for_director_plan(
         _text(character_name)
         for character_name in available_character_portraits
         if _text(character_name)
+    )
+    available_identity_ids = (
+        None
+        if available_character_identity_ids is None
+        else frozenset(
+            _text(identity_id)
+            for identity_id in available_character_identity_ids
+            if _text(identity_id)
+        )
     )
     available_scene_slots = (
         None
@@ -790,6 +805,7 @@ def bindings_for_director_plan(
             episode_identity_ids=selected_identity_ids,
             identity_default_map=default_identity_ids,
             available_character_portraits=available_portraits,
+            available_character_identity_ids=available_identity_ids,
             available_scene_reference_slots=available_scene_slots,
         )
         for requirement in _requirements(group_items, shot_items)
@@ -973,6 +989,16 @@ def _resolve_binding(
         return _unavailable(
             binding,
             "asset slot kind is not character_portrait",
+            status="missing_asset",
+        )
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution != "explicit_fallback"
+        and slot.asset_kind != "character_state"
+    ):
+        return _unavailable(
+            binding,
+            "asset slot kind is not character_state",
             status="missing_asset",
         )
     expected_slot_kind = _scene_binding_slot_kind(binding)

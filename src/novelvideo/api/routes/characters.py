@@ -932,7 +932,7 @@ async def restore_character_asset_history(
     user: dict = Depends(get_api_user),
 ):
     """把某个历史备份恢复到角色资产 canonical 槽位。"""
-    ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, username, _project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
     )
     character = store.get_character(name)
@@ -942,6 +942,11 @@ async def restore_character_asset_history(
     kind = str(getattr(body, "kind", "") or "").strip()
     identity_id = str(getattr(body, "identity_id", "") or "").strip()
     history_id = str(getattr(body, "history_id", "") or "").strip()
+    if kind == "portrait":
+        try:
+            validate_character_name(name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
     try:
         target, identity = _resolve_character_asset_path(
             project_dir=project_dir,
@@ -964,9 +969,22 @@ async def restore_character_asset_history(
     if not source.exists() or not source.is_file():
         return {"ok": False, "error": "History asset not found"}
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    backup = _backup_character_asset(target)
-    shutil.copy2(source, target)
+    if kind == "portrait":
+        before_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
+        target = commit_character_portrait_current(
+            state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
+            project_dir=project_dir,
+            character_name=name,
+            image_bytes=source.read_bytes(),
+            actor=str(getattr(ctx, "requester_username", "") or username),
+            origin=AssetOrigin.UPLOADED,
+        )
+        new_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
+        backup = max(new_backups - before_backups, default=None)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        backup = _backup_character_asset(target)
+        shutil.copy2(source, target)
     await _sync_restored_identity_asset(store, name, identity, kind, target)
 
     return {
