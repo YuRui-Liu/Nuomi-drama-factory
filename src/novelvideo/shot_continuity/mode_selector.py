@@ -79,12 +79,12 @@ def select_h3_mode(
         ),
         "h3.first_frame_forbidden": (
             requested != "auto"
-            and mode in {"t2va", "l2va", "ref2va"}
+            and mode in {"t2va", "l2va"}
             and has_first_frame
         ),
         "h3.last_frame_forbidden": (
             requested != "auto"
-            and mode in {"t2va", "i2va", "ref2va"}
+            and mode in {"t2va", "i2va"}
             and has_last_frame
         ),
         "h3.references_forbidden": (

@@ -38,6 +38,26 @@ it("shows unsupported modes with stable reasons and changes only to enabled mode
   expect(onChange).toHaveBeenCalledWith("i2va");
 });
 
+it("uses the exact official mode labels in the options", () => {
+  render(<H3VideoModeSelect
+    value="auto"
+    availability={[
+      { mode: "auto", resolvedMode: "i2va", available: true },
+      { mode: "t2va", resolvedMode: "t2va", available: true },
+      { mode: "i2va", resolvedMode: "i2va", available: true },
+      { mode: "fl2va", resolvedMode: "fl2va", available: true },
+      { mode: "l2va", resolvedMode: "l2va", available: true },
+      { mode: "ref2va", resolvedMode: "ref2va", available: true },
+    ]}
+    onChange={vi.fn()}
+  />);
+
+  expect(screen.getByRole("option", { name: "自动（解析为 I2VA）" })).toBeEnabled();
+  for (const label of ["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"]) {
+    expect(screen.getByRole("option", { name: label })).toBeEnabled();
+  }
+});
+
 it("keeps an input-valid but unsupported mode visible with the capability reason", () => {
   const availability = h3ModeAvailabilities({
     id: "runninghub:minimax-h3",

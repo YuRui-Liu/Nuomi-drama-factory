@@ -7,11 +7,11 @@ import type {
 import { h3ModeReasonLabel } from "@/lib/queries/media-models";
 
 const MODE_LABELS: Record<H3ResolvedVideoMode, string> = {
-  t2va: "T2V（文本）",
-  i2va: "I2V（首帧）",
-  fl2va: "FL2V（首尾帧）",
-  l2va: "L2V（尾帧）",
-  ref2va: "Ref2V（参考图）",
+  t2va: "T2VA",
+  i2va: "I2VA",
+  fl2va: "FL2VA",
+  l2va: "L2VA",
+  ref2va: "Ref2VA",
 };
 
 export function h3ModeLabel(mode: H3ResolvedVideoMode) {

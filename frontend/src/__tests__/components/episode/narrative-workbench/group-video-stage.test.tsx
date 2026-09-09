@@ -75,7 +75,7 @@ describe("GroupVideoStage", () => {
     />);
 
     expect(screen.getByRole("option", { name: /自动.*Ref2V/ })).toBeEnabled();
-    expect(screen.getByText(/MiniMax H3 多参考图 · Ref2V（参考图）/)).toBeInTheDocument();
+    expect(screen.getByText(/MiniMax H3 多参考图 · Ref2VA/)).toBeInTheDocument();
   });
 
   it.each([
@@ -210,6 +210,37 @@ describe("GroupVideoStage", () => {
     ])).toEqual({ allHaveFirst: true, allHaveLast: false, modes: ["fl2va", "i2va"] });
   });
 
+  it("summarizes mixed automatic units without claiming one mode for the group", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame={false}
+      inputs={[
+        { beat_id: "1", has_first_frame: true, has_last_frame: true, actual_mode: "fl2va" },
+        { beat_id: "2", has_first_frame: true, has_last_frame: false, actual_mode: "i2va" },
+      ]}
+    />);
+
+    expect(screen.getByText(/MiniMax H3 · 混合模式（FL2VA \/ I2VA）/)).toBeInTheDocument();
+  });
+
+  it("keeps a single official mode in the automatic summary for a uniform group", () => {
+    render(<GroupVideoStage
+      modelId="runninghub:minimax-h3"
+      mode="auto"
+      hasFirstFrame
+      hasLastFrame={false}
+      inputs={[
+        { beat_id: "1", has_first_frame: true, has_last_frame: false, actual_mode: "i2va" },
+        { beat_id: "2", has_first_frame: true, has_last_frame: false, actual_mode: "i2va" },
+      ]}
+    />);
+
+    expect(screen.getByText(/MiniMax H3 · I2VA/)).toBeInTheDocument();
+    expect(screen.queryByText(/混合模式/)).not.toBeInTheDocument();
+  });
+
   it("resolves the automatic mode independently for each Beat input", () => {
     render(<GroupVideoStage
       modelId="runninghub:minimax-h3"
@@ -222,8 +253,8 @@ describe("GroupVideoStage", () => {
       ]}
     />);
 
-    expect(screen.getByText(/Beat 1 .* FL2V（首尾帧）/)).toBeInTheDocument();
-    expect(screen.getByText(/Beat 2 .* I2V（首帧）/)).toBeInTheDocument();
+    expect(screen.getByText(/Beat 1 .* FL2VA/)).toBeInTheDocument();
+    expect(screen.getByText(/Beat 2 .* I2VA/)).toBeInTheDocument();
   });
 
   it("keeps a temporary override local to the generation callback", () => {

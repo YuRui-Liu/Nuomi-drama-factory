@@ -53,7 +53,7 @@ def test_auto_mode_freezes_the_complete_input_matrix(
         ("i2va", True, False, False),
         ("fl2va", True, True, False),
         ("l2va", False, True, False),
-        ("ref2va", False, False, True),
+        ("ref2va", True, True, True),
     ],
 )
 def test_all_explicit_modes_succeed_without_rewriting(
@@ -116,13 +116,6 @@ def test_all_explicit_modes_succeed_without_rewriting(
             ("h3.first_frame_forbidden", "h3.references_forbidden"),
         ),
         ("ref2va", False, False, False, ("h3.references_required",)),
-        (
-            "ref2va",
-            True,
-            True,
-            True,
-            ("h3.first_frame_forbidden", "h3.last_frame_forbidden"),
-        ),
     ],
 )
 def test_explicit_modes_report_all_missing_and_forbidden_inputs(
@@ -259,6 +252,28 @@ def test_auto_reference_priority_ignores_extra_frames_and_terminal_risk() -> Non
         has_last_frame=True,
         reference_count=1,
     )
+
+
+def test_explicit_reference_mode_accepts_the_same_frozen_transport_inputs_as_auto() -> None:
+    inputs = {
+        "has_first_frame": True,
+        "has_last_frame": True,
+        "reference_count": 2,
+        "endpoint_reachable": False,
+        "exact_terminal_state": True,
+        "motion_level": 2,
+    }
+
+    automatic = select_h3_mode(requested="auto", **inputs)  # type: ignore[arg-type]
+    explicit = select_h3_mode(requested="ref2va", **inputs)  # type: ignore[arg-type]
+
+    assert automatic.mode == explicit.mode == "ref2va"
+    assert automatic.input_snapshot == explicit.input_snapshot == H3ModeInputSnapshot(
+        has_first_frame=True,
+        has_last_frame=True,
+        reference_count=2,
+    )
+    assert explicit.blockers == ()
 
 
 def test_legacy_call_shape_remains_valid_and_still_freezes_a_snapshot() -> None:
