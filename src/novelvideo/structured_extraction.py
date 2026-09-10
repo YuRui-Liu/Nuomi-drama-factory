@@ -9,11 +9,12 @@ asset.  The module has no Cognee import or graph/runtime dependency.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from novelvideo.story_analysis import SourceChunk
 
@@ -34,6 +35,11 @@ class CharacterEvidence(BaseModel):
     confidence: float = Field(default=1.0, ge=0, le=1)
 
 
+class CharacterOutfitStateCandidate(BaseModel):
+    state: str = Field(description="服装状态名称，例如 default、work、ceremony")
+    description: str = Field(description="该状态下的完整服装描述")
+
+
 class CharacterProposalCandidate(BaseModel):
     proposal_id: str
     title: str
@@ -43,10 +49,20 @@ class CharacterProposalCandidate(BaseModel):
     hair_style: str | None = None
     body_type: str | None = None
     distinctive_features: list[str] = Field(default_factory=list)
-    outfit_states: dict[str, str] = Field(default_factory=dict)
+    outfit_states: list[CharacterOutfitStateCandidate] = Field(default_factory=list)
     identity_anchors: list[str] = Field(default_factory=list)
     asymmetry_detail: str = ""
     recommended: bool = False
+
+    @field_validator("outfit_states", mode="before")
+    @classmethod
+    def accept_legacy_outfit_state_mapping(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return [
+                {"state": state, "description": description}
+                for state, description in value.items()
+            ]
+        return value
 
 
 class CharacterCandidate(BaseModel):
@@ -102,7 +118,11 @@ CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说角色抽取器。只
   personality、dramatic_function；事实必须能由 evidence 支持，推断必须克制。
 - 在剧本明示视觉事实约束下，提供三套结构差异明显的 creative design 提案，
   其中恰好一套 recommended=true。每套至少 3 个 identity_anchors，并包含
-  asymmetry_detail 或其他可重复识别的非对称细节。
+  明确落在眉、眼、鼻、唇、嘴、耳、颧、颌、下巴、额头、发际线、疤、痣、
+  凹点或酒窝上的 asymmetry_detail/非对称细节，不能只写“略有不对称”。
+  三套提案的脸型、五官、发型和个体细节中至少三类必须有实质差异，不能只换
+  服装、颜色或文案。outfit_states 必须使用
+  [{"state": "default", "description": "服装描述"}] 这样的对象数组。
 - 不得根据姓名猜测地域、阶层或外貌；不得使用明星姓名；不得只写“漂亮、帅气、
   高级脸”等空泛审美词。提案不得改变剧本明示的年龄、性别、伤疤、残疾或制服。
 - 不得补写片段以外的剧情事实。创意外貌必须明确放在 design_proposals 中，
@@ -236,9 +256,15 @@ def merge_character_candidates(
                 and len(candidate.dramatic_function) > len(item.dramatic_function)
             ):
                 item.dramatic_function = candidate.dramatic_function.strip()
-            proposals = [
-                proposal.model_dump(mode="json") for proposal in candidate.design_proposals
-            ]
+            proposals: list[dict[str, Any]] = []
+            for proposal in candidate.design_proposals:
+                payload = proposal.model_dump(mode="json")
+                payload["outfit_states"] = {
+                    outfit.state.strip(): outfit.description.strip()
+                    for outfit in proposal.outfit_states
+                    if outfit.state.strip()
+                }
+                proposals.append(payload)
             if len(proposals) == 3 and (
                 not item.design_proposals
                 or sum(len(str(value)) for value in proposals)
@@ -286,6 +312,44 @@ def _create_agent(agent: Any = None) -> Any:
     )
 
 
+def _visual_proposal_quality_issues(output: ChunkCharacterOutput) -> dict[str, Any]:
+    """Return deterministic proposal issues suitable for a focused model retry."""
+    from novelvideo.character_visual.models import CharacterDesignProposal
+    from novelvideo.character_visual.proposals import (
+        ProposalQualityError,
+        validate_design_proposals,
+    )
+
+    rejected: dict[str, Any] = {}
+    for character in output.characters:
+        if not character.design_proposals:
+            continue
+        proposals = [
+            CharacterDesignProposal.model_validate(
+                {
+                    **proposal.model_dump(mode="json"),
+                    "outfit_states": {
+                        item.state.strip(): item.description.strip()
+                        for item in proposal.outfit_states
+                        if item.state.strip()
+                    },
+                }
+            )
+            for proposal in character.design_proposals
+        ]
+        try:
+            validate_design_proposals(proposals)
+        except ProposalQualityError as exc:
+            rejected[character.name] = {
+                proposal.proposal_id: proposal.quality_issues
+                for proposal in exc.proposals
+                if proposal.quality_issues
+            }
+        except ValueError as exc:
+            rejected[character.name] = {"proposal_set": [str(exc)]}
+    return rejected
+
+
 async def extract_characters_from_chunks(
     chunks: Iterable[SourceChunk],
     *,
@@ -312,6 +376,21 @@ async def extract_characters_from_chunks(
         output = getattr(result, "output", result)
         if not isinstance(output, ChunkCharacterOutput):
             output = ChunkCharacterOutput.model_validate(output)
+        issues = _visual_proposal_quality_issues(output)
+        if issues:
+            retry_prompt = (
+                f"{chunk.text}\n\n"
+                "上一次输出的角色视觉提案未通过确定性质量门禁。请完整重新输出当前"
+                "片段的结构化结果，只修正 design_proposals，不改变原文事实。"
+                f"必须逐项消除以下问题：{json.dumps(issues, ensure_ascii=False)}"
+            )
+            if on_log:
+                on_log(f"{chunk.section_label} 视觉提案未通过质量门禁，正在定向重试")
+            async with semaphore:
+                result = await runner.run(retry_prompt)
+            output = getattr(result, "output", result)
+            if not isinstance(output, ChunkCharacterOutput):
+                output = ChunkCharacterOutput.model_validate(output)
         if on_log:
             on_log(f"已分析 {chunk.section_label}")
         return chunk, output
@@ -327,6 +406,7 @@ async def extract_characters_from_chunks(
 __all__ = [
     "CharacterCandidate",
     "CharacterEvidence",
+    "CharacterOutfitStateCandidate",
     "CharacterProposalCandidate",
     "ChunkCharacterOutput",
     "MergedCharacter",

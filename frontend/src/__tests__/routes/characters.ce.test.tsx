@@ -16,9 +16,15 @@ const taskStreamOptionsMock = vi.hoisted(() => vi.fn());
 const extractionLockMutationMock = vi.hoisted(() => vi.fn());
 const visualWorkspaceMutationMock = vi.hoisted(() => vi.fn());
 const confirmVisualBibleMutationMock = vi.hoisted(() => vi.fn());
+const generatePortraitMutationMock = vi.hoisted(() => vi.fn());
 const characterVisualState = vi.hoisted(() => ({
   extractionLocked: false,
-  visualBibleStatus: "draft" as "draft" | "confirmed" | "superseded",
+  selectedProposalId: null as string | null,
+  visualBibleStatus: undefined as
+    | "draft"
+    | "confirmed"
+    | "superseded"
+    | undefined,
 }));
 
 vi.mock("@/lib/runtime-config", () => ({
@@ -171,17 +177,19 @@ vi.mock("@/lib/queries/characters", () => ({
             quality_issues: [],
           },
         ],
-        selected_proposal_id: "proposal-a",
-        visual_bible: {
-          revision_id: "vb-1",
-          status: characterVisualState.visualBibleStatus,
-          face_shape: "narrow",
-          facial_features: [],
-          hair_style: "shoulder-length",
-          body_type: "slim",
-          distinctive_features: [],
-          outfit_states: {},
-        },
+        selected_proposal_id: characterVisualState.selectedProposalId,
+        visual_bible: characterVisualState.visualBibleStatus
+          ? {
+              revision_id: "vb-1",
+              status: characterVisualState.visualBibleStatus,
+              face_shape: "narrow",
+              facial_features: [],
+              hair_style: "shoulder-length",
+              body_type: "slim",
+              distinctive_features: [],
+              outfit_states: {},
+            }
+          : null,
         legacy_fields: [],
       },
     },
@@ -256,7 +264,10 @@ vi.mock("@/lib/queries/characters", () => ({
   useUploadIdentityImage: mutation,
   useUploadCostumeImage: mutation,
   useUploadIdentityPortrait: mutation,
-  useGeneratePortraitAsync: mutation,
+  useGeneratePortraitAsync: () => ({
+    mutateAsync: generatePortraitMutationMock,
+    isPending: false,
+  }),
   useUploadPortrait: mutation,
   useIdentityAttempts: () => ({
     data: { ok: true, data: { image_attempts: 0, portrait_attempts: 0 } },
@@ -331,8 +342,14 @@ describe("characters page CE generation credit gating", () => {
     visualWorkspaceMutationMock.mockResolvedValue({ ok: true, data: {} });
     confirmVisualBibleMutationMock.mockReset();
     confirmVisualBibleMutationMock.mockResolvedValue({ ok: true, data: {} });
+    generatePortraitMutationMock.mockReset();
+    generatePortraitMutationMock.mockResolvedValue({
+      ok: true,
+      scope: "character:Li Qing:portrait",
+    });
     characterVisualState.extractionLocked = false;
-    characterVisualState.visualBibleStatus = "draft";
+    characterVisualState.selectedProposalId = null;
+    characterVisualState.visualBibleStatus = undefined;
     Element.prototype.scrollTo = vi.fn();
     window.localStorage.clear();
   });
@@ -428,27 +445,53 @@ describe("characters page CE generation credit gating", () => {
     expect(extractionLockMutationMock).toHaveBeenLastCalledWith(false);
   });
 
-  it("disables portrait generation until the VisualBible is confirmed", async () => {
+  it("guides pending automatic proposals through selection before confirmation", async () => {
+    const user = userEvent.setup();
     renderCharactersPage();
 
+    const generateButton = await screen.findByRole("button", {
+      name: "characters.summary.generateNew",
+    });
+    expect(generateButton).toBeEnabled();
+    await user.click(generateButton);
+
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "请先选择视觉提案，再确认 VisualBible",
+    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(generatePortraitMutationMock).not.toHaveBeenCalled();
     expect(
-      await screen.findByRole("button", { name: "characters.summary.generateNew" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "确认 VisualBible" })).toBeInTheDocument();
+      screen.getByRole("button", { name: "选择推荐提案" }),
+    ).toBeInTheDocument();
   });
 
-  it("enables portrait generation after the VisualBible is confirmed", async () => {
+  it("opens confirmation and generates after the VisualBible is confirmed", async () => {
+    const user = userEvent.setup();
+    characterVisualState.selectedProposalId = "proposal-a";
     characterVisualState.visualBibleStatus = "confirmed";
     renderCharactersPage();
 
-    expect(
-      await screen.findByRole("button", { name: "characters.summary.generateNew" }),
-    ).toBeEnabled();
+    const generateButton = await screen.findByRole("button", {
+      name: "characters.summary.generateNew",
+    });
+    expect(generateButton).toBeEnabled();
+    await user.click(generateButton);
+
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "common.confirm" }),
+    );
+
+    await waitFor(() =>
+      expect(generatePortraitMutationMock).toHaveBeenCalledTimes(1),
+    );
     expect(screen.getByText("VisualBible 已确认")).toBeInTheDocument();
   });
 
   it("confirms a draft VisualBible from the visual profile", async () => {
     const user = userEvent.setup();
+    characterVisualState.selectedProposalId = "proposal-a";
+    characterVisualState.visualBibleStatus = "draft";
     renderCharactersPage();
 
     await user.click(await screen.findByRole("button", { name: "确认 VisualBible" }));

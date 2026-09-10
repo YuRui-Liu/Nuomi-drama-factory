@@ -124,6 +124,38 @@ class ProposalQualityError(ValueError):
         super().__init__("character design proposals failed quality gate")
 
 
+class ProposalSetShapeError(ValueError):
+    """Raised when a proposal set has the wrong size or recommendation count."""
+
+
+def validate_proposal_selection(
+    proposals: Sequence[CharacterDesignProposal], selected_proposal_id: str
+) -> CharacterDesignProposal:
+    """Return a selectable proposal after enforcing the persisted quality gate."""
+
+    proposal_ids = [proposal.proposal_id for proposal in proposals]
+    if (
+        len(proposals) != 3
+        or len(set(proposal_ids)) != 3
+        or sum(proposal.recommended for proposal in proposals) != 1
+    ):
+        raise ProposalSetShapeError(
+            "character design requires three unique proposals and one recommendation"
+        )
+    reviewed = validate_design_proposals(proposals)
+    selected = next(
+        (
+            proposal
+            for proposal in reviewed
+            if proposal.proposal_id == selected_proposal_id
+        ),
+        None,
+    )
+    if selected is None:
+        raise ValueError("Selected design proposal not found")
+    return selected
+
+
 def _normalize(value: str | None) -> str:
     return "".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
 
@@ -261,9 +293,13 @@ def validate_design_proposals(
 
     reviewed = [assess_design_proposal(proposal) for proposal in proposals]
     if len(reviewed) != 3:
-        raise ValueError("character design requires exactly three proposals")
+        raise ProposalSetShapeError(
+            "character design requires exactly three proposals"
+        )
     if sum(proposal.recommended for proposal in reviewed) != 1:
-        raise ValueError("character design requires exactly one recommended proposal")
+        raise ProposalSetShapeError(
+            "character design requires exactly one recommended proposal"
+        )
 
     for left_index, left in enumerate(reviewed):
         for right_index in range(left_index + 1, len(reviewed)):
@@ -296,15 +332,25 @@ def build_character_visual_workspace(
     proposals: Sequence[CharacterDesignProposal],
     existing_workspace: CharacterVisualWorkspace | None = None,
     existing_roster_proposals: Sequence[CharacterDesignProposal] = (),
+    preserve_rejected_proposals: bool = False,
 ) -> CharacterVisualWorkspace:
     """Build refreshed automatic state without replacing human-owned choices."""
 
     if existing_workspace and existing_workspace.character_id != profile.character_id:
         raise ValueError("existing workspace character_id does not match profile")
-    reviewed = validate_design_proposals(
-        proposals,
-        existing_proposals=existing_roster_proposals,
-    )
+    try:
+        reviewed = validate_design_proposals(
+            proposals,
+            existing_proposals=existing_roster_proposals,
+        )
+    except ProposalQualityError as exc:
+        if not preserve_rejected_proposals:
+            raise
+        reviewed = exc.proposals
+    except ProposalSetShapeError:
+        if not preserve_rejected_proposals:
+            raise
+        reviewed = [assess_design_proposal(proposal) for proposal in proposals]
 
     has_human_selection = bool(
         existing_workspace and existing_workspace.selected_proposal_id
@@ -330,7 +376,9 @@ def build_character_visual_workspace(
 
 __all__ = [
     "ProposalQualityError",
+    "ProposalSetShapeError",
     "assess_design_proposal",
     "build_character_visual_workspace",
     "validate_design_proposals",
+    "validate_proposal_selection",
 ]

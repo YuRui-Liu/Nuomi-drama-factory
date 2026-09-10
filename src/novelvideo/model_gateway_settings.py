@@ -34,6 +34,16 @@ PLACEHOLDER_API_KEYS = {
     "your_api_key",
     "your_dc_key",
 }
+_CREDENTIAL_REFERENCE_PREFIX = "credential://"
+_SECRET_SETTING_KEYS = {
+    "official_newapi_api_key",
+    "custom_newapi_api_key",
+    "custom_newapi_db_sql_dsn",
+    "oss_relay_ak",
+    "oss_relay_sk",
+    "cloudinary_relay_api_key",
+    "cloudinary_relay_api_secret",
+}
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,97 @@ def _read_all() -> dict[str, str]:
         conn.close()
 
 
+def _credential_store():
+    from novelvideo.media_capabilities.runtime.credential_store import (
+        create_credential_store,
+    )
+
+    return create_credential_store(
+        _settings_db_path().parent / "media-credentials.dpapi.json"
+    )
+
+
+def _secret_reference(name: str) -> str:
+    return f"model-gateway/{name}"
+
+
+def _persist_secret(name: str, value: str) -> str:
+    """Store one secret outside SQLite and return its durable reference."""
+    clean = str(value or "").strip()
+    reference = _secret_reference(name)
+    store = _credential_store()
+    if clean:
+        store.set(reference, clean)
+        return f"{_CREDENTIAL_REFERENCE_PREFIX}{reference}"
+    store.delete(reference)
+    return ""
+
+
+def _resolve_secret(name: str, stored_value: str) -> tuple[str, str | None]:
+    """Resolve a reference, or migrate one legacy plaintext value."""
+    value = str(stored_value or "").strip()
+    if not value:
+        return "", None
+    if value.startswith(_CREDENTIAL_REFERENCE_PREFIX):
+        reference = value[len(_CREDENTIAL_REFERENCE_PREFIX) :]
+        return str(_credential_store().get(reference) or ""), None
+    reference_value = _persist_secret(name, value)
+    return value, reference_value
+
+
+def _hydrate_secrets(data: dict[str, str]) -> dict[str, str]:
+    migrations: dict[str, str] = {}
+    for key in _SECRET_SETTING_KEYS:
+        if key not in data:
+            continue
+        resolved, migrated = _resolve_secret(key, data[key])
+        data[key] = resolved
+        if migrated is not None:
+            migrations[key] = migrated
+
+    raw_channels = data.get("custom_newapi_provider_channels")
+    if raw_channels:
+        try:
+            channels = json.loads(raw_channels)
+        except json.JSONDecodeError:
+            channels = None
+        if isinstance(channels, list):
+            sanitized: list[Any] = []
+            hydrated: list[Any] = []
+            changed = False
+            for item in channels:
+                if not isinstance(item, dict):
+                    sanitized.append(item)
+                    hydrated.append(item)
+                    continue
+                provider = str(item.get("provider") or "").strip().lower()
+                legacy = str(item.get("upstreamKey") or "").strip()
+                stored_ref = str(item.get("upstreamKeyRef") or "").strip()
+                stored = stored_ref or legacy
+                secret, migrated = _resolve_secret(
+                    f"provider-channel/{provider}", stored
+                ) if provider and stored else ("", None)
+                safe_item = dict(item)
+                safe_item.pop("upstreamKey", None)
+                if migrated is not None:
+                    safe_item["upstreamKeyRef"] = migrated
+                    changed = True
+                runtime_item = dict(safe_item)
+                runtime_item["upstreamKey"] = secret
+                sanitized.append(safe_item)
+                hydrated.append(runtime_item)
+            if changed:
+                migrations["custom_newapi_provider_channels"] = json.dumps(
+                    sanitized, ensure_ascii=False, separators=(",", ":")
+                )
+            data["custom_newapi_provider_channels"] = json.dumps(
+                hydrated, ensure_ascii=False, separators=(",", ":")
+            )
+    if migrations:
+        _write_many(migrations)
+    return data
+
+
 def _uses_ce_gateway_settings() -> bool:
     """Return whether this process owns the CE-local gateway settings database."""
     return is_ce_effective()
@@ -180,7 +281,9 @@ def save_official_newapi_key(
     activate: bool = True,
 ) -> None:
     values = {
-        "official_newapi_api_key": str(api_key or "").strip(),
+        "official_newapi_api_key": _persist_secret(
+            "official_newapi_api_key", api_key
+        ),
     }
     if activate:
         values["model_gateway_mode"] = MODE_OFFICIAL
@@ -198,7 +301,7 @@ def save_custom_newapi_gateway(
 ) -> None:
     values = {
         "custom_newapi_base_url": normalize_relay_base_url(base_url),
-        "custom_newapi_api_key": str(api_key or "").strip(),
+        "custom_newapi_api_key": _persist_secret("custom_newapi_api_key", api_key),
         "custom_newapi_admin_base_url": str(admin_base_url or "").strip().rstrip("/"),
         "custom_newapi_token_name": str(token_name or "").strip(),
         "custom_newapi_token_id": str(token_id or "").strip(),
@@ -216,7 +319,9 @@ def save_newapi_database_config(
 ) -> None:
     _write_many(
         {
-            "custom_newapi_db_sql_dsn": str(sql_dsn or "").strip(),
+            "custom_newapi_db_sql_dsn": _persist_secret(
+                "custom_newapi_db_sql_dsn", sql_dsn
+            ),
             "custom_newapi_db_sqlite_path": str(sqlite_path or "").strip(),
             "custom_newapi_admin_username": str(admin_username or "").strip(),
         }
@@ -354,10 +459,18 @@ def save_newapi_provider_channels(
                 "baseUrl": base_url,
             }
         )
+    stored = []
+    for channel in normalized:
+        safe_channel = dict(channel)
+        secret = safe_channel.pop("upstreamKey")
+        safe_channel["upstreamKeyRef"] = _persist_secret(
+            f"provider-channel/{channel['provider']}", secret
+        )
+        stored.append(safe_channel)
     _write_many(
         {
             "custom_newapi_provider_channels": json.dumps(
-                normalized,
+                stored,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
@@ -485,18 +598,22 @@ def save_media_relay_config(
             "media_relay_ttl_seconds": str(int(ttl_seconds)),
             "oss_relay_endpoint": str(endpoint or "").strip(),
             "oss_relay_bucket": str(bucket or "").strip(),
-            "oss_relay_ak": str(access_key_id or "").strip(),
-            "oss_relay_sk": str(access_key_secret or "").strip(),
+            "oss_relay_ak": _persist_secret("oss_relay_ak", access_key_id),
+            "oss_relay_sk": _persist_secret("oss_relay_sk", access_key_secret),
             "cloudinary_relay_cloud_name": str(cloud_name or "").strip(),
-            "cloudinary_relay_api_key": str(cloudinary_api_key or "").strip(),
-            "cloudinary_relay_api_secret": str(cloudinary_api_secret or "").strip(),
+            "cloudinary_relay_api_key": _persist_secret(
+                "cloudinary_relay_api_key", cloudinary_api_key
+            ),
+            "cloudinary_relay_api_secret": _persist_secret(
+                "cloudinary_relay_api_secret", cloudinary_api_secret
+            ),
             "cloudinary_relay_folder": str(cloudinary_folder or "").strip().strip("/"),
         }
     )
 
 
 def get_model_gateway_settings() -> dict[str, str]:
-    data = _read_all()
+    data = _hydrate_secrets(_read_all())
     data.setdefault("model_gateway_mode", MODE_OFFICIAL)
     return data
 

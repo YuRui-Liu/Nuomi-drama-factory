@@ -65,6 +65,7 @@ class GroupGenerationInput:
     references: tuple[str, ...]
     warnings: tuple[str, ...] = ()
     reference_audit: Mapping[str, Any] = dataclass_field(default_factory=dict)
+    reference_mappings: tuple[str, ...] = ()
 
 
 class ReferenceSnapshotInvalid(RuntimeError):
@@ -104,7 +105,14 @@ def _snapshot_generation_input(
         assets_root = project_dir / "assets"
         uploads_root = project_dir / ".runtime" / "reference_uploads"
         references: list[str] = []
+        reference_mappings: list[str] = []
+        missing_mappings = 0
         counts = {"formal": 0, "temporary": 0, "fallback": 0}
+        beats_by_id = {
+            str(beat.get("id") or beat.get("beat_id") or ""): _beat_number(beat, index)
+            for index, beat in enumerate(payload.get("beats") or (), start=1)
+            if isinstance(beat, Mapping)
+        }
         for raw in images:
             if not isinstance(raw, Mapping):
                 raise ValueError
@@ -172,6 +180,29 @@ def _snapshot_generation_input(
                 ):
                     raise ValueError
             references.append(validated.image_path)
+            entity_id = str(raw.get("entity_id") or "").strip()
+            shot_ids = raw.get("shot_ids")
+            if entity_id and isinstance(shot_ids, (list, tuple)):
+                panel_numbers = tuple(
+                    beats_by_id[shot_id]
+                    for shot_id in (str(item) for item in shot_ids)
+                    if shot_id in beats_by_id
+                )
+                panels = ", ".join(str(number) for number in panel_numbers) or "all relevant"
+                asset_kind = str(raw.get("asset_kind") or "")
+                if asset_kind == "character_identity":
+                    character_name = entity_id.split("_", 1)[0]
+                    subject = f"character {character_name}, identity {entity_id}"
+                elif asset_kind.startswith("scene_"):
+                    subject = f"scene {entity_id}"
+                elif asset_kind == "prop":
+                    subject = f"prop {entity_id}"
+                else:
+                    subject = f"{asset_kind or 'asset'} {entity_id}"
+                reference_mappings.append(f"{subject}; use for panels {panels}.")
+            else:
+                reference_mappings.append("")
+                missing_mappings += 1
 
         style_reference = str(snapshot.get("style_reference") or "")
         if style_reference and bool(payload.get("use_style", True)):
@@ -179,10 +210,17 @@ def _snapshot_generation_input(
                 style_reference, allowed_roots=(assets_root,)
             )
             references.insert(0, validated_style.image_path)
+            reference_mappings.insert(0, "")
+        normalized_warnings = [str(item) for item in warnings]
+        if missing_mappings:
+            normalized_warnings.append(
+                "legacy reference snapshot missing semantic mapping; references remain usable without prompt labels"
+            )
         audit = {
             "snapshot_id": snapshot_id,
             **counts,
             "ignored": len(ignored),
+            "mapping_missing": missing_mappings,
         }
     except (KeyError, TypeError, ValueError, InvalidReferenceUpload):
         raise ReferenceSnapshotInvalid() from None
@@ -191,10 +229,13 @@ def _snapshot_generation_input(
     if not bool(payload.get("use_style", True)):
         prompt_payload = {**payload, "image_projection": "", "panel_tag": ""}
     return GroupGenerationInput(
-        prompt=_grid_prompt(prompt_payload),
+        prompt=_grid_prompt(
+            prompt_payload, reference_mappings=tuple(reference_mappings)
+        ),
         references=tuple(references),
-        warnings=tuple(str(item) for item in warnings),
+        warnings=tuple(normalized_warnings),
         reference_audit=audit,
+        reference_mappings=tuple(reference_mappings),
     )
 
 
@@ -202,6 +243,7 @@ def _grid_prompt(
     payload: Mapping[str, Any],
     *,
     style_prompt: str = "",
+    reference_mappings: tuple[str, ...] = (),
 ) -> str:
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
@@ -242,6 +284,16 @@ def _grid_prompt(
         for part in (image_projection, style_prompt, grid_rules, "\n".join(panels))
         if part
     ]
+    mapping = ""
+    if reference_mappings:
+        start = 2 if strong_lock else 1
+        mapping = "\n".join(
+            f"Reference {index}: {description}"
+            for index, description in enumerate(reference_mappings, start=start)
+            if description
+        )
+    if mapping:
+        parts.append(mapping)
     return "\n".join(parts)
 
 
@@ -309,6 +361,7 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         warnings = list(generation_input.warnings)
         style_prompt = ""
         reference_audit = generation_input.reference_audit
+        reference_mappings = generation_input.reference_mappings
     else:
         raise ReferenceSnapshotInvalid()
     if str(payload.get("constraint_mode") or "") == "strong_sketch":
@@ -337,6 +390,7 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         if len(references) > 8:
             warnings.append("强构图模式为草图保留首个参考位，仅使用前 8 张其他参考图")
         references = (str(frozen_asset), *references[:8])
+        reference_mappings = reference_mappings[:8]
     return GroupGenerationInput(
         prompt=_grid_prompt(
             (
@@ -345,10 +399,12 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
                 else {**payload, "image_projection": "", "panel_tag": ""}
             ),
             style_prompt=style_prompt,
+            reference_mappings=reference_mappings,
         ),
         references=tuple(references),
         warnings=tuple(warnings),
         reference_audit=reference_audit,
+        reference_mappings=reference_mappings,
     )
 
 
@@ -449,6 +505,9 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
     from novelvideo.media_capabilities.image.grsai import GrsaiPolicyViolation
     from novelvideo.media_capabilities.models import ImageGenerationRequest, MediaCapability
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.media_capabilities.runtime.grsai_execution import (
+        execute_grsai_generation,
+    )
 
     provider_id = str(payload.get("provider_id") or "grsai-main")
     runtime = load_grsai_runtime_configuration(
@@ -484,58 +543,34 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         ),
         image_size=(resolution.provider_size if resolution is not None else requested_tier),
     )
-    client = runtime.create_client()
     policy_retry = False
+    poll_interval = max(
+        0.05, float(os.environ.get("GRSAI_POLL_INTERVAL_SECONDS", "2"))
+    )
+    timeout_seconds = poll_interval * max(
+        1, int(os.environ.get("GRSAI_MAX_POLLS", "300"))
+    )
     try:
-        async def submit_and_wait(
-            candidate: ImageGenerationRequest,
-        ) -> tuple[str, Any]:
-            provider_task_id = await client.submit(
-                candidate, api_key=runtime.api_key
-            )
-            poll_interval = max(
-                0.05, float(os.environ.get("GRSAI_POLL_INTERVAL_SECONDS", "2"))
-            )
-            max_polls = max(1, int(os.environ.get("GRSAI_MAX_POLLS", "300")))
-            provider_snapshot = None
-            for _ in range(max_polls):
-                provider_snapshot = await client.query(
-                    provider_task_id, api_key=runtime.api_key
-                )
-                if provider_snapshot.status == "succeeded":
-                    break
-                if provider_snapshot.status == "violation":
-                    raise GrsaiPolicyViolation(
-                        "grsai.policy_violation status=violation"
-                    )
-                if provider_snapshot.status == "failed":
-                    raise RuntimeError("GRSAI grid generation failed: failed")
-                await asyncio.sleep(poll_interval)
-            if (
-                provider_snapshot is None
-                or provider_snapshot.status != "succeeded"
-                or not provider_snapshot.results
-            ):
-                raise TimeoutError(
-                    f"GRSAI grid generation timed out: {provider_task_id}"
-                )
-            return provider_task_id, provider_snapshot
-
-        try:
-            task_id, snapshot = await submit_and_wait(request)
-        except GrsaiPolicyViolation:
-            policy_retry = True
-            request = request.model_copy(
-                update={"prompt": _non_graphic_retry_prompt(request.prompt)}
-            )
-            task_id, snapshot = await submit_and_wait(request)
-        url = next(
-            (str(snapshot.results[0].get(key) or "") for key in ("url", "fileUrl", "downloadUrl") if snapshot.results[0].get(key)),
-            "",
+        execution = await execute_grsai_generation(
+            runtime,
+            request,
+            poll_interval_seconds=poll_interval,
+            timeout_seconds=timeout_seconds,
         )
-        if not url:
-            raise RuntimeError("GRSAI grid response has no result URL")
-        image_bytes = await client.download(url) if hasattr(client, "download") else (await client.http.get(url)).content
+    except GrsaiPolicyViolation:
+        policy_retry = True
+        request = request.model_copy(
+            update={"prompt": _non_graphic_retry_prompt(request.prompt)}
+        )
+        execution = await execute_grsai_generation(
+            runtime,
+            request,
+            poll_interval_seconds=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
+    task_id = execution.task_id
+    image_bytes = execution.content
+    try:
         output_dir = _contained_output_path(
             ctx, payload.get("output_dir") or ctx.output_dir
         )
@@ -589,7 +624,7 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             "degraded": resolution.degraded if resolution is not None else False,
         }
     finally:
-        await client.http.aclose()
+        pass
 
 
 def _split_existing_grid(

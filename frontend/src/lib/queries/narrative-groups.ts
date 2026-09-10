@@ -264,6 +264,9 @@ export interface NarrativeGroup {
   ordinal: number;
   title?: string | null;
   beat_ids: string[];
+  source_span_ids?: string[];
+  objective?: string | null;
+  visible_turn?: string | null;
   layout: { rows: number; columns: number; capacity: number };
   stages: { sketch: NarrativeStageState; render: NarrativeStageState; video: NarrativeStageState };
   cell_to_beat: Array<{ cell: number; beat_id: string }>;

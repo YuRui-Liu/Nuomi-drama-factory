@@ -82,6 +82,36 @@ def _client(monkeypatch, tmp_path, store: _CharacterStore):
     return TestClient(app)
 
 
+def _distinct_valid_proposal_set(first: dict) -> list[dict]:
+    return [
+        first,
+        {
+            "proposal_id": "proposal-2",
+            "title": "坚毅方脸",
+            "recommended": False,
+            "face_shape": "方脸宽下颌",
+            "facial_features": ["浓眉", "圆眼"],
+            "hair_style": "齐耳短发",
+            "body_type": "宽肩结实",
+            "distinctive_features": ["右脸颊小痣"],
+            "identity_anchors": ["方脸", "齐耳短发", "右脸颊小痣"],
+            "asymmetry_detail": "右侧鼻翼略高",
+        },
+        {
+            "proposal_id": "proposal-3",
+            "title": "沉静圆脸",
+            "recommended": False,
+            "face_shape": "圆脸低颧骨",
+            "facial_features": ["平直眉", "宽鼻"],
+            "hair_style": "自然卷长发",
+            "body_type": "中等匀称",
+            "distinctive_features": ["下巴浅疤"],
+            "identity_anchors": ["圆脸", "自然卷长发", "下巴浅疤"],
+            "asymmetry_detail": "左耳略低",
+        },
+    ]
+
+
 def test_create_character_accepts_react_extra_payload(monkeypatch, tmp_path):
     store = _CharacterStore()
     client = _client(monkeypatch, tmp_path, store)
@@ -228,7 +258,9 @@ def test_selecting_visual_proposal_builds_draft_bible_that_can_be_confirmed(
     }
     seeded = client.patch(
         "/projects/demo/characters/林昭/visual-workspace",
-        json={"design_proposals": [proposal]},
+        json={
+            "design_proposals": _distinct_valid_proposal_set(proposal)
+        },
     )
     assert seeded.status_code == 200
 
@@ -285,6 +317,155 @@ def test_incomplete_visual_bible_cannot_be_confirmed(monkeypatch, tmp_path):
     )
     assert response.status_code == 409
     assert response.json()["error_code"] == "CHARACTER_VISUAL_BIBLE_INCOMPLETE"
+
+
+def test_quality_rejected_visual_proposal_cannot_be_selected(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    proposals = [
+        {
+            "proposal_id": f"proposal-{index}",
+            "title": f"方向 {index}",
+            "recommended": index == 1,
+            "quality_issues": ["identity_anchors:min_3_unique"] if index == 2 else [],
+        }
+        for index in range(1, 4)
+    ]
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals},
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "proposal-2"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_visual_proposal_quality_is_reassessed_instead_of_trusting_client_issues(
+    monkeypatch, tmp_path
+):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    proposals = [
+        {
+            "proposal_id": f"proposal-{index}",
+            "title": f"空洞方向 {index}",
+            "recommended": index == 1,
+            "quality_issues": [],
+        }
+        for index in range(1, 4)
+    ]
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals},
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "proposal-1"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_invalid_proposal_set_shape_cannot_be_selected(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={
+            "design_proposals": [
+                {"proposal_id": "only-one", "title": "only", "recommended": True}
+            ]
+        },
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "only-one"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_SET_INVALID"
+
+
+def test_confirm_rechecks_selected_proposal_quality(monkeypatch, tmp_path):
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    valid = {
+        "proposal_id": "proposal-1",
+        "title": "方向 1",
+        "recommended": True,
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "distinctive_features": ["左眉断痕"],
+        "identity_anchors": ["窄长脸", "左眉断痕", "薄唇"],
+        "asymmetry_detail": "左眉略低",
+    }
+    proposals = _distinct_valid_proposal_set(valid)
+    seeded = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals, "selected_proposal_id": "proposal-1"},
+    )
+    assert seeded.status_code == 200
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get("林昭")
+    workspace.design_proposals[0].identity_anchors = []
+    workspace.design_proposals[0].quality_issues = []
+    visual_store.save(workspace)
+
+    response = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_confirm_rechecks_selected_proposal_set_shape(monkeypatch, tmp_path):
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    proposal = {
+        "proposal_id": "proposal-1",
+        "title": "方向 1",
+        "recommended": True,
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "distinctive_features": ["左眉断痕"],
+        "identity_anchors": ["窄长脸", "深眼窝", "薄唇"],
+        "asymmetry_detail": "左眉略低",
+    }
+    proposals = _distinct_valid_proposal_set(proposal)
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals, "selected_proposal_id": "proposal-1"},
+    ).status_code == 200
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get("林昭")
+    workspace.design_proposals.pop()
+    visual_store.save(workspace)
+
+    response = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_SET_INVALID"
 
 
 def test_character_and_identity_lists_expose_asset_history_links(monkeypatch, tmp_path):

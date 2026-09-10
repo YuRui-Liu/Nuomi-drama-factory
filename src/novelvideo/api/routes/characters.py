@@ -44,11 +44,17 @@ from novelvideo.api.schemas import (
     CharacterVoiceTrimRequest,
 )
 from novelvideo.character_visual import (
+    CharacterDesignProposal,
     CharacterNarrativeProfile,
     CharacterVisualBible,
     CharacterVisualWorkspace,
     CharacterVisualWorkspaceStore,
     classify_legacy_visual_field,
+    validate_proposal_selection,
+)
+from novelvideo.character_visual.proposals import (
+    ProposalQualityError,
+    ProposalSetShapeError,
 )
 from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_LAYOUT_VERSION,
@@ -1124,19 +1130,33 @@ async def update_character_visual_workspace(
         payload["visual_bible"]["confirmed_by"] = None
     if "selected_proposal_id" in patch:
         selected_id = str(patch["selected_proposal_id"] or "").strip()
-        selected = next(
-            (
-                proposal
-                for proposal in payload.get("design_proposals", [])
-                if str(proposal.get("proposal_id") or "") == selected_id
-            ),
-            None,
-        )
-        if selected is None:
+        proposal_models = [
+            CharacterDesignProposal.model_validate(proposal)
+            for proposal in payload.get("design_proposals", [])
+        ]
+        try:
+            selected_model = validate_proposal_selection(proposal_models, selected_id)
+        except ProposalSetShapeError as exc:
             return JSONResponse(
                 status_code=409,
-                content={"ok": False, "error": "Selected design proposal not found"},
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_SET_INVALID",
+                    "error": str(exc),
+                },
             )
+        except ProposalQualityError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_REJECTED",
+                    "error": str(exc),
+                },
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+        selected = selected_model.model_dump(mode="json")
         payload["visual_bible"] = {
             "character_id": name,
             "revision_id": f"proposal:{selected_id}",
@@ -1176,6 +1196,29 @@ async def confirm_character_visual_bible(
             status_code=409,
             content={"ok": False, "error": "Create a visual bible draft before confirmation"},
         )
+    if workspace.selected_proposal_id:
+        try:
+            validate_proposal_selection(
+                workspace.design_proposals, workspace.selected_proposal_id
+            )
+        except ProposalSetShapeError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_SET_INVALID",
+                    "error": str(exc),
+                },
+            )
+        except ProposalQualityError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_REJECTED",
+                    "error": str(exc),
+                },
+            )
     bible_payload = workspace.visual_bible.model_dump(mode="json")
     bible_payload.update(status="confirmed", confirmed_by=body.confirmed_by.strip())
     try:

@@ -10,7 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from novelvideo.model_gateway_settings import mask_secret
+from novelvideo.model_gateway_settings import (
+    _persist_secret,
+    _resolve_secret,
+    mask_secret,
+)
 from novelvideo.shared.runtime_env import is_ce_effective
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
@@ -19,6 +23,7 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
 VALID_PROVIDERS = {"deepseek", "dramaclaw", "openai_compatible"}
 SETTINGS_KEY = "text_runtime_config"
+API_KEY_REFERENCE_NAME = "text-runtime/api-key"
 
 
 @dataclass(frozen=True)
@@ -96,11 +101,29 @@ def load_text_runtime_settings() -> TextRuntimeSettings:
     finally:
         conn.close()
     payload = json.loads(str(row[0])) if row else {}
+    stored_key = str(payload.get("api_key_ref") or payload.get("api_key") or "")
+    api_key, migrated = (
+        _resolve_secret(API_KEY_REFERENCE_NAME, stored_key)
+        if stored_key
+        else ("", None)
+    )
+    if migrated is not None:
+        payload.pop("api_key", None)
+        payload["api_key_ref"] = migrated
+        conn = _connect()
+        try:
+            conn.execute(
+                "UPDATE runtime_settings SET value = ?, updated_at = ? WHERE key = ?",
+                (json.dumps(payload), datetime.now(timezone.utc).isoformat(), SETTINGS_KEY),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return _from_values(
         source="database",
         provider=payload.get("provider", DEFAULT_PROVIDER),
         base_url=payload.get("base_url", DEFAULT_BASE_URL),
-        api_key=payload.get("api_key", ""),
+        api_key=api_key,
         model=payload.get("model", DEFAULT_MODEL),
     )
 
@@ -121,6 +144,8 @@ def save_text_runtime_settings(
     )
     payload = asdict(settings)
     payload.pop("source")
+    payload.pop("api_key")
+    payload["api_key_ref"] = _persist_secret(API_KEY_REFERENCE_NAME, next_key)
     conn = _connect()
     try:
         conn.execute(

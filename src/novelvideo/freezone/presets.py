@@ -2220,6 +2220,8 @@ def _append_scene_asset_workflow(
                 _ensure_ply_workflow_node(role, x=1460, y=460 + scene_y + idx * 320)
 
         if master_node:
+            base_scene_id = str(prompt_meta.get("base_scene_id") or "").strip()
+            base_master_url = str(prompt_meta.get("base_master_url") or "").strip()
             master_prompt_id = f"prompt_scene_{safe_scene}_master"
             if not any(node.get("id") == master_prompt_id for node in nodes):
                 master_meta = (
@@ -2237,6 +2239,7 @@ def _append_scene_asset_workflow(
                             scene_id,
                             master_meta,
                             kind="master",
+                            has_master_reference=bool(base_master_url),
                         ),
                         source_meta={
                             "kind": "scene_prompt",
@@ -2253,8 +2256,6 @@ def _append_scene_asset_workflow(
                     master_node,
                 )
             )
-            base_scene_id = str(prompt_meta.get("base_scene_id") or "").strip()
-            base_master_url = str(prompt_meta.get("base_master_url") or "").strip()
             if base_scene_id and base_master_url:
                 base_master_node_id = f"ref_scene_base_master_{safe_scene}"
                 if not any(node.get("id") == base_master_node_id for node in nodes):

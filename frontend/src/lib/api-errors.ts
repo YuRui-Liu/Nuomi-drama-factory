@@ -92,7 +92,7 @@ function projectQueueLimitPlainMessage(
   if (limitScope === "user") {
     return `你在当前项目${queueLabel}队列的任务已达个人上限`;
   }
-  return `当前项目${queueLabel}队列已达团队上限`;
+  return `当前项目${queueLabel}队列的并发任务已达上限，请等待已有任务完成后重试`;
 }
 
 export function errorFromBackendBody(status: number, body: unknown, fallback: string): Error | null {

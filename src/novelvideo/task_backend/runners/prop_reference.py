@@ -40,6 +40,17 @@ def _prop_reference_prompt(*, style: str, visual_prompt: str) -> str:
     )
 
 
+def _resolve_grsai_prop_model(requested_model: str, runtime_model: str) -> str:
+    """Keep UI selection keys out of the provider-facing GRSAI model field."""
+    from novelvideo.config import IMAGE_GENERATION_SELECTIONS
+
+    requested = str(requested_model or "").strip()
+    effective_runtime = str(runtime_model or "").strip()
+    if not requested or requested in IMAGE_GENERATION_SELECTIONS:
+        return effective_runtime
+    return requested
+
+
 def _register_prop_candidate(
     *,
     ctx: ProjectContext,
@@ -169,7 +180,10 @@ async def _run_prop_reference_asset(
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-        model = str(payload.get("model") or runtime.model).strip() or runtime.model
+        model = _resolve_grsai_prop_model(
+            str(payload.get("model") or ""),
+            runtime.model,
+        )
         prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
             model=model,
@@ -253,7 +267,10 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             runtime = load_grsai_runtime_configuration(
                 get_media_capability_store(), get_media_credential_resolver()
             )
-            model = str(payload.get("model") or runtime.model).strip() or runtime.model
+            model = _resolve_grsai_prop_model(
+                str(payload.get("model") or ""),
+                runtime.model,
+            )
             visual_prompt = prop.visual_prompt or prop.description or prop.name
             prompt = _prop_reference_prompt(
                 style=style,

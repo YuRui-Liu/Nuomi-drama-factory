@@ -1340,8 +1340,8 @@
     "projectQueueFull": "当前项目{{queue}}队列已满",
     "projectDefaultQueueUserFull": "你在当前项目默认队列的任务已达个人上限",
     "projectQueueUserFull": "你在当前项目{{queue}}队列的任务已达个人上限",
-    "projectDefaultQueueProjectFull": "当前项目默认队列已达团队上限",
-    "projectQueueProjectFull": "当前项目{{queue}}队列已达团队上限",
+    "projectDefaultQueueProjectFull": "当前项目默认队列的并发任务已达上限，请等待已有任务完成后重试",
+    "projectQueueProjectFull": "当前项目{{queue}}队列的并发任务已达上限，请等待已有任务完成后重试",
     "projectQueueKinds": {
       "video": "视频",
       "world": "世界",

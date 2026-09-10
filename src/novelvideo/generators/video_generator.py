@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -117,6 +118,7 @@ class VideoGenStatus(Enum):
     PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
+    UNKNOWN = "unknown"
 
 
 class VideoBackend(Enum):
@@ -1742,9 +1744,20 @@ class HuimengVideoGenerator(VideoGeneratorBase):
 class NewApiVideoError(RuntimeError):
     """newAPI video request failure with gateway request id when available."""
 
-    def __init__(self, message: str, *, request_id: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        status_code: int | None = None,
+    ):
         super().__init__(message)
         self.request_id = request_id
+        self.status_code = status_code
+
+
+class NewApiSubmissionUnknown(RuntimeError):
+    """The submit request may have been accepted but no task id was received."""
 
 
 class NewApiVideoGenerator(VideoGeneratorBase):
@@ -1851,14 +1864,22 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         return aiohttp.ClientTimeout(total=NEWAPI_VIDEO_HTTP_TIMEOUT_SECONDS)
 
     async def _post_json(self, url: str, payload: dict) -> dict:
+        request_payload = dict(payload)
+        request_headers = dict(self.headers)
+        idempotency_key = str(request_payload.pop("idempotency_key", "") or "").strip()
+        if idempotency_key:
+            request_headers["Idempotency-Key"] = idempotency_key
         async with aiohttp.ClientSession(timeout=self._client_timeout()) as session:
-            async with session.post(url, json=payload, headers=self.headers) as resp:
+            async with session.post(
+                url, json=request_payload, headers=request_headers
+            ) as resp:
                 text = await resp.text()
                 if resp.status < 200 or resp.status >= 300:
                     request_id = self._extract_request_id(text, resp.headers)
                     raise NewApiVideoError(
                         f"DramaClawAPI submit failed: HTTP {resp.status} - {text}",
                         request_id=request_id,
+                        status_code=resp.status,
                     )
                 try:
                     data = json.loads(text)
@@ -1866,7 +1887,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         data["_newapi_request_id"] = self._extract_request_id(text, resp.headers)
                     return data
                 except json.JSONDecodeError as exc:
-                    raise RuntimeError(f"DramaClawAPI submit returned invalid JSON: {text}") from exc
+                    raise NewApiSubmissionUnknown(
+                        f"DramaClawAPI submit returned invalid JSON: {text}"
+                    ) from exc
 
     async def _get_json(self, url: str) -> dict:
         async with aiohttp.ClientSession(timeout=self._client_timeout()) as session:
@@ -1877,11 +1900,21 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                     raise NewApiVideoError(
                         f"DramaClawAPI task query failed: HTTP {resp.status} - {text}",
                         request_id=request_id,
+                        status_code=resp.status,
                     )
                 try:
                     return json.loads(text)
                 except json.JSONDecodeError as exc:
                     raise RuntimeError(f"DramaClawAPI task query returned invalid JSON: {text}") from exc
+
+    async def _cancel_provider_task(self, task_id: str) -> bool:
+        """Request remote cancellation; only a positive response is refundable."""
+        async with aiohttp.ClientSession(timeout=self._client_timeout()) as session:
+            async with session.delete(
+                f"{self.base_url}/videos/{task_id}", headers=self.headers
+            ) as resp:
+                await resp.read()
+                return resp.status in {200, 202, 204}
 
     async def _download_video(self, url: str, output_path: str) -> bytes:
         if url.startswith("data:"):
@@ -1900,7 +1933,13 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        partial = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+        try:
+            partial.write_bytes(content)
+            partial.replace(path)
+        finally:
+            if partial.exists():
+                partial.unlink()
         return content
 
     @staticmethod
@@ -1921,11 +1960,18 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         }.get(mime_type, default)
 
     @classmethod
-    async def _relay_frame_input(cls, image_value: str, *, default_ext: str = "png") -> str:
+    async def _relay_frame_input(
+        cls,
+        image_value: str,
+        *,
+        default_ext: str = "png",
+        allowed_roots: list[str | Path] | None = None,
+    ) -> str:
         return await cls._relay_media_input(
             image_value,
             default_ext=default_ext,
             image_transform=IMAGE_TRANSFORM_AI_REFERENCE_JPEG,
+            allowed_roots=allowed_roots,
         )
 
     @classmethod
@@ -1935,6 +1981,7 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         *,
         default_ext: str = "png",
         image_transform: str | None = None,
+        allowed_roots: list[str | Path] | None = None,
     ) -> str:
         media_value = str(media_value or "").strip()
         if not media_value:
@@ -1957,7 +2004,12 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 image_transform=image_transform,
             )
 
-        media_path = Path(media_value)
+        if allowed_roots is not None:
+            from novelvideo.utils.safe_paths import resolve_under_roots
+
+            media_path = resolve_under_roots(allowed_roots, media_value)
+        else:
+            media_path = Path(media_value)
         ext = media_path.suffix.lstrip(".") or default_ext
         return await asyncio.to_thread(
             upload_image_bytes,
@@ -2005,6 +2057,7 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         references: list["ShotReference"] | None,
         *,
         log: Callable[[str], None],
+        allowed_roots: list[str | Path] | None = None,
     ) -> dict[str, list[str]]:
         reference_urls: dict[str, list[str]] = {}
         for ref in references or []:
@@ -2033,6 +2086,7 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 path,
                 default_ext=default_ext,
                 image_transform=image_transform,
+                allowed_roots=allowed_roots,
             )
             if not path.startswith(("http://", "https://")):
                 log(f"{label}已上传到媒体中转")
@@ -2155,6 +2209,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 on_progress(value)
 
         project_output_dir = kwargs.get("project_output_dir")
+        relay_allowed_roots = (
+            [Path(str(project_output_dir))] if project_output_dir else None
+        )
         tracking_episode = kwargs.get("episode")
         tracking_beat_num = kwargs.get("beat_num")
         tracking_task_type = kwargs.get("task_type", "")
@@ -2288,6 +2345,7 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                     video_url = await self._relay_media_input(
                         video_reference_paths[0],
                         default_ext="mp4",
+                        allowed_roots=relay_allowed_roots,
                     )
                     if not video_reference_paths[0].startswith(("http://", "https://")):
                         log("视频参考已上传到媒体中转")
@@ -2298,13 +2356,17 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
                 relayed_references: list[str] = []
                 for path in reference_image_paths[: 5 if video_reference_paths else 9]:
-                    url = await self._relay_frame_input(path)
+                    url = await self._relay_frame_input(
+                        path, allowed_roots=relay_allowed_roots
+                    )
                     if not path.startswith(("http://", "https://")):
                         log("图片参考已上传到媒体中转")
                     relayed_references.append(url)
 
                 if first_frame_path:
-                    first_frame_url = await self._relay_frame_input(first_frame_path)
+                    first_frame_url = await self._relay_frame_input(
+                        first_frame_path, allowed_roots=relay_allowed_roots
+                    )
                     if not first_frame_path.startswith(("http://", "https://")):
                         log("首帧已上传到媒体中转")
                     metadata["image_url"] = first_frame_url
@@ -2340,7 +2402,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
             try:
                 if first_frame_path:
-                    first_frame_url = await self._relay_frame_input(first_frame_path)
+                    first_frame_url = await self._relay_frame_input(
+                        first_frame_path, allowed_roots=relay_allowed_roots
+                    )
                     if not first_frame_path.startswith(("http://", "https://")):
                         log("首帧已上传到媒体中转")
                     metadata["image_url"] = first_frame_url
@@ -2348,7 +2412,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
                 relayed_references: list[str] = []
                 for path in reference_image_paths[:7]:
-                    url = await self._relay_frame_input(path)
+                    url = await self._relay_frame_input(
+                        path, allowed_roots=relay_allowed_roots
+                    )
                     if not path.startswith(("http://", "https://")):
                         log("参考图片已上传到媒体中转")
                     relayed_references.append(url)
@@ -2362,17 +2428,28 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
         elif is_seedance2_model:
             try:
-                first_frame = await self._relay_frame_input(image_path) if image_path else ""
+                first_frame = (
+                    await self._relay_frame_input(
+                        image_path, allowed_roots=relay_allowed_roots
+                    )
+                    if image_path
+                    else ""
+                )
                 if image_path and not image_path.startswith(("http://", "https://")):
                     log("首帧已上传到媒体中转")
                 last_frame = (
-                    await self._relay_frame_input(str(last_frame_path)) if last_frame_path else ""
+                    await self._relay_frame_input(
+                        str(last_frame_path), allowed_roots=relay_allowed_roots
+                    )
+                    if last_frame_path
+                    else ""
                 )
                 if last_frame_path and not str(last_frame_path).startswith(("http://", "https://")):
                     log("尾帧已上传到媒体中转")
                 reference_params = await self._relay_seedance2_references(
                     kwargs.get("references") or [],
                     log=log,
+                    allowed_roots=relay_allowed_roots,
                 )
             except Exception as exc:
                 return VideoGenResult(
@@ -2445,7 +2522,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         error="First frame is required when last_frame_path is provided",
                     )
                 try:
-                    first_frame = await self._relay_frame_input(image_path)
+                    first_frame = await self._relay_frame_input(
+                        image_path, allowed_roots=relay_allowed_roots
+                    )
                     if not image_path.startswith(("http://", "https://")):
                         log("首帧已上传到媒体中转")
                 except Exception as exc:
@@ -2454,7 +2533,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         error=f"media relay upload failed: {exc}",
                     )
                 try:
-                    last_frame = await self._relay_frame_input(str(last_frame_path))
+                    last_frame = await self._relay_frame_input(
+                        str(last_frame_path), allowed_roots=relay_allowed_roots
+                    )
                     if not str(last_frame_path).startswith(("http://", "https://")):
                         log("尾帧已上传到媒体中转")
                 except Exception as exc:
@@ -2476,7 +2557,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 ]
             elif image_path:
                 try:
-                    first_frame = await self._relay_frame_input(image_path)
+                    first_frame = await self._relay_frame_input(
+                        image_path, allowed_roots=relay_allowed_roots
+                    )
                     if not image_path.startswith(("http://", "https://")):
                         log("首帧已上传到媒体中转")
                 except Exception as exc:
@@ -2489,6 +2572,7 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         task_id: str | None = None
         provider_request_id = ""
         reservation_id = ""
+        submission_started = False
         try:
             model_label = self._model_label(self.model)
             request_resolution = str(metadata.get("resolution") or self.resolution or "").strip()
@@ -2500,19 +2584,44 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 resolution=request_resolution,
                 duration_seconds=duration,
             )
+            request_key = str(kwargs.get("idempotency_key") or "").strip()
+            if not request_key:
+                stable_request = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "output_path": str(Path(output_path)),
+                    "image_path": image_path,
+                    "last_frame_path": str(last_frame_path or ""),
+                    "duration": duration,
+                    "ratio": ratio,
+                    "resolution": request_resolution,
+                }
+                request_key = hashlib.sha256(
+                    json.dumps(
+                        stable_request,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+            payload["idempotency_key"] = request_key
+            submission_started = True
             submitted = await self._post_json(f"{self.base_url}/video/generations", payload)
             task_id = str(submitted.get("id") or submitted.get("task_id") or "")
             provider_request_id = str(submitted.get("_newapi_request_id") or "").strip()
             if not task_id:
-                await _refund_video_model_call(
-                    reservation_id,
-                    source="newapi_video_generation",
-                    error="missing_task_id",
-                    provider_request_id=provider_request_id,
+                record_accepted(request_key)
+                update_request_status(
+                    request_key,
+                    "unknown",
+                    "provider accepted submission without a task id",
                 )
                 return VideoGenResult(
-                    status=VideoGenStatus.FAILED,
-                    error=f"No task_id in DramaClawAPI response: {submitted}",
+                    status=VideoGenStatus.UNKNOWN,
+                    error=(
+                        "Provider accepted submission without a task id; "
+                        f"reconciliation key {request_key}"
+                    ),
                 )
             record_accepted(task_id)
             log(f"任务已提交: {task_id}")
@@ -2555,12 +2664,16 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                                 output_path,
                                 last_frame_url,
                             )
-                            await self._download_video(
-                                last_frame_url,
-                                str(last_frame_output_path),
-                            )
-                            last_frame_path = last_frame_output_path.as_posix()
-                            log("已保存 DramaClawAPI 返回尾帧")
+                            try:
+                                await self._download_video(
+                                    last_frame_url,
+                                    str(last_frame_output_path),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log(f"尾帧下载失败（视频已保留）: {exc}")
+                            else:
+                                last_frame_path = last_frame_output_path.as_posix()
+                                log("已保存 DramaClawAPI 返回尾帧")
                     progress(1.0)
                     update_request_status(task_id, "completed")
                     await _confirm_video_model_call(
@@ -2605,31 +2718,100 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                     )
                 await asyncio.sleep(poll_interval)
 
-            update_request_status(task_id, "failed", "Timeout waiting for DramaClawAPI video task")
+            update_request_status(
+                task_id,
+                "unknown",
+                "Timeout waiting for DramaClawAPI video task",
+            )
+            return VideoGenResult(
+                status=VideoGenStatus.UNKNOWN,
+                error="Timeout waiting for DramaClawAPI video task; provider state unknown",
+                task_id=task_id,
+            )
+        except asyncio.CancelledError:
+            if task_id:
+                cancelled = False
+                try:
+                    cancelled = await asyncio.shield(
+                        self._cancel_provider_task(task_id)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(f"DramaClawAPI 远端取消状态未知: {exc}")
+                if cancelled:
+                    update_request_status(task_id, "cancelled")
+                    await _refund_video_model_call(
+                        reservation_id,
+                        source="newapi_video_generation",
+                        error="cancelled",
+                        provider_request_id=provider_request_id,
+                        provider_task_id=task_id,
+                    )
+                else:
+                    update_request_status(task_id, "unknown", "remote cancel unconfirmed")
+            elif reservation_id and not submission_started:
+                await _refund_video_model_call(
+                    reservation_id,
+                    source="newapi_video_generation",
+                    error="cancelled_before_submit",
+                )
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientConnectionError,
+                aiohttp.ServerDisconnectedError, NewApiSubmissionUnknown) as exc:
+            if submission_started and not task_id:
+                record_accepted(request_key)
+                update_request_status(
+                    request_key,
+                    "unknown",
+                    "provider submission outcome unknown",
+                )
+                return VideoGenResult(
+                    status=VideoGenStatus.UNKNOWN,
+                    error=(
+                        "Provider submission outcome unknown; reconciliation key "
+                        f"{request_key}: {exc}"
+                    ),
+                )
             await _refund_video_model_call(
                 reservation_id,
                 source="newapi_video_generation",
-                error="timeout",
-                provider_request_id=provider_request_id,
-                provider_task_id=task_id,
+                error=str(exc),
+                provider_task_id=task_id or "",
             )
-            return VideoGenResult(
-                status=VideoGenStatus.FAILED,
-                error="Timeout waiting for DramaClawAPI video task",
-                task_id=task_id,
-            )
+            return VideoGenResult(status=VideoGenStatus.FAILED, error=str(exc), task_id=task_id)
         except NewApiVideoError as exc:
             if exc.request_id:
                 log(f"DramaClawAPI request_id: {exc.request_id}")
             if task_id:
                 log(f"DramaClawAPI task_id: {task_id}")
-                update_request_status(task_id, "failed", str(exc))
+                update_request_status(task_id, "unknown", str(exc))
+                return VideoGenResult(
+                    status=VideoGenStatus.UNKNOWN,
+                    error=f"Provider task state unknown: {exc}",
+                    task_id=task_id,
+                )
+            if submission_started and (
+                exc.status_code is None
+                or exc.status_code == 408
+                or exc.status_code >= 500
+            ):
+                record_accepted(request_key)
+                update_request_status(
+                    request_key,
+                    "unknown",
+                    f"provider submission outcome unknown: {exc}",
+                )
+                return VideoGenResult(
+                    status=VideoGenStatus.UNKNOWN,
+                    error=(
+                        "Provider submission outcome unknown; reconciliation key "
+                        f"{request_key}: {exc}"
+                    ),
+                )
             await _refund_video_model_call(
                 reservation_id,
                 source="newapi_video_generation",
                 error=str(exc),
                 provider_request_id=exc.request_id or provider_request_id,
-                provider_task_id=task_id or "",
             )
             if is_insufficient_credits_error(exc):
                 raise
@@ -2640,13 +2822,19 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             )
         except Exception as exc:
             if task_id:
-                update_request_status(task_id, "failed", str(exc))
+                update_request_status(task_id, "unknown", str(exc))
+                if is_insufficient_credits_error(exc):
+                    raise
+                return VideoGenResult(
+                    status=VideoGenStatus.UNKNOWN,
+                    error=f"Provider task state unknown: {exc}",
+                    task_id=task_id,
+                )
             await _refund_video_model_call(
                 reservation_id,
                 source="newapi_video_generation",
                 error=str(exc),
                 provider_request_id=provider_request_id,
-                provider_task_id=task_id or "",
             )
             if is_insufficient_credits_error(exc):
                 raise
@@ -3714,7 +3902,9 @@ def _coerce_video_backend_value(backend: VideoBackend | str | None) -> str:
         backend = os.environ.get("VIDEO_BACKEND", "comfyui")
     if isinstance(backend, VideoBackend):
         return backend.value
-    value = str(backend).strip().lower()
+    from novelvideo.media_capabilities.video.backends import normalize_video_backend
+
+    value = normalize_video_backend(backend)
     return "comfyui" if value == "jimeng" else value
 
 
@@ -3761,6 +3951,10 @@ def create_video_generator(
         return MockVideoGenerator(**kwargs)
 
     backend_str = _coerce_video_backend_value(backend)
+    from novelvideo.media_capabilities.video.backends import H3_VIDEO_BACKEND
+
+    if backend_str == H3_VIDEO_BACKEND:
+        return RunningHubMiniMaxH3VideoGenerator(**kwargs)
     newapi_model = parse_newapi_video_backend(backend_str)
     if newapi_model:
         return NewApiVideoGenerator(model=newapi_model, **kwargs)

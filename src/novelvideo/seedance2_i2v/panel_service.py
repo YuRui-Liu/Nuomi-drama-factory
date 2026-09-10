@@ -184,7 +184,7 @@ async def generate_seedance2_prompt_for_panel(
         next_beat=next_beat,
         prop_menu=prop_menu,
     )
-    _append_seedance2_user_reference_assets(assets, config)
+    _append_seedance2_user_reference_assets(assets, config, allowed_roots=[project_dir])
     initial_prompt = _seedance2_initial_prompt(beat)
     reference_prompt = str(
         manual_prompt_reference
@@ -282,7 +282,9 @@ async def crop_seedance2_asset_to_reference(
     source_path: str | Path,
     crop_data: dict[str, Any],
 ) -> Path | None:
-    source = Path(source_path)
+    from novelvideo.utils.safe_paths import resolve_under_root
+
+    source = resolve_under_root(project_dir, source_path)
     if not source.exists():
         return None
     width = int(crop_data.get("width") or 0)
@@ -348,12 +350,10 @@ def _archive_narrator_voice_siblings(target: Path) -> None:
 
 
 def _resolve_project_audio_source(project_dir: Path, source_path: str | Path) -> Path:
-    root = Path(project_dir).resolve()
-    raw_path = Path(source_path)
-    source = raw_path if raw_path.is_absolute() else root / raw_path
-    source = source.resolve()
+    from novelvideo.utils.safe_paths import resolve_under_root
+
     try:
-        source.relative_to(root)
+        source = resolve_under_root(project_dir, source_path)
     except ValueError as exc:
         raise ValueError("请选择项目内有效的音频文件") from exc
     if not source.exists() or not source.is_file() or source.suffix.lower() not in VOICE_SAMPLE_EXTENSIONS:
@@ -427,6 +427,7 @@ async def remove_seedance2_uploaded_asset(
     beat: dict[str, Any],
     media_kind: str,
     path: str,
+    project_dir: str | Path,
 ) -> bool:
     config = parse_seedance2_config(beat.get("seedance2_config_json"))
     paths = config.reference_image_paths if media_kind == "images" else config.reference_audio_paths
@@ -434,7 +435,7 @@ async def remove_seedance2_uploaded_asset(
     if path_value not in paths:
         return False
     paths[:] = [existing for existing in paths if existing != path_value]
-    _seedance2_unlink_user_reference_file(path_value)
+    _seedance2_unlink_user_reference_file(path_value, allowed_roots=[project_dir])
     saved_json = dump_seedance2_config(config)
     beat["seedance2_config_json"] = saved_json
     await store.update_beat_asset(
@@ -470,7 +471,7 @@ def build_seedance2_video_panel_state(
         characters=characters,
         prop_menu=prop_menu,
     )
-    _append_seedance2_user_reference_assets(assets, config)
+    _append_seedance2_user_reference_assets(assets, config, allowed_roots=[project_dir])
     prompt_source = config.prompt_source or "saved"
     final_prompt = config.final_prompt
     initial_prompt = _seedance2_initial_prompt(beat)
@@ -587,7 +588,7 @@ def _sync_seedance2_asset_paths(
         next_beat=next_beat,
         prop_menu=prop_menu,
     )
-    _append_seedance2_user_reference_assets(assets, config)
+    _append_seedance2_user_reference_assets(assets, config, allowed_roots=[project_dir])
     assets = apply_prompt_audio_selection(assets, str(config.final_prompt or ""))
     auto_images = selected_reference_paths(assets, "reference_images")
     auto_audios = selected_reference_paths(assets, "reference_audios")
@@ -611,7 +612,11 @@ def _seedance2_user_reference_paths(
 def _append_seedance2_user_reference_assets(
     assets: list[Seedance2ResolvedAsset],
     config: Any,
+    *,
+    allowed_roots: list[str | Path],
 ) -> None:
+    from novelvideo.utils.safe_paths import resolve_under_roots
+
     auto_image_paths = {
         str(asset.path)
         for asset in assets
@@ -633,7 +638,7 @@ def _append_seedance2_user_reference_assets(
         auto_image_paths,
     ):
         image_count += 1
-        item_path = Path(path)
+        item_path = resolve_under_roots(allowed_roots, path)
         validation_error = (
             validate_seedance2_reference_image(item_path) if item_path.exists() else ""
         )
@@ -655,7 +660,7 @@ def _append_seedance2_user_reference_assets(
         auto_audio_paths,
     ):
         audio_count += 1
-        item_path = Path(path)
+        item_path = resolve_under_roots(allowed_roots, path)
         assets.append(
             Seedance2ResolvedAsset(
                 key=f"user_audio:{path}",
@@ -741,11 +746,17 @@ def _seedance2_safe_asset_key(asset_key: str) -> str:
     )
 
 
-def _seedance2_unlink_user_reference_file(path: str | Path) -> bool:
+def _seedance2_unlink_user_reference_file(
+    path: str | Path,
+    *,
+    allowed_roots: list[str | Path],
+) -> bool:
     text = str(path or "").strip()
     if not text or text.startswith(("http://", "https://")):
         return False
-    file_path = Path(text)
+    from novelvideo.utils.safe_paths import resolve_under_roots
+
+    file_path = resolve_under_roots(allowed_roots, text)
     if not file_path.exists() or not file_path.is_file():
         return False
     if "seedance2_uploads" not in file_path.parts and "seedance2_crops" not in file_path.parts:

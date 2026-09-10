@@ -614,6 +614,305 @@ async def test_newapi_seedance2_generator_preserves_config_resolution_and_scene_
     assert metadata["scene_optimize"] == "realistic"
     assert metadata["image_url"] == "https://example.com/first.png"
     assert payload["seconds"] == "8"
+    assert isinstance(payload["idempotency_key"], str)
+    assert len(payload["idempotency_key"]) == 64
+
+
+async def test_newapi_submit_timeout_returns_unknown_without_refund(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import (
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+
+    settlements: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-1.0-pro-fast",
+    )
+
+    async def timeout_submit(_url: str, _payload: dict):
+        raise asyncio.TimeoutError("response lost")
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-unknown"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    async def confirm(*_args, **_kwargs):
+        settlements.append("confirm")
+
+    monkeypatch.setattr(generator, "_post_json", timeout_submit)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+    monkeypatch.setattr(video_module, "_confirm_video_model_call", confirm)
+
+    result = await generator.generate(
+        image_path="",
+        prompt="camera pushes in",
+        output_path=str(tmp_path / "out.mp4"),
+    )
+
+    assert result.status is VideoGenStatus.UNKNOWN
+    assert "unknown" in (result.error or "").lower()
+    assert settlements == []
+
+
+async def test_newapi_success_without_task_id_is_unknown_without_refund(
+    tmp_path, monkeypatch
+):
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import (
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+
+    settlements: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-1.0-pro-fast",
+    )
+
+    async def submit(_url: str, _payload: dict):
+        return {"status": "accepted"}
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-missing-id"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+
+    result = await generator.generate(
+        image_path="",
+        prompt="camera pushes in",
+        output_path=str(tmp_path / "out.mp4"),
+    )
+
+    assert result.status is VideoGenStatus.UNKNOWN
+    assert "reconciliation key" in (result.error or "")
+    assert settlements == []
+
+
+async def test_newapi_submit_server_error_is_unknown_without_refund(
+    tmp_path, monkeypatch
+):
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import (
+        NewApiVideoError,
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+
+    settlements: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-1.0-pro-fast",
+    )
+
+    async def submit(_url: str, _payload: dict):
+        raise NewApiVideoError("HTTP 503", status_code=503)
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-server-error"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+
+    result = await generator.generate(
+        image_path="",
+        prompt="camera pushes in",
+        output_path=str(tmp_path / "out.mp4"),
+    )
+
+    assert result.status is VideoGenStatus.UNKNOWN
+    assert settlements == []
+
+
+async def test_newapi_poll_timeout_keeps_reservation_for_reconciliation(
+    tmp_path, monkeypatch
+):
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import (
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+
+    settlements: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-1.0-pro-fast",
+    )
+
+    async def submit(_url: str, _payload: dict):
+        return {"id": "provider-task-1"}
+
+    async def pending(_url: str):
+        return {"status": "running"}
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-pending"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(generator, "_get_json", pending)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+
+    result = await generator.generate(
+        image_path="",
+        prompt="camera pushes in",
+        output_path=str(tmp_path / "out.mp4"),
+        poll_interval=0,
+        max_polls=1,
+    )
+
+    assert result.status is VideoGenStatus.UNKNOWN
+    assert result.task_id == "provider-task-1"
+    assert settlements == []
+
+
+async def test_newapi_cancel_after_submit_cancels_provider_and_refunds_once(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import NewApiVideoGenerator
+
+    settlements: list[str] = []
+    cancelled: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-1.0-pro-fast",
+    )
+
+    async def submit(_url: str, _payload: dict):
+        return {"id": "provider-task-1"}
+
+    async def cancelled_poll(_url: str):
+        raise asyncio.CancelledError
+
+    async def cancel_provider(task_id: str):
+        cancelled.append(task_id)
+        return True
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-cancel"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    async def confirm(*_args, **_kwargs):
+        settlements.append("confirm")
+
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(generator, "_get_json", cancelled_poll)
+    monkeypatch.setattr(generator, "_cancel_provider_task", cancel_provider)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+    monkeypatch.setattr(video_module, "_confirm_video_model_call", confirm)
+
+    with pytest.raises(asyncio.CancelledError):
+        await generator.generate(
+            image_path="",
+            prompt="camera pushes in",
+            output_path=str(tmp_path / "out.mp4"),
+            poll_interval=0,
+        )
+
+    assert cancelled == ["provider-task-1"]
+    assert settlements == ["refund"]
+
+
+async def test_newapi_last_frame_download_failure_keeps_completed_video(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from novelvideo.generators import video_generator as video_module
+    from novelvideo.generators.video_generator import (
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+
+    settlements: list[str] = []
+    logs: list[str] = []
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://newapi.example",
+        model="seedance-2.0",
+    )
+
+    async def submit(_url: str, payload: dict):
+        payload["metadata"]["return_last_frame"] = True
+        return {"id": "provider-task-1"}
+
+    async def completed(_url: str):
+        return {
+            "status": "completed",
+            "url": "https://example.com/out.mp4",
+            "last_frame_url": "https://example.com/missing.png",
+        }
+
+    async def download(url: str, output_path: str):
+        if url.endswith("missing.png"):
+            raise RuntimeError("HTTP 404")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"video")
+        return b"video"
+
+    async def reserve(*_args, **_kwargs):
+        return "reservation-complete"
+
+    async def refund(*_args, **_kwargs):
+        settlements.append("refund")
+
+    async def confirm(*_args, **_kwargs):
+        settlements.append("confirm")
+
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(generator, "_get_json", completed)
+    monkeypatch.setattr(generator, "_download_video", download)
+    monkeypatch.setattr(video_module, "_reserve_video_model_call", reserve)
+    monkeypatch.setattr(video_module, "_refund_video_model_call", refund)
+    monkeypatch.setattr(video_module, "_confirm_video_model_call", confirm)
+
+    output = tmp_path / "out.mp4"
+    result = await generator.generate(
+        image_path="",
+        prompt="camera pushes in",
+        output_path=str(output),
+        poll_interval=0,
+        max_polls=1,
+        seedance2_config='{"return_last_frame":true}',
+        on_log=logs.append,
+    )
+
+    assert result.status is VideoGenStatus.DONE
+    assert output.read_bytes() == b"video"
+    assert result.last_frame_path is None
+    assert settlements == ["confirm"]
+    assert any("尾帧" in message and "404" in message for message in logs)
 
 
 async def test_newapi_seedance1_generator_preserves_adaptive_ratio(tmp_path, monkeypatch):

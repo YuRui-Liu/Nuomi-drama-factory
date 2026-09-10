@@ -1009,3 +1009,162 @@ async def test_director_timeline_revalidates_a_reused_succeeded_artifact(
     assert reused.quality_issues[0].code == "video.duration_mismatch"
     assert probe_calls == 2
     assert len(executor.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        MediaTaskStatus.FAILED,
+        MediaTaskStatus.CANCELLED,
+        MediaTaskStatus.QUALITY_FAILED,
+    ],
+)
+async def test_director_timeline_explicitly_retries_terminal_attempt(
+    tmp_path: Path,
+    terminal_status: MediaTaskStatus,
+) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    profile = WorkflowProfile(
+        id="minimax-h3-director",
+        version=1,
+        workflow_id="workflow-1",
+        capabilities=[MediaCapability.VIDEO_I2VA],
+        bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+    )
+
+    class TerminalThenSuccessExecutor(FakeExecutor):
+        async def step(self, task_id, **kwargs):
+            attempts = self.store.list_attempts(task_id)
+            if len(attempts) == 1:
+                attempt = attempts[-1]
+                if terminal_status is MediaTaskStatus.CANCELLED:
+                    attempt = self.store.transition_attempt(
+                        attempt.id, MediaTaskStatus.CANCEL_REQUESTED
+                    )
+                    self.store.transition_attempt(attempt.id, MediaTaskStatus.CANCELLED)
+                else:
+                    if terminal_status is MediaTaskStatus.QUALITY_FAILED:
+                        attempt = self.store.transition_attempt(
+                            attempt.id, MediaTaskStatus.UPLOADING
+                        )
+                        attempt = self.store.record_provider_task(
+                            attempt.id, "provider-quality"
+                        )
+                        for status in (
+                            MediaTaskStatus.RUNNING,
+                            MediaTaskStatus.DOWNLOADING,
+                            MediaTaskStatus.VALIDATING,
+                        ):
+                            attempt = self.store.transition_attempt(attempt.id, status)
+                    self.store.fail_attempt(
+                        attempt.id,
+                        "QUALITY_FAILED"
+                        if terminal_status is MediaTaskStatus.QUALITY_FAILED
+                        else "PROVIDER_REJECTED",
+                        "first attempt ended",
+                        quality_failed=terminal_status
+                        is MediaTaskStatus.QUALITY_FAILED,
+                    )
+                return self.store.get_task(task_id)
+            return await super().step(task_id, **kwargs)
+
+    executor = TerminalThenSuccessExecutor(store)
+
+    async def probe(_: MediaArtifact) -> VideoProbe:
+        return VideoProbe(
+            duration=5, width=576, height=1024, fps=24, has_audio=True
+        )
+
+    pipeline = H3VideoPipeline(
+        store=store,
+        executor=executor,
+        workflow_profile=profile,
+        provider_account_id="runninghub-main",
+        upload_reference=FakeUploader(),
+        probe_video=probe,
+        register_candidate=lambda _: None,
+        prompt_profile={"id": "minimax-h3", "version": 1},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA,
+        prompt="director",
+        duration=5,
+        first_frame="first.png",
+        aspect_ratio="9:16",
+        resolution="576x1024",
+    )
+    kwargs = {
+        "timeline_data": _timeline_data(),
+        "idempotency_input": {"segments": [_timeline_segment_input()]},
+    }
+
+    with pytest.raises(RuntimeError, match="first attempt ended|cancelled"):
+        await pipeline.generate_timeline(request, **kwargs)
+
+    result = await pipeline.generate_timeline(request, **kwargs)
+
+    assert result.status is MediaTaskStatus.SUCCEEDED
+    attempts = store.list_attempts(result.task_id)
+    assert [attempt.status for attempt in attempts] == [
+        terminal_status,
+        MediaTaskStatus.SUCCEEDED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_director_timeline_cancellation_calls_executor_cancel(
+    tmp_path: Path,
+) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    profile = WorkflowProfile(
+        id="minimax-h3-director",
+        version=1,
+        workflow_id="workflow-1",
+        capabilities=[MediaCapability.VIDEO_I2VA],
+        bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+    )
+
+    class CancelledExecutor:
+        def __init__(self):
+            self.cancelled: list[str] = []
+            self.stepped: list[str] = []
+
+        async def step(self, task_id, **_kwargs):
+            self.stepped.append(task_id)
+            attempt = store.list_attempts(task_id)[-1]
+            store.record_provider_task(attempt.id, "provider-running")
+            raise asyncio.CancelledError
+
+        async def cancel(self, task_id):
+            self.cancelled.append(task_id)
+
+    executor = CancelledExecutor()
+    pipeline = H3VideoPipeline(
+        store=store,
+        executor=executor,
+        workflow_profile=profile,
+        provider_account_id="runninghub-main",
+        upload_reference=FakeUploader(),
+        probe_video=lambda _: None,
+        register_candidate=lambda _: None,
+        prompt_profile={},
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA,
+        prompt="director",
+        duration=5,
+        first_frame="first.png",
+        aspect_ratio="9:16",
+        resolution="576x1024",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await pipeline.generate_timeline(
+            request,
+            timeline_data=_timeline_data(),
+            idempotency_input={"segments": [_timeline_segment_input()]},
+        )
+
+    assert len(executor.cancelled) == 1
+    assert executor.cancelled == executor.stepped

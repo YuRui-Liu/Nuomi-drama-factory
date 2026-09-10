@@ -240,6 +240,267 @@ async def test_structured_character_build_adds_missing_without_overwriting_user_
 
 
 @pytest.mark.asyncio
+async def test_character_build_preserves_profile_when_roster_proposal_collides(
+    structured_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from novelvideo import structured_extraction
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+    from novelvideo.structured_builders import build_characters_structured
+    from novelvideo.structured_extraction import MergedCharacter
+
+    store = structured_store
+    store.save_novel_content("第一章\n谢秋月遇见赵班头。")
+    (Path(store.state_dir) / "project_config.json").write_text(
+        json.dumps({"spine_template": "narrated"}), encoding="utf-8"
+    )
+
+    def proposal(
+        proposal_id: str,
+        *,
+        face_shape: str,
+        facial_feature: str,
+        hair_style: str,
+        distinctive_feature: str,
+        recommended: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "proposal_id": proposal_id,
+            "title": proposal_id,
+            "recommended": recommended,
+            "face_shape": face_shape,
+            "facial_features": [facial_feature, "鼻梁笔直"],
+            "hair_style": hair_style,
+            "distinctive_features": [distinctive_feature],
+            "identity_anchors": [
+                face_shape,
+                facial_feature,
+                distinctive_feature,
+            ],
+            "asymmetry_detail": distinctive_feature,
+        }
+
+    shared = {
+        "face_shape": "窄长脸，颧骨清晰",
+        "facial_feature": "眼窝偏深",
+        "hair_style": "利落短发",
+        "distinctive_feature": "左眉尾断眉",
+    }
+    first_proposals = [
+        proposal("xqy-01", **shared, recommended=True),
+        proposal(
+            "xqy-02",
+            face_shape="短圆脸，下颌柔和",
+            facial_feature="右眼略窄",
+            hair_style="自然侧分发",
+            distinctive_feature="右眼下浅痣",
+        ),
+        proposal(
+            "xqy-03",
+            face_shape="方脸，下颌角明确",
+            facial_feature="眉弓较高",
+            hair_style="略乱寸发",
+            distinctive_feature="左侧嘴角旧疤",
+        ),
+    ]
+    second_proposals = [
+        proposal("zbt-01", **shared, recommended=True),
+        proposal(
+            "zbt-02",
+            face_shape="菱形脸，颧骨外扩",
+            facial_feature="厚下唇",
+            hair_style="低位盘发",
+            distinctive_feature="右耳上缘小缺口",
+        ),
+        proposal(
+            "zbt-03",
+            face_shape="三角脸，下巴收尖",
+            facial_feature="下垂眼尾",
+            hair_style="蓬松短卷发",
+            distinctive_feature="右眼尾短疤",
+        ),
+    ]
+
+    async def fake_extract(_chunks, **_kwargs):
+        return [
+            MergedCharacter(
+                name="谢秋月",
+                biography="谢家人物。",
+                design_proposals=first_proposals,
+            ),
+            MergedCharacter(
+                name="赵班头",
+                biography="负责巡视的班头。",
+                design_proposals=second_proposals,
+            ),
+        ]
+
+    monkeypatch.setattr(
+        structured_extraction, "extract_characters_from_chunks", fake_extract
+    )
+
+    result = await build_characters_structured(store)
+
+    assert store.get_character("赵班头").description == "负责巡视的班头。"
+    assert result.stats["proposal_failed"] == ["赵班头"]
+    assert result.as_task_result(total=2)["proposal_failed"] == 1
+    workspace = CharacterVisualWorkspaceStore(store.project_dir).get("赵班头")
+    assert workspace is not None
+    assert workspace.design_proposals[0].quality_issues == [
+        "roster_collision:xqy-01"
+    ]
+    assert workspace.design_proposals[2].quality_issues == []
+
+
+@pytest.mark.asyncio
+async def test_character_build_ignores_previously_rejected_roster_proposals(
+    structured_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from novelvideo import structured_extraction
+    from novelvideo.character_visual import (
+        CharacterDesignProposal,
+        CharacterNarrativeProfile,
+        CharacterVisualWorkspace,
+        CharacterVisualWorkspaceStore,
+    )
+    from novelvideo.models import NovelCharacter
+    from novelvideo.structured_builders import build_characters_structured
+    from novelvideo.structured_extraction import MergedCharacter
+
+    store = structured_store
+    store.save_novel_content("第一章\n旧角色遇见新角色。")
+    (Path(store.state_dir) / "project_config.json").write_text(
+        json.dumps({"spine_template": "narrated"}), encoding="utf-8"
+    )
+    await store.add_character(NovelCharacter(name="旧角色"))
+    await store.load_graph_state()
+
+    rejected = CharacterDesignProposal(
+        proposal_id="old-rejected",
+        title="上一轮失败提案",
+        recommended=True,
+        face_shape="窄长脸，颧骨清晰",
+        facial_features=["眼窝偏深", "鼻梁笔直"],
+        hair_style="利落短发",
+        distinctive_features=["左眉尾断眉"],
+        identity_anchors=["窄长脸，颧骨清晰", "眼窝偏深", "左眉尾断眉"],
+        asymmetry_detail="左眉尾断眉",
+        quality_issues=["roster_collision:another-old-proposal"],
+    )
+    CharacterVisualWorkspaceStore(store.project_dir).save(
+        CharacterVisualWorkspace(
+            character_id="旧角色",
+            profile=CharacterNarrativeProfile(
+                character_id="旧角色", name="旧角色"
+            ),
+            design_proposals=[rejected],
+        )
+    )
+
+    proposals = [
+        rejected.model_copy(
+            update={
+                "proposal_id": "new-01",
+                "title": "新提案一",
+                "quality_issues": [],
+            }
+        ).model_dump(mode="json"),
+        CharacterDesignProposal(
+            proposal_id="new-02",
+            title="新提案二",
+            face_shape="短圆脸，下颌柔和",
+            facial_features=["右眼略窄", "鼻头微圆"],
+            hair_style="自然侧分发",
+            distinctive_features=["右眼下浅痣"],
+            identity_anchors=["短圆脸，下颌柔和", "右眼略窄", "右眼下浅痣"],
+            asymmetry_detail="右眼下浅痣",
+        ).model_dump(mode="json"),
+        CharacterDesignProposal(
+            proposal_id="new-03",
+            title="新提案三",
+            face_shape="方脸，下颌角明确",
+            facial_features=["眉弓较高", "薄唇"],
+            hair_style="略乱寸发",
+            distinctive_features=["左侧嘴角旧疤"],
+            identity_anchors=["方脸，下颌角明确", "眉弓较高", "左侧嘴角旧疤"],
+            asymmetry_detail="左侧嘴角旧疤",
+        ).model_dump(mode="json"),
+    ]
+
+    async def fake_extract(_chunks, **_kwargs):
+        return [MergedCharacter(name="新角色", design_proposals=proposals)]
+
+    monkeypatch.setattr(
+        structured_extraction, "extract_characters_from_chunks", fake_extract
+    )
+
+    result = await build_characters_structured(store)
+
+    assert result.stats["proposal_failed"] == []
+    workspace = CharacterVisualWorkspaceStore(store.project_dir).get("新角色")
+    assert workspace is not None
+    assert all(not proposal.quality_issues for proposal in workspace.design_proposals)
+
+
+@pytest.mark.asyncio
+async def test_character_build_does_not_report_failed_workspace_skipped_by_late_lock(
+    structured_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from novelvideo import structured_extraction
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+    from novelvideo.models import NovelCharacter
+    from novelvideo.structured_builders import build_characters_structured
+    from novelvideo.structured_extraction import MergedCharacter
+
+    store = structured_store
+    store.save_novel_content("第一章\n赵班头巡街。")
+    (Path(store.state_dir) / "project_config.json").write_text(
+        json.dumps({"spine_template": "narrated"}), encoding="utf-8"
+    )
+    await store.add_character(NovelCharacter(name="赵班头"))
+    await store.load_graph_state()
+
+    repeated = {
+        "face_shape": "窄长脸，颧骨清晰",
+        "facial_features": ["眼窝偏深", "鼻梁笔直"],
+        "hair_style": "利落短发",
+        "distinctive_features": ["左眉尾断眉"],
+        "identity_anchors": ["窄长脸，颧骨清晰", "眼窝偏深", "左眉尾断眉"],
+        "asymmetry_detail": "左眉尾断眉",
+    }
+    proposals = [
+        {
+            "proposal_id": f"zbt-0{index}",
+            "title": f"赵班头提案 {index}",
+            "recommended": index == 1,
+            **repeated,
+        }
+        for index in range(1, 4)
+    ]
+
+    async def fake_extract(_chunks, **_kwargs):
+        return [MergedCharacter(name="赵班头", design_proposals=proposals)]
+
+    original_publish = store.publish_character_analysis_atomic
+
+    async def lock_before_publish(*args, **kwargs):
+        await store.set_character_extraction_locked("赵班头", True)
+        return await original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        structured_extraction, "extract_characters_from_chunks", fake_extract
+    )
+    monkeypatch.setattr(
+        store, "publish_character_analysis_atomic", lock_before_publish
+    )
+
+    result = await build_characters_structured(store)
+
+    assert result.stats["locked_skipped"] == ["赵班头"]
+    assert result.stats["proposal_failed"] == []
+    assert CharacterVisualWorkspaceStore(store.project_dir).get("赵班头") is None
+
+
+@pytest.mark.asyncio
 async def test_structured_scene_build_is_atomic_and_preserves_existing_scene(
     structured_store,
 ) -> None:

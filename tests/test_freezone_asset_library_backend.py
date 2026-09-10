@@ -799,6 +799,50 @@ def test_derived_scene_asset_preset_projects_base_master_dependency() -> None:
     assert nodes[base_node_id]["data"]["imageUrl"].endswith("assets/scenes/bathroom/master.png")
     assert (base_node_id, "ref_scene_master_1") in edges
     assert ("prompt_scene_bathroom_leak_master", "ref_scene_master_1") in edges
+    master_content = nodes["prompt_scene_bathroom_leak_master"]["data"]["content"]
+    assert "STRUCTURED VARIANT PLATE" in master_content
+    assert "Use the attached base-scene master" in master_content
+    assert "TEXT-ONLY VARIANT TARGET" not in master_content
+
+
+def test_derived_scene_asset_preset_without_base_master_uses_text_only_prompt() -> None:
+    context = {
+        "scope": "asset",
+        "asset_kind": "scene",
+        "asset_id": "bathroom_leak",
+        "refs": [
+            {
+                "kind": "scene",
+                "role": "scene_master",
+                "label": "bathroom_leak master",
+                "rel_path": "assets/scenes/bathroom_leak/master.png",
+                "url": None,
+                "exists": False,
+                "aspect_ratio": "16:9",
+                "meta": {
+                    "scene_id": "bathroom_leak",
+                    "base_scene_id": "bathroom",
+                    "variant_id": "leak",
+                    "variant_prompt": "地面积水，天花板持续滴水。",
+                    "base_environment_prompt": "白瓷砖墙面，正面是洗手台。",
+                },
+            },
+        ],
+    }
+
+    payload = build_canvas_payload_from_context(
+        context=context,
+        preset_key="asset:scene:::bathroom_leak",
+        default_push_target={"kind": "scene_master", "scene_id": "bathroom_leak"},
+    )
+    nodes = {node["id"]: node for node in payload["nodes"]}
+    master_content = nodes["prompt_scene_bathroom_leak_master"]["data"]["content"]
+
+    assert "TEXT-ONLY VARIANT TARGET" in master_content
+    assert "STRUCTURED VARIANT PLATE" not in master_content
+    assert "attached base-scene master" not in master_content
+    assert "same physical scene" not in master_content
+    assert "ref_scene_base_master_bathroom_leak" not in nodes
 
 
 def test_scene_asset_preset_folds_existing_3gs_sources_into_director_world() -> None:

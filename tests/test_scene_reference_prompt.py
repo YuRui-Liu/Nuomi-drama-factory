@@ -112,6 +112,42 @@ async def test_grsai_submit_retries_connect_timeout(monkeypatch):
     assert client.calls == 2
 
 
+@pytest.mark.asyncio
+async def test_scene_grsai_call_uses_unified_runtime_execution(monkeypatch):
+    from types import SimpleNamespace
+
+    from novelvideo.api import deps
+    from novelvideo.generators import scene_reference_images
+    from novelvideo.media_capabilities.runtime import configuration, grsai_execution
+
+    runtime = SimpleNamespace(model="gpt-image-2")
+    monkeypatch.setattr(deps, "get_media_capability_store", lambda: object())
+    monkeypatch.setattr(deps, "get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        configuration,
+        "load_grsai_runtime_configuration",
+        lambda *_args, **_kwargs: runtime,
+    )
+    calls = []
+
+    async def fake_execute(candidate_runtime, request, **kwargs):
+        calls.append((candidate_runtime, request, kwargs))
+        return SimpleNamespace(content=b"image", task_id="task-1")
+
+    monkeypatch.setattr(grsai_execution, "execute_grsai_generation", fake_execute)
+
+    content, _text, error = await scene_reference_images._call_grsai_image_api(
+        model="gpt-image-2",
+        prompt="scene",
+        reference_images=None,
+        image_config={"aspect_ratio": "16:9", "image_size": "1K"},
+    )
+
+    assert content == b"image"
+    assert error == ""
+    assert calls[0][0] is runtime
+
+
 def test_scene_reference_prompt_combines_base_prompt_for_variant_without_base_image():
     base_scene = NovelScene(
         name="卫生间",
@@ -224,3 +260,38 @@ async def test_scene_reference_grsai_uses_persisted_runtime_not_newapi(monkeypat
 
     assert output.read_bytes() == b"png-bytes"
     assert calls[0]["model"] == "gpt-image-2"
+
+
+@pytest.mark.asyncio
+async def test_grsai_first_scene_master_with_time_of_day_is_text_only(
+    monkeypatch, tmp_path
+):
+    from novelvideo.generators import scene_reference_images
+    from novelvideo.models import NovelScene
+
+    captured = {}
+
+    async def fake_grsai(**kwargs):
+        captured.update(kwargs)
+        return b"png-bytes", "", ""
+
+    monkeypatch.setattr(scene_reference_images, "_call_grsai_image_api", fake_grsai)
+
+    await scene_reference_images.generate_scene_reference_image(
+        project_dir=tmp_path,
+        scene=NovelScene(
+            name="### 1-1 谢家碑坊",
+            scene_type="exterior",
+            time_of_day="夜晚",
+            environment_prompt="暴雨中的石质碑坊，冷灰石墙，固定木架。",
+        ),
+        kind="master",
+        provider="grsai",
+        model="gpt-image-2",
+    )
+
+    assert captured["reference_images"] is None
+    assert "STANDALONE TIME TARGET: 夜晚" in captured["prompt"]
+    assert "same physical scene" not in captured["prompt"]
+    assert "same architecture" not in captured["prompt"]
+    assert "as the base scene" not in captured["prompt"]

@@ -3,7 +3,7 @@
 from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from novelvideo.models import SceneRef
 from novelvideo.freezone.slots import PushTarget
@@ -1895,6 +1895,26 @@ class SceneCreate(BaseModel):
     spatial_layout_image: str = ""
     notes: str = ""
 
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        if not str(value or "").strip():
+            return ""
+        return validate_path_segment(value)
+
+    @model_validator(mode="after")
+    def _safe_structured_name_parts(self):
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        if not self.name and not str(self.base_scene_id or "").strip():
+            raise ValueError("invalid asset name")
+        for value in (self.base_scene_id, self.variant_id, self.time_of_day):
+            if str(value or "").strip():
+                validate_path_segment(value)
+        return self
+
 
 class SceneUpdate(BaseModel):
     name: Optional[str] = None
@@ -1908,6 +1928,24 @@ class SceneUpdate(BaseModel):
     description: Optional[str] = None
     spatial_layout_image: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
+
+    @field_validator("base_scene_id", "variant_id", "time_of_day")
+    @classmethod
+    def _safe_structured_name_part(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return value
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
 
 
 class ScenePanoGenerateRequest(BaseModel):
@@ -1936,6 +1974,13 @@ class PropCreate(BaseModel):
     owner: str = ""
     notes: str = ""
 
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
+
 
 class PropUpdate(BaseModel):
     name: Optional[str] = None
@@ -1945,6 +1990,15 @@ class PropUpdate(BaseModel):
     description: Optional[str] = None
     owner: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
 
 
 class PropReferenceGenerateRequest(BaseModel):

@@ -1149,12 +1149,12 @@ async def purge_project(
         )
     if record.purged_at:
         raise HTTPException(status_code=400, detail="Project has already been purged.")
-    record = await registry.mark_project_purged(ctx.project_id)
-    if record is None:
-        raise HTTPException(status_code=400, detail="Project could not be marked purged.")
     for path in (paths.output_dir, paths.state_dir, paths.runtime_dir):
         if path.exists():
             shutil.rmtree(path)
+    record = await registry.mark_project_purged(ctx.project_id)
+    if record is None:
+        raise HTTPException(status_code=400, detail="Project could not be marked purged.")
     await registry.delete_project_home(ctx.project_id)
     await emit_project_audit(action="project.purge", ctx=ctx, metadata={"status": "deleted"})
     return {

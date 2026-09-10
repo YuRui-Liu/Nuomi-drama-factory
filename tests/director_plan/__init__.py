@@ -1,1 +1,1 @@
-"""Director-plan test package."""
+"""Director plan test package."""

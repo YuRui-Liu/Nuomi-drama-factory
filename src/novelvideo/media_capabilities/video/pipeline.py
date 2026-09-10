@@ -506,6 +506,20 @@ class H3VideoPipeline:
         self.wait = wait
         self.monotonic = monotonic
 
+    async def _step_with_cancellation(self, task_id: str, **kwargs):
+        try:
+            return await self.executor.step(task_id, **kwargs)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.executor.cancel(task_id))
+            raise
+
+    async def _wait_with_cancellation(self, task_id: str) -> None:
+        try:
+            await self.wait(self.poll_interval)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.executor.cancel(task_id))
+            raise
+
     async def generate(
         self, request: VideoGenerationRequest, motion_spec: MotionSpec
     ) -> VideoCandidate:
@@ -583,7 +597,7 @@ class H3VideoPipeline:
         }
         deadline = self.monotonic() + self.poll_timeout
         while True:
-            completed = await self.executor.step(
+            completed = await self._step_with_cancellation(
                 task.id,
                 profile=self.workflow_profile,
                 semantic_values=semantic_values,
@@ -606,7 +620,7 @@ class H3VideoPipeline:
                 raise TimeoutError(
                     f"video generation did not finish within {self.poll_timeout:g} seconds"
                 )
-            await self.wait(self.poll_interval)
+            await self._wait_with_cancellation(task.id)
 
         if not isinstance(completed.output, dict) or not completed.output.get(
             "artifacts"
@@ -736,7 +750,17 @@ class H3VideoPipeline:
             None,
         )
         if active_attempt is None:
-            self.store.start_attempt(
+            start_attempt = (
+                self.store.start_retry_attempt
+                if task.status
+                in {
+                    MediaTaskStatus.FAILED,
+                    MediaTaskStatus.CANCELLED,
+                    MediaTaskStatus.QUALITY_FAILED,
+                }
+                else self.store.start_attempt
+            )
+            start_attempt(
                 task.id,
                 self.provider_account_id,
                 workflow_version={
@@ -755,7 +779,7 @@ class H3VideoPipeline:
             }
             if on_provider_submitted is not None:
                 step_kwargs["on_provider_submitted"] = notify_once
-            completed = await self.executor.step(task.id, **step_kwargs)
+            completed = await self._step_with_cancellation(task.id, **step_kwargs)
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
             if completed.status in {
@@ -774,7 +798,7 @@ class H3VideoPipeline:
                 raise TimeoutError(
                     f"video generation did not finish within {self.poll_timeout:g} seconds"
                 )
-            await self.wait(self.poll_interval)
+            await self._wait_with_cancellation(task.id)
         if not isinstance(completed.output, dict) or not completed.output.get("artifacts"):
             raise RuntimeError("video generation succeeded without an artifact")
         artifact = MediaArtifact.model_validate(completed.output["artifacts"][0])

@@ -20,7 +20,6 @@ from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 
-DIRECTOR_PLAN_TIMEOUT_SECONDS = 180
 _DIALOGUE_LINE = re.compile(r"^([^\s:：]{1,24})\s*[:：]\s*(.+)$")
 _SCENE_PREFIX = re.compile(r"^场景\s*[:：]\s*(.+)$")
 _SCENE_KIND = re.compile(r"^(内景|外景|内|外)\s+(.+)$")
@@ -350,20 +349,15 @@ async def _run_director_plan(
     service = _build_director_plan_service(ctx)
     old_plan, assets = _load_asset_migration_context(ctx, episode)
     try:
-        revision = await asyncio.wait_for(
-            service.create_draft(
-                input_value,
-                on_stage=lambda stage: progress(
-                    0.55 if stage == "episode_planned" else 0.8,
-                    f"M1 {stage}",
-                ),
-                old_plan=old_plan,
-                assets=assets,
+        revision = await service.create_draft(
+            input_value,
+            on_stage=lambda stage: progress(
+                0.55 if stage == "episode_planned" else 0.8,
+                f"M1 {stage}",
             ),
-            timeout=DIRECTOR_PLAN_TIMEOUT_SECONDS,
+            old_plan=old_plan,
+            assets=assets,
         )
-    except asyncio.TimeoutError as exc:
-        raise DirectorPlanTaskError("DIRECTOR_PLAN_TIMEOUT") from exc
     except DirectorPlanTaskError:
         raise
     except Exception as exc:

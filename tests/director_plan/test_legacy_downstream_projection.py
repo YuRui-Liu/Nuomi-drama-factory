@@ -14,7 +14,7 @@ from novelvideo.narrative_groups.service import (
     load_group_video_prompt_manifest,
     save_groups,
 )
-from test_api_narrative_groups import (
+from tests.test_api_narrative_groups import (
     activate_director_plan,
     install_reference_resolver,
     make_client,

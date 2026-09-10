@@ -109,12 +109,14 @@ async def _call_grsai_image_api(
     from novelvideo.media_capabilities.runtime.configuration import (
         load_grsai_runtime_configuration,
     )
+    from novelvideo.media_capabilities.runtime.grsai_execution import (
+        execute_grsai_generation,
+    )
 
     runtime = load_grsai_runtime_configuration(
         get_media_capability_store(),
         get_media_credential_resolver(),
     )
-    client = runtime.create_client()
     references = [
         f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
         for _name, data, mime_type in (reference_images or [])
@@ -128,27 +130,10 @@ async def _call_grsai_image_api(
         image_size=image_config.get("image_size") or "1K",
     )
     try:
-        task_id = await _submit_grsai_image(
-            client,
-            request,
-            api_key=runtime.api_key,
-        )
-        snapshot = await _poll_grsai_image_result(
-            client,
-            task_id,
-            api_key=runtime.api_key,
-        )
-        if snapshot.status in {"failed", "violation"}:
-            return None, "", f"GRSAI image generation {snapshot.status}"
-        if not snapshot.results or not snapshot.results[0].get("url"):
-            return None, "", "GRSAI image response missing result URL"
-        response = await client.http.get(str(snapshot.results[0]["url"]))
-        response.raise_for_status()
-        return response.content, "", ""
+        result = await execute_grsai_generation(runtime, request)
+        return result.content, "", ""
     except Exception as exc:
         return None, "", f"GRSAI image generation failed: {_grsai_error_detail(exc)}"
-    finally:
-        await client.http.aclose()
 
 
 def _scene_dir(project_dir: Path, scene_name: str) -> Path:
@@ -162,7 +147,12 @@ def _archive_existing(path: Path) -> None:
     path.replace(path.with_name(f"{path.stem}_{ts}{path.suffix}"))
 
 
-def _scene_context(scene: NovelScene, base_scene: NovelScene | None = None) -> str:
+def _scene_context(
+    scene: NovelScene,
+    base_scene: NovelScene | None = None,
+    *,
+    has_master_reference: bool = False,
+) -> str:
     scene_type = str(scene.scene_type or "").strip() or "interior"
     variant_prompt = str(getattr(scene, "variant_prompt", "") or "").strip()
     base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
@@ -192,13 +182,21 @@ def _scene_context(scene: NovelScene, base_scene: NovelScene | None = None) -> s
     if variant_prompt:
         structured.append(f"VARIANT DELTA PROMPT:\n{variant_prompt}")
     if time_of_day:
-        structured.append(
-            f"""TARGET TIME-OF-DAY PLATE: {time_of_day}
+        if base_scene_id and has_master_reference:
+            structured.append(
+                f"""TARGET TIME-OF-DAY PLATE: {time_of_day}
 - The generated image is a baked {time_of_day} plate for this scene.
 - The overall lighting must read as {time_of_day}; bake the time-of-day into the scene master.
 - Keep the same architecture, layout, fixed fixtures, material identity, and camera coverage as the base scene.
 - Change only lighting/time atmosphere and the explicitly requested plate state."""
-        )
+            )
+        else:
+            structured.append(
+                f"""STANDALONE TIME TARGET: {time_of_day}
+- Generate a complete scene master directly from the SCENE DESCRIPTION and structured text below.
+- The overall lighting must read as {time_of_day}; bake that time-of-day into the finished scene.
+- Establish all architecture, layout, fixed fixtures, materials, and camera coverage from the supplied text."""
+            )
     structured_block = "\n".join(structured).strip()
     return f"""SCENE NAME: {scene.name}
 SCENE TYPE: {scene_type}
@@ -293,13 +291,18 @@ def _master_prompt(
     style_prompt: str = "",
     avoid_instructions: str = "",
     base_scene: NovelScene | None = None,
+    has_master_reference: bool = False,
 ) -> str:
     style_block = _style_context(
         style_name=style_name,
         style_prompt=style_prompt,
         avoid_instructions=avoid_instructions,
     )
-    scene_block = _scene_context(scene, base_scene)
+    scene_block = _scene_context(
+        scene,
+        base_scene,
+        has_master_reference=has_master_reference,
+    )
     purpose_geometry = """- This image is the primary visual master for the stable default scene workflow:
   storyboard sketch, render, and video first-frame production.
 - It establishes the real environment identity, material language, color palette,
@@ -317,17 +320,28 @@ def _master_prompt(
 - Keep enough fixed objects visible to reconstruct the space later from this single image."""
     time_of_day = str(getattr(scene, "time_of_day", "") or "").strip()
     variant_id = str(getattr(scene, "variant_id", "") or "").strip()
-    if time_of_day:
+    base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
+    if time_of_day and base_scene_id and has_master_reference:
         time_instruction = f"""- STRUCTURED TIME PLATE OVERRIDE:
   - This scene has time_of_day={time_of_day}. Do NOT neutralize it.
   - Generate the master as the {time_of_day} version of the same physical scene.
-  - If a base-scene reference image is attached, preserve its architecture and fixtures while changing lighting to {time_of_day}."""
-    elif variant_id:
+  - Preserve the attached base-scene master architecture and fixtures while changing lighting to {time_of_day}."""
+    elif time_of_day:
+        time_instruction = f"""- STANDALONE TIME TARGET:
+  - This scene has time_of_day={time_of_day}. Do NOT neutralize it.
+  - Synthesize one complete master from the supplied text, with lighting that clearly reads as {time_of_day}.
+  - Establish the scene's architecture, fixtures, materials, and camera orientation from the SCENE DESCRIPTION."""
+    elif variant_id and has_master_reference:
         time_instruction = f"""- STRUCTURED VARIANT PLATE:
   - This is a state/appearance variant plate (variant_id={variant_id}). The VARIANT DELTA PROMPT is the target change.
   - Follow the delta's lighting, weather, damage, dressing, and atmosphere faithfully — do NOT neutralize them.
   - The delta wins over the base reference for every change it explicitly declares, including structural damage.
-  - If a base-scene reference image is attached, use it as the before-state and identity anchor; preserve only the architecture, fixtures, materials, and camera orientation that the delta does not change."""
+  - Use the attached base-scene master as the before-state and identity anchor; preserve only the architecture, fixtures, materials, and camera orientation that the delta does not change."""
+    elif variant_id:
+        time_instruction = f"""- TEXT-ONLY VARIANT TARGET:
+  - Synthesize one complete standalone master for variant_id={variant_id} from the SCENE DESCRIPTION and VARIANT DELTA PROMPT.
+  - Follow the delta's lighting, weather, damage, dressing, and atmosphere faithfully — do NOT neutralize them.
+  - Establish all unchanged architecture, fixtures, materials, and camera orientation from the supplied text."""
     else:
         time_instruction = """- IGNORE mood/time-of-day phrases in the text (深夜/昏暗/光晕/街灯/萧瑟/暖色荧光 etc.) when picking lighting;
   use a neutral, eye-level establishing exposure unless the text explicitly says the location IS literally outdoors at night."""
@@ -617,6 +631,7 @@ def build_scene_reference_prompt(
             style_prompt=style_prompt,
             avoid_instructions=avoid_instructions,
             base_scene=base_scene,
+            has_master_reference=has_master_reference,
         )
     if kind == "spatial_layout":
         return _spatial_layout_prompt(
@@ -769,6 +784,7 @@ async def generate_scene_reference_image(
             project_dir=project_dir,
             scene=scene,
         )
+        has_master_reference = bool(references)
 
     prompt = build_scene_reference_prompt(
         kind,

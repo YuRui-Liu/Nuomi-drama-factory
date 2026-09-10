@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import time
 from dataclasses import replace
 
@@ -19,11 +20,37 @@ from novelvideo.ports.auth_contract import (
 
 class FileAuthPort:
     async def verify_session(self, raw_cookie: str | None) -> dict:
+        configured_token = os.environ.get("ST_LOCAL_API_TOKEN", "").strip()
+        if configured_token:
+            supplied_token = str(raw_cookie or "")
+            if not secrets.compare_digest(supplied_token, configured_token):
+                reason = AuthFailureReason.MISSING if not supplied_token else AuthFailureReason.INVALID
+                raise AuthError(reason, "Local API token required")
+        elif not _is_loopback_host(
+            os.environ.get("NOVELVIDEO_PUBLIC_HOST")
+            or os.environ.get("NOVELVIDEO_API_HOST", "127.0.0.1")
+        ):
+            raise AuthError(
+                AuthFailureReason.MISSING,
+                "ST_LOCAL_API_TOKEN is required for non-loopback API hosts",
+            )
         username = os.environ.get("ST_LOCAL_USERNAME", "").strip() or "local"
         return AuthenticatedUser(id="local", username=username, role="owner").to_legacy_dict()
 
     async def revoke_session(self, raw_cookie: str) -> None:
         return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or "").strip().lower().strip("[]")
+    if value == "localhost" or value == "::1":
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 class LocalAuthSession:

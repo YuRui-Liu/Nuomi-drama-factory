@@ -145,3 +145,28 @@ def test_persisted_grsai_key_feeds_image_runtime(tmp_path) -> None:
     client = runtime.create_client()
     assert client.default_model == "gpt-image-2"
     assert client.http._trust_env is True
+
+
+def test_grsai_runtime_configures_persisted_concurrency_limits(tmp_path) -> None:
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    store.save_provider(
+        ProviderAccount(
+            id="grsai-limited",
+            provider_type="grsai",
+            base_url="https://grsai.example",
+            credential_ref="env://GRSAI_API_KEY",
+            max_concurrency=3,
+            capability_limits={"image.*": 2},
+            queue_limit=7,
+        )
+    )
+
+    runtime = load_grsai_runtime_configuration(
+        store,
+        CredentialResolver(env={"GRSAI_API_KEY": "key"}),
+        provider_id="grsai-limited",
+    )
+
+    snapshot = runtime.concurrency.snapshot("grsai-limited")
+    assert snapshot["active_total"] == 0
+    assert snapshot["active_by_rule"] == {"image.*": 0}

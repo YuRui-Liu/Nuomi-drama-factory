@@ -112,11 +112,12 @@ class GrsaiClient:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": request.prompt,
-            "images": [
-            self._encode_reference(reference) for reference in request.references
-            ],
             "replyType": "json",
         }
+        if request.references:
+            payload["images"] = [
+                self._encode_reference(reference) for reference in request.references
+            ]
         if model.startswith("nano-banana"):
             if request.aspect_ratio:
                 payload["aspectRatio"] = request.aspect_ratio

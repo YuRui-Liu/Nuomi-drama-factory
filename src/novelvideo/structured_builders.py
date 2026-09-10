@@ -69,6 +69,7 @@ class CharacterBuildResult(list[str]):
             "updated": list(stats.get("updated") or []),
             "locked_skipped": list(stats.get("locked_skipped") or []),
             "preserved": list(stats.get("preserved") or []),
+            "proposal_failed": list(stats.get("proposal_failed") or []),
         }
 
     def as_task_result(self, *, total: int) -> dict[str, Any]:
@@ -78,6 +79,7 @@ class CharacterBuildResult(list[str]):
             "updated_characters": len(self.stats["updated"]),
             "locked_skipped_characters": len(self.stats["locked_skipped"]),
             "preserved_characters": len(self.stats["preserved"]),
+            "proposal_failed": len(self.stats["proposal_failed"]),
             "character_build": self.stats,
         }
 
@@ -433,10 +435,7 @@ def _visual_workspace_for_merged_character(
         CharacterNarrativeProfile,
         SourceSpan,
     )
-    from novelvideo.character_visual.proposals import (
-        ProposalQualityError,
-        build_character_visual_workspace,
-    )
+    from novelvideo.character_visual.proposals import build_character_visual_workspace
 
     facts = []
     for index, evidence in enumerate(item.evidence):
@@ -474,40 +473,13 @@ def _visual_workspace_for_merged_character(
         CharacterDesignProposal.model_validate(proposal)
         for proposal in item.design_proposals
     ]
-    if len(proposals) != 3:
-        raise RuntimeError(
-            json.dumps(
-                {
-                    "error_code": "CHARACTER_DESIGN_PROPOSALS_REQUIRED",
-                    "character_name": item.name,
-                    "message": "角色提取必须返回三套可审查视觉提案，请重新提取。",
-                    "transport_called": False,
-                },
-                ensure_ascii=False,
-            )
-        )
-    try:
-        return build_character_visual_workspace(
-            profile=profile,
-            proposals=proposals,
-            existing_workspace=existing_workspace,
-            existing_roster_proposals=existing_roster_proposals,
-        )
-    except ProposalQualityError as exc:
-        raise RuntimeError(
-            json.dumps(
-                {
-                    "error_code": "CHARACTER_DESIGN_QUALITY_REJECTED",
-                    "character_name": item.name,
-                    "issues": {
-                        proposal.proposal_id: proposal.quality_issues
-                        for proposal in exc.proposals
-                    },
-                    "transport_called": False,
-                },
-                ensure_ascii=False,
-            )
-        ) from exc
+    return build_character_visual_workspace(
+        profile=profile,
+        proposals=proposals,
+        existing_workspace=existing_workspace,
+        existing_roster_proposals=existing_roster_proposals,
+        preserve_rejected_proposals=True,
+    )
 
 
 def _decode_character_artifact(
@@ -683,8 +655,10 @@ async def build_characters_structured(
         for workspace in [visual_store.get(character.name)]
         if workspace is not None
         for proposal in workspace.design_proposals
+        if not proposal.quality_issues
     ]
     workspaces = []
+    proposal_failed: list[str] = []
     for item in merged:
         workspace = _visual_workspace_for_merged_character(
             item=item,
@@ -693,7 +667,20 @@ async def build_characters_structured(
             existing_roster_proposals=roster_proposals,
         )
         workspaces.append(workspace)
-        roster_proposals.extend(workspace.design_proposals)
+        proposal_set_ready = (
+            len(workspace.design_proposals) == 3
+            and sum(proposal.recommended for proposal in workspace.design_proposals) == 1
+            and not any(
+                proposal.quality_issues for proposal in workspace.design_proposals
+            )
+        )
+        if not proposal_set_ready:
+            proposal_failed.append(item.name)
+        roster_proposals.extend(
+            proposal
+            for proposal in workspace.design_proposals
+            if not proposal.quality_issues
+        )
 
     _report(on_progress, 0.8, "原子发布角色与视觉提案...")
     try:
@@ -735,13 +722,20 @@ async def build_characters_structured(
             getattr(store.get_character(workspace.character_id), "extraction_locked", False)
         )
     ]
+    publishable_workspace_ids = {
+        workspace.character_id for workspace in publishable_workspaces
+    }
+    proposal_failed = [
+        name for name in proposal_failed if name in publishable_workspace_ids
+    ]
     if publishable_workspaces:
         visual_store.save_many(publishable_workspaces)
     _log(
         on_log,
         (
             f"角色提取完成：新增 {len(added)}，更新 {len(updated)}，"
-            f"锁定跳过 {len(locked_skipped)}，保留 {len(preserved)}"
+            f"锁定跳过 {len(locked_skipped)}，保留 {len(preserved)}，"
+            f"视觉提案待处理 {len(proposal_failed)}"
         ),
     )
     _report(on_progress, 1.0, "角色构建完成")
@@ -750,6 +744,7 @@ async def build_characters_structured(
         updated=updated,
         locked_skipped=locked_skipped,
         preserved=preserved,
+        proposal_failed=proposal_failed,
     )
 
 

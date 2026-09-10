@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import sys
@@ -16,6 +17,223 @@ _FALLBACK_LOCK = threading.RLock()
 
 class CredentialStoreError(RuntimeError):
     """The operating-system credential store could not be used."""
+
+
+class _MacOSSecurityBackend:
+    """Minimal ctypes binding for generic-password Keychain operations."""
+
+    _SUCCESS = 0
+    _ITEM_NOT_FOUND = -25300
+    _SECURITY_FRAMEWORK = (
+        "/System/Library/Frameworks/Security.framework/Security"
+    )
+    _CORE_FOUNDATION_FRAMEWORK = (
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
+
+    def __init__(self) -> None:
+        self._security = ctypes.CDLL(self._SECURITY_FRAMEWORK)
+        self._core_foundation = ctypes.CDLL(self._CORE_FOUNDATION_FRAMEWORK)
+        self._configure_functions()
+
+    def _configure_functions(self) -> None:
+        void_pointer = ctypes.c_void_p
+        uint32 = ctypes.c_uint32
+        pointer_to_uint32 = ctypes.POINTER(uint32)
+        pointer_to_void_pointer = ctypes.POINTER(void_pointer)
+
+        self._security.SecKeychainFindGenericPassword.argtypes = [
+            void_pointer,
+            uint32,
+            ctypes.c_char_p,
+            uint32,
+            ctypes.c_char_p,
+            pointer_to_uint32,
+            pointer_to_void_pointer,
+            pointer_to_void_pointer,
+        ]
+        self._security.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+        self._security.SecKeychainAddGenericPassword.argtypes = [
+            void_pointer,
+            uint32,
+            ctypes.c_char_p,
+            uint32,
+            ctypes.c_char_p,
+            uint32,
+            void_pointer,
+            pointer_to_void_pointer,
+        ]
+        self._security.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+        self._security.SecKeychainItemModifyAttributesAndData.argtypes = [
+            void_pointer,
+            void_pointer,
+            uint32,
+            void_pointer,
+        ]
+        self._security.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+        self._security.SecKeychainItemDelete.argtypes = [void_pointer]
+        self._security.SecKeychainItemDelete.restype = ctypes.c_int32
+        self._security.SecKeychainItemFreeContent.argtypes = [
+            void_pointer,
+            void_pointer,
+        ]
+        self._security.SecKeychainItemFreeContent.restype = ctypes.c_int32
+        self._core_foundation.CFRelease.argtypes = [void_pointer]
+        self._core_foundation.CFRelease.restype = None
+
+    @staticmethod
+    def _bytes(value: str) -> bytes:
+        return value.encode("utf-8")
+
+    @staticmethod
+    def _password_pointer(value: bytes) -> ctypes.c_void_p:
+        return ctypes.cast(ctypes.c_char_p(value), ctypes.c_void_p)
+
+    @staticmethod
+    def _raise_for_status(status: int) -> None:
+        if status != _MacOSSecurityBackend._SUCCESS:
+            raise OSError(f"macOS Keychain operation failed with status {status}")
+
+    def set(self, service: str, account: str, value: str) -> None:
+        service_bytes = self._bytes(service)
+        account_bytes = self._bytes(account)
+        value_bytes = self._bytes(value)
+        item = ctypes.c_void_p()
+        status = self._security.SecKeychainFindGenericPassword(
+            None,
+            len(service_bytes),
+            service_bytes,
+            len(account_bytes),
+            account_bytes,
+            None,
+            None,
+            ctypes.byref(item),
+        )
+        if status == self._ITEM_NOT_FOUND:
+            status = self._security.SecKeychainAddGenericPassword(
+                None,
+                len(service_bytes),
+                service_bytes,
+                len(account_bytes),
+                account_bytes,
+                len(value_bytes),
+                self._password_pointer(value_bytes),
+                None,
+            )
+            self._raise_for_status(status)
+            return
+        self._raise_for_status(status)
+        try:
+            status = self._security.SecKeychainItemModifyAttributesAndData(
+                item,
+                None,
+                len(value_bytes),
+                self._password_pointer(value_bytes),
+            )
+            self._raise_for_status(status)
+        finally:
+            if item.value:
+                self._core_foundation.CFRelease(item)
+
+    def get(self, service: str, account: str) -> str | None:
+        service_bytes = self._bytes(service)
+        account_bytes = self._bytes(account)
+        value_length = ctypes.c_uint32()
+        value_pointer = ctypes.c_void_p()
+        item = ctypes.c_void_p()
+        status = self._security.SecKeychainFindGenericPassword(
+            None,
+            len(service_bytes),
+            service_bytes,
+            len(account_bytes),
+            account_bytes,
+            ctypes.byref(value_length),
+            ctypes.byref(value_pointer),
+            ctypes.byref(item),
+        )
+        if status == self._ITEM_NOT_FOUND:
+            return None
+        self._raise_for_status(status)
+        try:
+            return ctypes.string_at(value_pointer, value_length.value).decode("utf-8")
+        finally:
+            if value_pointer.value:
+                self._security.SecKeychainItemFreeContent(None, value_pointer)
+            if item.value:
+                self._core_foundation.CFRelease(item)
+
+    def delete(self, service: str, account: str) -> None:
+        service_bytes = self._bytes(service)
+        account_bytes = self._bytes(account)
+        item = ctypes.c_void_p()
+        status = self._security.SecKeychainFindGenericPassword(
+            None,
+            len(service_bytes),
+            service_bytes,
+            len(account_bytes),
+            account_bytes,
+            None,
+            None,
+            ctypes.byref(item),
+        )
+        if status == self._ITEM_NOT_FOUND:
+            return
+        self._raise_for_status(status)
+        try:
+            self._raise_for_status(self._security.SecKeychainItemDelete(item))
+        finally:
+            if item.value:
+                self._core_foundation.CFRelease(item)
+
+
+class MacOSCredentialStore:
+    """Store secrets in the current macOS user's login Keychain."""
+
+    _ACCOUNT = "DramaClaw"
+    _PREFIX = "DramaClaw/"
+
+    def __init__(self, backend: Any | None = None) -> None:
+        try:
+            self._backend = backend or _MacOSSecurityBackend()
+        except Exception as exc:
+            self._backend = None
+            self._backend_error = exc
+
+    @classmethod
+    def _service(cls, reference: str) -> str:
+        normalized = reference.strip().lstrip("/")
+        if not normalized:
+            raise CredentialStoreError("credential target is invalid")
+        return f"{cls._PREFIX}{normalized}"
+
+    def set(self, reference: str, value: str) -> None:
+        if not isinstance(value, str) or not value.strip():
+            raise CredentialStoreError("credential value must not be empty")
+        if self._backend is None:
+            raise CredentialStoreError("credential store unavailable") from getattr(
+                self, "_backend_error", None
+            )
+        try:
+            self._backend.set(self._service(reference), self._ACCOUNT, value.strip())
+        except Exception as exc:
+            raise CredentialStoreError("credential store unavailable") from exc
+
+    def get(self, reference: str) -> str | None:
+        if self._backend is None:
+            return None
+        try:
+            value = self._backend.get(self._service(reference), self._ACCOUNT)
+        except Exception:
+            return None
+        return value if isinstance(value, str) and value.strip() else None
+
+    def delete(self, reference: str) -> None:
+        if self._backend is None:
+            return
+        try:
+            self._backend.delete(self._service(reference), self._ACCOUNT)
+        except Exception:
+            pass
 
 
 class WindowsCredentialStore:
@@ -174,4 +392,21 @@ class WindowsCredentialStore:
                 self._write_fallbacks(values)
 
 
-__all__ = ["CredentialStoreError", "WindowsCredentialStore"]
+def create_credential_store(
+    path: str | Path | None = None,
+    *,
+    platform: str | None = None,
+    macos_backend: Any | None = None,
+) -> MacOSCredentialStore | WindowsCredentialStore:
+    """Create the credential store supported by the current operating system."""
+    if (platform or sys.platform) == "darwin":
+        return MacOSCredentialStore(backend=macos_backend)
+    return WindowsCredentialStore(path)
+
+
+__all__ = [
+    "CredentialStoreError",
+    "MacOSCredentialStore",
+    "WindowsCredentialStore",
+    "create_credential_store",
+]

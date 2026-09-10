@@ -28,6 +28,7 @@ services:
       # ce-data volume even when .env.example sets the relative value "output".
       NOVELVIDEO_OUTPUT_DIR: /data/output
       NOVELVIDEO_STATE_DIR: /data/state
+      NOVELVIDEO_PUBLIC_HOST: "${ST_BIND_HOST:-127.0.0.1}"
       DRAMACLAW_CHAT_BACKEND: hermes
       HERMES_CLI_PATH: /root/.local/bin/hermes
       # 内置 newapi 网关：后端服务端调用走容器内网，覆盖 .env 里的外部网关地址，
@@ -42,7 +43,7 @@ services:
     # 宿主发布端口可配，便于一机多套（每套换 ST_API_PORT + 换 -p 项目名）。
     # 冒号右侧 8780 是容器内端口，固定不变（web 经内部网络访问它）。
     ports:
-      - "${ST_API_PORT:-8780}:8780"
+      - "${ST_BIND_HOST:-127.0.0.1}:${ST_API_PORT:-8780}:8780"
     volumes:
       - ce-data:/data
       - newapi-data:/newapi-data
@@ -60,7 +61,7 @@ services:
       SQL_DSN: ""
     # 一机多套时换 ST_NEWAPI_PORT；冒号右侧 3000 是容器内端口，固定不变。
     ports:
-      - "${ST_NEWAPI_PORT:-3000}:3000"
+      - "${ST_BIND_HOST:-127.0.0.1}:${ST_NEWAPI_PORT:-3000}:3000"
     volumes:
       - newapi-data:/data
     healthcheck:
@@ -83,7 +84,7 @@ services:
       BACKEND_PORT: "8780"
     # 浏览器打开的就是这个端口（默认 8080）。一机多套时换 ST_WEB_PORT。
     ports:
-      - "${ST_WEB_PORT:-8080}:80"
+      - "${ST_BIND_HOST:-127.0.0.1}:${ST_WEB_PORT:-8080}:80"
     depends_on:
       - api
 

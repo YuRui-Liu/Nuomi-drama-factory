@@ -113,13 +113,17 @@ def test_reference_snapshot_wins_over_legacy_selection(tmp_path):
     value = narrative_group._generation_input(payload)
 
     assert value.references == (formal,)
-    assert value.warnings == ("snapshot warning",)
+    assert value.warnings == (
+        "snapshot warning",
+        "legacy reference snapshot missing semantic mapping; references remain usable without prompt labels",
+    )
     assert value.reference_audit == {
         "snapshot_id": "refsnap_test",
         "formal": 1,
         "temporary": 0,
         "fallback": 0,
         "ignored": 1,
+        "mapping_missing": 1,
     }
 
 
@@ -144,6 +148,7 @@ def test_reference_snapshot_audit_counts_each_resolution(tmp_path):
         "temporary": 1,
         "fallback": 1,
         "ignored": 1,
+        "mapping_missing": 3,
     }
 
 
