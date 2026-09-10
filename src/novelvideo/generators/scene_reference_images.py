@@ -112,6 +112,7 @@ async def _call_grsai_image_api(
     from novelvideo.media_capabilities.runtime.grsai_execution import (
         execute_grsai_generation,
     )
+    from novelvideo.shared.billing_errors import InsufficientCreditsError
 
     runtime = load_grsai_runtime_configuration(
         get_media_capability_store(),
@@ -132,6 +133,8 @@ async def _call_grsai_image_api(
     try:
         result = await execute_grsai_generation(runtime, request)
         return result.content, "", ""
+    except InsufficientCreditsError:
+        raise
     except Exception as exc:
         return None, "", f"GRSAI image generation failed: {_grsai_error_detail(exc)}"
 

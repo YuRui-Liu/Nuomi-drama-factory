@@ -74,7 +74,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     from novelvideo.task_backend.runners import scene_reference
 
     scene = NovelScene(name="大厅", description="地下大厅")
-    calls: dict[str, object] = {"clear_stale": []}
+    calls: dict[str, object] = {"clear_stale": [], "generate": []}
 
     def scene_slot(scene_name: str, kind: str) -> str:
         calls.setdefault("slot_factory", []).append((scene_name, kind))
@@ -101,7 +101,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
             calls["sqlite_closed"] = True
 
     async def fake_generate(**kwargs):
-        calls["generate"] = kwargs
+        calls["generate"].append(kwargs)
         output = Path(kwargs["output_path_override"])
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"png")
@@ -141,6 +141,11 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
             "avoid_instructions": "text",
         },
     )
+    project_config = {"scene_image_selection": "nano-banana-2"}
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file",
+        lambda *_args: dict(project_config),
+    )
 
     ctx = SimpleNamespace(
         owner_project_label="frank/demo",
@@ -154,6 +159,7 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
             "payload": {
                 "scene_name": scene.name,
                 "kind": "master",
+                "model": "gpt-image-2-vip",
                 "output_dir": str(tmp_path),
             }
         },
@@ -166,9 +172,9 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert (tmp_path / "assets" / "scenes" / "大厅" / "master.png").read_bytes() == b"png"
     assert calls["sqlite_initialized"] is True
     assert calls["sqlite_closed"] is True
-    assert calls["generate"]["provider"] == "grsai"
-    assert calls["generate"]["model"] == "gpt-image-2"
-    assert "versions" in str(calls["generate"]["output_path_override"])
+    assert calls["generate"][0]["provider"] == "grsai"
+    assert calls["generate"][0]["model"] == "gpt-image-2-vip"
+    assert "versions" in str(calls["generate"][0]["output_path_override"])
     assert calls["clear_stale"] == [("大厅", "master")]
     assert calls["slot_factory"] == [("大厅", "master")]
 
@@ -184,6 +190,10 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert version.generation_metadata["canonical_path"] == (
         "assets/scenes/大厅/master.png"
     )
+    assert version.generation_metadata["provider"] == "grsai"
+    assert version.generation_metadata["requested_model"] == "gpt-image-2-vip"
+    assert version.generation_metadata["resolved_model"] == "gpt-image-2-vip"
+    assert version.generation_metadata["resolution_source"] == "explicit"
 
     second = await scene_reference._run_scene_reference_asset(
         {
@@ -202,5 +212,23 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert second["adoption_status"] == "candidate"
     assert second["version_id"] != result["version_id"]
     assert second_slot.current_version_id == result["version_id"]
+    assert calls["generate"][1]["model"] == "nano-banana-2"
+    second_version = _second_versions[second["version_id"]]
+    assert second_version.generation_metadata["requested_model"] == "nano-banana-2"
+    assert second_version.generation_metadata["resolved_model"] == "nano-banana-2"
+    assert second_version.generation_metadata["resolution_source"] == "project"
     assert calls["clear_stale"] == [("大厅", "master")]
     assert calls["slot_factory"] == [("大厅", "master"), ("大厅", "master")]
+
+    project_config["scene_image_selection"] = "outside-catalog-model"
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await scene_reference._run_scene_reference_asset(
+            {
+                "payload": {
+                    "scene_name": scene.name,
+                    "kind": "master",
+                    "output_dir": str(tmp_path),
+                }
+            },
+            ctx,
+        )

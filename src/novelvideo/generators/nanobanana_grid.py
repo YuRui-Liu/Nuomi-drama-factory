@@ -3289,23 +3289,61 @@ async def _call_newapi_image_api(
     """Route legacy image callers to GRSAI when its runtime is configured."""
     import httpx
 
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    from novelvideo.media_capabilities.image.catalog import (
+        ImageModelSelectionKind,
+        classify_image_model_selection,
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
+    from novelvideo.media_capabilities.runtime.configuration import (
+        load_grsai_runtime_configuration,
+    )
+
+    requested_model = str(model or "").strip()
+    legacy_selections = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    requested_kind = classify_image_model_selection(
+        requested_model,
+        legacy_values=legacy_selections,
+    )
+    if requested_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported GRSAI image model: {requested_model}")
+
     try:
         from novelvideo.api.deps import (
             get_media_capability_store,
             get_media_credential_resolver,
         )
-        from novelvideo.media_capabilities.runtime.configuration import (
-            load_grsai_runtime_configuration,
-        )
 
         grsai_runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-    except Exception:
+    except Exception as exc:
+        if requested_kind is ImageModelSelectionKind.GRSAI:
+            raise RuntimeError("GRSAI runtime is unavailable") from exc
+        logger.warning(
+            "GRSAI runtime unavailable for legacy image selection %r; "
+            "falling back to DramaClawAPI: %s",
+            requested_model,
+            exc,
+        )
         grsai_runtime = None
 
     if grsai_runtime is not None:
         from novelvideo.generators.scene_reference_images import _call_grsai_image_api
+
+        grsai_model = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model="",
+            runtime_model=grsai_runtime.model,
+            legacy_values=legacy_selections,
+        ).model
 
         normalized_refs: list[tuple[str, bytes, str]] = []
         for index, item in enumerate(reference_images or []):
@@ -3316,7 +3354,7 @@ async def _call_newapi_image_api(
             else:
                 normalized_refs.append((f"reference_{index}", item[0], str(item[1])))
         return await _call_grsai_image_api(
-            model=grsai_runtime.model,
+            model=grsai_model,
             prompt=prompt,
             reference_images=normalized_refs or None,
             image_config=image_config or {},

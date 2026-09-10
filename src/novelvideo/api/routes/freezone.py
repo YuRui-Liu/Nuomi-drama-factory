@@ -25,6 +25,8 @@ from fastapi.responses import FileResponse
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import (
+    get_media_capability_store,
+    get_media_credential_resolver,
     make_cognee_store_for_context,
     make_sqlite_store,
     make_sqlite_store_for_context,
@@ -77,7 +79,6 @@ from novelvideo.api.schemas import (
     ProjectionStatusRequest,
     PushRequest,
 )
-from novelvideo.config import IMAGE_GENERATION_SELECTIONS, image_generation_selection_options
 from novelvideo.director_world import DirectorWorldService
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
@@ -238,6 +239,9 @@ from novelvideo.freezone.video_node import (
     validate_omni_reference_limits,
 )
 from novelvideo.models import CharacterIdentity, beat_scene_id
+from novelvideo.media_capabilities.image.catalog import list_image_models
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
+from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.project_config import (
     load_effective_narration_style_for_voice,
     load_narrator_reference_audio,
@@ -6545,23 +6549,22 @@ async def freezone_video_models(
 async def freezone_image_models(
     project: str,
     user: dict = Depends(get_api_user),
+    store: MediaCapabilityStore = Depends(get_media_capability_store),
+    resolver: CredentialResolver = Depends(get_media_credential_resolver),
 ):
     """图片处理：返回和 NovelVideo 图片模型下拉一致的可见模型。"""
     await _resolve_freezone_project(project, user, required_role="viewer")
-    options = image_generation_selection_options()
-    data = []
-    for key, label in options.items():
-        entry = IMAGE_GENERATION_SELECTIONS.get(key, {})
-        data.append(
-            {
-                "id": key,
-                "providerId": entry.get("provider", "newapi"),
-                "provider": entry.get("provider", "newapi"),
-                "apiModel": key,
-                "api_model": key,
-                "label": label,
-            }
-        )
+    data = [
+        {
+            "id": item.id,
+            "providerId": item.provider_id,
+            "provider": item.provider,
+            "apiModel": item.id,
+            "api_model": item.id,
+            "label": item.label,
+        }
+        for item in list_image_models(store, resolver)
+    ]
     return {"ok": True, "data": data}
 
 

@@ -198,10 +198,11 @@ def m04_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(project_config, "STATE_DIR", tmp_path / "state", raising=False)
     monkeypatch.setattr(
         characters,
-        "character_image_selection_options",
-        lambda: {"mock": "Mock Image"},
+        "list_image_models",
+        lambda _store, _resolver: (
+            SimpleNamespace(id="gpt-image-2", label="gpt-image-2"),
+        ),
     )
-    monkeypatch.setattr(characters, "get_character_image_selection", lambda: "mock")
     monkeypatch.setattr(characters, "get_image_usage_summary", lambda **_: {"total": 0})
     monkeypatch.setattr(characters, "load_project_config", lambda *_: {"visual_style": "mock"})
     monkeypatch.setattr(characters, "load_project_config_file", lambda *_: {})
@@ -359,6 +360,12 @@ def m04_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             generation.get_api_user,
         ):
             app.dependency_overrides[dep] = lambda user=user: user
+        app.dependency_overrides[characters.get_media_capability_store] = lambda: (
+            object()
+        )
+        app.dependency_overrides[characters.get_media_credential_store] = lambda: (
+            SimpleNamespace(get=lambda _reference: "test-only-key")
+        )
         return TestClient(app), task_backend, project_dir
 
     return build
@@ -405,13 +412,20 @@ def test_m04_l2_exercises_all_57_endpoint_contracts(m04_client_factory):
     _assert_ok(client.get(f"/api/v1/projects/{_PROJECT}/characters"))
     _assert_ok(client.post(f"/api/v1/projects/{_PROJECT}/characters", json={"name": "秦昭"}))
     _assert_ok(client.post(f"/api/v1/projects/{_PROJECT}/characters/build"))
-    _assert_ok(client.get(f"/api/v1/projects/{_PROJECT}/character-image-selection"))
-    _assert_ok(
+    character_image_selection = _assert_ok(
+        client.get(f"/api/v1/projects/{_PROJECT}/character-image-selection")
+    )
+    assert character_image_selection["data"] == {
+        "character_image_selection": "gpt-image-2",
+        "options": {"gpt-image-2": "gpt-image-2"},
+    }
+    updated_character_image_selection = _assert_ok(
         client.patch(
             f"/api/v1/projects/{_PROJECT}/character-image-selection",
-            json={"character_image_selection": "mock"},
+            json={"character_image_selection": "gpt-image-2"},
         )
     )
+    assert updated_character_image_selection["data"] == character_image_selection["data"]
     _assert_ok(client.get(f"/api/v1/projects/{_PROJECT}/character-image-usage"))
     _assert_ok(client.get(f"/api/v1/projects/{_PROJECT}/characters/{_CHARACTER}/identities"))
     _assert_ok(

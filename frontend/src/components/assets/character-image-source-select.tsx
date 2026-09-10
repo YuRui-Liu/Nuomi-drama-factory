@@ -38,9 +38,11 @@ export function CharacterImageSourceSelect({
   const selection = selectionQuery.data?.data.image_source_selection ?? "";
   const options = selectionQuery.data?.data.options ?? {};
   const optionEntries = Object.entries(options);
-  const selectedLabel = options[selection] ?? selection;
+  const hasNoOptions = Boolean(selectionQuery.data) && optionEntries.length === 0;
+  const selectedLabel = hasNoOptions ? "" : (options[selection] ?? selection);
   const isDisabled =
     disabled ||
+    hasNoOptions ||
     selectionQuery.isLoading ||
     (selectionQuery.isFetching && !selectionQuery.data) ||
     updateSelection.isPending;
@@ -74,7 +76,10 @@ export function CharacterImageSourceSelect({
         </span>
         <span className="shrink-0 text-muted-foreground/50">&nbsp;·&nbsp;</span>
         <SelectValue>
-          {selectedLabel || t("characters.imageSource.loading")}
+          {selectedLabel ||
+            (hasNoOptions
+              ? t("characters.imageSource.unavailable")
+              : t("characters.imageSource.loading"))}
         </SelectValue>
       </SelectTrigger>
       <SelectContent

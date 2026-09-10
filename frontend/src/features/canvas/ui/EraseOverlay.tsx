@@ -10,6 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { NodeToolbar as ReactFlowNodeToolbar, Position, useViewport } from '@xyflow/react';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowUp,
   Brush,
@@ -45,6 +46,7 @@ import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
 import {
   NODE_GENERATE_BUTTON_BASE_CLASS,
   NODE_CREDIT_PILL_FLAT_CLASS,
+  NODE_GENERATE_BUTTON_DISABLED_CLASS,
   NODE_GENERATE_BUTTON_ENABLED_CLASS,
 } from './nodeControlStyles';
 import { CreditCostPill } from '@/components/credits/credit-visual';
@@ -103,6 +105,7 @@ function imageModelSupportsQuality(apiModel: string | null | undefined): boolean
 }
 
 export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayProps) => {
+  const { t } = useTranslation();
   const addNode = useCanvasStore((state) => state.addNode);
   const addEdge = useCanvasStore((state) => state.addEdge);
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
@@ -133,8 +136,13 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
   const [imageSize, setImageSize] = useState<string>('2K');
   const [numImages, setNumImages] = useState<number>(1);
   const [aspectRatio, setAspectRatio] = useState<FreezoneRedrawAspectRatio>('16:9');
-  const { models: imageModels } = useFreezoneImageModels();
+  const { models: imageModels, isLoading: imageModelsLoading } = useFreezoneImageModels();
   const selectedModel = imageModels[0];
+  const modelAvailabilityReason = !selectedModel
+    ? t(imageModelsLoading
+      ? 'characters.imageSource.loading'
+      : 'characters.imageSource.unavailable')
+    : null;
   const creditCost = useGenerationCreditCost('image_selection', selectedModel?.apiModel ?? null, {
     surface: 'canvas',
     params: imageModelSupportsQuality(selectedModel?.apiModel)
@@ -506,6 +514,7 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
 
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
+    if (!selectedModel) return;
     const project = readUrl().project;
     if (!project) {
       setError('当前 URL 没有 project，无法提交');
@@ -572,6 +581,7 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
     numImages,
     onClose,
     runEraseGeneration,
+    selectedModel,
     setSelectedNode,
     submitting,
     updateNodeData,
@@ -739,9 +749,14 @@ export const EraseOverlay = memo(({ node, imageSource, onClose }: EraseOverlayPr
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting || !imageDims}
-            className={`ml-1 shrink-0 ${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS} disabled:cursor-not-allowed disabled:opacity-50`}
-            title="提交擦除"
+            disabled={submitting || !imageDims || !selectedModel}
+            className={`ml-1 shrink-0 ${NODE_GENERATE_BUTTON_BASE_CLASS} ${
+              selectedModel
+                ? NODE_GENERATE_BUTTON_ENABLED_CLASS
+                : NODE_GENERATE_BUTTON_DISABLED_CLASS
+            } disabled:cursor-not-allowed disabled:opacity-50`}
+            aria-label={modelAvailabilityReason ?? '提交擦除'}
+            title={modelAvailabilityReason ?? '提交擦除'}
           >
             <ArrowUp className="h-4 w-4" />
           </button>

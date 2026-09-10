@@ -40,17 +40,6 @@ def _prop_reference_prompt(*, style: str, visual_prompt: str) -> str:
     )
 
 
-def _resolve_grsai_prop_model(requested_model: str, runtime_model: str) -> str:
-    """Keep UI selection keys out of the provider-facing GRSAI model field."""
-    from novelvideo.config import IMAGE_GENERATION_SELECTIONS
-
-    requested = str(requested_model or "").strip()
-    effective_runtime = str(runtime_model or "").strip()
-    if not requested or requested in IMAGE_GENERATION_SELECTIONS:
-        return effective_runtime
-    return requested
-
-
 def _register_prop_candidate(
     *,
     ctx: ProjectContext,
@@ -61,6 +50,9 @@ def _register_prop_candidate(
     prompt: str,
     model: str,
     source_attempt_id: str | None,
+    requested_model: str = "",
+    resolved_model: str = "",
+    resolution_source: str = "",
 ) -> dict[str, str]:
     from novelvideo.production_workflow import (
         ProductionWorkflowStore,
@@ -100,6 +92,9 @@ def _register_prop_candidate(
                     "prop_type": str(getattr(prop, "prop_type", "") or "object"),
                     "provider": "grsai",
                     "model": model,
+                    "requested_model": requested_model or model,
+                    "resolved_model": resolved_model or model,
+                    "resolution_source": resolution_source,
                     "aspect_ratio": "16:9",
                     "panel_layout": ["front", "side", "back"],
                     "prompt_snapshot": prompt,
@@ -148,6 +143,15 @@ async def _run_prop_reference_asset(
 ) -> dict[str, Any] | None:
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    from novelvideo.media_capabilities.image.catalog import (
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
+    from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
@@ -180,10 +184,23 @@ async def _run_prop_reference_asset(
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-        model = _resolve_grsai_prop_model(
-            str(payload.get("model") or ""),
-            runtime.model,
+        requested_model = str(payload.get("model") or "").strip()
+        project_model = str(
+            load_project_config_file(ctx.owner_username, ctx.project_name).get(
+                "prop_image_selection"
+            )
+            or ""
+        ).strip()
+        resolution = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model=project_model,
+            runtime_model=runtime.model,
+            legacy_values=legacy_image_model_values(
+                IMAGE_GENERATION_SELECTIONS,
+                LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            ),
         )
+        model = resolution.model
         prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
         result_path = await _generate_grsai_image(
             model=model,
@@ -205,6 +222,9 @@ async def _run_prop_reference_asset(
                 envelope.get("task_id") or envelope.get("job_id") or ""
             )
             or None,
+            requested_model=resolution.requested_model,
+            resolved_model=resolution.model,
+            resolution_source=resolution.resolution_source,
         )
         return {
             "prop_name": prop.name,
@@ -228,8 +248,17 @@ def run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[st
 
 
 async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    from novelvideo.config import (
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.image.catalog import (
+        legacy_image_model_values,
+        resolve_grsai_image_model,
+    )
     from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.project_config import load_project_config_file
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.task_backend.runners.character_image import _generate_grsai_image
 
@@ -237,6 +266,17 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
     style = str(payload.get("style") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
     manager = get_task_manager()
+    project_model = str(
+        load_project_config_file(ctx.owner_username, ctx.project_name).get(
+            "prop_image_selection"
+        )
+        or ""
+    ).strip()
+    requested_model = str(payload.get("model") or "").strip()
+    legacy_selections = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
 
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
@@ -267,10 +307,13 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             runtime = load_grsai_runtime_configuration(
                 get_media_capability_store(), get_media_credential_resolver()
             )
-            model = _resolve_grsai_prop_model(
-                str(payload.get("model") or ""),
-                runtime.model,
+            resolution = resolve_grsai_image_model(
+                requested_model=requested_model,
+                project_model=project_model,
+                runtime_model=runtime.model,
+                legacy_values=legacy_selections,
             )
+            model = resolution.model
             visual_prompt = prop.visual_prompt or prop.description or prop.name
             prompt = _prop_reference_prompt(
                 style=style,
@@ -296,6 +339,9 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
                         envelope.get("task_id") or envelope.get("job_id") or ""
                     )
                     or None,
+                    requested_model=resolution.requested_model,
+                    resolved_model=resolution.model,
+                    resolution_source=resolution.resolution_source,
                 )
                 generated += 1
         return {"generated": generated}

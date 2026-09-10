@@ -20,12 +20,19 @@ from pydantic import BaseModel, Field
 from novelvideo.character_visual.identity_sheet import IDENTITY_SHEET_LAYOUT_VERSION
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
+    LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     get_character_image_selection,
     get_image_config,
     get_style_preset,
     normalize_character_image_selection,
 )
 from novelvideo.ports import get_usage_meter
+from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+from novelvideo.media_capabilities.image.catalog import (
+    ImageModelSelectionKind,
+    classify_image_model_selection,
+    legacy_image_model_values,
+)
 from novelvideo.shared.billing_errors import is_insufficient_credits_error
 
 
@@ -1132,8 +1139,32 @@ async def generate_character_reference_unified(
     Returns:
         生成的图片路径列表
     """
-    # model 参数优先，否则从配置读取；支持旧值 nanobanana/seedream 和统一 selection key。
-    model = normalize_character_image_selection(model or get_character_image_selection())
+    # 原始 GRSAI ID 是执行模型，不是 legacy selection key，必须原样保留。
+    explicit_model = str(model or "").strip()
+    legacy_models = {
+        entry["model"]: selection
+        for selection, entry in IMAGE_GENERATION_SELECTIONS.items()
+    }
+    explicit_kind = classify_image_model_selection(
+        explicit_model,
+        legacy_values=legacy_image_model_values(
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        ),
+    )
+    if explicit_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported image model: {explicit_model}")
+    if explicit_kind is ImageModelSelectionKind.GRSAI:
+        requested_model = explicit_model
+    elif explicit_kind is ImageModelSelectionKind.LEGACY:
+        requested_model = legacy_models.get(explicit_model, explicit_model)
+    else:
+        requested_model = get_character_image_selection()
+    model = (
+        requested_model
+        if requested_model in GRSAI_IMAGE_MODELS
+        else normalize_character_image_selection(requested_model)
+    )
 
     if use_mock:
         generator = MockImageGenerator()
@@ -1180,6 +1211,52 @@ async def generate_character_reference_unified(
             return []
         except ValueError as e:
             print(f"[Character] NanoBanana 配置错误: {e}")
+            return []
+
+    if model in GRSAI_IMAGE_MODELS:
+        try:
+            from novelvideo.api.deps import (
+                get_media_capability_store,
+                get_media_credential_resolver,
+            )
+            from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
+            from novelvideo.media_capabilities.runtime.configuration import (
+                load_grsai_runtime_configuration,
+            )
+
+            runtime = load_grsai_runtime_configuration(
+                get_media_capability_store(), get_media_credential_resolver()
+            )
+            generator = NanoBananaCharacterGenerator(
+                config={
+                    "provider": "newapi",
+                    "api_key": runtime.api_key,
+                    "model": model,
+                    "base_url": runtime.account.base_url or "",
+                }
+            )
+            result = await generator.generate_character_portrait(
+                character_name=character_name,
+                character_prompt=appearance_prompt,
+                character_tag=character_tag,
+                output_dir=output_dir,
+                style=style,
+                ethnicity=ethnicity,
+                prompt_only=prompt_only,
+                project_dir=project_dir,
+                usage_task_type=usage_task_type,
+                usage_scope=usage_scope,
+                identity_name=identity_name,
+            )
+            if result.success:
+                return result.reference_paths
+            if is_insufficient_credits_error(message=result.error or ""):
+                raise RuntimeError("INSUFFICIENT_CREDITS")
+            if raise_on_error:
+                raise RuntimeError(result.error or f"{model} 生成失败")
+            return []
+        except ValueError as e:
+            print(f"[Character] {model} 配置错误: {e}")
             return []
 
     if model in IMAGE_GENERATION_SELECTIONS:
@@ -1290,8 +1367,32 @@ async def generate_identity_image_unified(
     Returns:
         默认保持旧版 bool 契约；``structured=True`` 返回带 v2 元数据的字典。
     """
-    # model 参数优先，否则从配置读取；支持旧值 nanobanana/seedream 和统一 selection key。
-    model = normalize_character_image_selection(model or get_character_image_selection())
+    # 原始 GRSAI ID 是执行模型，不是 legacy selection key，必须原样保留。
+    explicit_model = str(model or "").strip()
+    legacy_models = {
+        entry["model"]: selection
+        for selection, entry in IMAGE_GENERATION_SELECTIONS.items()
+    }
+    explicit_kind = classify_image_model_selection(
+        explicit_model,
+        legacy_values=legacy_image_model_values(
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        ),
+    )
+    if explicit_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported image model: {explicit_model}")
+    if explicit_kind is ImageModelSelectionKind.GRSAI:
+        requested_model = explicit_model
+    elif explicit_kind is ImageModelSelectionKind.LEGACY:
+        requested_model = legacy_models.get(explicit_model, explicit_model)
+    else:
+        requested_model = get_character_image_selection()
+    model = (
+        requested_model
+        if requested_model in GRSAI_IMAGE_MODELS
+        else normalize_character_image_selection(requested_model)
+    )
 
     if model == "nanobanana":
         try:
@@ -1337,6 +1438,65 @@ async def generate_identity_image_unified(
             return {"success": False, "error": str(e)} if structured else False
         except ValueError as e:
             print(f"[Identity] NanoBanana 配置错误: {e}")
+            return {"success": False, "error": str(e)} if structured else False
+
+    if model in GRSAI_IMAGE_MODELS:
+        try:
+            from novelvideo.api.deps import (
+                get_media_capability_store,
+                get_media_credential_resolver,
+            )
+            from novelvideo.generators.nanobanana_character import NanoBananaCharacterGenerator
+            from novelvideo.media_capabilities.runtime.configuration import (
+                load_grsai_runtime_configuration,
+            )
+
+            runtime = load_grsai_runtime_configuration(
+                get_media_capability_store(), get_media_credential_resolver()
+            )
+            generator = NanoBananaCharacterGenerator(
+                config={
+                    "provider": "newapi",
+                    "api_key": runtime.api_key,
+                    "model": model,
+                    "base_url": runtime.account.base_url or "",
+                }
+            )
+            result = await generator.generate_identity_with_reference(
+                character_name=character_name,
+                identity_prompt=identity_prompt,
+                reference_image_path=reference_image_path,
+                output_path=output_path,
+                character_tag=character_tag,
+                ethnicity=ethnicity,
+                style=style,
+                dry_run=dry_run,
+                project_dir=project_dir,
+                costume_image_path=costume_image_path,
+                usage_task_type=usage_task_type,
+                usage_scope=usage_scope,
+                identity_name=identity_name,
+            )
+            if dry_run:
+                return {
+                    "success": result.success,
+                    "prompt": result.prompt,
+                    "prompt_file": result.prompt_file,
+                }
+            if not result.success:
+                if is_insufficient_credits_error(message=result.error or ""):
+                    raise RuntimeError("INSUFFICIENT_CREDITS")
+                if raise_on_error:
+                    raise RuntimeError(result.error or f"{model} 身份图生成失败")
+            structured_result = {
+                "success": result.success,
+                "error": result.error,
+                "image_path": output_path if result.success else None,
+                "layout_version": IDENTITY_SHEET_LAYOUT_VERSION if result.success else None,
+            }
+            return structured_result if structured else result.success
+        except ValueError as e:
+            print(f"[Identity] {model} 配置错误: {e}")
             return {"success": False, "error": str(e)} if structured else False
 
     if model in IMAGE_GENERATION_SELECTIONS:

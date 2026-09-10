@@ -308,9 +308,32 @@ async def _run_character_image(
         ethnicity = project_config.get("ethnicity", "Chinese")
         from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
         from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
-        model = load_grsai_runtime_configuration(
+        from novelvideo.config import (
+            IMAGE_GENERATION_SELECTIONS,
+            LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+        )
+        from novelvideo.media_capabilities.image.catalog import (
+            legacy_image_model_values,
+            resolve_grsai_image_model,
+        )
+
+        runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
-        ).model
+        )
+        requested_model = str(payload.get("model") or "").strip()
+        project_model = str(
+            project_config.get("character_image_selection") or ""
+        ).strip()
+        resolution = resolve_grsai_image_model(
+            requested_model=requested_model,
+            project_model=project_model,
+            runtime_model=runtime.model,
+            legacy_values=legacy_image_model_values(
+                IMAGE_GENERATION_SELECTIONS,
+                LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+            ),
+        )
+        model = resolution.model
         from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
         visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
@@ -383,6 +406,7 @@ async def _run_character_image(
                 recipe_revision=str(
                     project_config.get("production_recipe_version") or "1"
                 ),
+                resolution=resolution,
             )
         else:
             raise RuntimeError(f"未知角色图像生成模式: {mode}")
@@ -392,6 +416,10 @@ async def _run_character_image(
             "identity_id": identity_id,
             "identity_name": identity_name,
             "path": str(output_path),
+            "provider": "grsai",
+            "requested_model": resolution.requested_model,
+            "resolved_model": resolution.model,
+            "resolution_source": resolution.resolution_source,
         }
         if mode == "identity_image":
             result.update(workflow_result)
@@ -531,6 +559,7 @@ def _register_character_state_candidate(
     generation: CharacterStateGeneration,
     source_attempt_id: str | None,
     recipe_revision: str,
+    resolution: Any | None = None,
 ) -> dict[str, Any]:
     from novelvideo.production_workflow import ProductionWorkflowStore
 
@@ -600,6 +629,16 @@ def _register_character_state_candidate(
                     "quality_report": quality_report,
                     "raw_candidate_path": raw_candidate_path,
                     "recipe_revision": recipe_revision,
+                    **(
+                        {
+                            "provider": "grsai",
+                            "requested_model": resolution.requested_model,
+                            "resolved_model": resolution.model,
+                            "resolution_source": resolution.resolution_source,
+                        }
+                        if resolution is not None
+                        else {}
+                    ),
                     "reference_sources": reference_sources,
                     "canonical_path": canonical_path,
                 },
