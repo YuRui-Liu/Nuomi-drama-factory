@@ -25,12 +25,15 @@ export function GenerationBatchSummary({ batches }: { batches: NarrativeGenerati
           <p className="text-sm font-medium">{LAYOUT_LABEL[batch.layout]} · {batch.shot_ids.length} 个镜头</p>
           <span className="text-xs text-muted-foreground">{STATUS[batch.status ?? "pending"]}</span>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p
+          className="mt-1 text-xs text-muted-foreground"
+          title={batch.style_hash ? `风格版本：${batch.style_hash}` : undefined}
+        >
           {[batch.provider && batch.model ? `${batch.provider}/${batch.model}` : null,
             batch.requested_resolution && batch.actual_resolution
               ? `${batch.requested_resolution} → ${batch.actual_resolution}`
               : batch.requested_resolution ?? batch.actual_resolution,
-            batch.style_hash ? `style ${batch.style_hash}` : null,
+            batch.style_hash ? "风格已锁定" : null,
             batch.cleanup_reports?.length ? `亮边 ${(cleanupRatio * 100).toFixed(2)}%` : null,
           ].filter(Boolean).join(" · ")}
         </p>

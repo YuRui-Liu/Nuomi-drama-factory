@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from typing import Any, Protocol, TypeVar
 from types import SimpleNamespace
 
+from pydantic import ValidationError
 from pydantic_ai import Agent, PromptedOutput
 
 from novelvideo.knowledge_runtime.codex import (
@@ -32,7 +33,12 @@ class StructuredTextRuntime(Protocol):
     snapshot: AgentTaskRouteSnapshot
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T: ...
 
 
@@ -93,12 +99,18 @@ class CodexStructuredRuntime:
         self._backend = backend
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T:
+        kwargs = {}
+        if validation_context is not None:
+            kwargs["validation_context"] = validation_context
         return await self._backend.acreate_structured_output(
-            prompt,
-            system_prompt,
-            output_type,
+            prompt, system_prompt, output_type, **kwargs
         )
 
 
@@ -120,7 +132,12 @@ class ModelApiStructuredRuntime:
         self._agent_factory = agent_factory
 
     async def run_structured(
-        self, *, prompt: str, output_type: type[T], system_prompt: str = ""
+        self,
+        *,
+        prompt: str,
+        output_type: type[T],
+        system_prompt: str = "",
+        validation_context: dict[str, Any] | None = None,
     ) -> T:
         from novelvideo.config import get_newapi_text_pydantic_model
 
@@ -139,6 +156,8 @@ class ModelApiStructuredRuntime:
             agent_kwargs["model_settings"] = {
                 "openai_reasoning_effort": self.snapshot.reasoning_effort
             }
+        if validation_context is not None:
+            agent_kwargs["validation_context"] = validation_context
         agent = self._agent_factory(**agent_kwargs)
         result = await agent.run(prompt)
         output = getattr(result, "output", result)
@@ -173,28 +192,49 @@ class StructuredRuntimeAgent:
         output_type: type[Any],
         system_prompt: str = "",
         validation_context: dict[str, Any] | None = None,
+        output_retries: int = 0,
     ) -> None:
         self.runtime = runtime
         self.output_type = output_type
         self.system_prompt = system_prompt
         self.validation_context = validation_context
+        self.output_retries = max(0, int(output_retries))
         self.model_name = runtime.snapshot.model
 
     async def run(self, prompt: str) -> Any:
-        output = await self.runtime.run_structured(
-            prompt=prompt,
-            output_type=self.output_type,
-            system_prompt=self.system_prompt,
-        )
-        if self.validation_context is not None and hasattr(
-            self.output_type, "model_validate"
-        ):
-            payload = output.model_dump() if hasattr(output, "model_dump") else output
-            output = self.output_type.model_validate(
-                payload,
-                context=self.validation_context,
+        attempt_prompt = prompt
+        for attempt in range(self.output_retries + 1):
+            output = await self.runtime.run_structured(
+                prompt=attempt_prompt,
+                output_type=self.output_type,
+                system_prompt=self.system_prompt,
+                validation_context=self.validation_context,
             )
-        return SimpleNamespace(output=output)
+            try:
+                if self.validation_context is not None and hasattr(
+                    self.output_type, "model_validate"
+                ):
+                    payload = (
+                        output.model_dump() if hasattr(output, "model_dump") else output
+                    )
+                    output = self.output_type.model_validate(
+                        payload,
+                        context=self.validation_context,
+                    )
+            except ValidationError as exc:
+                if attempt >= self.output_retries:
+                    raise
+                error = str(exc)[:3000]
+                attempt_prompt = f"""{prompt}
+
+## 上次结构化结果未通过业务校验
+{error}
+
+请严格根据原始输入修正上述字段。禁止补写原文中不存在的实体名称，只返回符合既定 Schema 的完整结果。
+"""
+                continue
+            return SimpleNamespace(output=output)
+        raise AssertionError("unreachable")
 
 
 @contextmanager

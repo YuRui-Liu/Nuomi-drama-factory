@@ -680,12 +680,14 @@ export function useNarrativeGroupReferences(
 ) {
   return useQuery({
     queryKey: [...queryKeys.narrativeGroups(project, episode), groupId, stage, "references"],
-    queryFn: ({ signal }) => jsonWithBackendError<ApiResponse<PlannedNarrativeGroupReferencePreview>>(
-      api.get(narrativeGroupReferencePath(project, episode, groupId, stage), {
+    queryFn: ({ signal }) => jsonWithBackendError<
+      ApiResponse<PlannedNarrativeGroupReferencePreview>
+    >(api.get(
+      narrativeGroupReferencePath(project, episode, groupId, stage), {
         signal,
         throwHttpErrors: false,
-      }),
-    ),
+      },
+    )),
     enabled: enabled && !!project && episode > 0 && !!groupId,
   });
 }

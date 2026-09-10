@@ -92,6 +92,58 @@ def test_scene_and_prop_binding_projection_overlays_draft_entities():
     assert all(item.entity_id != "咖啡馆_暴雨版" for item in scene_bindings)
 
 
+def test_prop_binding_resolves_existing_asset_alias_to_canonical_id():
+    prop = NovelProp(name="功德碑", aliases=["镇河碑"])
+    requirement = SimpleNamespace(kind="prop", entity_key="镇河碑", required=True)
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=("beat-1",),
+        asset_requirements=(requirement,),
+    )
+    group = SimpleNamespace(id="group-1", dramatic_beat_ids=("beat-1",), shots=(shot,))
+    plan = SimpleNamespace(revision_id="director-r2", groups=(group,))
+
+    bindings = _episode_asset_bindings(
+        asset_kind="prop",
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        changed_entities=(prop,),
+        scenes=(),
+        props=(prop,),
+        characters=(),
+    )
+
+    assert [(item.asset_kind, item.entity_id) for item in bindings] == [
+        ("prop", "功德碑")
+    ]
+
+
+def test_prop_binding_omits_unselected_or_missing_asset_requirement():
+    prop = NovelProp(name="功德碑")
+    requirement = SimpleNamespace(kind="prop", entity_key="普通雨伞", required=True)
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=("beat-1",),
+        asset_requirements=(requirement,),
+    )
+    group = SimpleNamespace(id="group-1", dramatic_beat_ids=("beat-1",), shots=(shot,))
+    plan = SimpleNamespace(revision_id="director-r2", groups=(group,))
+
+    bindings = _episode_asset_bindings(
+        asset_kind="prop",
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        changed_entities=(),
+        scenes=(),
+        props=(prop,),
+        characters=(),
+    )
+
+    assert bindings == ()
+
+
 def test_binding_projection_retains_unchanged_full_catalog_alongside_overlay():
     requirements = (
         SimpleNamespace(kind="scene_base", entity_key="旧车站", required=True),
@@ -454,14 +506,17 @@ async def test_prop_publish_preserves_concurrent_notes(tmp_path):
     assert persisted.notes == "用户并发备注"
 
 
-def test_episode_asset_planners_use_dedicated_text_task_route():
+def test_only_scene_planner_uses_asset_planning_text_task_route():
     import novelvideo.task_backend.runners.episode_assets  # noqa: F401
     from novelvideo.task_backend.registry import get_project_task_runner_registration
 
-    for task_type in ("episode_scene_planner", "episode_prop_planner"):
-        registration = get_project_task_runner_registration(task_type)
-        assert registration is not None
-        assert registration.text_task_role == "episode_asset_planning"
+    scene_registration = get_project_task_runner_registration("episode_scene_planner")
+    prop_registration = get_project_task_runner_registration("episode_prop_planner")
+
+    assert scene_registration is not None
+    assert scene_registration.text_task_role == "episode_asset_planning"
+    assert prop_registration is not None
+    assert prop_registration.text_task_role is None
 
 
 @pytest.mark.asyncio

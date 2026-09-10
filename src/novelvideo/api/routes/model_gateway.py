@@ -95,7 +95,7 @@ TEXT_TASK_ROLE_LABELS = {
     "episode_normalization": "剧本解析与规范化",
     "knowledge_extraction": "知识图谱与角色/场景/道具提取",
     "director_plan": "整集导演规划",
-    "episode_asset_planning": "场景/道具规划",
+    "episode_asset_planning": "场景规划",
     "h3_episode_pack": "MiniMax H3 整集提示词",
     "h3_segment_repair": "MiniMax H3 局部修复",
 }

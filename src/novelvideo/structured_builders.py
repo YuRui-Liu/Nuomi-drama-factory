@@ -375,7 +375,7 @@ async def publish_structured_publication(
             await _write_character(db, item.model)
         for item in publication.scenes:
             await _write_scene(db, item.model)
-        if run_id:
+        if run_id and (publication.characters or publication.scenes):
             from novelvideo.structured_evidence import write_publication_evidence
             await write_publication_evidence(db, run_id=run_id, publication=publication)
         if before_commit is not None:

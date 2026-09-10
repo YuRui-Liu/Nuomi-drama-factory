@@ -84,7 +84,7 @@ def test_fallback_episode_range_keeps_exact_original_offsets() -> None:
 
 
 @pytest.mark.asyncio
-async def test_source_publication_maps_role_face_and_build(
+async def test_source_publication_contains_only_episodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from novelvideo import structured_extraction
@@ -97,14 +97,15 @@ async def test_source_publication_maps_role_face_and_build(
     )
 
     publication = await build_structured_publication_from_source(SOURCE, "drama")
-    character = publication.characters[0].model
-    assert character.role == "主角"
-    assert character.face_prompt == "短发，眉眼清晰"
-    assert character.body_type == "清瘦高挑"
+    assert len(publication.episodes) == 1
+    assert publication.episodes[0].model.raw_content.startswith("第一集")
+    assert publication.episodes[0].model.character_names == []
+    assert publication.characters == ()
+    assert publication.scenes == ()
 
 
 async def _seed_previous_formal_results(store) -> None:
-    from novelvideo.models import NovelCharacter, NovelEpisode, NovelScene
+    from novelvideo.models import NovelCharacter, NovelEpisode, NovelProp, NovelScene
 
     store.save_novel_content("上一版导入原文")
     await store.add_episode(
@@ -116,45 +117,31 @@ async def _seed_previous_formal_results(store) -> None:
     await store.add_scene(
         NovelScene(name="旧场景", environment_prompt="用户旧场景")
     )
+    await store.add_prop(NovelProp(name="旧道具", description="用户旧道具"))
     await store.load_graph_state()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_target", ["scene", "evidence"])
-async def test_production_structured_ingest_rolls_back_all_formal_results_on_failure(
+async def test_production_structured_ingest_rolls_back_episode_on_failure(
     structured_store,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_target: str,
 ) -> None:
-    from novelvideo import structured_extraction
     from novelvideo.structured_ingest import ingest_source_text_structured
 
     store = structured_store
     await _seed_previous_formal_results(store)
     source_path = tmp_path / "source.txt"
     source_path.write_text(SOURCE, encoding="utf-8")
-    monkeypatch.setattr(
-        structured_extraction,
-        "extract_characters_from_chunks",
-        lambda *_args, **_kwargs: _fake_character_result(),
-    )
     db = await store._ensure_db()
-    if failure_target == "scene":
-        await db.execute(
-            """CREATE TRIGGER fail_structured_scene BEFORE INSERT ON scenes
-            WHEN NEW.name = '天台'
-            BEGIN SELECT RAISE(ABORT, 'scene publish failed'); END"""
-        )
-    else:
-        await db.execute(
-            """CREATE TRIGGER fail_structured_evidence BEFORE INSERT ON entity_evidence
-            BEGIN SELECT RAISE(ABORT, 'evidence publish failed'); END"""
-        )
+    await db.execute(
+        """CREATE TRIGGER fail_structured_episode BEFORE UPDATE ON episodes
+        WHEN NEW.number = 1
+        BEGIN SELECT RAISE(ABORT, 'episode publish failed'); END"""
+    )
     await db.commit()
     transitions: list[str] = []
 
-    with pytest.raises(Exception, match=f"{failure_target} publish failed"):
+    with pytest.raises(Exception, match="episode publish failed"):
         await ingest_source_text_structured(
             store,
             str(source_path),
@@ -167,6 +154,7 @@ async def test_production_structured_ingest_rolls_back_all_formal_results_on_fai
     assert store.get_character("林默").role == "用户设定"
     assert store.get_character("林默").face_prompt == "用户面容"
     assert (await store.get_scene("旧场景")).environment_prompt == "用户旧场景"
+    assert (await store.get_prop("旧道具")).description == "用户旧道具"
     assert await store.get_scene("天台") is None
     assert (Path(store.project_dir) / "novel.txt").read_text(encoding="utf-8") == "上一版导入原文"
     assert transitions[-1] == "structured_failed"
@@ -499,7 +487,7 @@ async def test_ready_failure_does_not_rollback_or_fail_a_new_running_run(
 
 
 @pytest.mark.asyncio
-async def test_production_structured_ingest_publishes_complete_bundle_before_ready(
+async def test_production_structured_ingest_publishes_only_episodes_before_ready(
     structured_store,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -525,15 +513,57 @@ async def test_production_structured_ingest_publishes_complete_bundle_before_rea
         transition=lambda _state, status, **_kwargs: transitions.append(status),
     )
 
-    assert result["published"] == {"episodes": 1, "characters": 1, "scenes": 1}
+    assert result["published"] == {"episodes": 1}
     assert store.get_episode(1).raw_content.startswith("第一集")
-    assert store.get_episode(1).character_names == ["林默"]
-    assert (await store.get_scene("天台")).time_of_day == "夜"
+    assert store.get_episode(1).character_names == []
+    assert await store.get_scene("天台") is None
+    assert (await store.get_scene("旧场景")).environment_prompt == "用户旧场景"
+    assert (await store.get_prop("旧道具")).description == "用户旧道具"
     assert store.get_character("林默").role == "用户设定"
     assert store.get_character("林默").face_prompt == "用户面容"
-    assert await store.list_entity_evidence("character", "林默")
+    assert await store.list_entity_evidence("character", "林默") == []
     assert transitions[-1] == "structured_ready"
     assert (Path(store.state_dir) / "episode_import.lock").is_file()
+
+
+@pytest.mark.asyncio
+async def test_episode_only_ingest_preserves_active_character_and_scene_evidence(
+    structured_store,
+    tmp_path: Path,
+) -> None:
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    store = structured_store
+    await _seed_previous_formal_results(store)
+    evidence = [
+        {
+            "chunk_id": "legacy-0001",
+            "source_start": 0,
+            "source_end": 4,
+            "evidence_kind": "source_quote",
+            "evidence_text": "既有证据",
+        }
+    ]
+    await store.replace_entity_evidence(
+        "legacy-character-run", "character", "林默", evidence
+    )
+    await store.replace_entity_evidence(
+        "legacy-scene-run", "scene", "旧场景", evidence
+    )
+    source_path = tmp_path / "source.txt"
+    source_path.write_text(SOURCE, encoding="utf-8")
+
+    await ingest_source_text_structured(
+        store,
+        str(source_path),
+        spine_template="drama",
+        transition=lambda *_args, **_kwargs: None,
+    )
+
+    character_evidence = await store.list_entity_evidence("character", "林默")
+    scene_evidence = await store.list_entity_evidence("scene", "旧场景")
+    assert [item["evidence_text"] for item in character_evidence] == ["既有证据"]
+    assert [item["evidence_text"] for item in scene_evidence] == ["既有证据"]
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Package, Plus, Sparkles } from "lucide-react";
+import { FileUp, Loader2, Package, Plus, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
+import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { PropAssetCard } from "@/components/assets/prop-asset-card";
 import { PropReferenceVersions } from "@/components/assets/prop-reference-versions";
@@ -343,6 +344,7 @@ export function PropsPanel({
   const props = useProps(project);
   const createProp = useCreateProp(project);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<PropAsset | null>(null);
   const updateProp = useUpdateProp(project, editing?.name ?? "");
   const deleteProp = useDeleteProp(project);
@@ -454,6 +456,10 @@ export function PropsPanel({
           refreshing={props.isRefetching}
           data-props-refresh
         />
+        <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}>
+          <FileUp className="size-3.5" />
+          {t("assets.import.button.prop")}
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -492,6 +498,9 @@ export function PropsPanel({
           </Tooltip>
         </TooltipProvider>
       </AssetHeaderActions>
+      {importOpen ? (
+        <AssetImportDialog project={project} assetType="prop" open onOpenChange={setImportOpen} />
+      ) : null}
       {refIndex.isError ? (
         <p role="alert" className="px-6 pt-3 text-xs text-destructive">
           {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}

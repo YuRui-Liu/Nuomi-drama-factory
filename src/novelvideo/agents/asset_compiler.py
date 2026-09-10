@@ -76,6 +76,7 @@ def _asset_planning_agent(
             output_type=output_type,
             system_prompt=system_prompt,
             validation_context=validation_context,
+            output_retries=2,
         )
     return Agent(
         get_newapi_text_pydantic_model(model_env, default_model),
@@ -316,6 +317,18 @@ class DerivedSceneRequirement(BaseModel):
     )
     lighting: str = Field(default="", description="派生场景特有的光照条件；没有就留空")
     atmosphere: str = Field(default="", description="派生场景特有的氛围/天气/空气感；没有就留空")
+    evidence_scene_headers: list[str] = Field(
+        default_factory=list,
+        description="出现该状态的不同场次头，必须逐字复制输入中的场次头",
+    )
+    affects_whole_environment: bool = Field(
+        default=False,
+        description="是否改变整个场景的环境或空间连续性，而非局部物体/人物/光线",
+    )
+    requires_shared_plate: bool = Field(
+        default=False,
+        description="是否无法仅靠叙事组/分镜提示词准确表达，确实需要跨场次共享参考图",
+    )
 
 
 PROP_OUTPUT_SCHEMA_HINT = (
@@ -469,15 +482,17 @@ BASE_SCENE_RECONCILE_PROMPT = """# 你是影视项目基础场景资产校对员
 
 DERIVED_SCENE_PROMPT = """# 你是派生场景分析师
 
-任务：基于当前场景块文本，判断该基础场景在本集是否出现了稳定、可复用、应提升为独立场景的视觉状态。
+任务：基于同一基础场景在整集中的全部场次块，判断是否存在跨场次持续、应提升为独立场景资产的整体环境状态。
 
 规则：
-- 只输出稳定视觉状态，不要把普通时间、镜头、景别、机位写成独立场景
-- 普通“白天/夜晚/黄昏”只属于 time_of_day，不要机械派生
-- 但如果光线/天气/损坏/陈设变化是需要审批、跨镜头复用、会作为视频参考图的稳定 plate，可以输出派生场景
-- 正确示例：蒸汽弥漫、雪景、战后版、凌乱版、节日装饰版
-- 正确示例：暴雨夜霓虹版、停电手电筒版、漏水冷光版
-- 错误示例：白天、夜晚、俯拍、特写、黑屏、第一人称
+- 每个候选必须在至少两个不同场次块中持续出现，并逐字返回对应 evidence_scene_headers
+- 只有影响整个环境或空间连续性时 affects_whole_environment 才为 true
+- 只有无法靠叙事组/分镜提示词准确表达、确实需要共享参考图时 requires_shared_plate 才为 true
+- 普通时段、天气细节、局部积水、临时灯光、门窗开合、人物行为、文字显隐及对象损坏进度都不创建变体
+- 镜头、景别、机位和一次性剧情瞬间不创建变体
+- 正确示例：跨多个场次持续封闭入口和通道的“封控版”、跨多个场次持续改变整体空间的“战后版”
+- 错误示例：暴雨积水版、油灯侧光版、朱红姓名渗显版、残字显露版、白天、特写
+- 如果当前变化能写入生成提示词，就不要输出候选
 - 没有就输出空列表
 """
 
@@ -1326,6 +1341,8 @@ class AssetCompiler:
             scene.name: scene for scene in planned_scene_writes or []
         }
         time_plate_counts = self._time_plate_counts(scene_blocks)
+        blocks_by_base: dict[str, list[SceneBlock]] = {}
+        base_scenes: dict[str, NovelScene] = {}
 
         for block in scene_blocks:
             location = str(block.location or "").strip()
@@ -1370,13 +1387,9 @@ class AssetCompiler:
                         planned_scene_writes.append(existing)
                     pending_scene_map[existing.name] = existing
 
-            derived_requirements = (
-                []
-                if self.director_plan is not None
-                else await self._analyze_derived_scenes(existing.name, block)
-            )
-            normalized_derived = self._build_derived_scene_specs(derived_requirements)
             self._add_to_scene_menu(existing.name, scene_menu, seen_scene_ids)
+            blocks_by_base.setdefault(existing.name, []).append(block)
+            base_scenes[existing.name] = existing
             for scene_time, count in sorted(time_plate_counts.get(location, {}).items()):
                 if count < 2:
                     continue
@@ -1394,23 +1407,42 @@ class AssetCompiler:
                     base_scene_id=existing.name,
                     time_of_day=scene_time,
                 )
-            for requirement in normalized_derived:
-                derived_scene = self._build_derived_scene(existing, requirement)
-                existing_derived = pending_scene_map.get(
-                    derived_scene.name
-                ) or await self.cognee_store.sqlite_store.get_scene(derived_scene.name)
-                if not existing_derived:
-                    pending_scene_map[derived_scene.name] = derived_scene
-                    pending_scenes.append(derived_scene)
-                self._add_to_scene_menu(
-                    derived_scene.name,
-                    scene_menu,
-                    seen_scene_ids,
-                    base_scene_id=existing.name,
-                    variant_id=requirement.label,
+            log(f"  场景: {existing.name}")
+
+        if self.director_plan is None:
+            for base_name, blocks in blocks_by_base.items():
+                derived_requirements = await self._analyze_derived_scenes(
+                    base_name, blocks
                 )
-            extra = f" ({len(normalized_derived)} 派生场景)" if normalized_derived else ""
-            log(f"  场景: {existing.name}{extra}")
+                valid_scene_headers = {
+                    str(block.header_line or "").strip()
+                    for block in blocks
+                    if str(block.header_line or "").strip()
+                }
+                normalized_derived = self._build_derived_scene_specs(
+                    derived_requirements,
+                    valid_scene_headers=valid_scene_headers,
+                )
+                existing = base_scenes[base_name]
+                for requirement in normalized_derived:
+                    derived_scene = self._build_derived_scene(existing, requirement)
+                    existing_derived = pending_scene_map.get(
+                        derived_scene.name
+                    ) or await self.cognee_store.sqlite_store.get_scene(
+                        derived_scene.name
+                    )
+                    if not existing_derived:
+                        pending_scene_map[derived_scene.name] = derived_scene
+                        pending_scenes.append(derived_scene)
+                    self._add_to_scene_menu(
+                        derived_scene.name,
+                        scene_menu,
+                        seen_scene_ids,
+                        base_scene_id=existing.name,
+                        variant_id=requirement.label,
+                    )
+                if normalized_derived:
+                    log(f"  场景变体: {existing.name} ({len(normalized_derived)} 个)")
 
         if self.director_plan is not None:
             director_scenes = await self._project_director_scene_variants(
@@ -1768,22 +1800,29 @@ class AssetCompiler:
     async def _analyze_derived_scenes(
         self,
         scene_name: str,
-        block: SceneBlock,
+        blocks: list[SceneBlock],
     ) -> list[DerivedSceneRequirement]:
-        content_lines = [line for line in block.lines if str(line or "").strip()]
-        has_env_desc = any(str(line or "").strip().startswith("△") for line in content_lines)
-        if len(content_lines) < 3 and not has_env_desc:
+        scene_headers = {
+            str(block.header_line or "").strip()
+            for block in blocks
+            if str(block.header_line or "").strip()
+        }
+        if len(scene_headers) < 2:
             return []
-        block_text = "\n".join(content_lines)
-        if not block_text:
+        sections: list[str] = []
+        for block in blocks:
+            content_lines = [line for line in block.lines if str(line or "").strip()]
+            if not content_lines:
+                continue
+            sections.append(
+                f"### {block.header_line or '无场次头'}\n" + "\n".join(content_lines)
+            )
+        if not sections:
             return []
-        task = f"""分析场景 `{scene_name}` 在当前场景块里的视觉状态。
+        task = f"""分析基础场景 `{scene_name}` 在本集全部场次块中的整体视觉状态。
 
-## 场次头
-{block.header_line or "无"}
-
-## 当前场景块文本
-{block_text}
+## 同一基础场景的全部场次块
+{chr(10).join(sections)}
 """
         agent = _asset_planning_agent(
             model_env="EPISODE_SCENE_PLANNER_MODEL",
@@ -1808,7 +1847,6 @@ class AssetCompiler:
         prop_menu: list[PropMenuItem] = []
         seen_prop_ids: set[str] = set()
         existing_props = await self.cognee_store.sqlite_store.list_props()
-        episode_selected_props: dict[str, str] = {}
 
         for block_index, block in enumerate(scene_blocks):
             block_text = "\n".join(
@@ -1817,46 +1855,14 @@ class AssetCompiler:
             if not block_text.strip():
                 continue
 
-            preselected = self._preselect_existing_props(block_text, existing_props)
-            prior_reuse = self._prior_selected_props_in_block(block, episode_selected_props)
-            if prior_reuse and self._is_short_prior_prop_reuse_block(block, preselected):
-                requirements = prior_reuse
-            else:
-                try:
-                    requirements = await self._analyze_block_props(
-                        block,
-                        preselected,
-                        sorted(set(episode_selected_props.values())),
-                    )
-                except ValueError as exc:
-                    log(f"  道具[{block_index + 1}]: {exc}")
-                    raise
-            requirements = self._filter_background_props(requirements, block_text)
-            for req in requirements:
-                existing = await self._find_matching_prop(req.prop_name)
-                if existing:
-                    prop_id = existing.name
-                    source = "复用"
-                else:
-                    prop_id = self._match_selected_prop(req.prop_name, episode_selected_props)
-                    source = "本集复用" if prop_id else "本集局部"
-                prop_id = prop_id or str(req.prop_name or "").strip()
-                if not prop_id:
-                    continue
-                if existing is None and planned_prop_writes is not None:
-                    existing = NovelProp(
-                        name=prop_id,
-                        prop_type=str(req.prop_type or "").strip() or "object",
-                        visual_prompt=str(req.visual_prompt or "").strip(),
-                        description=str(req.description or "").strip(),
-                        owner=str(req.owner or "").strip(),
-                    )
-                    await self.cognee_store.sqlite_store.add_prop(existing)
-                    planned_prop_writes.append(existing)
-                episode_selected_props[str(req.prop_name or "").strip()] = prop_id
-                episode_selected_props[prop_id] = prop_id
-                self._add_to_prop_menu(prop_id, prop_menu, seen_prop_ids, existing, req)
-                log(f"  道具[{block_index + 1}]: {prop_id} [{source}]")
+            for existing in self._preselect_existing_props(block_text, existing_props):
+                self._add_to_prop_menu(
+                    existing.name,
+                    prop_menu,
+                    seen_prop_ids,
+                    existing=existing,
+                )
+                log(f"  道具[{block_index + 1}]: {existing.name} [已有资产]")
 
         return prop_menu
 
@@ -2244,9 +2250,12 @@ class AssetCompiler:
             notes=f"由 AssetCompiler 从场景 {parent_scene.name} 创建的空 plate 槽位 (ep{episode.number})",
         )
 
-    @staticmethod
+    @classmethod
     def _normalize_derived_scenes(
+        cls,
         derived_scenes: list[DerivedSceneRequirement],
+        *,
+        valid_scene_headers: set[str],
     ) -> list[DerivedSceneRequirement]:
         forbidden_exact = {
             "日",
@@ -2282,9 +2291,24 @@ class AssetCompiler:
             "过肩",
         }
         forbidden_contains = ("内景", "外景", "第一人称", "POV")
+        prompt_level_contains = (
+            "暴雨",
+            "积水",
+            "雨夜",
+            "侧光",
+            "油灯",
+            "显字",
+            "显露",
+            "姓名",
+            "残字",
+            "满碑",
+            "开门",
+            "关门",
+        )
         normalized: list[DerivedSceneRequirement] = []
         seen: set[str] = set()
-        for raw in derived_scenes or []:
+        ranked: list[tuple[int, int, DerivedSceneRequirement]] = []
+        for index, raw in enumerate(derived_scenes or []):
             label = str(getattr(raw, "label", "") or "").strip()
             if not label:
                 continue
@@ -2292,27 +2316,62 @@ class AssetCompiler:
                 continue
             if any(token in label for token in forbidden_contains):
                 continue
-            if label in seen:
-                continue
-            seen.add(label)
             description = str(getattr(raw, "description", "") or "").strip()
             lighting = str(getattr(raw, "lighting", "") or "").strip()
             atmosphere = str(getattr(raw, "atmosphere", "") or "").strip()
-            normalized.append(
-                DerivedSceneRequirement(
-                    label=label,
-                    description=description or label,
-                    lighting=lighting,
-                    atmosphere=atmosphere,
+            candidate_text = " ".join((label, description, lighting, atmosphere))
+            if any(token in candidate_text for token in prompt_level_contains):
+                continue
+            if not bool(getattr(raw, "affects_whole_environment", False)):
+                continue
+            if not bool(getattr(raw, "requires_shared_plate", False)):
+                continue
+            evidence_headers = list(
+                dict.fromkeys(
+                    str(header or "").strip()
+                    for header in getattr(raw, "evidence_scene_headers", []) or []
+                    if str(header or "").strip() in valid_scene_headers
                 )
             )
+            if len(evidence_headers) < 2:
+                continue
+            semantic_key = re.sub(r"[\s_\-]+", "", label)
+            semantic_key = semantic_key.removesuffix("版")
+            if semantic_key in seen:
+                continue
+            seen.add(semantic_key)
+            ranked.append(
+                (
+                    -len(evidence_headers),
+                    index,
+                    DerivedSceneRequirement(
+                        label=label,
+                        description=description or label,
+                        lighting=lighting,
+                        atmosphere=atmosphere,
+                        evidence_scene_headers=evidence_headers,
+                        affects_whole_environment=True,
+                        requires_shared_plate=True,
+                    ),
+                )
+            )
+        for _coverage, _index, requirement in sorted(ranked, key=lambda item: item[:2]):
+            normalized.append(requirement)
+            if len(normalized) == 2:
+                break
         return normalized
 
     @classmethod
     def _build_derived_scene_specs(
-        cls, derived_scenes: list[DerivedSceneRequirement]
+        cls,
+        derived_scenes: list[DerivedSceneRequirement],
+        *,
+        valid_scene_headers: set[str],
     ) -> list[DerivedSceneRequirement]:
-        return cls._normalize_derived_scenes(derived_scenes)
+        return cls._normalize_derived_scenes(
+            derived_scenes,
+            valid_scene_headers=valid_scene_headers,
+        )
 
     @staticmethod
     def _add_to_scene_menu(

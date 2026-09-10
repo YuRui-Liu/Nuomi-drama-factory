@@ -171,8 +171,8 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
   if (typeof detail === "string" && detail.trim()) {
     return new BackendStatusError(detail, status, body);
   }
-  if (nestedMessage) {
-    return new BackendStatusError(nestedMessage, status, body);
+  if (message !== fallback) {
+    return new BackendStatusError(message, status, body);
   }
   return null;
 }
@@ -191,7 +191,8 @@ async function safeJsonFromResponse(response: Response): Promise<unknown> {
 
 async function backendError(error: unknown): Promise<Error | null> {
   if (!(error instanceof HTTPError)) return null;
-  const body = await safeJsonFromResponse(error.response);
+  const body = (error as HTTPError & { data?: unknown }).data
+    ?? await safeJsonFromResponse(error.response);
   return errorFromBackendBody(error.response.status, body, error.message);
 }
 

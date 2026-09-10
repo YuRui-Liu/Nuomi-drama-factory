@@ -79,6 +79,7 @@ import { useTaskStream } from "@/hooks/use-task-stream";
 import { TaskControllerProvider } from "@/components/episode/task-controller-provider";
 import { SlidingTabs } from "@/components/nav/sliding-tabs";
 import { CharacterSearch, filterCharacters } from "@/components/assets/character-search";
+import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { CharacterStatsStrip } from "@/components/assets/character-stats-strip";
 import { CharacterVoicePanel } from "@/components/assets/character-voice-panel";
@@ -543,6 +544,7 @@ function CharactersPageHeader({
   rebuildDisabled,
   buildCharactersCostDisplay,
   onAdd,
+  onImport,
   project,
   activeTab,
   setImageModel,
@@ -551,6 +553,7 @@ function CharactersPageHeader({
   rebuildDisabled: boolean;
   buildCharactersCostDisplay?: string | null;
   onAdd: () => void;
+  onImport: () => void;
   project: string;
   activeTab: AssetTab;
   setImageModel: (model: string) => void;
@@ -595,6 +598,15 @@ function CharactersPageHeader({
               disabled={rebuildDisabled}
               onSelectionChange={setImageModel}
             />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onImport}
+              className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}
+            >
+              <Upload className="size-3.5" />
+              {t("assets.import.button.character")}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -3195,6 +3207,7 @@ function CharactersPageContent() {
   const [buildStarted, setBuildStarted] = useState(false);
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [attempts, setAttempts] = useState<Record<string, number>>({});
   const deepLink = useAssetsDeepLink();
   const ownerIndex = useIdentityOwnerIndex(project);
@@ -3312,6 +3325,7 @@ function CharactersPageContent() {
         rebuildDisabled={buildChars.isPending || buildStarted}
         buildCharactersCostDisplay={buildCharactersCostDisplay}
         onAdd={() => setAddDialogOpen(true)}
+        onImport={() => setImportDialogOpen(true)}
         project={project}
         activeTab={assetTab}
         setImageModel={setImageModel}
@@ -3399,6 +3413,14 @@ function CharactersPageContent() {
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
       />
+      {importDialogOpen ? (
+        <AssetImportDialog
+          project={project}
+          assetType="character"
+          open
+          onOpenChange={setImportDialogOpen}
+        />
+      ) : null}
       </div>
     </AssetHeaderActionsSlotProvider>
   );

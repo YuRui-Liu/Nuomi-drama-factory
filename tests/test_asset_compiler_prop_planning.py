@@ -25,11 +25,14 @@ STANDARD_DRAMA_PROP_SCRIPT = """第1集 开始
 
 
 class _FakeSQLiteStore:
+    def __init__(self, props: list | None = None):
+        self.props = list(props or [])
+
     async def load_working_content(self, episode_number: int) -> str:
         return ""
 
     async def list_props(self) -> list:
-        return []
+        return list(self.props)
 
     async def get_prop(self, name: str):
         return None
@@ -39,9 +42,9 @@ class _FakeSQLiteStore:
 
 
 class _FakeCogneeStore:
-    def __init__(self, raw_content: str = ""):
+    def __init__(self, raw_content: str = "", props: list | None = None):
         self.raw_content = raw_content
-        self.sqlite_store = _FakeSQLiteStore()
+        self.sqlite_store = _FakeSQLiteStore(props)
         self.updated: list[tuple[int, dict]] = []
 
     async def load_episode_content(self, episode_number: int) -> str:
@@ -96,24 +99,34 @@ async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
     import novelvideo.agents.asset_compiler as asset_compiler
 
     captured: dict[str, object] = {}
+    prompts: list[str] = []
 
     class FakeRuntime:
         snapshot = SimpleNamespace(model="gpt-5.6-sol")
 
-        async def run_structured(self, *, prompt, output_type, system_prompt=""):
+        async def run_structured(
+            self,
+            *,
+            prompt,
+            output_type,
+            system_prompt="",
+            validation_context=None,
+        ):
+            prompts.append(prompt)
             captured.update(
                 prompt=prompt,
                 output_type=output_type,
                 system_prompt=system_prompt,
             )
+            prop_name = "深灰功德碑" if len(prompts) == 1 else "功德碑"
             return output_type.model_construct(
                 requirements=[
                     asset_compiler.PropRequirement(
-                        prop_name="强光手电",
+                        prop_name=prop_name,
                         prop_type="object",
                         owner="沈月白",
-                        visual_prompt="黑色金属筒身，冷白光束",
-                        description="地下室照明",
+                        visual_prompt="深灰石材碑身，表面布满雨水冲刷痕迹",
+                        description="被众人从暴雨中推入屋檐下",
                     )
                 ]
             )
@@ -129,112 +142,53 @@ async def test_prop_planner_uses_scoped_codex_runtime_without_text_api_key(
     )
     compiler = asset_compiler.AssetCompiler(_FakeCogneeStore())
     block = asset_compiler.SceneBlock(
-        header_line="1-1、地下室 深夜 内",
-        lines=["△昏暗地下室里尘埃翻涌。", "沈月白：把强光手电给我。"],
+        header_line="1-1、谢家碑坊 暴雨夜 外",
+        lines=["△众人合力把功德碑从暴雨中推入屋檐下。", "石九扶住碑身。"],
     )
 
     requirements = await compiler._analyze_block_props(block, [], [])
 
-    assert [item.prop_name for item in requirements] == ["强光手电"]
+    assert [item.prop_name for item in requirements] == ["功德碑"]
+    assert len(prompts) == 2
+    assert "深灰功德碑" in prompts[1]
+    assert "未在当前场景块文本中出现" in prompts[1]
     assert captured["output_type"] is asset_compiler.BlockPropRequirements
     assert captured["system_prompt"] == asset_compiler.BLOCK_PROP_PROMPT
 
 
 @pytest.mark.asyncio
-async def test_standard_drama_prop_planner_reports_string_list_validation_error(
-    monkeypatch,
-):
+async def test_build_prop_plan_draft_only_links_existing_prop_without_model(monkeypatch):
     import novelvideo.agents.asset_compiler as asset_compiler
 
-    captured: dict[str, object] = {}
+    async def fail_analyze(*args, **kwargs):
+        raise AssertionError("prop planning must not call a text model")
 
-    def fake_newapi_model(model_env: str, default_model: str) -> str:
-        return "prop-model"
-
-    def fake_settings(thinking_env: str, default_thinking_level: str) -> dict[str, str]:
-        return {"openai_reasoning_effort": default_thinking_level}
-
-    class FakeAgent:
-        def __init__(self, model, **kwargs):
-            captured["agent_kwargs"] = kwargs
-
-        async def run(self, task: str):
-            captured["task"] = task
-            kwargs = captured["agent_kwargs"]
-            output_type = kwargs["output_type"]
-            return SimpleNamespace(
-                output=output_type.model_validate(
-                    {"requirements": ["手电筒", "羊皮笔记本"]},
-                    context=kwargs["validation_context"],
-                )
-            )
-
-    monkeypatch.setattr(asset_compiler, "get_newapi_text_pydantic_model", fake_newapi_model)
-    monkeypatch.setattr(
-        asset_compiler,
-        "get_newapi_text_pydantic_model_settings",
-        fake_settings,
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fail_analyze)
+    existing = asset_compiler.NovelProp(
+        name="强光手电",
+        aliases=["冷白手电"],
+        visual_prompt="黑色金属筒身，冷白光束",
     )
-    monkeypatch.setattr(asset_compiler, "Agent", FakeAgent)
-
-    store = _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT)
-    compiler = asset_compiler.AssetCompiler(store)
-    logs: list[str] = []
-
-    with pytest.raises(ValueError, match="requirements 必须是对象数组"):
-        await compiler.compile_episode_props(
-            SimpleNamespace(number=1, beat_source_text=STANDARD_DRAMA_PROP_SCRIPT),
-            on_log=logs.append,
-        )
-
-    assert logs[0] == "[AssetCompiler] 共识别 1 个场景块"
-    assert any("requirements 必须是对象数组" in log for log in logs)
-    assert store.updated == []
-    assert "1-1、地下室 深夜 内" in captured["task"]
-    assert "强光手电" in captured["task"]
-
-
-@pytest.mark.asyncio
-async def test_build_prop_plan_draft_creates_entity_without_persistent_writes(monkeypatch):
-    import novelvideo.agents.asset_compiler as asset_compiler
-
-    async def fake_analyze(self, block, preselected, prior_selected_prop_ids):
-        return [
-            asset_compiler.PropRequirement(
-                prop_name="强光手电",
-                prop_type="object",
-                owner="沈月白",
-                visual_prompt="黑色金属筒身，冷白光束",
-                description="地下室照明",
-            )
-        ]
-
-    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fake_analyze)
-    store = _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT)
+    store = _FakeCogneeStore(
+        raw_content=STANDARD_DRAMA_PROP_SCRIPT,
+        props=[existing],
+    )
     compiler = asset_compiler.AssetCompiler(store)
     episode = SimpleNamespace(number=1, prop_menu=[])
 
     draft = await compiler.build_prop_plan_draft(episode)
 
-    assert [prop.name for prop in draft.props] == ["强光手电"]
+    assert draft.props == ()
     assert [item.prop_id for item in draft.prop_menu] == ["强光手电"]
-    assert draft.new_count == 1
+    assert draft.new_count == 0
     assert draft.prop_baseline_digests == {}
     assert store.updated == []
 
 
 @pytest.mark.asyncio
-async def test_build_prop_plan_draft_keeps_director_requirements_in_analyzer_input(
-    monkeypatch,
-):
+async def test_load_prop_scene_blocks_keeps_director_requirements_in_matching_input():
     import novelvideo.agents.asset_compiler as asset_compiler
     from novelvideo.director_plan.models import AssetRequirement
-
-    captured_blocks: list[asset_compiler.SceneBlock] = []
-
-    async def fake_analyze(self, block, preselected, prior_selected_prop_ids):
-        captured_blocks.append(block)
-        return []
 
     requirement = AssetRequirement(
         kind="prop",
@@ -256,19 +210,66 @@ async def test_build_prop_plan_draft_keeps_director_requirements_in_analyzer_inp
             )
         ]
     )
-    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fake_analyze)
     compiler = asset_compiler.AssetCompiler(
         _FakeCogneeStore(raw_content=STANDARD_DRAMA_PROP_SCRIPT),
         director_plan=director_plan,
     )
 
-    await compiler.build_prop_plan_draft(SimpleNamespace(number=1, prop_menu=[]))
+    captured_blocks = await compiler._load_prop_scene_blocks(
+        SimpleNamespace(number=1, prop_menu=[])
+    )
 
     assert len(captured_blocks) == 1
     block = captured_blocks[0]
     assert block.location == "谢家碑坊"
     assert "谢怀安 举起龙纹玉佩" in block.lines
     assert "龙纹玉佩 玉质温润，有旧裂纹" in block.lines
+
+
+@pytest.mark.asyncio
+async def test_prop_plan_matches_existing_alias_and_deduplicates_across_blocks(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def fail_analyze(*args, **kwargs):
+        raise AssertionError("prop planning must not call a text model")
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fail_analyze)
+    existing = asset_compiler.NovelProp(
+        name="功德碑",
+        aliases=["镇河碑"],
+        visual_prompt="深灰石材碑身",
+    )
+    store = _FakeCogneeStore(props=[existing])
+    compiler = asset_compiler.AssetCompiler(store)
+    blocks = [
+        asset_compiler.SceneBlock(lines=["众人把镇河碑推入屋檐下。"]),
+        asset_compiler.SceneBlock(lines=["石九再次扶住镇河碑。"]),
+    ]
+
+    menu = await compiler._compile_props(blocks, SimpleNamespace(number=1), lambda _: None)
+
+    assert [item.prop_id for item in menu] == ["功德碑"]
+
+
+@pytest.mark.asyncio
+async def test_prop_plan_succeeds_with_empty_menu_when_no_existing_asset_matches(monkeypatch):
+    import novelvideo.agents.asset_compiler as asset_compiler
+
+    async def fail_analyze(*args, **kwargs):
+        raise AssertionError("prop planning must not call a text model")
+
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fail_analyze)
+    store = _FakeCogneeStore(
+        raw_content="1-1、碑坊 夜 外\n石九拿起一把普通雨伞。",
+        props=[asset_compiler.NovelProp(name="功德碑")],
+    )
+    compiler = asset_compiler.AssetCompiler(store)
+
+    draft = await compiler.build_prop_plan_draft(SimpleNamespace(number=1, prop_menu=[]))
+
+    assert draft.props == ()
+    assert draft.prop_menu == ()
+    assert draft.new_count == 0
 
 
 @pytest.mark.asyncio
@@ -515,33 +516,26 @@ async def test_short_block_reuses_prior_episode_prop_without_ai_reanalysis(monke
             ],
         ),
     ]
-    calls: list[str] = []
+    async def fail_analyze(*args, **kwargs):
+        raise AssertionError("prop planning must not call a text model")
 
-    async def fake_analyze(self, block, preselected, prior_selected_prop_ids):
-        calls.append(block.header_line)
-        if "梦境火场" in block.header_line:
-            raise ValueError("should not call AI for short prior-prop-only block")
-        return [
-            asset_compiler.PropRequirement(
-                prop_name="笔记本",
-                prop_type="object",
-                owner="陆辰",
-                visual_prompt="一本有些陈旧的硬皮笔记本，纸页泛黄",
-                description="陆辰查看预言的笔记本",
+    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fail_analyze)
+
+    store = _FakeCogneeStore(
+        props=[
+            asset_compiler.NovelProp(
+                name="命运笔记本",
+                aliases=["笔记本", "羊皮笔记本"],
             )
         ]
-
-    monkeypatch.setattr(asset_compiler.AssetCompiler, "_analyze_block_props", fake_analyze)
-
-    store = _FakeCogneeStore()
+    )
     compiler = asset_compiler.AssetCompiler(store)
     logs: list[str] = []
 
     prop_menu = await compiler._compile_props(blocks, SimpleNamespace(number=1), logs.append)
 
-    assert [item.prop_id for item in prop_menu] == ["笔记本"]
-    assert calls == ["场次（4）地点：旧书店一楼，晨，内；出场人物：陆辰"]
+    assert [item.prop_id for item in prop_menu] == ["命运笔记本"]
     assert logs == [
-        "  道具[1]: 笔记本 [本集局部]",
-        "  道具[2]: 笔记本 [本集复用]",
+        "  道具[1]: 命运笔记本 [已有资产]",
+        "  道具[2]: 命运笔记本 [已有资产]",
     ]
