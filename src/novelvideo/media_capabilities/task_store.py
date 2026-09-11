@@ -625,6 +625,53 @@ class TaskStore:
         effective_params: JsonValue | None = None,
         input_asset_hashes: JsonValue | None = None,
     ) -> MediaAttemptRecord:
+        return self._start_attempt(
+            task_id,
+            provider_account_id,
+            implementation_snapshot=implementation_snapshot,
+            workflow_version=workflow_version,
+            effective_params=effective_params,
+            input_asset_hashes=input_asset_hashes,
+            retry_terminal=False,
+        )
+
+    def start_retry_attempt(
+        self,
+        task_id: str,
+        provider_account_id: str,
+        *,
+        implementation_snapshot: JsonValue | None = None,
+        workflow_version: JsonValue | None = None,
+        effective_params: JsonValue | None = None,
+        input_asset_hashes: JsonValue | None = None,
+    ) -> MediaAttemptRecord:
+        """Start a new generation after an explicitly retryable terminal outcome.
+
+        This is intentionally separate from ``start_attempt`` so terminal task
+        history remains immutable and callers cannot accidentally revive a
+        successful or ambiguous provider submission.
+        """
+        return self._start_attempt(
+            task_id,
+            provider_account_id,
+            implementation_snapshot=implementation_snapshot,
+            workflow_version=workflow_version,
+            effective_params=effective_params,
+            input_asset_hashes=input_asset_hashes,
+            retry_terminal=True,
+        )
+
+    def _start_attempt(
+        self,
+        task_id: str,
+        provider_account_id: str,
+        *,
+        implementation_snapshot: JsonValue | None,
+        workflow_version: JsonValue | None,
+        effective_params: JsonValue | None,
+        input_asset_hashes: JsonValue | None,
+        retry_terminal: bool,
+    ) -> MediaAttemptRecord:
         task_id = _validated_text(task_id, "task_id")
         account_id = _validated_text(provider_account_id, "provider_account_id")
         implementation_json = (
@@ -657,6 +704,15 @@ class TaskStore:
                     )
                 _reject_sensitive_keys(inherited)
                 implementation_json = task["implementation_snapshot_json"]
+            current_task_status = MediaTaskStatus(task["status"])
+            if retry_terminal and current_task_status not in {
+                MediaTaskStatus.FAILED,
+                MediaTaskStatus.CANCELLED,
+                MediaTaskStatus.QUALITY_FAILED,
+            }:
+                raise InvalidTaskTransition(
+                    f"task status {current_task_status.value} cannot be explicitly retried"
+                )
             active = connection.execute(
                 """
                 SELECT 1 FROM media_attempts
@@ -667,7 +723,10 @@ class TaskStore:
             ).fetchone()
             if active is not None:
                 raise TaskStoreConflictError(f"task {task_id} already has an active attempt")
-            self._validate_transition(MediaTaskStatus(task["status"]), MediaTaskStatus.PREPARING)
+            if not retry_terminal:
+                self._validate_transition(
+                    current_task_status, MediaTaskStatus.PREPARING
+                )
             attempt_no = int(task["attempt_count"]) + 1
             timestamp = _iso(_now())
             attempt_id = str(uuid4())
@@ -698,7 +757,9 @@ class TaskStore:
             connection.execute(
                 """
                 UPDATE media_tasks
-                SET status = ?, attempt_count = ?, updated_at = ?
+                SET status = ?, attempt_count = ?, output_json = '{}',
+                    next_run_at = NULL, retry_from_status = NULL,
+                    updated_at = ?, completed_at = NULL
                 WHERE id = ?
                 """,
                 (MediaTaskStatus.PREPARING.value, attempt_no, timestamp, task_id),

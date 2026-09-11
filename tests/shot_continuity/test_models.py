@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -24,6 +25,8 @@ from novelvideo.shot_continuity import (
     canonical_sha256,
 )
 from novelvideo.shot_continuity.hashing import canonical_json
+from novelvideo.shot_continuity.mode_selector import select_h3_mode
+from novelvideo.shot_continuity.models import H3ModeInputSnapshot
 
 
 def _contract(*, revision: int = 1, shot_id: str = "shot-1") -> ShotContinuityContract:
@@ -68,7 +71,77 @@ def _bundle(**overrides: object) -> CompiledShotBundle:
     values.update(overrides)
     values.setdefault(
         "mode_decision",
-        H3ModeDecision(requested="auto", mode=values["mode"]),
+        H3ModeDecision(
+            requested="auto",
+            mode=values["mode"],
+            reason_codes=("h3.auto_i2va",),
+        ),
+    )
+    if "bundle_sha256" not in values:
+        unhashed_bundle = CompiledShotBundle.model_construct(**values)
+        values["bundle_sha256"] = canonical_sha256(
+            unhashed_bundle.model_dump(mode="json", exclude={"bundle_sha256"})
+        )
+    return CompiledShotBundle(**values)
+
+
+def _reference() -> H3ReferenceBinding:
+    return H3ReferenceBinding(
+        reference_id="reference-1",
+        source_kind="character_identity",
+        subject_index=1,
+        picture_index=1,
+        label="hero",
+        asset=FrameEvidence(asset_id="reference-frame", sha256="d" * 64),
+    )
+
+
+def _v2_bundle(mode: str, **overrides: object) -> CompiledShotBundle:
+    contract = _contract()
+    first_frame = (
+        FrameEvidence(asset_id="frame-1", sha256="a" * 64)
+        if mode in {"i2va", "fl2va"}
+        else None
+    )
+    last_frame = (
+        FrameEvidence(asset_id="frame-2", sha256="b" * 64)
+        if mode in {"fl2va", "l2va"}
+        else None
+    )
+    references = (_reference(),) if mode == "ref2va" else ()
+    values: dict[str, object] = {
+        "schema_version": 2,
+        "segment_id": "segment-v2",
+        "source_shot_ids": (contract.shot_id,),
+        "contracts": (
+            ContractRef(
+                shot_id=contract.shot_id,
+                revision=contract.revision,
+                sha256=contract.contract_sha256,
+            ),
+        ),
+        "compiler_version": 2,
+        "adapter": "h3-ref" if mode == "ref2va" else "base-h3",
+        "mode": mode,
+        "prompt": "A frozen H3 v2 bundle.",
+        "first_frame": first_frame,
+        "last_frame": last_frame,
+        "references": references,
+        "risk_report": _risk_report(),
+    }
+    values.update(overrides)
+    values.setdefault(
+        "mode_decision",
+        H3ModeDecision(
+            requested=mode,  # type: ignore[arg-type]
+            mode=mode,  # type: ignore[arg-type]
+            reason_codes=(f"h3.explicit_{mode}",),
+            input_snapshot=H3ModeInputSnapshot(
+                has_first_frame=values.get("first_frame") is not None,
+                has_last_frame=values.get("last_frame") is not None,
+                reference_count=len(values.get("references", ())),  # type: ignore[arg-type]
+            ),
+        ),
     )
     if "bundle_sha256" not in values:
         unhashed_bundle = CompiledShotBundle.model_construct(**values)
@@ -112,7 +185,67 @@ def test_h3_mode_decision_requires_mode_even_when_it_is_none() -> None:
     with pytest.raises(ValidationError):
         H3ModeDecision(requested="auto")
 
-    assert H3ModeDecision(requested="auto", mode=None).mode is None
+    assert H3ModeDecision(
+        requested="auto",
+        mode=None,
+        blockers=("h3.unreachable_motion",),
+    ).mode is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "requested": "auto",
+            "mode": "i2va",
+            "reason_codes": ("h3.auto_i2va",),
+            "blockers": ("h3.unreachable_motion",),
+        },
+        {"requested": "auto", "mode": None},
+        {
+            "requested": "auto",
+            "mode": None,
+            "reason_codes": ("h3.auto_i2va",),
+            "blockers": ("h3.unreachable_motion",),
+        },
+    ),
+)
+def test_h3_mode_decision_rejects_contradictory_states(payload) -> None:
+    with pytest.raises(ValidationError):
+        H3ModeDecision(**payload)
+
+
+def test_h3_mode_input_snapshot_is_frozen_forbids_extra_and_validates_count() -> None:
+    snapshot = H3ModeInputSnapshot(
+        has_first_frame=True,
+        has_last_frame=False,
+        reference_count=2,
+    )
+
+    with pytest.raises(ValidationError):
+        snapshot.reference_count = 3
+    with pytest.raises(ValidationError):
+        H3ModeInputSnapshot(
+            has_first_frame=False,
+            has_last_frame=False,
+            reference_count=-1,
+        )
+    with pytest.raises(ValidationError):
+        H3ModeInputSnapshot(
+            has_first_frame=False,
+            has_last_frame=False,
+            reference_count=0,
+            paths=(),
+        )
+
+
+@pytest.mark.parametrize("mode", ["t2va", "i2va", "fl2va", "l2va", "ref2va"])
+def test_h3_mode_decision_accepts_all_official_modes(mode: str) -> None:
+    assert H3ModeDecision(
+        requested=mode,  # type: ignore[arg-type]
+        mode=mode,  # type: ignore[arg-type]
+        reason_codes=(f"h3.explicit_{mode}",),
+    ).mode == mode
 
 
 def test_planned_and_observed_carry_out_are_separate() -> None:
@@ -213,8 +346,16 @@ def test_bundle_rejects_digest_from_an_older_payload() -> None:
 @pytest.mark.parametrize(
     "mode_decision",
     [
-        H3ModeDecision(requested="auto", mode=None),
-        H3ModeDecision(requested="auto", mode="fl2va"),
+        H3ModeDecision(
+            requested="auto",
+            mode=None,
+            blockers=("h3.unreachable_motion",),
+        ),
+        H3ModeDecision(
+            requested="auto",
+            mode="fl2va",
+            reason_codes=("h3.auto_fl2va",),
+        ),
     ],
 )
 def test_bundle_requires_resolved_matching_mode_decision(
@@ -273,6 +414,203 @@ def test_h3_ref_bundle_requires_references() -> None:
         asset=FrameEvidence(asset_id="reference-frame", sha256="d" * 64),
     )
     assert _bundle(adapter="h3-ref", references=(reference,)).references == (reference,)
+
+
+@pytest.mark.parametrize("mode", ["t2va", "i2va", "fl2va", "l2va", "ref2va"])
+def test_v2_bundle_accepts_the_five_frozen_mode_contracts(mode: str) -> None:
+    bundle = _v2_bundle(mode)
+
+    assert bundle.schema_version == 2
+    assert bundle.mode == mode
+    assert bundle.bundle_sha256 == canonical_sha256(
+        bundle.model_dump(mode="json", exclude={"bundle_sha256"})
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides"),
+    [
+        ("t2va", {"first_frame": FrameEvidence(asset_id="first", sha256="1" * 64)}),
+        ("t2va", {"last_frame": FrameEvidence(asset_id="last", sha256="2" * 64)}),
+        ("t2va", {"references": (_reference(),)}),
+        ("t2va", {"adapter": "h3-ref"}),
+        ("i2va", {"first_frame": None}),
+        ("i2va", {"last_frame": FrameEvidence(asset_id="last", sha256="2" * 64)}),
+        ("i2va", {"references": (_reference(),)}),
+        ("i2va", {"adapter": "h3-ref"}),
+        ("fl2va", {"first_frame": None}),
+        ("fl2va", {"last_frame": None}),
+        ("fl2va", {"references": (_reference(),)}),
+        ("fl2va", {"adapter": "h3-ref"}),
+        ("l2va", {"last_frame": None}),
+        ("l2va", {"first_frame": FrameEvidence(asset_id="first", sha256="1" * 64)}),
+        ("l2va", {"references": (_reference(),)}),
+        ("l2va", {"adapter": "h3-ref"}),
+        ("ref2va", {"references": ()}),
+        ("ref2va", {"first_frame": FrameEvidence(asset_id="first", sha256="1" * 64)}),
+        ("ref2va", {"last_frame": FrameEvidence(asset_id="last", sha256="2" * 64)}),
+        ("ref2va", {"adapter": "base-h3"}),
+    ],
+)
+def test_v2_bundle_rejects_missing_forbidden_or_wrong_adapter_inputs(
+    mode: str,
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _v2_bundle(mode, **overrides)
+
+
+def test_v2_bundle_requires_a_frozen_input_snapshot() -> None:
+    decision = H3ModeDecision(
+        requested="i2va",
+        mode="i2va",
+        reason_codes=("h3.explicit_i2va",),
+    )
+
+    with pytest.raises(ValidationError, match="input snapshot"):
+        _v2_bundle("i2va", mode_decision=decision)
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        H3ModeInputSnapshot(
+            has_first_frame=False,
+            has_last_frame=False,
+            reference_count=0,
+        ),
+        H3ModeInputSnapshot(
+            has_first_frame=True,
+            has_last_frame=True,
+            reference_count=0,
+        ),
+        H3ModeInputSnapshot(
+            has_first_frame=True,
+            has_last_frame=False,
+            reference_count=1,
+        ),
+    ],
+)
+def test_v2_bundle_rejects_snapshot_mismatches(
+    snapshot: H3ModeInputSnapshot,
+) -> None:
+    decision = H3ModeDecision(
+        requested="i2va",
+        mode="i2va",
+        reason_codes=("h3.explicit_i2va",),
+        input_snapshot=snapshot,
+    )
+
+    with pytest.raises(ValidationError, match="input snapshot"):
+        _v2_bundle("i2va", mode_decision=decision)
+
+
+def test_v2_auto_reference_bundle_preserves_reference_priority_snapshot() -> None:
+    decision = H3ModeDecision(
+        requested="auto",
+        mode="ref2va",
+        reason_codes=("h3.auto_ref2va",),
+        input_snapshot=H3ModeInputSnapshot(
+            has_first_frame=True,
+            has_last_frame=True,
+            reference_count=1,
+        ),
+    )
+
+    bundle = _v2_bundle("ref2va", mode_decision=decision)
+
+    assert bundle.first_frame is None
+    assert bundle.last_frame is None
+    assert bundle.mode_decision.input_snapshot == decision.input_snapshot
+
+
+def test_v2_reference_bundle_accepts_a_decision_with_two_frozen_references() -> None:
+    first_reference = _reference()
+    second_reference = first_reference.model_copy(
+        update={"reference_id": "reference-2", "picture_index": 2}
+    )
+    references = (first_reference, second_reference)
+    decision = select_h3_mode(
+        requested="auto",
+        has_first_frame=False,
+        has_last_frame=False,
+        has_references=True,
+        reference_count=len(references),
+        endpoint_reachable=True,
+        exact_terminal_state=False,
+        motion_level=0,
+    )
+
+    bundle = _v2_bundle(
+        "ref2va",
+        references=references,
+        mode_decision=decision,
+    )
+
+    assert bundle.references == references
+    assert bundle.mode_decision.input_snapshot is not None
+    assert bundle.mode_decision.input_snapshot.reference_count == 2
+
+
+def test_v2_explicit_reference_bundle_cannot_claim_discarded_frames() -> None:
+    decision = H3ModeDecision(
+        requested="ref2va",
+        mode="ref2va",
+        reason_codes=("h3.explicit_ref2va",),
+        input_snapshot=H3ModeInputSnapshot(
+            has_first_frame=True,
+            has_last_frame=False,
+            reference_count=1,
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="input snapshot"):
+        _v2_bundle("ref2va", mode_decision=decision)
+
+
+def test_v1_h3_ref_hybrid_bundle_remains_compatible() -> None:
+    last_frame = FrameEvidence(asset_id="last", sha256="e" * 64)
+    bundle = _bundle(
+        adapter="h3-ref",
+        last_frame=last_frame,
+        references=(_reference(),),
+    )
+
+    assert bundle.schema_version == 1
+    assert bundle.mode == "i2va"
+    assert bundle.first_frame is not None
+    assert bundle.last_frame == last_frame
+    assert bundle.references == (_reference(),)
+
+
+def test_v1_legacy_json_without_snapshot_round_trips_with_original_digest() -> None:
+    payload = _bundle(adapter="h3-ref", references=(_reference(),)).model_dump(
+        mode="json"
+    )
+    payload["mode_decision"].pop("input_snapshot", None)
+    payload["bundle_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "bundle_sha256"}
+    )
+
+    restored = CompiledShotBundle.model_validate(payload)
+    dumped_json = restored.model_dump_json()
+    dumped_payload = json.loads(dumped_json)
+    dumped_without_digest = {
+        key: value for key, value in dumped_payload.items() if key != "bundle_sha256"
+    }
+    round_tripped = CompiledShotBundle.model_validate_json(dumped_json)
+
+    assert "input_snapshot" not in dumped_payload["mode_decision"]
+    assert canonical_sha256(dumped_without_digest) == restored.bundle_sha256
+    assert round_tripped == restored
+    assert round_tripped.bundle_sha256 == payload["bundle_sha256"]
+
+
+def test_v2_bundle_digest_rejects_mutated_content() -> None:
+    original_digest = _v2_bundle("t2va").bundle_sha256
+
+    with pytest.raises(ValidationError, match="bundle sha256"):
+        _v2_bundle("t2va", prompt="Changed.", bundle_sha256=original_digest)
 
 
 def test_bundle_has_contract_refs_instead_of_single_contract_revision() -> None:

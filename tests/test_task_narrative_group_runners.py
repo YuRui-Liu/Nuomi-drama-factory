@@ -125,6 +125,130 @@ def test_generation_batch_payload_controls_layout_style_and_panel_tags():
     assert prompt.count("PANEL_STYLE") == 2
 
 
+def test_frozen_reference_snapshot_preserves_prompt_mapping_with_strong_sketch(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from novelvideo.task_backend.runners import narrative_group
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    identity = assets / "identity.png"
+    scene = assets / "scene.png"
+    identity.write_bytes(b"identity")
+    scene.write_bytes(b"scene")
+    sketch = tmp_path / "sketch.png"
+    sketch.write_bytes(b"sketch")
+    group = SimpleNamespace(
+        id="ng-01",
+        stages={
+            "sketch": SimpleNamespace(
+                status="completed", revision=2, grid_asset=str(sketch)
+            )
+        },
+    )
+    monkeypatch.setattr(narrative_group, "load_materialized_groups", lambda *_: [group])
+    monkeypatch.setattr(
+        narrative_group,
+        "validate_reference_image",
+        lambda path, **_: SimpleNamespace(image_path=str(path)),
+    )
+    payload = {
+        "project_dir": str(tmp_path),
+        "episode": 1,
+        "group_id": "ng-01",
+        "stage": "render",
+        "constraint_mode": "strong_sketch",
+        "source_sketch_revision": 2,
+        "source_sketch_asset": str(sketch),
+        "beats": [
+            {"id": "shot-1", "beat_number": 4, "action": "Alice enters"},
+            {"id": "shot-2", "beat_number": 7, "action": "Wide hall"},
+        ],
+        "reference_resolution": {
+            "id": "refsnap-1",
+            "schema_version": "narrative-reference-decision/v1",
+            "ignored_requirement_ids": [],
+            "warnings": [],
+            "images": [
+                {
+                    "requirement_id": "character_identity:Alice_youth",
+                    "source": "matched",
+                    "source_id": "Alice_youth",
+                    "asset_kind": "character_identity",
+                    "image_path": str(identity),
+                    "resolution": "matched",
+                    "entity_id": "Alice_youth",
+                    "shot_ids": ["shot-1"],
+                },
+                {
+                    "requirement_id": "scene_base:hall",
+                    "source": "matched",
+                    "source_id": "hall",
+                    "asset_kind": "scene_base",
+                    "image_path": str(scene),
+                    "resolution": "matched",
+                    "entity_id": "hall",
+                    "shot_ids": ["shot-2"],
+                },
+            ],
+        },
+    }
+
+    generation_input = narrative_group._generation_input(payload)
+
+    assert generation_input.references == (str(sketch), str(identity), str(scene))
+    assert "Reference 2: character Alice, identity Alice_youth; use for panels 4." in generation_input.prompt
+    assert "Reference 3: scene hall; use for panels 7." in generation_input.prompt
+
+
+def test_legacy_frozen_snapshot_without_mapping_warns_instead_of_crashing(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from novelvideo.task_backend.runners import narrative_group
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    image = assets / "legacy.png"
+    image.write_bytes(b"legacy")
+    monkeypatch.setattr(
+        narrative_group,
+        "validate_reference_image",
+        lambda path, **_: SimpleNamespace(image_path=str(path)),
+    )
+    generation_input = narrative_group._generation_input(
+        {
+            "project_dir": str(tmp_path),
+            "beats": [],
+            "reference_resolution": {
+                "id": "refsnap-legacy",
+                "schema_version": "narrative-reference-decision/v1",
+                "ignored_requirement_ids": [],
+                "warnings": [],
+                "images": [
+                    {
+                        "requirement_id": "character_identity:Alice_youth",
+                        "source": "matched",
+                        "source_id": "Alice_youth",
+                        "asset_kind": "character_identity",
+                        "image_path": str(image),
+                        "resolution": "matched",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert any(
+        "missing semantic mapping" in warning
+        for warning in generation_input.warnings
+    )
+    assert generation_input.reference_audit["mapping_missing"] == 1
+
+
 def test_generation_paths_reject_escape_and_hash_untrusted_ids(tmp_path):
     from types import SimpleNamespace
 

@@ -27,6 +27,7 @@ services:
       ST_CELERY_RESULT_BACKEND: ""
       NOVELVIDEO_DATA_ROOT: /data
       NOVELVIDEO_STATE_DIR: /data/state
+      NOVELVIDEO_PUBLIC_HOST: "${ST_BIND_HOST:-127.0.0.1}"
       DRAMACLAW_CHAT_BACKEND: hermes
       HERMES_CLI_PATH: /root/.local/bin/hermes
       # 默认「官方 DC key」路径:模型网关地址/密钥来自 .env(NEWAPI_BASE_URL / NEWAPI_API_KEY),
@@ -37,7 +38,7 @@ services:
     # 宿主发布端口可配，便于一机多套（每套换 ST_API_PORT + 换 -p 项目名）。
     # 冒号右侧 8780 是容器内端口，固定不变（web 经内部网络访问它）。
     ports:
-      - "${ST_API_PORT:-8780}:8780"
+      - "${ST_BIND_HOST:-127.0.0.1}:${ST_API_PORT:-8780}:8780"
     volumes:
       - ce-data:/data
 
@@ -54,7 +55,7 @@ services:
       BACKEND_PORT: "8780"
     # 浏览器打开的就是这个端口（默认 8080）。一机多套时换 ST_WEB_PORT。
     ports:
-      - "${ST_WEB_PORT:-8080}:80"
+      - "${ST_BIND_HOST:-127.0.0.1}:${ST_WEB_PORT:-8080}:80"
     depends_on:
       - api
 

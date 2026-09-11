@@ -419,10 +419,11 @@ def _episode_task(value: H3EpisodeInput) -> str:
         "Within each director_plan, shots[].shot_id must be continuous string "
         "numbers starting at \"1\". Never copy the outer business shot_ids into "
         "director_plan.shots[].shot_id. "
-        "Each director_plan must set schema_version=2 and populate the complete "
+        "Each director_plan must set schema_version=3 and populate the complete "
         "fifteen-section rigid prompt in fixed protocol order. Use one coherent "
         "motivated lighting system, preserve the supplied 2D, 2.5D, or 3D Style "
-        "Prefix verbatim, and set music exactly to No music. SFX only. Only emit "
+        'Prefix verbatim, set music to "N/A" when no narrative music is requested, '
+        "and preserve a supplied non-diegetic music description. Only emit "
         "active_references whose tags appear in resolved_reference_tags; when no "
         "real tags are supplied, active_references must be empty. Match every "
         "active_reference kind to its resolved reference fact; prop and temporary "
@@ -525,6 +526,8 @@ def _validate_pack(
 ) -> None:
     if pack.episode != value.episode or pack.director_revision_id != value.director_revision_id:
         raise ValueError("episode prompt pack identity does not match request")
+    if any(item.director_plan.schema_version != 3 for item in pack.segments):
+        raise ValueError("live episode planner requires director_plan schema_version=3")
     actual = {item.segment_id for item in pack.segments}
     expected = expected_ids or {item.segment_id for item in value.segments}
     if actual != expected or (require_all and len(pack.segments) != len(value.segments)):

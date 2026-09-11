@@ -148,6 +148,51 @@ def test_happyhorse_video_backend_options_expose_mainline_limits() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_h3_alias_is_validated_and_enqueued_as_canonical(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo.api.routes import generation
+    from novelvideo.api.schemas import SingleVideoRequest
+
+    calls = []
+    store = _FakeStore()
+    _patch_generation_celery(monkeypatch, generation, tmp_path, store)
+    frame = generation.PathResolver(str(tmp_path), 3).first_frame_for_video(2)
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"frame")
+    monkeypatch.setattr(
+        generation,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=_fake_enqueue(calls)),
+    )
+    monkeypatch.setattr(generation, "get_media_capability_store", lambda: None)
+    monkeypatch.setattr(generation, "get_media_credential_resolver", lambda: None)
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.video.catalog.list_video_models",
+        lambda *_args: [
+            SimpleNamespace(
+                id="runninghub:minimax-h3",
+                available=True,
+                unavailable_reason=None,
+            )
+        ],
+    )
+
+    response = await generation.generate_single_video(
+        project="demo",
+        episode_num=3,
+        beat_num=2,
+        body=SingleVideoRequest(),
+        user={"username": "alice"},
+    )
+
+    assert response["ok"] is True
+    assert calls[0]["payload"]["config"]["video_backend"] == (
+        "runninghub:minimax-h3"
+    )
+
+
+@pytest.mark.asyncio
 async def test_audio_generate_route_dispatches_indextts2(monkeypatch, tmp_path):
     from novelvideo.api.routes import generation
     from novelvideo.api.schemas import TTSGenerateRequest

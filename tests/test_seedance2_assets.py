@@ -477,6 +477,7 @@ def test_prompt_audio_selection_sends_only_referenced_audio(tmp_path):
         assets,
         reference_image_paths=[],
         reference_audio_paths=[str(second_audio)],
+        allowed_roots=[project_dir],
     )
 
     selected = apply_prompt_audio_selection(assets, "画面参考图片1，不使用音频。")

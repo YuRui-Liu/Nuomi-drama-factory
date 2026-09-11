@@ -55,6 +55,7 @@ const plannedReferencePreview: PlannedNarrativeGroupReferencePreview = {
     beat_ids: ["beat-1"],
     required: true,
     status: "ready",
+    resolution: "auto_matched",
     selected_by_default: true,
   }],
   max_images: 9,
@@ -87,6 +88,18 @@ describe("narrative group query contract", () => {
       plan_revision: 7, reference_revision: 3, aspect_ratio: "16:9", resolution: "720p",
     });
   });
+
+  it.each(["auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"] as const)(
+    "preserves requested H3 mode %s in the transport payload",
+    (mode) => {
+      expect(narrativeGroupVideoPayload({
+        model: "runninghub:minimax-h3",
+        mode,
+        revision: 4,
+        aspectRatio: "16:9",
+      })).toMatchObject({ mode });
+    },
+  );
 
   it("omits reference_revision from legacy video generation requests", () => {
     expect(narrativeGroupVideoPayload({

@@ -11,10 +11,12 @@ from typing import Optional
 
 from novelvideo.task_identity import selection_scope
 from novelvideo.utils.state_index_files import resolve_state_index_path
+from novelvideo.utils.safe_paths import resolve_under_root, validate_path_segment
 
 
 def _scene_dir(project_dir: Path, scene_name: str) -> Path:
-    return project_dir / "assets" / "scenes" / scene_name
+    safe_name = validate_path_segment(scene_name)
+    return resolve_under_root(project_dir / "assets" / "scenes", safe_name)
 
 
 def canonical_portrait_path(project_dir: Path, char_name: str) -> Path:
@@ -229,7 +231,8 @@ def compute_prop_reference_path(project_dir: Path, prop_name: str) -> str:
 
 def canonical_prop_reference_path(project_dir: Path, prop_name: str) -> Path:
     """Canonical prop reference slot path. Does not require the file to exist."""
-    return project_dir / "assets" / "props" / prop_name / "reference_3view.png"
+    safe_name = validate_path_segment(prop_name)
+    return resolve_under_root(project_dir / "assets" / "props", safe_name) / "reference_3view.png"
 
 
 def compute_identity_path(project_dir: Path, char_name: str, identity_name: str) -> str:

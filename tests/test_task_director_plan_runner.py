@@ -16,7 +16,7 @@ from novelvideo.narrative_groups.models import (
 )
 from novelvideo.narrative_groups.service import save_groups
 
-from director_plan.test_migration import _plan, _shot
+from tests.director_plan.test_migration import _plan, _shot
 
 
 @pytest.mark.asyncio
@@ -101,10 +101,8 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
 
 
 @pytest.mark.asyncio
-async def test_director_plan_runner_enforces_180_second_timeout(monkeypatch):
+async def test_director_plan_runner_does_not_preempt_runtime_timeout(monkeypatch):
     from novelvideo.task_backend.runners import director_plan
-
-    seen: dict[str, float] = {}
 
     class Service:
         async def create_draft(self, _value, *, on_stage, old_plan, assets):
@@ -118,13 +116,11 @@ async def test_director_plan_runner_enforces_180_second_timeout(monkeypatch):
                 ),
             )
 
-    original_wait_for = asyncio.wait_for
+    async def reject_local_timeout(awaitable, timeout):
+        awaitable.close()
+        raise AssertionError(f"unexpected local timeout: {timeout}")
 
-    async def recording_wait_for(awaitable, timeout):
-        seen["timeout"] = timeout
-        return await original_wait_for(awaitable, timeout)
-
-    monkeypatch.setattr(director_plan.asyncio, "wait_for", recording_wait_for)
+    monkeypatch.setattr(asyncio, "wait_for", reject_local_timeout)
     monkeypatch.setattr(
         director_plan, "_build_director_plan_input", lambda *_args: _async(object())
     )
@@ -141,8 +137,6 @@ async def test_director_plan_runner_enforces_180_second_timeout(monkeypatch):
         {"payload": {"project_id": "p", "episode": 1, "source_revision": 1}},
         SimpleNamespace(project_id="p"),
     )
-
-    assert seen == {"timeout": 180}
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from novelvideo.ports import get_task_backend
 from novelvideo.task_scopes import prop_reference_asset_scope
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.utils.path_resolver import compute_prop_reference_path
+from novelvideo.utils.safe_paths import resolve_under_root, validate_path_segment
 
 router = APIRouter()
 
@@ -121,12 +122,13 @@ async def _local_episode_prop_payloads(
 
 
 def _rename_prop_asset_dir(project_dir: Path, old_name: str, new_name: str) -> None:
-    old_dir = project_dir / "assets" / "props" / old_name
-    new_dir = project_dir / "assets" / "props" / new_name
+    root = project_dir / "assets" / "props"
+    old_dir = resolve_under_root(root, validate_path_segment(old_name))
+    new_dir = resolve_under_root(root, validate_path_segment(new_name))
     if not old_dir.exists():
         return
     if new_dir.exists():
-        raise ValueError(f"Target asset directory already exists: {new_dir}")
+        raise ValueError("Target asset directory already exists")
     new_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(old_dir), str(new_dir))
 

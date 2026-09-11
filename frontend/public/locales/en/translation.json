@@ -1340,8 +1340,8 @@
     "projectQueueFull": "The current project's {{queue}} queue is full",
     "projectDefaultQueueUserFull": "You have reached your personal default queue limit in this project",
     "projectQueueUserFull": "You have reached your personal {{queue}} queue limit in this project",
-    "projectDefaultQueueProjectFull": "The current project's default queue has reached the team limit",
-    "projectQueueProjectFull": "The current project's {{queue}} queue has reached the team limit",
+    "projectDefaultQueueProjectFull": "The current project's default queue has reached its concurrent task limit. Wait for an active task to finish and try again.",
+    "projectQueueProjectFull": "The current project's {{queue}} queue has reached its concurrent task limit. Wait for an active task to finish and try again.",
     "projectQueueKinds": {
       "video": "video",
       "world": "world",

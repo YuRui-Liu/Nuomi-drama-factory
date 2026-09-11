@@ -191,6 +191,7 @@ def collect_seedance2_video_prereq_errors(
             assets,
             reference_image_paths=list(config.reference_image_paths),
             reference_audio_paths=list(config.reference_audio_paths),
+            allowed_roots=[project_output],
         )
         assets = apply_prompt_audio_selection(assets, final_prompt)
         beat_number = int(beat.get("beat_number") or index + 1)
@@ -259,6 +260,7 @@ async def prepare_seedance2_generation_inputs(
         assets,
         reference_image_paths=list(config.reference_image_paths),
         reference_audio_paths=list(config.reference_audio_paths),
+        allowed_roots=[project_output],
     )
 
     target_duration = int(config.duration or duration or 0)

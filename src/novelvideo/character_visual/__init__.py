@@ -27,9 +27,11 @@ from .models import (
 from .store import CharacterVisualWorkspaceStore
 from .proposals import (
     ProposalQualityError,
+    ProposalSetShapeError,
     assess_design_proposal,
     build_character_visual_workspace,
     validate_design_proposals,
+    validate_proposal_selection,
 )
 
 __all__ = [
@@ -46,6 +48,7 @@ __all__ = [
     "IdentitySheetQualityReport",
     "IdentitySheetStyleFamily",
     "ProposalQualityError",
+    "ProposalSetShapeError",
     "LegacyVisualField",
     "SourceSpan",
     "VisualPromptSnapshot",
@@ -59,4 +62,5 @@ __all__ = [
     "assess_design_proposal",
     "build_character_visual_workspace",
     "validate_design_proposals",
+    "validate_proposal_selection",
 ]

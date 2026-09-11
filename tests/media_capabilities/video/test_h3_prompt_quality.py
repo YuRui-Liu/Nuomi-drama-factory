@@ -4,19 +4,82 @@ from novelvideo.media_capabilities.video.h3_director_plan import (
     H3ActionPlan,
     H3CameraPlan,
     H3DirectorPlan,
+    H3FrameAnchor,
     H3ShotPlan,
 )
 from novelvideo.media_capabilities.video.h3_prompt_quality import (
+    H3_PROMPT_QUALITY_VERSION,
     H3PromptQualityError,
+    H3PromptQualityIssue,
     inspect_h3_plan,
+    inspect_h3_prompt,
     normalize_h3_action_timeline,
 )
-from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+    compile_h3_director_plan,
+)
+from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+    H3PromptContext,
+    compile_and_gate_h3_plan,
+)
 from novelvideo.media_capabilities.video.h3_rigid_prompt import H3RigidPromptPlan
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3ResolvedReferenceFact,
 )
+from novelvideo.media_capabilities.video.h3_rigid_prompt import (
+    H3_RIGID_SECTION_ORDER,
+)
 from novelvideo.media_capabilities.video.models import H3Mode
+from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3BaseWire,
+    H3ReferenceWire,
+    H3RetentionItem,
+    compile_h3_wire,
+)
+
+
+def _official_prompt(
+    mode: H3Mode,
+    *,
+    duration_seconds: float = 6,
+    description: str = "[Shot 1] A static medium shot.",
+    music: str = "N/A",
+) -> str:
+    common = {
+        "mode": mode,
+        "duration_seconds": duration_seconds,
+        "overall_soundscape": "Rain taps the window.",
+        "non_diegetic_music": music,
+    }
+    if mode is H3Mode.REF2VA:
+        detailed_description = (
+            description
+            if "<Subject 1>" in description
+            else f"{description} <Subject 1> remains active."
+        )
+        return compile_h3_wire(
+            H3ReferenceWire(
+                **common,
+                subject_definitions=(
+                    "<Subject 1> comes from <Picture 1>: Lin in a black coat."
+                ),
+                summary="[reference generation] Lin waits beside the window.",
+                retention_analysis=(
+                    H3RetentionItem(
+                        subject="<Subject 1> (appears in [Shot 1])",
+                        retain="fully_preserved - face, coat, and proportions",
+                    ),
+                ),
+                detailed_description=detailed_description,
+            )
+        )
+    return compile_h3_wire(
+        H3BaseWire(
+            **common,
+            integrated_multimodal_description=description,
+        )
+    )
 
 
 def _plan(*, description: str, action_end: int = 120) -> H3DirectorPlan:
@@ -402,8 +465,6 @@ def _plan_with_quality_issue(code: str) -> H3DirectorPlan:
                 )
             }
         )
-    elif code == "non_diegetic_music_forbidden":
-        plan = plan.model_copy(update={"music": "Low strings."})
     elif code == "character_acting_missing":
         rigid = rigid.model_copy(update={"character_acting": ()})
     elif code == "style_prefix_mismatch":
@@ -438,7 +499,6 @@ def test_paid_context_requires_schema_v2_rigid_prompt():
         "format_duration_mismatch",
         "optics_shot_mismatch",
         "lighting_source_conflict",
-        "non_diegetic_music_forbidden",
         "character_acting_missing",
         "style_prefix_mismatch",
         "physics_required",
@@ -455,7 +515,40 @@ def test_rigid_quality_gate_passes_complete_v2_plan():
     report = inspect_h3_plan(_rigid_plan(), context=_context())
 
     assert report.passed is True
-    assert report.version == 6
+    assert report.version == 9
+    assert H3_PROMPT_QUALITY_VERSION == 9
+
+
+def test_v3_rigid_plan_passes_real_gate_and_compiler_chain():
+    payload = _rigid_plan().model_dump(mode="python")
+    payload.update(
+        schema_version=3,
+        first_frame_anchor=H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the corridor door.",
+        ),
+    )
+    plan = H3DirectorPlan.model_validate(payload)
+    segment = H3DirectorSegment(
+        segment_id="segment-1",
+        beat_number=1,
+        prompt="Lin turns toward the corridor door.",
+        duration_seconds=5,
+        first_frame="first-frame.png",
+    )
+
+    result = compile_and_gate_h3_plan(
+        plan,
+        segment=segment,
+        context=_context(),
+        mode=H3Mode.I2VA,
+        input_hash="f" * 64,
+    )
+
+    assert result.quality_report.passed is True
+    assert "rigid_prompt_required" not in result.quality_report.codes
+    assert "integrated_multimodal_description: [Shot 1]" in result.prompt
+    assert "SCENE CONTEXT" not in result.prompt
 
 
 def test_active_references_fail_when_no_real_mapping_is_available():
@@ -672,15 +765,20 @@ def test_each_structured_dialogue_line_is_forbidden_from_action_timing() -> None
     assert "dialogue_in_action_timing" in report.codes
 
 
-def test_v2_music_contract_rejects_appended_text():
-    report = inspect_h3_plan(
-        _rigid_plan().model_copy(
-            update={"music": "No music. SFX only. Add low strings."}
-        ),
-        context=_context(),
+def test_typed_plan_quality_allows_real_non_diegetic_music():
+    plan = _rigid_plan().model_copy(update={"music": "Low strings rise."})
+
+    assert inspect_h3_plan(plan, context=_context()).passed
+    assert compile_h3_director_plan(plan).endswith(
+        "non_diegetic_music: Low strings rise."
     )
 
-    assert "non_diegetic_music_forbidden" in report.codes
+
+def test_typed_plan_legacy_no_music_is_compiled_as_na():
+    plan = _rigid_plan().model_copy(update={"music": "No music. SFX only."})
+
+    assert inspect_h3_plan(plan, context=_context()).passed
+    assert compile_h3_director_plan(plan).endswith("non_diegetic_music: N/A")
 
 
 def test_location_map_requires_landmarks():
@@ -1082,3 +1180,530 @@ def test_active_reference_kind_must_match_resolved_reference_fact() -> None:
     )
 
     assert "reference_kind_mismatch" in report.codes
+
+
+def test_prompt_issue_exposes_field_and_preserves_location_compatibility() -> None:
+    current = H3PromptQualityIssue(
+        code="h3.wire_field_set",
+        message="wrong fields",
+        field="prompt",
+    )
+    legacy = H3PromptQualityIssue(
+        code="h3.wire_field_set",
+        message="wrong fields",
+        location="prompt",
+    )
+
+    assert current.field == current.location == "prompt"
+    assert legacy.field == legacy.location == "prompt"
+    assert current.model_dump()["field"] == "prompt"
+
+
+@pytest.mark.parametrize("mode", tuple(H3Mode))
+def test_official_wire_prompt_passes_mode_aware_quality_gate(mode: H3Mode) -> None:
+    report = inspect_h3_prompt(_official_prompt(mode), mode, 6)
+
+    assert report.passed is True
+    assert report.codes == ()
+
+
+def test_prompt_fields_must_follow_canonical_base_wire_order() -> None:
+    prompt = _official_prompt(H3Mode.T2VA)
+    description, soundscape, music = prompt.split("\n\n")
+
+    report = inspect_h3_prompt(
+        "\n\n".join((soundscape, description, music)),
+        H3Mode.T2VA,
+        6,
+    )
+
+    assert "h3.wire_field_order" in report.codes
+
+
+def test_prompt_fields_must_match_canonical_reference_wire_set() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA)
+    sections = tuple(
+        section
+        for section in prompt.split("\n\n")
+        if not section.startswith("retention_analysis:")
+    )
+
+    report = inspect_h3_prompt(
+        "\n\n".join(sections),
+        H3Mode.REF2VA,
+        6,
+    )
+
+    assert "h3.wire_field_set" in report.codes
+
+
+def test_canonical_body_may_contain_lowercase_colon_notes() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "camera_note: keep the lens level while Lin settles."
+        ),
+    )
+
+    assert inspect_h3_prompt(prompt, H3Mode.T2VA, 6).passed is True
+
+
+def test_t2va_rejects_a_leading_wrapper() -> None:
+    prompt = f"Generate exactly this video.\n\n{_official_prompt(H3Mode.T2VA)}"
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_base_wire_rejects_next_line_field_values() -> None:
+    prompt = _official_prompt(H3Mode.T2VA).replace(
+        "integrated_multimodal_description: ",
+        "integrated_multimodal_description:\n",
+        1,
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_reference_wire_rejects_inline_field_values() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "subject_definitions:\n", "subject_definitions: ", 1
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.wire_format_invalid" in report.codes
+
+
+def test_t2va_requires_shot_one_at_the_start_of_description() -> None:
+    prompt = (
+        "integrated_multimodal_description: A static medium shot.\n\n"
+        "overall_soundscape: Rain taps the window.\n\n"
+        "non_diegetic_music: N/A"
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.shot_sequence_invalid" in report.codes
+
+
+@pytest.mark.parametrize("duration_seconds", [3.99, 15.01])
+def test_prompt_duration_must_stay_inside_official_range(
+    duration_seconds: float,
+) -> None:
+    report = inspect_h3_prompt(
+        _official_prompt(H3Mode.T2VA),
+        H3Mode.T2VA,
+        duration_seconds,
+    )
+
+    assert "h3.duration_out_of_range" in report.codes
+
+
+@pytest.mark.parametrize("duration_seconds", [4, 15])
+def test_prompt_duration_accepts_official_boundaries(
+    duration_seconds: float,
+) -> None:
+    report = inspect_h3_prompt(
+        _official_prompt(H3Mode.T2VA, duration_seconds=duration_seconds),
+        H3Mode.T2VA,
+        duration_seconds,
+    )
+
+    assert "h3.duration_out_of_range" not in report.codes
+
+
+def test_prompt_event_timestamp_may_equal_video_end() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "At 00:06.000, Lin raises one hand and holds it beside his face."
+        ),
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert report.passed is True
+
+
+def test_prompt_event_timestamp_cannot_exceed_video_end() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "At 00:06.001, Lin raises one hand and holds it beside his face."
+        ),
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.event_timestamp_out_of_range" in report.codes
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_code"),
+    [
+        (H3Mode.I2VA, "h3.first_image_alignment_missing"),
+        (H3Mode.FL2VA, "h3.first_image_alignment_missing"),
+        (H3Mode.L2VA, "h3.last_image_alignment_missing"),
+    ],
+)
+def test_frame_conditioned_modes_require_canonical_alignment(
+    mode: H3Mode,
+    expected_code: str,
+) -> None:
+    prompt = _official_prompt(mode).split("\n\n", 1)[1]
+
+    report = inspect_h3_prompt(prompt, mode, 6)
+
+    assert expected_code in report.codes
+
+
+@pytest.mark.parametrize("mode", [H3Mode.FL2VA, H3Mode.L2VA])
+def test_terminal_alignment_uses_the_declared_duration(
+    mode: H3Mode,
+) -> None:
+    report = inspect_h3_prompt(_official_prompt(mode), mode, 7)
+
+    assert "h3.last_image_alignment_missing" in report.codes
+
+
+@pytest.mark.parametrize("mode", [H3Mode.T2VA, H3Mode.REF2VA])
+def test_unconditioned_modes_forbid_frame_alignment_prefixes(mode: H3Mode) -> None:
+    prefixed = _official_prompt(H3Mode.I2VA).split("\n\n", 1)[0]
+    prompt = f"{prefixed}\n\n{_official_prompt(mode)}"
+
+    report = inspect_h3_prompt(prompt, mode, 6)
+
+    assert "h3.frame_alignment_forbidden" in report.codes
+
+
+def test_reference_wire_requires_nonempty_retention_analysis() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA)
+    prompt = prompt.replace(
+        "retention_analysis:\n"
+        "- <Subject 1> (appears in [Shot 1]): fully_preserved - face, coat, and proportions",
+        "retention_analysis:\n",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.retention_analysis_missing" in report.codes
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        _official_prompt(H3Mode.REF2VA).replace(
+            "<Subject 1> (appears in [Shot 1])",
+            "<Subject 99> (appears in [Shot 1])",
+        ),
+        _official_prompt(H3Mode.REF2VA).replace(
+            "summary:\n",
+            "<Subject 2> comes from <Picture 2>: Kai in a grey coat.\n\nsummary:\n",
+            1,
+        ),
+    ],
+)
+def test_reference_subject_definitions_and_retention_must_match(prompt: str) -> None:
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_subject_mismatch" in report.codes
+
+
+def test_reference_prompt_rejects_picture_outside_declared_mappings() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "<Subject 1> remains active.",
+        "<Subject 1> copies styling from <Picture 99>.",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_picture_out_of_range" in report.codes
+
+
+def test_reference_prompt_rejects_non_official_visual_relation() -> None:
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "fully_preserved - face, coat, and proportions",
+        "totally_invented_relation - face, coat, and proportions",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_relation_invalid" in report.codes
+
+
+def test_reference_prompt_accepts_official_audio_relation_and_tags() -> None:
+    prompt = compile_h3_wire(
+        H3ReferenceWire(
+            mode=H3Mode.REF2VA,
+            duration_seconds=6,
+            subject_definitions=(
+                "<Subject 1> is Lin in <Picture 1>.\n"
+                "<Audio 1> is the voice reference for <Subject 1> (S1)."
+            ),
+            summary=(
+                "[reference generation + audio reference] <Subject 1> speaks "
+                "with <Audio 1>'s timbre."
+            ),
+            retention_analysis=(
+                H3RetentionItem(
+                    subject="<Subject 1> (appears in [Shot 1])",
+                    retain="fully_preserved - identity and coat",
+                ),
+                H3RetentionItem(
+                    subject="<Audio 1>",
+                    retain="reference - voice timbre without copying the signal",
+                ),
+            ),
+            detailed_description=(
+                "[Shot 1] <Subject 1> (S1) speaks using the timbre from <Audio 1>."
+            ),
+            overall_soundscape="Quiet room tone.",
+            non_diegetic_music="N/A",
+        )
+    )
+
+    assert inspect_h3_prompt(prompt, H3Mode.REF2VA, 6).passed
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    ("remains active.", "<Subject 1> stands beside <Subject 2>."),
+)
+def test_reference_prompt_rejects_missing_or_extra_active_subject(replacement):
+    prompt = _official_prompt(H3Mode.REF2VA).replace(
+        "<Subject 1> remains active.",
+        replacement,
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.REF2VA, 6)
+
+    assert "h3.reference_subject_inactive" in report.codes
+
+
+def test_dialogue_requires_speaker_id_language_and_wrapping() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "At 00:01.000, Lin says: <d>[Chinese]别过来。</d>"
+        ),
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.dialogue_wire_invalid" in report.codes
+
+
+def test_official_dialogue_and_control_markers_pass() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=(
+            "[Shot 1] A static medium shot.\n"
+            "At 00:01.000, Lin (S1) continues: "
+            "<scenetrans><d>[English]Stay—</d><cutoff>"
+        ),
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.dialogue_wire_invalid" not in report.codes
+    assert "h3.control_marker_invalid" not in report.codes
+
+
+@pytest.mark.parametrize("marker", ["<transition>", "<scenetrans>orphan"])
+def test_only_official_control_markers_and_placement_are_allowed(marker: str) -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=f"[Shot 1] A static medium shot. {marker}",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.control_marker_invalid" in report.codes
+
+
+@pytest.mark.parametrize(
+    ("field", "code"),
+    [
+        ("overall_soundscape", "h3.soundscape_occurrence"),
+        ("non_diegetic_music", "h3.music_occurrence"),
+    ],
+)
+def test_soundscape_and_music_must_each_appear_once(field: str, code: str) -> None:
+    prompt = _official_prompt(H3Mode.T2VA) + f"\n\n{field}: duplicate"
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert code in report.codes
+
+
+@pytest.mark.parametrize("heading", H3_RIGID_SECTION_ORDER)
+def test_internal_rigid_section_headings_never_leak_to_wire(heading: str) -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description=f"[Shot 1] A static medium shot.\n{heading}: hidden data",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.internal_heading_leaked" in report.codes
+
+
+def test_legacy_mode_prefix_is_forbidden() -> None:
+    prompt = f"mode: t2va\n\n{_official_prompt(H3Mode.T2VA)}"
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.mode_prefix_forbidden" in report.codes
+
+
+def test_raw_dialogue_field_is_forbidden() -> None:
+    prompt = _official_prompt(
+        H3Mode.T2VA,
+        description="[Shot 1] A static medium shot.\ndialogue: Stay here.",
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.raw_dialogue_forbidden" in report.codes
+
+
+@pytest.mark.parametrize(
+    "legacy_music",
+    ["None.", "No music", "No music.", "No music. SFX only."],
+)
+def test_legacy_no_music_phrases_are_forbidden(legacy_music: str) -> None:
+    prompt = _official_prompt(H3Mode.T2VA, music=legacy_music)
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, 6)
+
+    assert "h3.legacy_no_music_phrase" in report.codes
+
+
+@pytest.mark.parametrize(
+    ("duration_seconds", "beat_count"),
+    [(5, 2), (8, 3), (12, 4)],
+)
+def test_main_action_beats_obey_duration_budget(
+    duration_seconds: float,
+    beat_count: int,
+) -> None:
+    description = "\n".join(
+        f"[Shot {index}] A restrained composition.\n"
+        f"At 00:{index:02d}.000, Lin completes action beat {index}."
+        for index in range(1, beat_count + 1)
+    )
+    prompt = compile_h3_wire(
+        H3BaseWire(
+            mode=H3Mode.T2VA,
+            duration_seconds=duration_seconds,
+            final_shot_number=beat_count,
+            integrated_multimodal_description=description,
+            overall_soundscape="Rain taps the window.",
+            non_diegetic_music="N/A",
+        )
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
+
+    assert "h3.action_beat_overload" in report.codes
+
+
+@pytest.mark.parametrize(
+    ("duration_seconds", "beat_count"),
+    [(5, 1), (8, 2), (12, 3)],
+)
+def test_action_budget_accepts_the_modeled_maximum(
+    duration_seconds: float,
+    beat_count: int,
+) -> None:
+    description = "\n".join(
+        f"[Shot {index}] A restrained composition.\n"
+        f"At 00:{index:02d}.000, Lin completes action beat {index}."
+        for index in range(1, beat_count + 1)
+    )
+    prompt = compile_h3_wire(
+        H3BaseWire(
+            mode=H3Mode.T2VA,
+            duration_seconds=duration_seconds,
+            final_shot_number=beat_count,
+            integrated_multimodal_description=description,
+            overall_soundscape="Rain taps the window.",
+            non_diegetic_music="N/A",
+        )
+    )
+
+    report = inspect_h3_prompt(prompt, H3Mode.T2VA, duration_seconds)
+
+    assert "h3.action_beat_overload" not in report.codes
+
+
+def test_one_compiled_shot_with_multiple_action_phases_uses_one_beat() -> None:
+    plan = _rigid_plan()
+    shot = plan.shots[0]
+    actions = (
+        shot.actions[0].model_copy(update={"end_frame": 36}),
+        H3ActionPlan(
+            phase="prepare",
+            start_frame=36,
+            end_frame=60,
+            description="Lin deliberately braces one foot and grips the latch.",
+            moving_entities=("lin",),
+        ),
+        H3ActionPlan(
+            phase="execute",
+            start_frame=60,
+            end_frame=90,
+            description="Lin firmly turns the latch and holds the door closed.",
+            moving_entities=("lin",),
+        ),
+        H3ActionPlan(
+            phase="settle",
+            start_frame=90,
+            end_frame=120,
+            description="Lin steadily settles with both feet planted.",
+            moving_entities=("lin",),
+        ),
+    )
+    plan = plan.model_copy(
+        update={"shots": (shot.model_copy(update={"actions": actions}),)}
+    )
+    prompt = compile_h3_director_plan(plan)
+
+    report = inspect_h3_prompt(prompt, H3Mode.I2VA, 5)
+
+    assert "h3.action_beat_overload" not in report.codes
+
+
+@pytest.mark.parametrize(
+    "camera_text",
+    [
+        "The camera remains static.",
+        "The camera makes a push-in moving forward.",
+    ],
+)
+def test_static_and_default_camera_motion_do_not_count_as_action_beats(
+    camera_text: str,
+) -> None:
+    report = inspect_h3_prompt(
+        _official_prompt(
+            H3Mode.T2VA,
+            duration_seconds=4,
+            description=(
+                "[Shot 1] A restrained composition.\n"
+                f"At 00:01.000, {camera_text}\n"
+                f"At 00:02.000, {camera_text}"
+            ),
+        ),
+        H3Mode.T2VA,
+        4,
+    )
+
+    assert "h3.action_beat_overload" not in report.codes

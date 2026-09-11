@@ -1,6 +1,29 @@
+import pytest
+
 from novelvideo.media_capabilities.runtime.credential_store import (
+    CredentialStoreError,
+    MacOSCredentialStore,
     WindowsCredentialStore,
+    create_credential_store,
 )
+
+
+class FakeMacOSKeychainBackend:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.calls: list[tuple[str, str, str, str | None]] = []
+
+    def set(self, service: str, account: str, value: str) -> None:
+        self.calls.append(("set", service, account, value))
+        self.values[service] = value
+
+    def get(self, service: str, account: str) -> str | None:
+        self.calls.append(("get", service, account, None))
+        return self.values.get(service)
+
+    def delete(self, service: str, account: str) -> None:
+        self.calls.append(("delete", service, account, None))
+        self.values.pop(service, None)
 
 
 class FakeWin32CredentialBackend:
@@ -82,3 +105,57 @@ def test_dpapi_file_fallback_when_background_session_cannot_use_credwrite(
     assert store.get("dramaclaw/media/runninghub-main") == "rh-secret"
     store.delete("dramaclaw/media/runninghub-main")
     assert store.get("dramaclaw/media/runninghub-main") is None
+
+
+def test_macos_keychain_round_trip_uses_native_backend() -> None:
+    backend = FakeMacOSKeychainBackend()
+    store = MacOSCredentialStore(backend=backend)
+    reference = "dramaclaw/media/runninghub-main"
+
+    store.set(reference, "rh-secret")
+
+    assert store.get(reference) == "rh-secret"
+    assert backend.calls[0] == (
+        "set",
+        "DramaClaw/dramaclaw/media/runninghub-main",
+        "DramaClaw",
+        "rh-secret",
+    )
+    store.delete(reference)
+    assert store.get(reference) is None
+
+
+def test_credential_store_factory_selects_macos_keychain() -> None:
+    backend = FakeMacOSKeychainBackend()
+    store = create_credential_store(platform="darwin", macos_backend=backend)
+
+    assert isinstance(store, MacOSCredentialStore)
+
+
+def test_macos_keychain_translates_native_backend_failures() -> None:
+    class FailingBackend:
+        def set(self, *_args) -> None:
+            raise OSError("keychain is unavailable")
+
+        def get(self, *_args) -> str | None:
+            raise OSError("keychain is unavailable")
+
+        def delete(self, *_args) -> None:
+            raise OSError("keychain is unavailable")
+
+    store = MacOSCredentialStore(backend=FailingBackend())
+
+    with pytest.raises(CredentialStoreError, match="credential store unavailable"):
+        store.set("dramaclaw/media/runninghub-main", "rh-secret")
+
+    assert store.get("dramaclaw/media/runninghub-main") is None
+    store.delete("dramaclaw/media/runninghub-main")
+
+
+def test_credential_store_factory_preserves_windows_fallback_path(tmp_path) -> None:
+    path = tmp_path / "credentials.json"
+
+    store = create_credential_store(path, platform="win32")
+
+    assert isinstance(store, WindowsCredentialStore)
+    assert store._path == path

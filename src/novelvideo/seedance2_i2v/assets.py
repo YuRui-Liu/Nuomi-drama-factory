@@ -40,6 +40,7 @@ from novelvideo.seedance2_i2v.voice_clone import (
 from novelvideo.utils.path_resolver import PathResolver
 from novelvideo.utils.path_resolver import canonical_scene_master_path
 from novelvideo.utils.path_resolver import canonical_prop_reference_path
+from novelvideo.utils.safe_paths import validate_path_segment
 
 MIN_REFERENCE_ASPECT_RATIO = 0.4
 MAX_REFERENCE_ASPECT_RATIO = 2.5
@@ -223,8 +224,10 @@ def _identity_display_label(identity_id: str) -> str:
 
 def _identity_asset_path(project_output: Path, identity_id: str) -> Path:
     character, identity = _split_identity_label(identity_id)
+    character = validate_path_segment(character, label="character identity")
     if not identity:
         return project_output / "assets" / "characters" / character / "portrait.png"
+    identity = validate_path_segment(identity, label="character identity")
     return project_output / "assets" / "characters" / character / "identities" / f"{identity}.png"
 
 
@@ -1140,7 +1143,10 @@ def append_seedance2_user_reference_assets(
     *,
     reference_image_paths: list[str],
     reference_audio_paths: list[str],
+    allowed_roots: list[str | Path],
 ) -> None:
+    from novelvideo.utils.safe_paths import resolve_under_roots
+
     auto_image_paths = {
         str(asset.path)
         for asset in assets
@@ -1159,7 +1165,7 @@ def append_seedance2_user_reference_assets(
     )
     for path in _user_reference_paths(list(reference_image_paths), auto_image_paths):
         image_count += 1
-        item_path = Path(path)
+        item_path = resolve_under_roots(allowed_roots, path)
         validation_error = (
             validate_seedance2_reference_image(item_path) if item_path.exists() else ""
         )
@@ -1178,7 +1184,7 @@ def append_seedance2_user_reference_assets(
         )
     for path in _user_reference_paths(list(reference_audio_paths), auto_audio_paths):
         audio_count += 1
-        item_path = Path(path)
+        item_path = resolve_under_roots(allowed_roots, path)
         assets.append(
             Seedance2ResolvedAsset(
                 key=f"user_audio:{path}",

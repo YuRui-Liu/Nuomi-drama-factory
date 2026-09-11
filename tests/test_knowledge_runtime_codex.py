@@ -23,6 +23,7 @@ from novelvideo.knowledge_runtime.codex import (
     _create_codex_process,
 )
 from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+from novelvideo.structured_extraction import ChunkCharacterOutput
 
 
 class Extracted(BaseModel):
@@ -73,6 +74,19 @@ def test_episode_graph_schema_closes_attribute_objects_for_codex() -> None:
         "exclusiveMinimum",
     ):
         assert unsupported not in serialized
+
+
+def test_character_extraction_schema_avoids_dynamic_objects_for_codex() -> None:
+    normalized = normalize_codex_output_schema(
+        ChunkCharacterOutput.model_json_schema()
+    )
+
+    proposal_schema = normalized["$defs"]["CharacterProposalCandidate"]
+    outfit_states_schema = proposal_schema["properties"]["outfit_states"]
+    assert outfit_states_schema["type"] == "array"
+    assert outfit_states_schema["items"]["$ref"].endswith(
+        "/CharacterOutfitStateCandidate"
+    )
 
 
 def test_build_codex_exec_argv_is_ephemeral_read_only() -> None:

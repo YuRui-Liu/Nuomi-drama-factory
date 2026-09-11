@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
 from novelvideo.media_capabilities.image.grsai import GrsaiClient
 from novelvideo.media_capabilities.models import (
     DEFAULT_GRSAI_IMAGE_MODEL,
@@ -43,6 +44,8 @@ RUNNINGHUB_DOWNLOAD_HOSTS = (
     "rh-images-1252422369.cos.ap-beijing.myqcloud.com",
     "rh-images-switch-1252422369.cos.ap-guangzhou.myqcloud.com",
 )
+
+_GRSAI_CONCURRENCY = ProviderConcurrencyCoordinator()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +100,7 @@ class RunningHubRuntimeConfiguration:
 class GrsaiRuntimeConfiguration:
     account: ProviderAccount
     api_key: str
+    concurrency: ProviderConcurrencyCoordinator
 
     @property
     def model(self) -> str:
@@ -171,7 +175,17 @@ def load_grsai_runtime_configuration(
         provider_id=provider_id,
         provider_type="grsai",
     )
-    return GrsaiRuntimeConfiguration(account=account, api_key=api_key)
+    _GRSAI_CONCURRENCY.configure(
+        account.id,
+        max_concurrency=account.max_concurrency,
+        capability_limits=account.capability_limits,
+        queue_limit=account.queue_limit,
+    )
+    return GrsaiRuntimeConfiguration(
+        account=account,
+        api_key=api_key,
+        concurrency=_GRSAI_CONCURRENCY,
+    )
 
 
 __all__ = [

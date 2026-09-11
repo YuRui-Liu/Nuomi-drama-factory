@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from novelvideo.narrative_groups.planned_binding_service import (
     bindings_by_kind,
     bindings_for_director_plan,
+    resolve_planned_reference_preview,
 )
+from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
+from novelvideo.production_workflow import ProductionWorkflowStore
 
 
 def _group(group_id: str, beat_id: str, *shot_ids: str) -> dict:
@@ -31,6 +37,20 @@ def _project(**overrides):
     }
     values.update(overrides)
     return bindings_for_director_plan(**values)
+
+
+class _BindingStore:
+    def __init__(self, binding: PlannedReferenceBinding) -> None:
+        self.binding = binding
+
+    async def list_planned_reference_bindings(
+        self, episode_number: int, group_id: str | None = None
+    ) -> list[PlannedReferenceBinding]:
+        if self.binding.episode_number != episode_number:
+            return []
+        if group_id is not None and group_id not in self.binding.group_ids:
+            return []
+        return [self.binding]
 
 
 def test_projects_all_four_ready_kinds_with_canonical_slots() -> None:
@@ -250,7 +270,7 @@ def test_multiple_exact_candidates_are_pending_confirmation() -> None:
     assert binding.status == "pending_confirmation"
 
 
-def test_missing_asset_and_explicit_missing_image_are_distinct() -> None:
+def test_missing_asset_and_unavailable_identity_fallback_are_distinct() -> None:
     result = _project(
         shots=[
             _shot(
@@ -277,7 +297,388 @@ def test_missing_asset_and_explicit_missing_image_are_distinct() -> None:
         ("prop", "missing_asset"),
         ("character_identity", "missing_image"),
     ]
-    assert result[1].resolution == "auto_matched"
+    assert result[1].resolution == "explicit_fallback"
+    assert result[1].asset_slot_id == "character:Lin Mo:portrait"
+
+
+@pytest.mark.asyncio
+async def test_identity_portrait_fallback_requires_valid_workflow_version(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": [],
+                    }
+                ],
+            }
+        ],
+        available_character_portraits=("Lin Mo",),
+    )
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+
+    unavailable = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert unavailable.bindings[0].status == "missing_asset"
+    assert unavailable.bindings[0].selected_by_default is False
+    assert unavailable.bindings[0].version_id == ""
+    assert unavailable.bindings[0].thumbnail_url == ""
+
+    portrait_path = tmp_path / "assets" / "characters" / "lin-mo.png"
+    portrait_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait_path)
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_portrait",
+        version_id="portrait-v1",
+        asset_path=str(portrait_path),
+        source_attempt_id="portrait-attempt-1",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    resolved = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert resolved.bindings[0].status == "ready"
+    assert resolved.bindings[0].selected_by_default is True
+    assert resolved.bindings[0].asset_slot_id == "character:Lin Mo:portrait"
+    assert resolved.bindings[0].version_id == "portrait-v1"
+    assert resolved.bindings[0].thumbnail_url == str(portrait_path)
+
+
+@pytest.mark.asyncio
+async def test_identity_portrait_fallback_is_rejected_when_state_becomes_available(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": [],
+                    }
+                ],
+            }
+        ],
+        available_character_portraits=("Lin Mo",),
+        available_character_identity_ids=(),
+    )
+    character_root = tmp_path / "assets" / "characters" / "Lin Mo"
+    portrait_path = character_root / "portrait.png"
+    state_path = character_root / "state.png"
+    character_root.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait_path)
+    Image.new("RGB", (8, 8), "blue").save(state_path)
+    workflow_path = tmp_path / "state" / "workflow.json"
+    publisher = ProductionWorkflowStore(workflow_path)
+    publisher.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_portrait",
+        version_id="portrait-v1",
+        asset_path=portrait_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    stale_reader = ProductionWorkflowStore(workflow_path)
+    concurrent_publisher = ProductionWorkflowStore(workflow_path)
+    concurrent_publisher.register_candidate_version(
+        slot_id="character:Lin Mo:state:linmo-duty",
+        asset_kind="character_state",
+        version_id="state-v1",
+        asset_path=state_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "linmo-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        stale_reader,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "pending_confirmation"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+@pytest.mark.asyncio
+async def test_identity_portrait_fallback_rejects_wrong_workflow_slot_kind(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": [],
+                    }
+                ],
+            }
+        ],
+        available_character_portraits=("Lin Mo",),
+    )
+    portrait_path = tmp_path / "assets" / "characters" / "lin-mo.png"
+    portrait_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait_path)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="wrong-kind-v1",
+        asset_path=str(portrait_path),
+        source_attempt_id="attempt-1",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "missing_asset"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("asset_path", "identity_id"),
+    [
+        ("assets/characters/Other/state.png", "linmo-duty"),
+        ("assets/scenes/hall/master.png", "linmo-duty"),
+        ("assets/characters/Lin Mo/state.png", "other-identity"),
+    ],
+)
+async def test_direct_identity_preview_rejects_cross_entity_current(
+    tmp_path: Path,
+    asset_path: str,
+    identity_id: str,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("linmo-duty",),
+    )
+    image_path = tmp_path / asset_path
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="swapped-v1",
+        asset_path=asset_path,
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": identity_id},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status in {"missing_asset", "missing_image"}
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+async def test_direct_identity_preview_rejects_characters_root_symlink(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "linmo-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin Mo",
+                "identities": [
+                    {
+                        "identity_id": "linmo-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("linmo-duty",),
+    )
+    external = tmp_path / "assets" / "scenes"
+    image_path = external / "Lin Mo" / "state.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (tmp_path / "assets" / "characters").symlink_to(
+        external, target_is_directory=True
+    )
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="redirected-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "linmo-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "missing_asset"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
+
+
+async def test_direct_identity_preview_rejects_sibling_character_symlink(
+    tmp_path: Path,
+) -> None:
+    [binding] = _project(
+        shots=[
+            _shot(
+                "shot-1",
+                {"kind": "character_identity", "entity_key": "lin-duty"},
+            )
+        ],
+        characters=[
+            {
+                "name": "Lin",
+                "identities": [
+                    {
+                        "identity_id": "lin-duty",
+                        "identity_name": "Duty",
+                        "reference_images": ["stale.png"],
+                    }
+                ],
+            }
+        ],
+        available_character_identity_ids=("lin-duty",),
+    )
+    characters_root = tmp_path / "assets" / "characters"
+    other_root = characters_root / "Other"
+    image_path = other_root / "state.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (characters_root / "Lin").symlink_to(other_root, target_is_directory=True)
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "workflow.json")
+    workflow.register_candidate_version(
+        slot_id=binding.asset_slot_id,
+        asset_kind="character_state",
+        version_id="sibling-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": "lin-duty"},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    preview = await resolve_planned_reference_preview(
+        _BindingStore(binding),
+        workflow,
+        project_id="project-1",
+        episode_number=2,
+        group_id="group-1",
+        project_dir=tmp_path,
+    )
+
+    assert preview.bindings[0].status == "missing_asset"
+    assert preview.bindings[0].selected_by_default is False
+    assert preview.bindings[0].version_id == ""
 
 
 def test_identity_without_image_field_is_unknown_and_remains_ready() -> None:
@@ -459,7 +860,7 @@ def test_empty_matched_metadata_falls_back_only_for_pending_binding_record(
     assert normal.asset_slot_id == "prop:normal:reference"
 
 
-def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
+def test_explicit_missing_variant_and_base_images_keep_base_fallback_slot() -> None:
     result = _project(
         shots=[
             _shot(
@@ -491,8 +892,13 @@ def test_explicit_missing_images_keep_canonical_entity_slots() -> None:
     )
 
     assert [binding.status for binding in result] == ["missing_image"] * 3
-    assert [binding.resolution for binding in result] == ["auto_matched"] * 3
-    assert result[1].asset_slot_id == "scene:hall:state:hall-night:master"
+    assert [binding.resolution for binding in result] == [
+        "auto_matched",
+        "explicit_fallback",
+        "auto_matched",
+    ]
+    assert result[1].entity_id == "hall"
+    assert result[1].asset_slot_id == "scene:hall:base:master"
 
 
 def test_projection_does_not_mutate_inputs_or_call_write_entry_points(

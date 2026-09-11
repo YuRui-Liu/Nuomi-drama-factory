@@ -84,6 +84,7 @@ describe("apiCall backend errors", () => {
       name: "ProjectQueueLimitError",
       queueKind: "default",
       limitScope: "project",
+      message: "当前项目默认队列的并发任务已达上限，请等待已有任务完成后重试",
     });
     await expect(promise).rejects.toBeInstanceOf(ProjectQueueLimitError);
   });
@@ -134,7 +135,7 @@ describe("apiCall backend errors", () => {
     const tMock = vi.fn((key: string, options?: { queue?: string; defaultValue?: string }) => {
       if (key === "common.projectQueueKinds.video") return "视频";
       if (key === "common.projectQueueProjectFull") {
-        return `当前项目${options?.queue}队列已达团队上限`;
+        return `当前项目${options?.queue}队列的并发任务已达上限，请等待已有任务完成后重试`;
       }
       if (key === "common.projectQueueFull") return `当前项目${options?.queue}队列已满`;
       return options?.defaultValue ?? key;
@@ -146,7 +147,7 @@ describe("apiCall backend errors", () => {
       t,
     );
 
-    expect(message).toBe("当前项目视频队列已达团队上限");
+    expect(message).toBe("当前项目视频队列的并发任务已达上限，请等待已有任务完成后重试");
     expect(tMock).toHaveBeenCalledWith("common.projectQueueKinds.video", {
       defaultValue: "video",
     });

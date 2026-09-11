@@ -140,6 +140,10 @@ class ProductionWorkflowStore:
             if version_id in self._versions
         }
 
+    def list_slots(self) -> tuple[AssetSlot, ...]:
+        """Return the immutable slot views used by read-only consumers."""
+        return tuple(slot.model_copy(deep=True) for slot in self._slots.values())
+
     def read_legacy_current(
         self, *, slot_id: str, asset_kind: str, asset_path: str
     ) -> tuple[AssetSlot, AssetVersion]:
@@ -194,6 +198,7 @@ class ProductionWorkflowStore:
         at: datetime,
         soft_issues: list[str] | None = None,
         technical_error: str | None = None,
+        origin: AssetOrigin = AssetOrigin.GENERATED,
     ) -> tuple[AssetSlot, AssetVersion, AdoptionEvent]:
         if self.read_only_reason:
             raise RuntimeError(self.read_only_reason)
@@ -210,7 +215,7 @@ class ProductionWorkflowStore:
             slot_id=slot_id,
             source_attempt_id=source_attempt_id,
             asset_path=asset_path,
-            origin=AssetOrigin.GENERATED,
+            origin=origin,
             generation_metadata=generation_metadata,
             qc_passed=qc_passed,
             soft_issues=soft_issues or [],
@@ -228,6 +233,34 @@ class ProductionWorkflowStore:
         self._events.append(event)
         self._save()
         return updated_slot, updated_version, event
+
+    def retarget_version_asset_paths(
+        self,
+        *,
+        slot_id: str,
+        version_ids: tuple[str, ...],
+        asset_path: str,
+    ) -> dict[str, AssetVersion]:
+        """Atomically redirect existing version records to one immutable asset."""
+
+        if self.read_only_reason:
+            raise RuntimeError(self.read_only_reason)
+        normalized_path = str(asset_path or "").strip()
+        if not normalized_path:
+            raise ValueError("asset path is required")
+        _slot, versions = self.get_slot(slot_id)
+        requested_ids = tuple(dict.fromkeys(version_ids))
+        updated: dict[str, AssetVersion] = {}
+        for version_id in requested_ids:
+            version = versions.get(version_id)
+            if version is None or version.slot_id != slot_id:
+                raise ValueError("asset version does not belong to slot")
+            updated[version_id] = AssetVersion.model_validate(
+                {**version.model_dump(), "asset_path": normalized_path}
+            )
+        self._versions.update(updated)
+        self._save()
+        return updated
 
     def adopt_version(
         self,

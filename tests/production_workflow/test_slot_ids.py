@@ -1,6 +1,7 @@
 import pytest
 
 from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
     character_state_slot_id,
     prop_reference_slot_id,
     scene_base_slot_id,
@@ -9,6 +10,7 @@ from novelvideo.production_workflow.slot_ids import (
 
 
 def test_slot_id_factories_preserve_existing_production_formats() -> None:
+    assert character_portrait_slot_id("林默") == "character:林默:portrait"
     assert character_state_slot_id("林默", "linmo-duty") == (
         "character:林默:state:linmo-duty"
     )
@@ -26,6 +28,7 @@ def test_slot_id_factories_do_not_normalize_non_empty_fields() -> None:
 @pytest.mark.parametrize(
     ("factory", "args"),
     [
+        (character_portrait_slot_id, ("",)),
         (character_state_slot_id, ("", "identity")),
         (character_state_slot_id, ("character", "  ")),
         (scene_base_slot_id, ("", "master")),
@@ -42,6 +45,7 @@ def test_slot_id_factories_reject_empty_fields(factory, args) -> None:
 @pytest.mark.parametrize(
     ("factory", "args"),
     [
+        (character_portrait_slot_id, ("林:默",)),
         (character_state_slot_id, ("林:默", "identity")),
         (character_state_slot_id, ("林默", "id:1")),
         (scene_base_slot_id, ("大:厅", "master")),
@@ -59,5 +63,6 @@ def test_slot_id_factories_reject_collision_delimiter(factory, args) -> None:
 
 @pytest.mark.parametrize("value", ["line\nbreak", "tab\tvalue", "delete\x7fvalue"])
 def test_slot_id_factories_reject_control_characters(value: str) -> None:
-    with pytest.raises(ValueError, match="control"):
-        prop_reference_slot_id(value)
+    for factory in (character_portrait_slot_id, prop_reference_slot_id):
+        with pytest.raises(ValueError, match="control"):
+            factory(value)

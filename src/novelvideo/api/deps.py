@@ -42,18 +42,18 @@ def get_media_capability_store():
 def get_media_credential_store():
     """Return the current user's OS-backed media credential store."""
     from novelvideo.media_capabilities.runtime.credential_store import (
-        WindowsCredentialStore,
+        create_credential_store,
     )
 
     from novelvideo import config as app_config
 
-    return WindowsCredentialStore(
+    return create_credential_store(
         Path(app_config.STATE_DIR) / "local" / "media-credentials.dpapi.json"
     )
 
 
 def get_media_credential_resolver():
-    """Resolve env and Windows Credential Manager references at execution time."""
+    """Resolve env and OS keyring references at execution time."""
     from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 
     credential_store = get_media_credential_store()

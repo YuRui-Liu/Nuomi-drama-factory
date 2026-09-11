@@ -34,6 +34,8 @@ from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3_REFERENCE_COMPILER_VERSION,
     build_h3_reference_timeline_payload,
 )
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.media_capabilities.video.pipeline import H3VideoPipeline
 from novelvideo.media_capabilities.video.runtime import (
     H3GenerationResult,
@@ -43,6 +45,10 @@ from novelvideo.media_capabilities.video.runtime import (
 )
 from novelvideo.media_capabilities.video.workflow_registry import (
     load_h3_reference_workflow_profile,
+)
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    compile_h3_wire,
 )
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.narrative_groups.video_references import (
@@ -496,15 +502,22 @@ def persist_h3_reference_input_snapshot(
     if reference_revision < 0:
         raise ValueError("reference_revision must be a non-negative integer")
     if isinstance(reference_limit, bool) or not isinstance(reference_limit, int):
-        raise ValueError("reference_limit must be an integer from 1 to 10")
-    if not 1 <= reference_limit <= 10:
-        raise ValueError("reference_limit must be from 1 to 10")
+        raise ValueError("reference_limit must be an integer from 0 to 10")
     workflow_id = str(provider_workflow_id).strip()
     if not workflow_id:
         raise ValueError("provider_workflow_id is required")
     frozen_references = tuple(references)
-    if not 1 <= len(frozen_references) <= reference_limit:
-        raise ValueError("global references do not satisfy reference_limit")
+    frame_only = not frozen_references
+    if frame_only:
+        if reference_revision != 0 or reference_limit != 0:
+            raise ValueError(
+                "frame-only H3 snapshots require zero reference revision and limit"
+            )
+    else:
+        if not 1 <= reference_limit <= 10:
+            raise ValueError("reference_limit must be from 1 to 10")
+        if not 1 <= len(frozen_references) <= reference_limit:
+            raise ValueError("global references do not satisfy reference_limit")
 
     reference_records = []
     reference_contents = []
@@ -616,9 +629,25 @@ def load_h3_reference_input_snapshot(
         raise ValueError("invalid H3 reference snapshot descriptor") from exc
     if descriptor.get("version") != H3_REFERENCE_INPUT_SNAPSHOT_VERSION:
         raise ValueError("unsupported H3 reference snapshot version")
-    reference_limit = int(descriptor["reference_limit"])
+    raw_reference_revision = descriptor["reference_revision"]
+    raw_reference_limit = descriptor["reference_limit"]
+    if (
+        isinstance(raw_reference_revision, bool)
+        or not isinstance(raw_reference_revision, int)
+        or raw_reference_revision < 0
+    ):
+        raise ValueError("invalid H3 reference snapshot revision")
+    if isinstance(raw_reference_limit, bool) or not isinstance(raw_reference_limit, int):
+        raise ValueError("invalid H3 reference snapshot limit")
+    reference_revision = raw_reference_revision
+    reference_limit = raw_reference_limit
     reference_records = descriptor.get("references", ())
-    if not isinstance(reference_records, list) or not 1 <= len(reference_records) <= reference_limit:
+    if not isinstance(reference_records, list):
+        raise ValueError("invalid H3 reference snapshot count")
+    if not reference_records:
+        if reference_revision != 0 or reference_limit != 0:
+            raise ValueError("invalid frame-only H3 snapshot contract")
+    elif not 1 <= len(reference_records) <= reference_limit <= 10:
         raise ValueError("invalid H3 reference snapshot count")
 
     references = []
@@ -676,7 +705,7 @@ def load_h3_reference_input_snapshot(
         )
     return H3ReferenceInputSnapshot(
         digest=actual_digest,
-        reference_revision=int(descriptor["reference_revision"]),
+        reference_revision=reference_revision,
         reference_limit=reference_limit,
         provider_workflow_id=str(descriptor["provider_workflow_id"]),
         references=tuple(references),
@@ -1319,6 +1348,19 @@ def _idempotency_input(
             }
             for entry in timeline.entries
         ],
+        "segments": [
+            {
+                "id": entry.segment.segment_id,
+                "start": entry.start_frame,
+                "frame_count": entry.frame_count,
+                "prompt": entry.segment.prompt,
+                "resolved_mode": H3Mode.REF2VA.value,
+                "duration_seconds": entry.segment.duration_seconds,
+            }
+            for entry in timeline.entries
+        ],
+        "frame_rate": timeline.fps,
+        "total_frames": timeline.total_frames,
         "mode": mode,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
@@ -1337,12 +1379,24 @@ async def generate_h3_reference_director_video(
     global_references,
     reference_limit: int,
     workflow_id: str,
+    wire: H3ReferenceWire,
     frozen_frames=None,
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
 ) -> H3GenerationResult:
     """Submit H3 Ref using immutable bytes captured before remote I/O."""
     from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_data
     normalized_segments = tuple(segments)
+    if not isinstance(wire, H3ReferenceWire):
+        raise ValueError("a validated H3ReferenceWire is required")
+    final_wire = compile_h3_wire(wire)
+    if any(segment.prompt != final_wire for segment in normalized_segments):
+        raise ValueError(
+            "every H3 reference segment prompt must equal its compiled wire"
+        )
+    for segment in normalized_segments:
+        inspect_h3_prompt(
+            final_wire, H3Mode.REF2VA, segment.duration_seconds
+        ).raise_for_failure()
     timeline = build_h3_timeline_data(normalized_segments, strict_first_frame=True)
     references, preflight_references, reference_suffixes, frames = _freeze_inputs(
         normalized_segments,
@@ -1365,6 +1419,7 @@ async def generate_h3_reference_director_video(
         timeline,
         preflight_references,
         max_references=reference_limit,
+        wire=wire,
         mode=mode,
         uploaded_frames=preflight_frames,
         aspect_ratio=aspect_ratio,
@@ -1409,6 +1464,7 @@ async def generate_h3_reference_director_video(
             timeline,
             uploaded_references,
             max_references=reference_limit,
+            wire=wire,
             mode=mode,
             uploaded_frames=uploaded_frames,
             aspect_ratio=aspect_ratio,
@@ -1430,7 +1486,7 @@ async def generate_h3_reference_director_video(
                 if actual_mode == "fl2va"
                 else MediaCapability.VIDEO_I2VA
             ),
-            prompt="\n".join(entry.segment.prompt for entry in timeline.entries),
+            prompt=final_wire,
             duration=timeline.duration_seconds,
             first_frame=f"sha256:{first_frame.sha256}",
             last_frame=(f"sha256:{frames[last_source].sha256}" if last_source else None),
@@ -1480,6 +1536,9 @@ async def generate_h3_reference_director_video(
                 aspect_ratio=aspect_ratio,
                 resolution=resolution or "720p",
                 output_path=output_path,
+            ),
+            transport_reference_urls=tuple(
+                reference.uploaded_url for reference in uploaded_references
             ),
             on_provider_submitted=on_provider_submitted,
         )

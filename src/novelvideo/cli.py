@@ -310,7 +310,11 @@ def api(
         console.print("[dim]请运行: pip install uvicorn[/dim]")
         raise typer.Exit(1)
 
-    api_host = host or os.environ.get("NOVELVIDEO_API_HOST", "0.0.0.0")
+    api_host = host or os.environ.get("NOVELVIDEO_API_HOST", "127.0.0.1")
+    os.environ["NOVELVIDEO_API_HOST"] = api_host
+    # Keep auth's exposure decision coupled to the address actually passed to
+    # Uvicorn; a stale inherited value must not classify a public bind as local.
+    os.environ["NOVELVIDEO_PUBLIC_HOST"] = api_host
     api_port = port or int(os.environ.get("NOVELVIDEO_API_PORT", "8780"))
     console.print(f"[green]访问: http://{api_host}:{api_port}/api/v1[/green]")
     uvicorn.run(

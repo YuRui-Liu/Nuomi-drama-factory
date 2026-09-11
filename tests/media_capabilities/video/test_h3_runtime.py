@@ -17,6 +17,17 @@ from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_da
 from novelvideo.media_capabilities.video.runtime import _director_timeline_payload
 
 
+def _official_prompt(mode: str = "i2va", duration: float = 5) -> str:
+    from novelvideo.media_capabilities.video.h3_prompt import compile_h3
+    from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
+
+    return compile_h3(
+        MotionSpec(action="人物缓慢向前走并停稳。"),
+        H3Mode(mode),
+        duration_seconds=duration,
+    )
+
+
 def test_production_profile_is_packaged_and_workflow_can_be_overridden() -> None:
     profile = load_h3_workflow_profile(workflow_id="9001")
 
@@ -67,22 +78,164 @@ async def test_single_video_api_wraps_one_director_segment(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("requested", "last_frame", "expected"),
-    [("auto", "last.png", "fl2va"), ("auto", None, "i2va"), ("i2va", None, "i2va")],
+    ("requested", "first_frame", "last_frame", "references", "expected"),
+    [
+        ("auto", None, None, (), "t2va"),
+        ("auto", "first.png", None, (), "i2va"),
+        ("auto", "first.png", "last.png", (), "fl2va"),
+        ("auto", None, "last.png", (), "l2va"),
+        ("auto", None, None, (object(),), "ref2va"),
+        ("auto", "first.png", "last.png", (object(),), "ref2va"),
+        ("t2va", None, None, (), "t2va"),
+        ("i2va", "first.png", None, (), "i2va"),
+        ("fl2va", "first.png", "last.png", (), "fl2va"),
+        ("l2va", None, "last.png", (), "l2va"),
+        ("ref2va", None, None, (object(),), "ref2va"),
+        ("ref2va", "first.png", "last.png", (object(),), "ref2va"),
+    ],
 )
-def test_h3_mode_uses_actual_frame_inputs(requested, last_frame, expected) -> None:
-    assert resolve_h3_mode(requested, "first.png", last_frame).value == expected
+def test_h3_mode_uses_the_shared_five_mode_input_matrix(
+    requested,
+    first_frame,
+    last_frame,
+    references,
+    expected,
+) -> None:
+    assert resolve_h3_mode(
+        requested,
+        first_frame,
+        last_frame,
+        references=references,
+    ).value == expected
 
 
-def test_h3_mode_rejects_missing_first_or_required_last_frame() -> None:
-    with pytest.raises(ValueError, match="first frame"):
-        resolve_h3_mode("auto", None, None)
-    with pytest.raises(ValueError, match="last frame"):
-        resolve_h3_mode("fl2va", "first.png", None)
+@pytest.mark.parametrize(
+    ("requested", "first_frame", "last_frame", "references", "code"),
+    [
+        ("i2va", None, None, (), "h3.first_frame_required"),
+        ("fl2va", "first.png", None, (), "h3.last_frame_required"),
+        ("ref2va", None, None, (), "h3.references_required"),
+        ("t2va", "first.png", None, (), "h3.first_frame_forbidden"),
+        ("l2va", "first.png", "last.png", (), "h3.first_frame_forbidden"),
+        ("i2va", "first.png", None, (object(),), "h3.references_forbidden"),
+    ],
+)
+def test_h3_mode_errors_expose_stable_blocker_codes(
+    requested,
+    first_frame,
+    last_frame,
+    references,
+    code,
+) -> None:
+    with pytest.raises(ValueError, match=code):
+        resolve_h3_mode(
+            requested,
+            first_frame,
+            last_frame,
+            references=references,
+        )
+
+
+def test_h3_mode_supported_modes_never_falls_back() -> None:
+    with pytest.raises(ValueError, match="h3.mode_unsupported_by_workflow"):
+        resolve_h3_mode(
+            "auto",
+            "first.png",
+            "last.png",
+            supported_modes={"i2va"},
+        )
+
+
+def test_h3_mode_existing_three_positional_argument_call_remains_compatible() -> None:
+    assert resolve_h3_mode("auto", "first.png", None).value == "i2va"
+
+
+def test_h3_mode_uses_reference_sequence_length_not_truthiness() -> None:
+    class FalseyReferences(tuple):
+        def __bool__(self) -> bool:
+            return False
+
+    references = FalseyReferences((object(), object()))
+
+    assert resolve_h3_mode(
+        "auto",
+        None,
+        None,
+        references=references,
+    ).value == "ref2va"
 
 
 def test_h3_concurrency_is_shared_process_wide_per_provider() -> None:
     assert get_h3_concurrency_coordinator("runninghub-main") is get_h3_concurrency_coordinator("runninghub-main")
+
+
+@pytest.mark.asyncio
+async def test_director_runtime_rejects_invalid_wire_before_upload_or_pipeline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video import pipeline as pipeline_module
+    from novelvideo.media_capabilities.video.h3_prompt_quality import (
+        H3PromptQualityError,
+    )
+
+    frame = tmp_path / "first.png"
+    Image.new("RGB", (16, 16)).save(frame)
+    upload_calls = 0
+    executor_calls = 0
+
+    class Client:
+        async def upload(self, _path):
+            nonlocal upload_calls
+            upload_calls += 1
+            return "uploaded://first.png"
+
+        async def close(self):
+            return None
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, *_args, **_kwargs):
+            nonlocal executor_calls
+            executor_calls += 1
+            raise AssertionError("pipeline transport must not run")
+
+    account = SimpleNamespace(
+        id="invalid-wire", max_concurrency=5,
+        capability_limits={}, queue_limit=10,
+    )
+    configured = SimpleNamespace(
+        account=account, workflow_id=lambda _capability: None,
+        create_client=Client,
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_capability_store", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_credential_resolver", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_runninghub_runtime_configuration",
+        lambda *_args: configured,
+    )
+    monkeypatch.setattr(pipeline_module, "H3VideoPipeline", Pipeline)
+
+    with pytest.raises(H3PromptQualityError):
+        await generate_h3_director_video(
+            SimpleNamespace(runtime_dir=tmp_path / "runtime"),
+            segments=(H3DirectorSegment(
+                segment_id="one", beat_number=1, prompt="人物转身",
+                duration_seconds=5, first_frame=str(frame),
+            ),),
+            output_path=str(tmp_path / "out.mp4"),
+        )
+
+    assert upload_calls == 0
+    assert executor_calls == 0
 
 
 @pytest.mark.asyncio
@@ -155,16 +308,16 @@ async def test_mixed_timeline_request_uses_last_nonempty_segment_tail(
             H3DirectorSegment(
                 segment_id="fl2va",
                 beat_number=1,
-                prompt="first",
-                duration_seconds=3,
+                prompt=_official_prompt("fl2va", 5),
+                duration_seconds=5,
                 first_frame=str(first),
                 last_frame=str(tail),
             ),
             H3DirectorSegment(
                 segment_id="i2va",
                 beat_number=2,
-                prompt="second",
-                duration_seconds=3,
+                prompt=_official_prompt("i2va", 5),
+                duration_seconds=5,
                 first_frame=str(middle),
             ),
         ),
@@ -175,6 +328,101 @@ async def test_mixed_timeline_request_uses_last_nonempty_segment_tail(
 
     assert captured["request"].last_frame == str(tail)
     assert captured["request"].resolution == "736x1280"
+
+
+@pytest.mark.asyncio
+async def test_director_runtime_uploads_frozen_frame_after_source_is_removed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video import pipeline as pipeline_module
+    from novelvideo.media_capabilities.video import runtime as runtime_module
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+
+    first = tmp_path / "first.png"
+    Image.new("RGB", (17, 19), "green").save(first)
+    segment = H3DirectorSegment(
+        segment_id="one", beat_number=1, prompt=_official_prompt(),
+        duration_seconds=5, first_frame=str(first),
+    )
+    frozen_frames = freeze_h3_reference_frames(
+        (segment,), project_root=tmp_path
+    )
+    frozen = frozen_frames[str(first)]
+    first.unlink()
+
+    runtime_dir = tmp_path / "runtime"
+    artifact = runtime_dir / "media_h3" / "artifacts" / "generated.mp4"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"video")
+    captured = {"uploads": []}
+
+    class Client:
+        async def upload(self, path):
+            uploaded = Path(path)
+            captured["uploads"].append(uploaded.read_bytes())
+            return f"uploaded://{uploaded.name}"
+
+        async def close(self):
+            captured["closed"] = True
+
+    class Pipeline:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def generate_timeline(self, request, **kwargs):
+            captured["request"] = request
+            captured["input_asset_hashes"] = kwargs["input_asset_hashes"]
+            captured["idempotency_input"] = kwargs["idempotency_input"]
+            return SimpleNamespace(
+                status=runtime_module.MediaTaskStatus.SUCCEEDED,
+                quality_issues=(),
+                artifact=SimpleNamespace(local_path="generated.mp4"),
+                provider_task_id="provider-frozen",
+            )
+
+    account = SimpleNamespace(
+        id="frozen-runtime", max_concurrency=5,
+        capability_limits={}, queue_limit=10,
+    )
+    configured = SimpleNamespace(
+        account=account, workflow_id=lambda _capability: None,
+        create_client=Client,
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_capability_store", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.deps.get_media_credential_resolver", lambda: object()
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_runninghub_runtime_configuration",
+        lambda *_args: configured,
+    )
+    monkeypatch.setattr(pipeline_module, "H3VideoPipeline", Pipeline)
+
+    await generate_h3_director_video(
+        SimpleNamespace(runtime_dir=runtime_dir),
+        segments=(segment,),
+        output_path=str(tmp_path / "out.mp4"),
+        frozen_frames=frozen_frames,
+    )
+
+    assert captured["uploads"] == [frozen.content]
+    assert captured["request"].first_frame == f"sha256:{frozen.sha256}"
+    assert captured["input_asset_hashes"] == (frozen.sha256,)
+    assert (
+        captured["idempotency_input"]["segments"][0]["first_frame_sha256"]
+        == hashlib.sha256(frozen.content).hexdigest()
+    )
+    assert captured["closed"] is True
+    assert not any((runtime_dir / "media_h3" / "staging").glob("*"))
 
 
 @pytest.mark.asyncio
@@ -246,7 +494,8 @@ async def test_director_runtime_resolves_size_once_for_request_and_timeline(
     await generate_h3_director_video(
         SimpleNamespace(runtime_dir=runtime_dir),
         segments=(H3DirectorSegment(
-            segment_id="one", beat_number=1, prompt="move", duration_seconds=3,
+            segment_id="one", beat_number=1, prompt=_official_prompt(),
+            duration_seconds=5,
             first_frame=str(first),
         ),),
         output_path=str(tmp_path / "out.mp4"),
@@ -311,7 +560,8 @@ async def test_director_runtime_forwards_provider_submission_callback(
     await generate_h3_director_video(
         SimpleNamespace(runtime_dir=runtime_dir),
         segments=(H3DirectorSegment(
-            segment_id="one", beat_number=1, prompt="move", duration_seconds=3,
+            segment_id="one", beat_number=1, prompt=_official_prompt(),
+            duration_seconds=5,
             first_frame=str(first),
         ),),
         output_path=str(tmp_path / "out.mp4"),

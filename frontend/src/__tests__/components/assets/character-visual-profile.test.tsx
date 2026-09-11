@@ -135,11 +135,38 @@ describe("CharacterVisualProfile", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /都市锐利/ }));
-    expect(onSelectProposal).toHaveBeenCalledWith("proposal-b");
+    await user.click(screen.getByRole("button", { name: /克制写实/ }));
+    expect(onSelectProposal).toHaveBeenCalledWith("proposal-c");
 
     await user.click(screen.getByRole("button", { name: "确认 VisualBible" }));
     expect(onConfirmVisualBible).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the recommended proposal when automatic proposals still await selection", async () => {
+    const user = userEvent.setup();
+    const onSelectProposal = vi.fn();
+    render(
+      <CharacterVisualProfile
+        biography="地下广播站主持人。"
+        facts={[]}
+        visualProposal=""
+        proposals={proposals}
+        selectedProposalId={null}
+        onSelectProposal={onSelectProposal}
+        visualIdentity={{}}
+        outfitsAndStates={[]}
+      />,
+    );
+
+    expect(
+      screen.getByText("已生成视觉提案，请先选择一套，再确认 VisualBible。"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "选择推荐提案" }));
+
+    expect(onSelectProposal).toHaveBeenCalledWith("proposal-a");
+    expect(
+      screen.queryByRole("button", { name: "确认 VisualBible" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a confirmed VisualBible as locked without another confirm action", () => {
@@ -158,5 +185,68 @@ describe("CharacterVisualProfile", () => {
 
     expect(screen.getByText("VisualBible 已确认")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认 VisualBible" })).not.toBeInTheDocument();
+  });
+
+  it("disables rejected proposals and explains why they cannot be used", () => {
+    const onSelectProposal = vi.fn();
+    render(
+      <CharacterVisualProfile
+        biography="地下广播站主持人。"
+        facts={[]}
+        visualProposal=""
+        proposals={proposals}
+        selectedProposalId={null}
+        onSelectProposal={onSelectProposal}
+        visualIdentity={{}}
+        outfitsAndStates={[]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /都市锐利/ })).toBeDisabled();
+    expect(screen.getByText("该提案未通过质量检查，不能选择或确认。"))
+      .toBeInTheDocument();
+  });
+
+  it("disables VisualBible confirmation when the selected proposal is rejected", () => {
+    render(
+      <CharacterVisualProfile
+        biography="地下广播站主持人。"
+        facts={[]}
+        visualProposal=""
+        proposals={proposals}
+        selectedProposalId="proposal-b"
+        visualBibleStatus="draft"
+        onConfirmVisualBible={vi.fn()}
+        visualIdentity={{}}
+        outfitsAndStates={[]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "确认 VisualBible" })).toBeDisabled();
+    expect(screen.getByText("所选提案未通过质量检查，请改选合格提案。"))
+      .toBeInTheDocument();
+  });
+
+  it("disables proposal actions when the proposal set shape is invalid", () => {
+    render(
+      <CharacterVisualProfile
+        biography="地下广播站主持人。"
+        facts={[]}
+        visualProposal=""
+        proposals={proposals.slice(0, 2)}
+        selectedProposalId="proposal-a"
+        onSelectProposal={vi.fn()}
+        visualBibleStatus="draft"
+        onConfirmVisualBible={vi.fn()}
+        visualIdentity={{}}
+        outfitsAndStates={[]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /冷峻纪实/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /都市锐利/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "确认 VisualBible" })).toBeDisabled();
+    expect(screen.getAllByText("视觉提案集必须包含三套不同方案，且只能有一套推荐方案。"))
+      .not.toHaveLength(0);
   });
 });

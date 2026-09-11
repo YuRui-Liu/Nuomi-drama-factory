@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -23,7 +24,10 @@ from novelvideo.media_capabilities.video.parameters import (
     VideoWorkflowParameterDefinition,
     VideoWorkflowParameterOption,
 )
-from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
+from novelvideo.media_capabilities.video.runtime import (
+    load_h3_workflow_profile,
+    resolve_h3_mode,
+)
 
 
 H3_WORKFLOW_ID = "runninghub:minimax-h3"
@@ -82,7 +86,7 @@ class VideoWorkflowDefinition(BaseModel):
             raise ValueError("workflow scenes must not be empty")
         if not self.supported_modes:
             raise ValueError("workflow supported_modes must not be empty")
-        if self.default_mode not in self.supported_modes:
+        if self.default_mode != "auto" and self.default_mode not in self.supported_modes:
             raise ValueError("workflow default_mode must be supported")
         parameter_keys: set[str] = set()
         for parameter in self.parameters:
@@ -100,6 +104,48 @@ class VideoWorkflowDefinition(BaseModel):
 
 class VideoWorkflowUnavailable(LookupError):
     """A workflow cannot be used for the requested scene."""
+
+
+class H3ModeUnavailableError(ValueError):
+    """The requested H3 mode cannot run on the selected workflow."""
+
+
+_CAPABILITY_MODES = {
+    MediaCapability.VIDEO_T2VA: "t2va",
+    MediaCapability.VIDEO_I2VA: "i2va",
+    MediaCapability.VIDEO_FL2VA: "fl2va",
+    MediaCapability.VIDEO_L2VA: "l2va",
+    MediaCapability.VIDEO_REF2VA: "ref2va",
+}
+
+
+def supported_modes_from_profile(profile: WorkflowProfile) -> tuple[str, ...]:
+    return tuple(
+        mode
+        for capability, mode in _CAPABILITY_MODES.items()
+        if capability in profile.capabilities
+    )
+
+
+def resolve_h3_workflow_mode(
+    *,
+    requested: str | None,
+    first_frame: str | None,
+    last_frame: str | None,
+    references: Sequence[object] = (),
+    supported_modes: Collection[str],
+) -> str:
+    """Resolve frozen inputs first, then fail closed on workflow capability."""
+    try:
+        return resolve_h3_mode(
+            requested,
+            first_frame,
+            last_frame,
+            references=references,
+            supported_modes=supported_modes,
+        ).value
+    except ValueError as exc:
+        raise H3ModeUnavailableError(str(exc)) from exc
 
 
 class VideoWorkflowRegistry:
@@ -193,9 +239,11 @@ def load_h3_reference_workflow_profile(*, workflow_id: str) -> WorkflowProfile:
     profile = WorkflowProfile.model_validate_json(
         _H3_REFERENCE_PROFILE_PATH.read_text(encoding="utf-8")
     )
+    declared_capabilities = set(profile.capabilities)
     if (
         profile.provider != "runninghub"
-        or profile.capabilities != [MediaCapability.VIDEO_REF2VA]
+        or MediaCapability.VIDEO_REF2VA not in declared_capabilities
+        or not declared_capabilities.issubset(_CAPABILITY_MODES)
         or profile.bindings
         != {"timeline_data": {"node_id": "12", "field": "timeline_data"}}
         or profile.outputs
@@ -279,6 +327,18 @@ def build_video_workflow_registry(
 ) -> VideoWorkflowRegistry:
     unavailable_reason = _h3_unavailable_reason(store, resolver)
     workflows = store.get_runninghub_workflows()
+    try:
+        base_modes = supported_modes_from_profile(load_h3_workflow_profile())
+    except (OSError, ValueError):
+        base_modes = ("i2va", "fl2va")
+    try:
+        reference_modes = supported_modes_from_profile(
+            load_h3_reference_workflow_profile(
+                workflow_id=workflows.video_minimax_h3_ref or "1"
+            )
+        )
+    except (OSError, ValueError):
+        reference_modes = ("ref2va",)
     reference_definition = VideoWorkflowDefinition(
         id=H3_REFERENCE_WORKFLOW_ID,
         label="RunningHub MiniMax H3 · Ref",
@@ -287,7 +347,7 @@ def build_video_workflow_registry(
         workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
         provider_workflow_id=workflows.video_minimax_h3_ref,
         scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-        supported_modes=("auto", "i2va", "fl2va"),
+        supported_modes=reference_modes,
         default_mode="auto",
         is_default=False,
         reference_policy=VideoReferencePolicy(
@@ -333,7 +393,8 @@ def build_video_workflow_registry(
                     RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3
                 ),
                 scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                supported_modes=("auto", "i2va", "fl2va"),
+                supported_modes=base_modes,
+                default_mode="auto",
                 is_default=True,
                 parameters=_h3_parameters(),
                 available=unavailable_reason is None,
@@ -347,6 +408,7 @@ def build_video_workflow_registry(
 __all__ = [
     "H3_WORKFLOW_ID",
     "H3_REFERENCE_WORKFLOW_ID",
+    "H3ModeUnavailableError",
     "VideoReferencePolicy",
     "VideoWorkflowDefinition",
     "VideoWorkflowRegistry",
@@ -354,4 +416,6 @@ __all__ = [
     "VideoWorkflowUnavailable",
     "build_video_workflow_registry",
     "load_h3_reference_workflow_profile",
+    "resolve_h3_workflow_mode",
+    "supported_modes_from_profile",
 ]

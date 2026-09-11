@@ -3,10 +3,11 @@
 from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from novelvideo.models import SceneRef
 from novelvideo.freezone.slots import PushTarget
+from novelvideo.shot_continuity.models import H3RequestedMode
 
 ProjectStatus = Literal["active", "archived", "deleted"]
 ProjectStatusFilter = Literal["all", "active", "archived", "deleted", "visible"]
@@ -102,7 +103,7 @@ class ProjectUpdate(BaseModel):
     grid_mode: Optional[str] = None
     grid_model: Optional[str] = None
     video_backend: Optional[str] = None
-    h3_mode: Optional[Literal["auto", "i2va", "fl2va"]] = None
+    h3_mode: Optional[H3RequestedMode] = None
     use_director_render: Optional[bool] = None
     video_resolution: Optional[str] = None
     add_subtitles: Optional[bool] = None
@@ -113,7 +114,7 @@ class ProjectUpdate(BaseModel):
 
 class MediaDefaultsRequest(BaseModel):
     video_model: str
-    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    h3_mode: H3RequestedMode = "auto"
     video_workflow_parameters: dict[str, dict[str, str]] | None = None
     narrative_sketch_provider: str = "grsai-main"
     narrative_sketch_model: str = "nano-banana-2"
@@ -381,7 +382,7 @@ class InsertManualShotRequest(BaseModel):
 class SingleVideoRequest(BaseModel):
     resolution: str = "720x1280"
     video_backend: str = "runninghub_minimax_h3"
-    h3_mode: Literal["auto", "i2va", "fl2va"] = "auto"
+    h3_mode: H3RequestedMode = "auto"
     use_director_render: bool = False
     seedance2_config_json: Optional[str] = None
     mode: Optional[str] = None
@@ -1894,6 +1895,26 @@ class SceneCreate(BaseModel):
     spatial_layout_image: str = ""
     notes: str = ""
 
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        if not str(value or "").strip():
+            return ""
+        return validate_path_segment(value)
+
+    @model_validator(mode="after")
+    def _safe_structured_name_parts(self):
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        if not self.name and not str(self.base_scene_id or "").strip():
+            raise ValueError("invalid asset name")
+        for value in (self.base_scene_id, self.variant_id, self.time_of_day):
+            if str(value or "").strip():
+                validate_path_segment(value)
+        return self
+
 
 class SceneUpdate(BaseModel):
     name: Optional[str] = None
@@ -1907,6 +1928,24 @@ class SceneUpdate(BaseModel):
     description: Optional[str] = None
     spatial_layout_image: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
+
+    @field_validator("base_scene_id", "variant_id", "time_of_day")
+    @classmethod
+    def _safe_structured_name_part(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return value
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
 
 
 class ScenePanoGenerateRequest(BaseModel):
@@ -1935,6 +1974,13 @@ class PropCreate(BaseModel):
     owner: str = ""
     notes: str = ""
 
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
+
 
 class PropUpdate(BaseModel):
     name: Optional[str] = None
@@ -1944,6 +1990,15 @@ class PropUpdate(BaseModel):
     description: Optional[str] = None
     owner: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from novelvideo.utils.safe_paths import validate_path_segment
+
+        return validate_path_segment(value)
 
 
 class PropReferenceGenerateRequest(BaseModel):

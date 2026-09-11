@@ -3,9 +3,17 @@ import { Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { effectiveVideoMode, type VideoModelCatalogItem, type VideoModelMode } from "@/lib/queries/media-models";
+import {
+  effectiveVideoMode,
+  h3ModeAvailabilities,
+  type H3ResolvedVideoMode,
+  type H3VideoMode,
+  type VideoModelCatalogItem,
+  type VideoModelMode,
+} from "@/lib/queries/media-models";
 import type { NarrativeGroup, NarrativeGroupVideoPlan } from "@/lib/queries/narrative-groups";
 import { ProjectVideoModelSelect } from "./project-video-model-select";
+import { H3VideoModeSelect, h3ModeLabel } from "./h3-video-mode-select";
 
 interface DraftVideoUnit {
   beatIds: string[];
@@ -68,6 +76,40 @@ export function groupFrameSummary(inputs: NonNullable<NarrativeGroup["video_inpu
   };
 }
 
+const RESOLVED_H3_MODES = new Set<H3ResolvedVideoMode>([
+  "t2va", "i2va", "fl2va", "l2va", "ref2va",
+]);
+
+function inputVideoMode(
+  input: NonNullable<NarrativeGroup["video_inputs"]>[number],
+  requestedMode: VideoModelMode,
+  referenceCount: number,
+): H3ResolvedVideoMode {
+  if (input.actual_mode && RESOLVED_H3_MODES.has(input.actual_mode as H3ResolvedVideoMode)) {
+    return input.actual_mode as H3ResolvedVideoMode;
+  }
+  return effectiveVideoMode(
+    requestedMode,
+    input.has_first_frame,
+    input.has_last_frame,
+    referenceCount,
+  );
+}
+
+function groupModeLabel(
+  requestedMode: VideoModelMode,
+  fallbackMode: H3ResolvedVideoMode,
+  inputs: NarrativeGroup["video_inputs"],
+  referenceCount: number,
+) {
+  if (requestedMode !== "auto" || !inputs?.length) return h3ModeLabel(fallbackMode);
+  const modes = [...new Set(inputs.map((input) => (
+    inputVideoMode(input, requestedMode, referenceCount)
+  )))];
+  if (modes.length === 1) return h3ModeLabel(modes[0]);
+  return `混合模式（${modes.map(h3ModeLabel).join(" / ")}）`;
+}
+
 const taskStatusLabel: Record<NonNullable<NarrativeGroup["stages"]["video"]["status"]>, string> = {
   pending: "待生成", queued: "已排队", running: "生成中", review: "待审核",
   completed: "已完成", partial_failure: "部分失败", failed: "生成失败",
@@ -84,7 +126,7 @@ export interface GroupVideoReferenceState {
   onManage?: () => void;
 }
 
-export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onPlanSave, onGenerate }: {
+export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onModeChange, onPlanSave, onGenerate }: {
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
   plan?: NarrativeGroup["video_plan"];
@@ -94,16 +136,37 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
   models?: VideoModelCatalogItem[]; modelSaving?: boolean;
   reference?: GroupVideoReferenceState;
   onModelChange?: (modelId: string) => void;
+  onModeChange?: (mode: H3VideoMode) => void;
   onPlanSave?: (units: Array<{ beatIds: string[] }>) => void | Promise<void>;
   onGenerate?: (request: { video_model: string; h3_mode: VideoModelMode }) => void;
 }) {
   const { t } = useTranslation();
   const [draftUnits, setDraftUnits] = useState<DraftVideoUnit[]>(() => planDraft(plan));
   useEffect(() => { setDraftUnits(planDraft(plan)); }, [plan]);
-  const actualMode = effectiveVideoMode(mode, hasFirstFrame, hasLastFrame);
+  const catalogModel = models?.find((item) => item.id === modelId);
+  const availabilityModel: VideoModelCatalogItem = catalogModel ?? {
+    id: modelId,
+    label: modelId,
+    provider: "runninghub",
+    available,
+    unavailable_reason: unavailableReason,
+    supported_modes: modelId === "runninghub:minimax-h3-ref"
+      ? ["ref2va"] : ["i2va", "fl2va"],
+    default_mode: "auto",
+    parameters: [],
+  };
+  const modeAvailabilities = h3ModeAvailabilities(availabilityModel, {
+    hasFirstFrame,
+    hasLastFrame,
+    referenceCount: reference?.count ?? 0,
+  });
+  const selectedMode = modeAvailabilities.find((item) => item.mode === mode)
+    ?? modeAvailabilities[0];
+  const actualMode = selectedMode.resolvedMode;
   const label = modelId === "runninghub:minimax-h3" ? "MiniMax H3"
     : modelId === "runninghub:minimax-h3-ref" ? t("narrativeVideoReferences.modelLabel") : modelId;
-  const modeLabel = actualMode === "fl2va" ? "FL2V（首尾帧）" : actualMode === "i2va" ? "I2V（首帧）" : "等待首帧";
+  const referenceCount = reference?.count ?? 0;
+  const modeLabel = groupModeLabel(mode, actualMode, inputs, referenceCount);
   const editingDisabled = planSaving || taskStatus === "queued" || taskStatus === "running";
   const planChanged = draftSignature(draftUnits) !== draftSignature(planDraft(plan));
   const totalDuration = plan?.total_duration_seconds ?? draftUnits.reduce((total, unit) => total + (unit.durationSeconds ?? 0), 0);
@@ -118,7 +181,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
           <Video className="size-4 text-primary" />
           <div><h3 className="text-sm font-semibold">视频生成</h3><p className="text-xs text-muted-foreground">{label} · {modeLabel} · {inherited ? "继承项目默认" : "本次临时覆盖"}</p></div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!available || !hasFirstFrame || !onGenerate || planChanged || planSaving || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
+        <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}<H3VideoModeSelect value={mode} availability={modeAvailabilities} disabled={editingDisabled || modelSaving || !onModeChange} onChange={(nextMode) => onModeChange?.(nextMode)} />{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!selectedMode.available || !onGenerate || planChanged || planSaving || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
       </div>
       {!available && <p className="mt-2 text-xs text-destructive">{unavailableReason || "模型尚未配置"}</p>}
       {planChanged && <p className="mt-2 text-xs text-muted-foreground">请先保存视频方案</p>}
@@ -166,7 +229,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
         </div>
       </div> : inputs?.length ? <div className="mt-3 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
         {inputs.map((input) => <div key={input.beat_id} className="rounded-md bg-black/20 px-2 py-1.5 text-[11px] text-muted-foreground">
-          Beat {input.beat_id} · {input.has_first_frame ? "有首帧" : "缺首帧"} · {input.has_last_frame ? "有尾帧" : "无尾帧"} · {input.actual_mode || effectiveVideoMode(mode, input.has_first_frame, input.has_last_frame)}
+          Beat {input.beat_id} · {input.has_first_frame ? "有首帧" : "缺首帧"} · {input.has_last_frame ? "有尾帧" : "无尾帧"} · {h3ModeLabel(inputVideoMode(input, mode, referenceCount))}
         </div>)}
       </div> : null}
     </section>

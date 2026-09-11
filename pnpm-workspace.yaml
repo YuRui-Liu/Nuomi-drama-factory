@@ -8,3 +8,12 @@ onlyBuiltDependencies:
 
 blockExoticSubdeps: false
 verifyDepsBeforeRun: false
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: false
+  msw: false
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: false

@@ -33,6 +33,7 @@ from .h3_prompt_quality import (
     H3PromptQualityError,
     H3PromptQualityReport,
     inspect_h3_plan,
+    inspect_h3_prompt,
     normalize_h3_action_timeline,
 )
 from .h3_timeline import H3DirectorSegment
@@ -302,10 +303,17 @@ def compile_and_gate_h3_plan(
     normalized = normalize_h3_action_timeline(plan)
     report = inspect_h3_plan(normalized, segment=segment, context=context)
     report.raise_for_failure()
+    prompt = compile_h3_director_plan(normalized)
+    wire_report = inspect_h3_prompt(
+        prompt,
+        normalized.mode,
+        normalized.total_frames / normalized.fps,
+    )
+    wire_report.raise_for_failure()
     return H3PromptOptimizationResult(
-        prompt=compile_h3_director_plan(normalized),
+        prompt=prompt,
         plan=normalized,
-        quality_report=report,
+        quality_report=wire_report,
         input_hash=input_hash,
     )
 

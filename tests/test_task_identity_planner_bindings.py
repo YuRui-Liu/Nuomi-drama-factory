@@ -10,11 +10,20 @@ from novelvideo.agents.identity_planner import IdentityPlanDraft, IdentityPlanne
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.models import CharacterIdentity, NovelCharacter, NovelEpisode
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
-from novelvideo.production_workflow.slot_ids import character_state_slot_id
+from novelvideo.narrative_groups.planned_binding_service import (
+    _ProjectedRequirement,
+    _binding as _project_binding,
+    bindings_for_director_plan,
+)
+from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
+    character_state_slot_id,
+)
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.task_backend.runners.identity import (
     _build_identity_planner_result,
     _character_identity_bindings,
+    _character_identity_bindings_for_publish,
 )
 from tests.director_plan.test_store import make_revision
 
@@ -50,13 +59,452 @@ def _binding(identity_id: str, *, revision: str) -> PlannedReferenceBinding:
     )
 
 
-def test_character_binding_projection_uses_new_identity_from_draft():
+def _project_character_binding(
+    entity_key: str,
+    *,
+    characters: tuple[NovelCharacter, ...],
+    episode_identity_ids: tuple[str, ...] = (),
+    identity_default_map: dict[str, str] | None = None,
+    available_character_portraits: tuple[str, ...] = (),
+    available_character_identity_ids: tuple[str, ...] | None = None,
+) -> PlannedReferenceBinding:
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity",
+                entity_key=entity_key,
+                required=True,
+            ),
+        ),
+    )
+    return bindings_for_director_plan(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        groups=(),
+        shots=(shot,),
+        characters=characters,
+        scenes=(),
+        props=(),
+        episode_identity_ids=episode_identity_ids,
+        identity_default_map=identity_default_map or {},
+        available_character_portraits=available_character_portraits,
+        available_character_identity_ids=available_character_identity_ids,
+    )[0]
+
+
+def test_character_name_requirement_uses_episode_default_identity():
+    default_identity = _identity("陆辰_青年时期", with_image=True)
+    alternate_identity = _identity("陆辰_战斗装", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", default_identity, alternate_identity),),
+        episode_identity_ids=(
+            default_identity.identity_id,
+            alternate_identity.identity_id,
+        ),
+        identity_default_map={"陆辰": default_identity.identity_id},
+    )
+
+    assert binding.entity_id == default_identity.identity_id
+    assert binding.status == "ready"
+    assert binding.asset_slot_id == "character:陆辰:state:陆辰_青年时期"
+
+
+def test_character_name_requirement_uses_only_episode_identity_without_default():
+    prior_identity = _identity("陆辰_少年时期", with_image=True)
+    episode_identity = _identity("陆辰_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", prior_identity, episode_identity),),
+        episode_identity_ids=(episode_identity.identity_id,),
+    )
+
+    assert binding.entity_id == episode_identity.identity_id
+    assert binding.status == "ready"
+
+
+def test_unique_identity_without_image_stays_missing_when_portrait_is_unavailable():
+    identity = _identity("陆辰_青年时期")
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+    )
+
+    assert binding.asset_kind == "character_identity"
+    assert binding.entity_id == identity.identity_id
+    assert binding.asset_slot_id == character_portrait_slot_id("陆辰")
+    assert binding.status == "missing_image"
+    assert binding.resolution == "explicit_fallback"
+    assert "基础头像" in binding.display_label
+
+
+def test_unique_identity_without_image_uses_available_character_portrait():
+    identity = _identity("陆辰_青年时期")
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+        available_character_portraits=("陆辰",),
+    )
+
+    assert binding.entity_id == identity.identity_id
+    assert binding.asset_slot_id == character_portrait_slot_id("陆辰")
+    assert binding.status == "ready"
+    assert binding.resolution == "explicit_fallback"
+
+
+def test_unique_identity_with_image_keeps_state_slot_auto_match():
+    identity = _identity("陆辰_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+    )
+
+    assert binding.asset_slot_id == character_state_slot_id(
+        "陆辰", identity.identity_id
+    )
+    assert binding.status == "ready"
+    assert binding.resolution == "auto_matched"
+    assert "基础头像" not in binding.display_label
+
+
+def test_stale_identity_reference_falls_back_to_available_character_portrait():
+    identity = _identity("陆辰_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+        available_character_portraits=("陆辰",),
+        available_character_identity_ids=(),
+    )
+
+    assert binding.entity_id == identity.identity_id
+    assert binding.asset_slot_id == character_portrait_slot_id("陆辰")
+    assert binding.status == "ready"
+    assert binding.resolution == "explicit_fallback"
+
+
+def test_identity_runner_requires_real_workflow_identity_asset(tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=["assets/characters/陆辰/identities/missing.png"],
+    )
+    character = _character("陆辰", identity)
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(character,)
+    ) == frozenset()
+
+    image_path = tmp_path / "assets" / "characters" / "陆辰" / "identities" / "state.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    workflow = ProductionWorkflowStore(ctx.state_dir / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=character_state_slot_id("陆辰", identity.identity_id),
+        asset_kind="character_state",
+        version_id="state-v1",
+        asset_path=image_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": identity.identity_id},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(character,)
+    ) == frozenset({identity.identity_id})
+
+
+def test_identity_runner_materializes_safe_legacy_identity_reference(tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    image_path = tmp_path / "assets" / "characters" / "陆辰" / "identities" / "legacy.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset({identity.identity_id})
+    slot, versions = ProductionWorkflowStore(
+        ctx.state_dir / "production_workflow.json"
+    ).get_slot(character_state_slot_id("陆辰", identity.identity_id))
+    assert slot.asset_kind == "character_state"
+    assert versions[slot.current_version_id].asset_path.startswith(
+        "assets/characters/陆辰/identities/_workflow_versions/legacy-"
+    )
+    assert (tmp_path / versions[slot.current_version_id].asset_path).read_bytes() == (
+        image_path.read_bytes()
+    )
+
+
+def test_identity_runner_rejects_character_directory_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    external = tmp_path / "assets" / "scenes" / "villain"
+    external.mkdir(parents=True)
+    image_path = external / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    characters_root = tmp_path / "assets" / "characters"
+    characters_root.mkdir(parents=True)
+    (characters_root / "陆辰").symlink_to(external, target_is_directory=True)
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+
+
+def test_identity_runner_rejects_characters_root_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    external = tmp_path / "assets" / "scenes"
+    character_root = external / "陆辰"
+    character_root.mkdir(parents=True)
+    image_path = character_root / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (tmp_path / "assets" / "characters").symlink_to(
+        external, target_is_directory=True
+    )
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+    assert not (character_root / "identities" / "_workflow_versions").exists()
+
+
+def test_identity_runner_rejects_sibling_character_symlink(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    characters_root = tmp_path / "assets" / "characters"
+    other_root = characters_root / "Other"
+    other_root.mkdir(parents=True)
+    image_path = other_root / "identity.png"
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    (characters_root / "Lin").symlink_to(other_root, target_is_directory=True)
+    identity = CharacterIdentity(
+        identity_id="lin-duty",
+        character_name="Lin",
+        identity_name="Duty",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(_character("Lin", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+    assert not (other_root / "identities" / "_workflow_versions").exists()
+
+
+def test_identity_legacy_snapshot_rejects_changed_copy(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners import identity as identity_runner
+
+    image_path = tmp_path / "assets" / "characters" / "陆辰" / "identities" / "legacy.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(image_path)
+    identity = CharacterIdentity(
+        identity_id="陆辰_青年时期",
+        character_name="陆辰",
+        identity_name="青年时期",
+        reference_images=[image_path.relative_to(tmp_path).as_posix()],
+    )
+
+    def replace_during_copy(_source, destination):
+        Image.new("RGB", (8, 8), "blue").save(destination)
+
+    monkeypatch.setattr(identity_runner.shutil, "copy2", replace_during_copy)
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    assert identity_runner._available_character_identity_ids(
+        ctx=ctx, characters=(_character("陆辰", identity),)
+    ) == frozenset()
+    assert not (ctx.state_dir / "production_workflow.json").exists()
+
+
+def test_character_name_requirement_uses_only_identity_for_legacy_episode():
+    only_identity = _identity("陆辰_默认", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", only_identity),),
+    )
+
+    assert binding.entity_id == only_identity.identity_id
+    assert binding.status == "ready"
+
+
+def test_character_name_requirement_does_not_guess_between_episode_identities():
+    young = _identity("陆辰_青年时期", with_image=True)
+    fighter = _identity("陆辰_战斗装", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰",
+        characters=(_character("陆辰", young, fighter),),
+        episode_identity_ids=(young.identity_id, fighter.identity_id),
+    )
+
+    assert binding.entity_id == "陆辰"
+    assert binding.status == "pending_confirmation"
+    assert binding.asset_slot_id == ""
+
+
+def test_planned_phase_alias_resolves_only_within_same_character():
+    matching = _identity("陆辰_青年时期", with_image=True)
+    other_character = _identity("沈砚_青年时期", with_image=True)
+
+    binding = _project_character_binding(
+        "陆辰_青年期",
+        characters=(
+            _character("陆辰", matching),
+            _character("沈砚", other_character),
+        ),
+        episode_identity_ids=(matching.identity_id, other_character.identity_id),
+    )
+
+    assert binding.entity_id == matching.identity_id
+    assert binding.status == "ready"
+
+
+def test_resolved_duplicate_bindings_merge_scope_and_required():
+    identity = _identity("陆辰_青年时期", with_image=True)
+    shot_one = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity", entity_key="陆辰", required=False
+            ),
+        ),
+    )
+    shot_two = SimpleNamespace(
+        id="shot-2",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity", entity_key="陆辰_青年期", required=True
+            ),
+        ),
+    )
+
+    bindings = bindings_for_director_plan(
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        groups=(
+            SimpleNamespace(id="group-1", beat_ids=("beat-1",), shots=(shot_one,)),
+            SimpleNamespace(id="group-2", beat_ids=("beat-2",), shots=(shot_two,)),
+        ),
+        shots=(shot_one, shot_two),
+        characters=(_character("陆辰", identity),),
+        scenes=(),
+        props=(),
+        episode_identity_ids=(identity.identity_id,),
+        identity_default_map={"陆辰": identity.identity_id},
+    )
+
+    assert len(bindings) == 1
+    assert bindings[0].entity_id == identity.identity_id
+    assert bindings[0].group_ids == ("group-1", "group-2")
+    assert bindings[0].beat_ids == ("beat-1", "beat-2")
+    assert bindings[0].shot_ids == ("shot-1", "shot-2")
+    assert bindings[0].required is True
+
+
+def test_exact_identity_id_keeps_matching_outside_episode_selection():
+    exact = _identity("陆辰_少年时期", with_image=True)
+
+    binding = _project_character_binding(
+        exact.identity_id,
+        characters=(_character("陆辰", exact),),
+        episode_identity_ids=(),
+    )
+
+    assert binding.entity_id == exact.identity_id
+    assert binding.status == "ready"
+
+
+def test_internal_binding_keeps_legacy_call_signature():
+    exact = _identity("陆辰_少年时期", with_image=True)
+
+    binding = _project_binding(
+        _ProjectedRequirement(kind="character_identity", entity_key=exact.identity_id),
+        project_id="owner/project",
+        episode_number=1,
+        source_plan_revision_id="director-r2",
+        characters=(_character("陆辰", exact),),
+        scenes=(),
+        props=(),
+    )
+
+    assert binding.entity_id == exact.identity_id
+    assert binding.status == "ready"
+
+
+def test_character_binding_projection_uses_default_identity_from_draft():
+    alternate_identity = _identity("陆辰_日常装", with_image=True)
     new_identity = _identity("陆辰_战斗装", with_image=True)
     draft = IdentityPlanDraft(
         new_count=1,
         resolved_count=1,
-        characters=(_character("陆辰", new_identity),),
-        episode_identity_ids=(new_identity.identity_id,),
+        characters=(_character("陆辰", alternate_identity, new_identity),),
+        episode_identity_ids=(
+            alternate_identity.identity_id,
+            new_identity.identity_id,
+        ),
         identity_default_map={"陆辰": new_identity.identity_id},
         identity_baseline_digests={"陆辰": "baseline"},
         episode_identity_baseline_digest="episode-baseline",
@@ -67,7 +515,7 @@ def test_character_binding_projection_uses_new_identity_from_draft():
         asset_requirements=(
             SimpleNamespace(
                 kind="character_identity",
-                entity_key=new_identity.identity_id,
+                entity_key="陆辰",
                 required=True,
             ),
         ),
@@ -100,6 +548,213 @@ def test_character_binding_projection_uses_new_identity_from_draft():
     assert bindings[0].shot_ids == ("shot-1",)
 
 
+def test_character_binding_projection_forwards_available_portraits():
+    identity = _identity("陆辰_战斗装")
+    draft = IdentityPlanDraft(
+        new_count=1,
+        resolved_count=0,
+        characters=(_character("陆辰", identity),),
+        episode_identity_ids=(identity.identity_id,),
+        identity_default_map={"陆辰": identity.identity_id},
+        identity_baseline_digests={"陆辰": "baseline"},
+        episode_identity_baseline_digest="episode-baseline",
+    )
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity",
+                entity_key="陆辰",
+                required=True,
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        revision_id="director-r2",
+        groups=(SimpleNamespace(id="group-1", beat_ids=(), shots=(shot,)),),
+    )
+
+    bindings = _character_identity_bindings(
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        draft=draft,
+        characters=(_character("陆辰"),),
+        scenes=(),
+        props=(),
+        available_character_portraits=("陆辰",),
+    )
+
+    assert bindings[0].status == "ready"
+    assert bindings[0].asset_slot_id == character_portrait_slot_id("陆辰")
+    assert bindings[0].resolution == "explicit_fallback"
+
+
+def test_identity_runner_materializes_safe_legacy_character_portrait(tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state")
+
+    available = _available_character_portraits(
+        ctx=ctx,
+        characters=(_character("陆辰"),),
+    )
+
+    assert available == frozenset({"陆辰"})
+    slot, versions = ProductionWorkflowStore(
+        tmp_path / "state" / "production_workflow.json"
+    ).get_slot(character_portrait_slot_id("陆辰"))
+    assert slot.asset_kind == "character_portrait"
+    assert slot.current_version_id
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/陆辰/portrait_versions/legacy-"
+    )
+    immutable_path = tmp_path / current.asset_path
+    assert immutable_path.read_bytes() == portrait.read_bytes()
+
+
+def test_identity_runner_migrates_mutable_legacy_current_before_reconcile(tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    original_bytes = portrait.read_bytes()
+    state_dir = tmp_path / "state"
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    workflow.materialize_legacy_current(
+        slot_id=character_portrait_slot_id("陆辰"),
+        asset_kind="character_portrait",
+        asset_path="assets/characters/陆辰/portrait.png",
+    )
+    old_slot, _old_versions = workflow.get_slot(character_portrait_slot_id("陆辰"))
+    old_version_id = old_slot.current_version_id
+
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=state_dir)
+    assert _available_character_portraits(
+        ctx=ctx,
+        characters=(_character("陆辰"),),
+    ) == frozenset({"陆辰"})
+    migrated = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    slot, versions = migrated.get_slot(character_portrait_slot_id("陆辰"))
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/陆辰/portrait_versions/legacy-"
+    )
+    immutable_path = tmp_path / current.asset_path
+    assert immutable_path.read_bytes() == original_bytes
+    assert versions[old_version_id].asset_path == current.asset_path
+
+    Image.new("RGB", (8, 8), "blue").save(portrait)
+    assert _available_character_portraits(
+        ctx=ctx,
+        characters=(_character("陆辰"),),
+    ) == frozenset({"陆辰"})
+    assert portrait.read_bytes() == original_bytes
+
+
+def test_identity_runner_does_not_readopt_rejected_mutable_legacy_current(tmp_path):
+    import json
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    state_dir = tmp_path / "state"
+    state_path = state_dir / "production_workflow.json"
+    workflow = ProductionWorkflowStore(state_path)
+    workflow.materialize_legacy_current(
+        slot_id=character_portrait_slot_id("陆辰"),
+        asset_kind="character_portrait",
+        asset_path="assets/characters/陆辰/portrait.png",
+    )
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["versions"][0]["adoption_status"] = "rejected"
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    available = _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=state_dir),
+        characters=(_character("陆辰"),),
+    )
+
+    assert available == frozenset()
+    slot, versions = ProductionWorkflowStore(state_path).get_slot(
+        character_portrait_slot_id("陆辰")
+    )
+    assert versions[slot.current_version_id].adoption_status.value == "rejected"
+    assert versions[slot.current_version_id].asset_path.endswith("/portrait.png")
+
+
+def test_identity_runner_does_not_overwrite_wrong_kind_portrait_slot(tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    portrait = tmp_path / "assets" / "characters" / "陆辰" / "portrait.png"
+    portrait.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(portrait)
+    state_dir = tmp_path / "state"
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=character_portrait_slot_id("陆辰"),
+        asset_kind="character_state",
+        version_id="wrong-kind-v1",
+        asset_path="assets/characters/陆辰/portrait.png",
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+
+    available = _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=state_dir),
+        characters=(_character("陆辰"),),
+    )
+
+    assert available == frozenset()
+    slot, _versions = ProductionWorkflowStore(
+        state_dir / "production_workflow.json"
+    ).get_slot(character_portrait_slot_id("陆辰"))
+    assert slot.asset_kind == "character_state"
+
+
+def test_identity_runner_rejects_cross_asset_legacy_portrait_path(tmp_path):
+    from PIL import Image
+
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    misplaced = tmp_path / "assets" / "scenes" / "villain" / "portrait.png"
+    misplaced.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(misplaced)
+
+    available = _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path / "state"),
+        characters=(_character("../scenes/villain"),),
+    )
+
+    assert available == frozenset()
+    assert not (tmp_path / "state" / "production_workflow.json").exists()
+
+
 def test_identity_runner_result_aggregates_binding_statuses():
     result = _build_identity_planner_result(
         episode=1,
@@ -113,6 +768,110 @@ def test_identity_runner_result_aggregates_binding_statuses():
 
     assert result["binding_count"] == 3
     assert result["binding_statuses"] == {"ready": 2, "missing_image": 1}
+
+
+@pytest.mark.asyncio
+async def test_identity_publish_rechecks_state_availability_before_projection(tmp_path):
+    from datetime import UTC, datetime
+
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_identity_ids
+
+    identity = _identity("陆辰_青年时期")
+    character = _character("陆辰", identity)
+    episode = NovelEpisode(
+        number=1,
+        title="第一集",
+        character_names=["陆辰"],
+        identity_ids=[identity.identity_id],
+        identity_default_map={"陆辰": identity.identity_id},
+    )
+    draft = IdentityPlanDraft(
+        new_count=0,
+        resolved_count=1,
+        characters=(character,),
+        episode_identity_ids=(identity.identity_id,),
+        identity_default_map={"陆辰": identity.identity_id},
+        identity_baseline_digests={
+            "陆辰": hashlib.sha256(character.identities_json.encode()).hexdigest()
+        },
+        episode_identity_baseline_digest=SQLiteStore.identity_episode_baseline_digest(
+            episode.identity_ids, episode.identity_default_map
+        ),
+    )
+    shot = SimpleNamespace(
+        id="shot-1",
+        dramatic_beat_ids=(),
+        asset_requirements=(
+            SimpleNamespace(
+                kind="character_identity",
+                entity_key=identity.identity_id,
+                required=True,
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        revision_id="director-r2",
+        groups=(SimpleNamespace(id="group-1", beat_ids=(), shots=(shot,)),),
+    )
+    ctx = SimpleNamespace(
+        output_dir=tmp_path,
+        state_dir=tmp_path / "state",
+        project_id="owner/project",
+    )
+    assert _available_character_identity_ids(
+        ctx=ctx, characters=(character,)
+    ) == frozenset()
+
+    state_path = tmp_path / "assets" / "characters" / "陆辰" / "state.png"
+    state_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(state_path)
+    workflow = ProductionWorkflowStore(ctx.state_dir / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id=character_state_slot_id("陆辰", identity.identity_id),
+        asset_kind="character_state",
+        version_id="state-v1",
+        asset_path=state_path.relative_to(tmp_path).as_posix(),
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata={"identity_id": identity.identity_id},
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    bindings = _character_identity_bindings_for_publish(
+        ctx=ctx,
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        draft=draft,
+        characters=(character,),
+        scenes=(),
+        props=(),
+    )
+    store = SQLiteStore(
+        "owner/project", output_dir=str(tmp_path), state_dir=str(ctx.state_dir)
+    )
+    await store.initialize()
+    await store.add_character(character)
+    await store.add_episode(episode)
+    await store.publish_identity_plan_atomic(
+        episode_number=1,
+        characters=draft.characters,
+        episode_identity_ids=draft.episode_identity_ids,
+        identity_default_map=draft.identity_default_map,
+        identity_baseline_digests=draft.identity_baseline_digests,
+        episode_identity_baseline_digest=draft.episode_identity_baseline_digest,
+        bindings=bindings,
+    )
+
+    [persisted] = await store.list_planned_reference_bindings(1)
+    assert persisted.asset_slot_id == character_state_slot_id(
+        "陆辰", identity.identity_id
+    )
+    assert persisted.resolution == "auto_matched"
+    assert persisted.status == "ready"
 
 
 @pytest.mark.asyncio

@@ -1129,6 +1129,61 @@ def test_cancellation_failure_and_quality_failure_paths(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "terminal_status",
+    [
+        MediaTaskStatus.FAILED,
+        MediaTaskStatus.CANCELLED,
+        MediaTaskStatus.QUALITY_FAILED,
+    ],
+)
+def test_explicit_terminal_retry_starts_new_attempt_and_preserves_history(
+    tmp_path: Path,
+    terminal_status: MediaTaskStatus,
+) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    task = create_task(store, f"retry-{terminal_status.value}")
+    first = store.start_attempt(task.id, "provider-a")
+    if terminal_status is MediaTaskStatus.CANCELLED:
+        first = store.transition_attempt(first.id, MediaTaskStatus.CANCEL_REQUESTED)
+        first = store.transition_attempt(first.id, MediaTaskStatus.CANCELLED)
+    else:
+        if terminal_status is MediaTaskStatus.QUALITY_FAILED:
+            first = store.transition_attempt(first.id, MediaTaskStatus.UPLOADING)
+            first = store.record_provider_task(first.id, "provider-quality")
+            first = store.transition_attempt(first.id, MediaTaskStatus.RUNNING)
+            first = store.transition_attempt(first.id, MediaTaskStatus.DOWNLOADING)
+            first = store.transition_attempt(first.id, MediaTaskStatus.VALIDATING)
+        first = store.fail_attempt(
+            first.id,
+            MediaErrorCode.QUALITY_FAILED
+            if terminal_status is MediaTaskStatus.QUALITY_FAILED
+            else MediaErrorCode.PROVIDER_REJECTED,
+            "terminal attempt",
+            quality_failed=terminal_status is MediaTaskStatus.QUALITY_FAILED,
+        )
+
+    second = store.start_retry_attempt(task.id, "provider-b")
+
+    assert second.attempt_no == 2
+    assert second.status is MediaTaskStatus.PREPARING
+    assert store.get_task(task.id).status is MediaTaskStatus.PREPARING
+    attempts = store.list_attempts(task.id)
+    assert [(item.id, item.status) for item in attempts] == [
+        (first.id, terminal_status),
+        (second.id, MediaTaskStatus.PREPARING),
+    ]
+
+
+def test_explicit_terminal_retry_rejects_non_retryable_task_state(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+    task = create_task(store, "retry-active")
+    store.start_attempt(task.id, "provider-a")
+
+    with pytest.raises(InvalidTaskTransition):
+        store.start_retry_attempt(task.id, "provider-b")
+
+
+@pytest.mark.parametrize(
     "terminal",
     [
         MediaTaskStatus.SUCCEEDED,

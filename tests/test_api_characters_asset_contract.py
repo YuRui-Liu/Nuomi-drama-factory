@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +56,12 @@ def _client(monkeypatch, tmp_path, store: _CharacterStore):
 
     async def fake_resolve_project(project: str, user: dict, *, required_role: str = "editor"):
         return (
-            SimpleNamespace(project_id="proj_demo", output_dir=project_dir, is_home_node=True),
+            SimpleNamespace(
+                project_id="proj_demo",
+                output_dir=project_dir,
+                state_dir=tmp_path / "state" / "admin" / "demo",
+                is_home_node=True,
+            ),
             "admin",
             "demo",
             project_dir,
@@ -74,6 +80,36 @@ def _client(monkeypatch, tmp_path, store: _CharacterStore):
     app.include_router(characters.router)
     app.dependency_overrides[characters.get_api_user] = lambda: {"username": "admin"}
     return TestClient(app)
+
+
+def _distinct_valid_proposal_set(first: dict) -> list[dict]:
+    return [
+        first,
+        {
+            "proposal_id": "proposal-2",
+            "title": "坚毅方脸",
+            "recommended": False,
+            "face_shape": "方脸宽下颌",
+            "facial_features": ["浓眉", "圆眼"],
+            "hair_style": "齐耳短发",
+            "body_type": "宽肩结实",
+            "distinctive_features": ["右脸颊小痣"],
+            "identity_anchors": ["方脸", "齐耳短发", "右脸颊小痣"],
+            "asymmetry_detail": "右侧鼻翼略高",
+        },
+        {
+            "proposal_id": "proposal-3",
+            "title": "沉静圆脸",
+            "recommended": False,
+            "face_shape": "圆脸低颧骨",
+            "facial_features": ["平直眉", "宽鼻"],
+            "hair_style": "自然卷长发",
+            "body_type": "中等匀称",
+            "distinctive_features": ["下巴浅疤"],
+            "identity_anchors": ["圆脸", "自然卷长发", "下巴浅疤"],
+            "asymmetry_detail": "左耳略低",
+        },
+    ]
 
 
 def test_create_character_accepts_react_extra_payload(monkeypatch, tmp_path):
@@ -222,7 +258,9 @@ def test_selecting_visual_proposal_builds_draft_bible_that_can_be_confirmed(
     }
     seeded = client.patch(
         "/projects/demo/characters/林昭/visual-workspace",
-        json={"design_proposals": [proposal]},
+        json={
+            "design_proposals": _distinct_valid_proposal_set(proposal)
+        },
     )
     assert seeded.status_code == 200
 
@@ -279,6 +317,155 @@ def test_incomplete_visual_bible_cannot_be_confirmed(monkeypatch, tmp_path):
     )
     assert response.status_code == 409
     assert response.json()["error_code"] == "CHARACTER_VISUAL_BIBLE_INCOMPLETE"
+
+
+def test_quality_rejected_visual_proposal_cannot_be_selected(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    proposals = [
+        {
+            "proposal_id": f"proposal-{index}",
+            "title": f"方向 {index}",
+            "recommended": index == 1,
+            "quality_issues": ["identity_anchors:min_3_unique"] if index == 2 else [],
+        }
+        for index in range(1, 4)
+    ]
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals},
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "proposal-2"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_visual_proposal_quality_is_reassessed_instead_of_trusting_client_issues(
+    monkeypatch, tmp_path
+):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    proposals = [
+        {
+            "proposal_id": f"proposal-{index}",
+            "title": f"空洞方向 {index}",
+            "recommended": index == 1,
+            "quality_issues": [],
+        }
+        for index in range(1, 4)
+    ]
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals},
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "proposal-1"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_invalid_proposal_set_shape_cannot_be_selected(monkeypatch, tmp_path):
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={
+            "design_proposals": [
+                {"proposal_id": "only-one", "title": "only", "recommended": True}
+            ]
+        },
+    ).status_code == 200
+
+    response = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"selected_proposal_id": "only-one"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_SET_INVALID"
+
+
+def test_confirm_rechecks_selected_proposal_quality(monkeypatch, tmp_path):
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    valid = {
+        "proposal_id": "proposal-1",
+        "title": "方向 1",
+        "recommended": True,
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "distinctive_features": ["左眉断痕"],
+        "identity_anchors": ["窄长脸", "左眉断痕", "薄唇"],
+        "asymmetry_detail": "左眉略低",
+    }
+    proposals = _distinct_valid_proposal_set(valid)
+    seeded = client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals, "selected_proposal_id": "proposal-1"},
+    )
+    assert seeded.status_code == 200
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get("林昭")
+    workspace.design_proposals[0].identity_anchors = []
+    workspace.design_proposals[0].quality_issues = []
+    visual_store.save(workspace)
+
+    response = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_REJECTED"
+
+
+def test_confirm_rechecks_selected_proposal_set_shape(monkeypatch, tmp_path):
+    from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    proposal = {
+        "proposal_id": "proposal-1",
+        "title": "方向 1",
+        "recommended": True,
+        "face_shape": "窄长脸",
+        "facial_features": ["深眼窝", "薄唇"],
+        "hair_style": "利落高马尾",
+        "distinctive_features": ["左眉断痕"],
+        "identity_anchors": ["窄长脸", "深眼窝", "薄唇"],
+        "asymmetry_detail": "左眉略低",
+    }
+    proposals = _distinct_valid_proposal_set(proposal)
+    assert client.patch(
+        "/projects/demo/characters/林昭/visual-workspace",
+        json={"design_proposals": proposals, "selected_proposal_id": "proposal-1"},
+    ).status_code == 200
+    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    workspace = visual_store.get("林昭")
+    workspace.design_proposals.pop()
+    visual_store.save(workspace)
+
+    response = client.post(
+        "/projects/demo/characters/林昭/visual-workspace/confirm",
+        json={"confirmed_by": "director"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "CHARACTER_VISUAL_PROPOSAL_SET_INVALID"
 
 
 def test_character_and_identity_lists_expose_asset_history_links(monkeypatch, tmp_path):
@@ -352,3 +539,179 @@ def test_delete_character_route_removes_character(monkeypatch, tmp_path):
         "data": {"name": "秦昭", "deleted": True},
     }
     assert store.get_character("秦昭") is None
+
+
+def test_portrait_upload_materializes_current_production_slot(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.task_backend.runners.identity import _available_character_portraits
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    state_path = (
+        tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    )
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    assert _available_character_portraits(
+        ctx=SimpleNamespace(output_dir=project_dir, state_dir=state_path.parent),
+        characters=(NovelCharacter(name="林昭"),),
+    ) == frozenset({"林昭"})
+    legacy_workflow = ProductionWorkflowStore(state_path)
+    legacy_slot, legacy_versions = legacy_workflow.get_slot("character:林昭:portrait")
+    legacy_path = project_dir / legacy_versions[legacy_slot.current_version_id].asset_path
+    legacy_bytes = legacy_path.read_bytes()
+    assert legacy_path != canonical
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    workflow = ProductionWorkflowStore(state_path)
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    assert slot.asset_kind == "character_portrait"
+    assert slot.current_version_id
+    current = versions[slot.current_version_id]
+    assert current.asset_path.startswith(
+        "assets/characters/林昭/portrait_versions/portrait-"
+    )
+    assert current.adoption_status.value == "adopted"
+    assert current.origin.value == "uploaded"
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert (project_dir / current.asset_path).read_bytes() == (
+        project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    ).read_bytes()
+
+
+def test_portrait_upload_archives_mutable_current_without_identity_planning(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(canonical)
+    old_bytes = canonical.read_bytes()
+    state_path = tmp_path / "state" / "admin" / "demo" / "production_workflow.json"
+    workflow = ProductionWorkflowStore(state_path)
+    old_slot, old_version = workflow.materialize_legacy_current(
+        slot_id="character:林昭:portrait",
+        asset_kind="character_portrait",
+        asset_path="assets/characters/林昭/portrait.png",
+    )
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+
+    response = client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", image.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    reloaded_slot, versions = ProductionWorkflowStore(state_path).get_slot(old_slot.slot_id)
+    archived = versions[old_version.version_id]
+    assert archived.adoption_status.value == "superseded"
+    assert archived.asset_path != "assets/characters/林昭/portrait.png"
+    assert (project_dir / archived.asset_path).read_bytes() == old_bytes
+    assert reloaded_slot.current_version_id != old_version.version_id
+
+
+def test_portrait_history_restore_commits_a_new_workflow_current(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    from novelvideo.production_workflow.character_portraits import (
+        reconcile_character_portrait_canonical,
+    )
+    from novelvideo.production_workflow.store import production_workflow_project_lock
+
+    store = _CharacterStore([NovelCharacter(name="林昭")])
+    client = _client(monkeypatch, tmp_path, store)
+    project_dir = tmp_path / "output" / "admin" / "demo"
+    canonical = project_dir / "assets" / "characters" / "林昭" / "portrait.png"
+    canonical.parent.mkdir(parents=True)
+    current = io.BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(current, format="PNG")
+    assert client.post(
+        "/projects/demo/characters/林昭/portrait/upload",
+        files={"file": ("portrait.png", current.getvalue(), "image/png")},
+    ).status_code == 200
+    history = canonical.with_name("portrait_20260909010101000000.png")
+    Image.new("RGB", (8, 8), "red").save(history)
+    restored_bytes = history.read_bytes()
+
+    response = client.post(
+        "/projects/demo/characters/林昭/asset-history/restore",
+        json={"kind": "portrait", "history_id": history.name},
+    )
+
+    assert response.status_code == 200
+    state_dir = tmp_path / "state" / "admin" / "demo"
+    workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
+    slot, versions = workflow.get_slot("character:林昭:portrait")
+    restored = versions[slot.current_version_id]
+    assert restored.origin.value == "uploaded"
+    assert (project_dir / restored.asset_path).read_bytes() == restored_bytes
+    assert canonical.read_bytes() == restored_bytes
+
+    Image.new("RGB", (8, 8), "green").save(canonical)
+    with production_workflow_project_lock(state_dir):
+        assert reconcile_character_portrait_canonical(
+            workflow=ProductionWorkflowStore(state_dir / "production_workflow.json"),
+            project_dir=project_dir,
+            character_name="林昭",
+        )
+    assert canonical.read_bytes() == restored_bytes
+
+
+@pytest.mark.asyncio
+async def test_portrait_history_restore_rejects_unsafe_stored_character_name(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from novelvideo.api.routes import characters
+    from novelvideo.api.schemas import CharacterAssetRestoreRequest
+
+    unsafe_name = "../scenes/villain"
+    store = _CharacterStore([SimpleNamespace(name=unsafe_name, identities=[])])
+    _client(monkeypatch, tmp_path, store)
+    cross_asset_history = (
+        tmp_path
+        / "output"
+        / "admin"
+        / "demo"
+        / "assets"
+        / "scenes"
+        / "villain"
+        / "portrait_20260909010101000000.png"
+    )
+    cross_asset_history.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(cross_asset_history)
+
+    result = await characters.restore_character_asset_history(
+        "demo",
+        unsafe_name,
+        CharacterAssetRestoreRequest(
+            kind="portrait",
+            history_id=cross_asset_history.name,
+        ),
+        {"username": "admin"},
+    )
+
+    assert result == {"ok": False, "error": "invalid character name"}
+    assert not (
+        tmp_path / "output" / "admin" / "demo" / "assets" / "characters"
+    ).exists()

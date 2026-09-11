@@ -80,6 +80,49 @@ def test_new_candidate_does_not_replace_materialized_legacy_current(tmp_path):
     assert candidate.adoption_status == AdoptionStatus.CANDIDATE
 
 
+def test_candidate_origin_can_record_an_uploaded_asset(tmp_path):
+    store = ProductionWorkflowStore(tmp_path / "production_workflow.json")
+
+    _slot, candidate, _event = store.register_candidate_version(
+        slot_id="character:lin-mo:portrait",
+        asset_kind="character_portrait",
+        version_id="uploaded-1",
+        asset_path="assets/characters/lin-mo/uploaded-1.png",
+        source_attempt_id=None,
+        qc_passed=True,
+        generation_metadata=None,
+        actor="lin-mo",
+        at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        origin=AssetOrigin.UPLOADED,
+    )
+
+    assert candidate.origin == AssetOrigin.UPLOADED
+
+
+def test_store_can_retarget_multiple_versions_without_changing_their_status(tmp_path):
+    state_path = tmp_path / "production_workflow.json"
+    store = ProductionWorkflowStore(state_path)
+    slot, legacy = store.materialize_legacy_current(
+        slot_id="character:lin-mo:portrait",
+        asset_kind="character_portrait",
+        asset_path="assets/characters/lin-mo/portrait.png",
+    )
+
+    updated = store.retarget_version_asset_paths(
+        slot_id=slot.slot_id,
+        version_ids=(legacy.version_id,),
+        asset_path="assets/characters/lin-mo/portrait_versions/legacy-blue.png",
+    )
+
+    assert updated[legacy.version_id].asset_path.endswith("/legacy-blue.png")
+    assert updated[legacy.version_id].adoption_status == AdoptionStatus.PROVISIONAL
+    reloaded_slot, reloaded_versions = ProductionWorkflowStore(state_path).get_slot(
+        slot.slot_id
+    )
+    assert reloaded_slot.current_version_id == legacy.version_id
+    assert reloaded_versions[legacy.version_id].asset_path.endswith("/legacy-blue.png")
+
+
 def test_manual_adoption_persists_selected_candidate(tmp_path):
     state_path = tmp_path / "production_workflow.json"
     store = ProductionWorkflowStore(state_path)

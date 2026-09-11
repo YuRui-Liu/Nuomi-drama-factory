@@ -105,8 +105,50 @@ def test_video_models_endpoint_lists_disabled_h3_without_secrets(
         if model["id"] == "runninghub:minimax-h3"
     )
     assert item["available"] is False
-    assert item["supported_modes"] == ["auto", "i2va", "fl2va"]
+    assert item["supported_modes"] == ["i2va", "fl2va"]
     assert item["default_mode"] == "auto"
+    assert item["mode_capabilities"] == [
+        {
+            "mode": "t2va",
+            "enabled": False,
+            "reason": "workflow_capability_unverified",
+            "requires_first_frame": False,
+            "requires_last_frame": False,
+            "requires_references": False,
+        },
+        {
+            "mode": "i2va",
+            "enabled": True,
+            "reason": None,
+            "requires_first_frame": True,
+            "requires_last_frame": False,
+            "requires_references": False,
+        },
+        {
+            "mode": "fl2va",
+            "enabled": True,
+            "reason": None,
+            "requires_first_frame": True,
+            "requires_last_frame": True,
+            "requires_references": False,
+        },
+        {
+            "mode": "l2va",
+            "enabled": False,
+            "reason": "workflow_capability_unverified",
+            "requires_first_frame": False,
+            "requires_last_frame": True,
+            "requires_references": False,
+        },
+        {
+            "mode": "ref2va",
+            "enabled": False,
+            "reason": "hybrid_input_unverified",
+            "requires_first_frame": False,
+            "requires_last_frame": False,
+            "requires_references": True,
+        },
+    ]
     assert item["parameters"] == [
         {
             "key": "resolution",
@@ -129,7 +171,41 @@ def test_video_models_endpoint_lists_disabled_h3_without_secrets(
                     "relative_cost": "higher",
                 },
             ],
-        }
+        },
+        {
+            "key": "continuity_policy",
+            "type": "enum",
+            "label": "连续性策略",
+            "description": "",
+            "default": "legacy",
+            "scope": "narrative_group",
+            "options": [
+                {
+                    "value": "legacy",
+                    "label": "旧流程",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "observe",
+                    "label": "只观察",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "guard",
+                    "label": "阻断确定性错误",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+                {
+                    "value": "enforce",
+                    "label": "启用新编译",
+                    "description": "",
+                    "relative_cost": "standard",
+                },
+            ],
+        },
     ]
     serialized = response.text.lower()
     for private_name in (

@@ -10,21 +10,21 @@ const bindings: PlannedReferenceBinding[] = [
   {
     binding_id: "character-1", asset_kind: "character_identity", display_label: "苏清晏",
     beat_ids: ["beat-1"], required: true, status: "ready", selected_by_default: true,
-    thumbnail_url: "/character.png", version_id: "character-v1",
+    resolution: "auto_matched", thumbnail_url: "/character.png", version_id: "character-v1",
   },
   {
     binding_id: "scene-variant-1", asset_kind: "scene_variant", display_label: "雨夜长街",
     variant_id: "rain", beat_ids: ["beat-1", "beat-2"], required: true,
-    status: "ready", selected_by_default: true, version_id: "scene-variant-v1",
+    status: "ready", resolution: "auto_matched", selected_by_default: true, version_id: "scene-variant-v1",
   },
   {
     binding_id: "scene-base-1", asset_kind: "scene_base", display_label: "旧宅",
-    beat_ids: ["beat-3"], required: false, status: "ready", selected_by_default: false,
+    beat_ids: ["beat-3"], required: false, status: "ready", resolution: "auto_matched", selected_by_default: false,
     version_id: "scene-base-v1",
   },
   {
     binding_id: "prop-1", asset_kind: "prop", display_label: "旧灯笼",
-    beat_ids: ["beat-2"], required: false, status: "ready", selected_by_default: false,
+    beat_ids: ["beat-2"], required: false, status: "ready", resolution: "auto_matched", selected_by_default: false,
     version_id: "prop-v1",
   },
 ];
@@ -85,6 +85,51 @@ describe("PlannedReferencePicker", () => {
     expect(card).toHaveAttribute("aria-pressed", "false");
     await user.keyboard(" ");
     expect(card).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("defaults required explicit fallbacks on but lets users cancel them", async () => {
+    const user = userEvent.setup();
+    const fallback = {
+      ...bindings[1],
+      binding_id: "scene-fallback-1",
+      display_label: "雨夜长街（基础场景兜底）",
+      resolution: "explicit_fallback" as const,
+    };
+    const onChange = vi.fn();
+    render(<ControlledPicker
+      items={[bindings[0], fallback]}
+      initial={["character-1", "scene-fallback-1"]}
+      onChange={onChange}
+    />);
+
+    const direct = screen.getByRole("button", { name: /苏清晏/ });
+    const fallbackCard = screen.getByRole("button", { name: /基础场景兜底/ });
+    expect(direct).toBeEnabled();
+    expect(fallbackCard).toBeEnabled();
+    expect(fallbackCard).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(fallbackCard);
+
+    expect(onChange).toHaveBeenLastCalledWith(["character-1"]);
+    expect(fallbackCard).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("clear removes explicit fallbacks and direct required references", () => {
+    const fallback = {
+      ...bindings[1],
+      binding_id: "scene-fallback-1",
+      resolution: "explicit_fallback" as const,
+    };
+    const onChange = vi.fn();
+    render(<ControlledPicker
+      items={[bindings[0], fallback]}
+      initial={["character-1", "scene-fallback-1"]}
+      onChange={onChange}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "清空全部规划参考" }));
+
+    expect(onChange).toHaveBeenLastCalledWith([]);
   });
 
   it("groups references and applies stable category and global select/clear actions", () => {
@@ -148,7 +193,7 @@ describe("PlannedReferencePicker", () => {
   it("ignores duplicate, unknown, and unavailable selected IDs when counting", () => {
     const unavailable: PlannedReferenceBinding = {
       binding_id: "missing-1", asset_kind: "prop", display_label: "失落印章",
-      beat_ids: [], required: false, status: "missing_image", selected_by_default: false,
+      beat_ids: [], required: false, status: "missing_image", resolution: "auto_matched", selected_by_default: false,
     };
     render(<ControlledPicker
       initial={["character-1", "character-1", "unknown", "missing-1"]}
@@ -164,15 +209,15 @@ describe("PlannedReferencePicker", () => {
       {
         binding_id: "pending-1", asset_kind: "scene_variant", display_label: "大厅雨夜版",
         beat_ids: ["beat-1"], required: true, status: "pending_confirmation",
-        selected_by_default: false, warning: "需要确认雨夜变体",
+        resolution: "auto_matched", selected_by_default: false, warning: "需要确认雨夜变体",
       },
       {
         binding_id: "missing-asset-1", asset_kind: "prop", display_label: "密信",
-        beat_ids: ["beat-2"], required: true, status: "missing_asset", selected_by_default: false,
+        beat_ids: ["beat-2"], required: true, status: "missing_asset", resolution: "auto_matched", selected_by_default: false,
       },
       {
         binding_id: "missing-image-1", asset_kind: "character_identity", display_label: "沈砚",
-        beat_ids: ["beat-3"], required: false, status: "missing_image", selected_by_default: false,
+        beat_ids: ["beat-3"], required: false, status: "missing_image", resolution: "auto_matched", selected_by_default: false,
       },
     ];
     render(<ControlledPicker items={unavailable} onResolvePlanning={onResolvePlanning} />);

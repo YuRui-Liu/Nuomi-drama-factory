@@ -61,6 +61,7 @@ vi.mock("@/lib/queries/media-models",()=>({
  useMediaDefaults:()=>({data:{ok:true,data:m.mediaDefaults}}),
  useUpdateMediaDefaults:()=>({isPending:false,mutateAsync:m.updateDefaults}),
  availableVideoModels:(catalog:any[])=>catalog.filter((item)=>item.available),
+ h3ModeAvailability:()=>({mode:"auto",resolvedMode:"i2va",available:true}),
  resolveVideoModel:(saved:string|undefined,catalog:any[])=>catalog.find((item)=>item.available&&item.id===saved)??catalog.find((item)=>item.available),
  resolveVideoMode:(saved:string,item:any)=>item.supported_modes.includes(saved)?saved:item.default_mode,
 }));
@@ -69,7 +70,7 @@ vi.mock("@/lib/queries/styles",()=>({useStyles:()=>({data:{ok:true,data:[]}})}))
 vi.mock("@/components/episode/narrative-workbench/group-pipeline",()=>({GroupPipeline:({onAction}:any)=><><button onClick={()=>onAction("render","generate")}>生成</button><button onClick={()=>onAction("render","regenerate")}>重生成</button><button onClick={()=>onAction("render","split")}>切分</button></>}));
 vi.mock("@/components/episode/narrative-workbench/group-reference-dialog",()=>({GroupReferenceDialog:({open,onSubmit,onOpenChange,onResolvePlanning}:any)=>open?<div role="dialog"><button onClick={()=>onSubmit(m.dialogSelection)}>确认</button><button onClick={()=>onOpenChange(false)}>取消</button><button onClick={onResolvePlanning}>返回规划</button></div>:null}));
 vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
- GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.models?.map((model:any)=><button key={model.id} aria-label={`卡片切换至 ${model.label}`} disabled={!model.available} onClick={()=>props.onModelChange(model.id)}>{model.id}</button>)}{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode==="auto"?"i2va":props.mode})}>生成组合视频</button></>},
+ GroupVideoStage:(props:any)=>{m.stageProps(props);return <><span>stage-model:{props.modelId}</span><span>stage-mode:{props.mode}</span>{props.models?.map((model:any)=><button key={model.id} aria-label={`卡片切换至 ${model.label}`} disabled={!model.available} onClick={()=>props.onModelChange(model.id)}>{model.id}</button>)}{props.reference?.required?<button onClick={props.reference.onManage}>管理参考图</button>:null}<button aria-label="切换至 L2VA" disabled={!props.onModeChange} onClick={()=>props.onModeChange("l2va")}>切换模式</button><button disabled={props.reference?.required&&(!props.reference.valid||props.reference.dirty||props.reference.loading||props.reference.error)} onClick={()=>props.onGenerate({video_model:props.modelId,h3_mode:props.mode})}>生成组合视频</button></>},
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
 }));
 vi.mock("@/components/episode/narrative-workbench/group-video-reference-dialog",()=>({GroupVideoReferenceDialog:({open,onSaved,onDirtyChange}:any)=>open?<div role="dialog" aria-label="管理视频参考图"><button onClick={()=>onDirtyChange(true)}>修改描述</button><button onClick={()=>onSaved({revision:8,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]})}>保存参考图</button></div>:null}));
@@ -226,9 +227,23 @@ describe("NarrativeGroupWorkbench references",()=>{
   fireEvent.click(screen.getByText("切分"));
   fireEvent.click(screen.getByText("生成组合视频"));
 
-  await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith({groupId:"g1",model:"runninghub:minimax-h3",mode:"i2va",aspectRatio:"16:9",revision:0}));
+  await waitFor(()=>expect(m.generateVideo).toHaveBeenCalledWith({groupId:"g1",model:"runninghub:minimax-h3",mode:"auto",aspectRatio:"16:9",revision:0}));
   await waitFor(()=>expect(m.mutate).toHaveBeenCalledTimes(3));
   expect(m.mutate.mock.calls.map(([request])=>request.aspectRatio)).toEqual(["16:9","16:9","16:9"]);
+ });
+ it("persists a requested H3 mode without resolving it in the UI",async()=>{
+  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3",h3_mode:"auto"};
+  m.videoModels=[{id:"runninghub:minimax-h3",label:"RunningHub MiniMax H3",provider:"runninghub",available:true,supported_modes:["i2va","fl2va"],default_mode:"auto"}];
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+
+  const switchMode=screen.getByRole("button",{name:"切换至 L2VA"});
+  expect(switchMode).toBeEnabled();
+  fireEvent.click(switchMode);
+
+  await waitFor(()=>expect(m.updateDefaults).toHaveBeenCalledWith(expect.objectContaining({
+   videoModel:"runninghub:minimax-h3",
+   videoMode:"l2va",
+  })));
  });
  it("ignores a saved newapi default and exposes RunningHub MiniMax H3 as the only video model",()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);

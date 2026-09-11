@@ -20,17 +20,29 @@ from novelvideo.narrative_groups.reference_uploads import (
     ReferenceUpload,
     validate_reference_image,
 )
-from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
+from novelvideo.production_workflow import (
+    AdoptionStatus,
+    AssetSlot,
+    AssetVersion,
+    ProductionWorkflowStore,
+)
+from novelvideo.production_workflow.character_portraits import validate_character_name
 from novelvideo.production_workflow.store import production_workflow_project_lock
 
 from novelvideo.production_workflow.slot_ids import (
+    character_portrait_slot_id,
     character_state_slot_id,
     prop_reference_slot_id,
     scene_base_slot_id,
     scene_state_slot_id,
 )
 
-from .planned_bindings import AssetKind, BindingStatus, PlannedReferenceBinding
+from .planned_bindings import (
+    AssetKind,
+    BindingResolution,
+    BindingStatus,
+    PlannedReferenceBinding,
+)
 from .reference_requirements import parse_scene_requirement, structured_scene_requirement
 
 
@@ -109,6 +121,27 @@ class ReadOnlyPlannedBindingStore:
             return bindings
         return [item for item in bindings if group_id in item.group_ids]
 
+    async def list_scenes(self) -> list[dict[str, str]]:
+        if not self.database_path.is_file():
+            return []
+        uri = f"{self.database_path.as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    "SELECT name, base_scene_id, variant_id FROM scenes ORDER BY name"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "name": _text(row["name"]),
+                "base_scene_id": _text(row["base_scene_id"]),
+                "variant_id": _text(row["variant_id"]),
+            }
+            for row in rows
+        ]
+
 
 class ResolvedPlannedReference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -121,6 +154,7 @@ class ResolvedPlannedReference(BaseModel):
     beat_ids: tuple[str, ...] = ()
     required: bool
     status: BindingStatus
+    resolution: BindingResolution
     selected_by_default: bool
     asset_slot_id: str
     version_id: str = ""
@@ -201,6 +235,71 @@ def _identities(character: Any) -> tuple[Any, ...]:
     return ()
 
 
+def _identity_phase_key(identity_id: str) -> str:
+    if identity_id.endswith("_青年时期"):
+        return identity_id.removesuffix("时期") + "期"
+    return identity_id
+
+
+def _character_identity_candidates(
+    entity_key: str,
+    characters: tuple[Any, ...],
+    episode_identity_ids: frozenset[str],
+    identity_default_map: Mapping[str, str],
+) -> tuple[list[tuple[Any, Any]], bool]:
+    exact = [
+        (character, identity)
+        for character in characters
+        for identity in _identities(character)
+        if _text(_get(identity, "identity_id")) == entity_key
+    ]
+    if exact:
+        return exact, False
+
+    named_characters = [
+        character
+        for character in characters
+        if _text(_get(character, "name")) == entity_key
+    ]
+    if named_characters:
+        episode_candidates = [
+            (character, identity)
+            for character in named_characters
+            for identity in _identities(character)
+            if _text(_get(identity, "identity_id")) in episode_identity_ids
+        ]
+        if entity_key in identity_default_map:
+            default_id = _text(identity_default_map[entity_key])
+            default_candidates = [
+                candidate
+                for candidate in episode_candidates
+                if _text(_get(candidate[1], "identity_id")) == default_id
+            ]
+            if len(default_candidates) == 1:
+                return default_candidates, False
+            return episode_candidates, True
+        if not episode_identity_ids:
+            return [
+                (character, identity)
+                for character in named_characters
+                for identity in _identities(character)
+                if _text(_get(identity, "identity_id"))
+            ], False
+        return episode_candidates, False
+
+    phase_key = _identity_phase_key(entity_key)
+    return (
+        [
+            (character, identity)
+            for character in characters
+            for identity in _identities(character)
+            if _text(_get(identity, "identity_id")) in episode_identity_ids
+            and _identity_phase_key(_text(_get(identity, "identity_id"))) == phase_key
+        ],
+        False,
+    )
+
+
 def _explicitly_missing_image(entity: Any, *, identity: bool = False) -> bool:
     if _get(entity, "has_reference_image", None) is False:
         return True
@@ -229,6 +328,17 @@ def _explicitly_missing_image(entity: Any, *, identity: bool = False) -> bool:
         for name in present
         for value in (_get(entity, name, ""),)
     )
+
+
+def _scene_reference_available(
+    scene: Any,
+    *,
+    slot_id: str,
+    available_scene_reference_slots: frozenset[str] | None,
+) -> bool:
+    if available_scene_reference_slots is not None:
+        return slot_id in available_scene_reference_slots
+    return not _explicitly_missing_image(scene)
 
 
 @dataclass(frozen=True)
@@ -424,6 +534,11 @@ def _binding(
     characters: tuple[Any, ...],
     scenes: tuple[Any, ...],
     props: tuple[Any, ...],
+    episode_identity_ids: frozenset[str] = frozenset(),
+    identity_default_map: Mapping[str, str] | None = None,
+    available_character_portraits: frozenset[str] = frozenset(),
+    available_character_identity_ids: frozenset[str] | None = None,
+    available_scene_reference_slots: frozenset[str] | None = None,
 ) -> PlannedReferenceBinding:
     status = "missing_asset"
     resolution = "auto_matched"
@@ -434,13 +549,13 @@ def _binding(
     invalid_slot = False
 
     if requirement.kind == "character_identity":
-        candidates = [
-            (character, identity)
-            for character in characters
-            for identity in _identities(character)
-            if _text(_get(identity, "identity_id")) == requirement.entity_key
-        ]
-        if len(candidates) == 1:
+        candidates, force_pending = _character_identity_candidates(
+            requirement.entity_key,
+            characters,
+            episode_identity_ids,
+            identity_default_map or {},
+        )
+        if len(candidates) == 1 and not force_pending:
             character, identity = candidates[0]
             entity_id = _text(_get(identity, "identity_id"))
             character_name = _text(_get(character, "name")) or _text(
@@ -448,19 +563,29 @@ def _binding(
             )
             identity_name = _text(_get(identity, "identity_name"))
             label = " / ".join(item for item in (character_name, identity_name) if item)
+            identity_available = (
+                not _explicitly_missing_image(identity, identity=True)
+                if available_character_identity_ids is None
+                else entity_id in available_character_identity_ids
+            )
             try:
-                slot_id = character_state_slot_id(character_name, entity_id)
+                slot_id = (
+                    character_state_slot_id(character_name, entity_id)
+                    if identity_available
+                    else character_portrait_slot_id(character_name)
+                )
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
             else:
-                status = (
-                    "missing_image"
-                    if _explicitly_missing_image(identity, identity=True)
-                    else "ready"
-                )
-        elif len(candidates) > 1:
+                status = "ready"
+                if not identity_available:
+                    resolution = "explicit_fallback"
+                    label = f"{label}（基础头像）"
+                    if character_name not in available_character_portraits:
+                        status = "missing_image"
+        elif candidates or force_pending:
             slot_id = ""
             status = "pending_confirmation"
         else:
@@ -477,7 +602,7 @@ def _binding(
             scene = candidates[0]
             entity_id = _text(_get(scene, "name"))
             label = entity_id
-            status = "missing_image" if _explicitly_missing_image(scene) else "ready"
+            status = "ready"
         elif len(candidates) > 1:
             status = "pending_confirmation"
         if len(candidates) == 1:
@@ -487,6 +612,13 @@ def _binding(
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
+            else:
+                if not _scene_reference_available(
+                    scene,
+                    slot_id=slot_id,
+                    available_scene_reference_slots=available_scene_reference_slots,
+                ):
+                    status = "missing_image"
         else:
             slot_id = ""
     elif requirement.kind == "scene_variant" and requirement.malformed_scene_state:
@@ -499,22 +631,76 @@ def _binding(
             if _text(_get(scene, "base_scene_id")) == base_entity_id
             and _text(_get(scene, "variant_id")) == variant_id
         ]
-        if len(candidates) == 1:
-            scene = candidates[0]
+        available_candidates = []
+        for scene in candidates:
+            if available_scene_reference_slots is None:
+                if not _explicitly_missing_image(scene):
+                    available_candidates.append(scene)
+                continue
+            candidate_entity_id = _text(_get(scene, "name"))
+            try:
+                candidate_slot_id = scene_state_slot_id(
+                    base_entity_id, candidate_entity_id, "master"
+                )
+            except ValueError:
+                continue
+            if _scene_reference_available(
+                scene,
+                slot_id=candidate_slot_id,
+                available_scene_reference_slots=available_scene_reference_slots,
+            ):
+                available_candidates.append(scene)
+        if len(available_candidates) == 1:
+            scene = available_candidates[0]
             entity_id = _text(_get(scene, "name"))
             label = " / ".join((base_entity_id, variant_id))
-            status = "missing_image" if _explicitly_missing_image(scene) else "ready"
-        elif len(candidates) > 1:
+            status = "ready"
+        elif len(available_candidates) > 1:
             status = "pending_confirmation"
-        if len(candidates) == 1:
+        if len(available_candidates) == 1:
             try:
                 slot_id = scene_state_slot_id(base_entity_id, entity_id, "master")
             except ValueError:
                 slot_id = ""
                 status = "pending_confirmation"
                 invalid_slot = True
-        else:
+        elif len(available_candidates) > 1:
             slot_id = ""
+        else:
+            resolution = "explicit_fallback"
+            entity_id = base_entity_id
+            label = " / ".join((base_entity_id, variant_id))
+            base_candidates = [
+                scene
+                for scene in scenes
+                if _text(_get(scene, "name")) == base_entity_id
+                and not _text(_get(scene, "base_scene_id"))
+                and not _text(_get(scene, "variant_id"))
+            ]
+            if len(base_candidates) == 1:
+                try:
+                    slot_id = scene_base_slot_id(base_entity_id, "master")
+                except ValueError:
+                    slot_id = ""
+                    status = "pending_confirmation"
+                    invalid_slot = True
+                else:
+                    status = (
+                        "ready"
+                        if _scene_reference_available(
+                            base_candidates[0],
+                            slot_id=slot_id,
+                            available_scene_reference_slots=(
+                                available_scene_reference_slots
+                            ),
+                        )
+                        else "missing_image"
+                    )
+            elif len(base_candidates) > 1:
+                status = "pending_confirmation"
+                slot_id = ""
+            else:
+                slot_id = ""
     else:
         candidates = [
             prop
@@ -570,6 +756,50 @@ def _binding(
     )
 
 
+def _merge_projected_bindings(
+    bindings: Iterable[PlannedReferenceBinding],
+) -> tuple[PlannedReferenceBinding, ...]:
+    status_priority: dict[BindingStatus, int] = {
+        "ready": 0,
+        "missing_image": 1,
+        "missing_asset": 2,
+        "pending_confirmation": 3,
+    }
+    resolution_priority: dict[BindingResolution, int] = {
+        "manually_confirmed": 0,
+        "auto_matched": 1,
+        "explicit_fallback": 2,
+    }
+    merged: list[PlannedReferenceBinding] = []
+    positions: dict[str, int] = {}
+    for binding in bindings:
+        position = positions.get(binding.binding_id)
+        if position is None:
+            positions[binding.binding_id] = len(merged)
+            merged.append(binding)
+            continue
+        current = merged[position]
+        status = max(
+            (current.status, binding.status), key=status_priority.__getitem__
+        )
+        resolution = max(
+            (current.resolution, binding.resolution),
+            key=resolution_priority.__getitem__,
+        )
+        merged[position] = PlannedReferenceBinding.model_validate(
+            {
+                **current.model_dump(),
+                "group_ids": _append_unique(current.group_ids, binding.group_ids),
+                "beat_ids": _append_unique(current.beat_ids, binding.beat_ids),
+                "shot_ids": _append_unique(current.shot_ids, binding.shot_ids),
+                "required": current.required or binding.required,
+                "status": status,
+                "resolution": resolution,
+            }
+        )
+    return tuple(merged)
+
+
 def bindings_for_director_plan(
     *,
     project_id: str,
@@ -580,6 +810,11 @@ def bindings_for_director_plan(
     characters: Iterable[Any] | Mapping[Any, Any],
     scenes: Iterable[Any] | Mapping[Any, Any],
     props: Iterable[Any] | Mapping[Any, Any],
+    episode_identity_ids: Iterable[str] = (),
+    identity_default_map: Mapping[str, str] | None = None,
+    available_character_portraits: Iterable[str] = (),
+    available_character_identity_ids: Iterable[str] | None = None,
+    available_scene_reference_slots: Iterable[str] | None = None,
 ) -> tuple[PlannedReferenceBinding, ...]:
     """Project current DirectorPlan relationships without I/O or mutation."""
     group_items = _items(groups)
@@ -594,7 +829,34 @@ def bindings_for_director_plan(
         and not _text(_get(scene, "base_scene_id"))
         and not _text(_get(scene, "variant_id"))
     }
-    return tuple(
+    selected_identity_ids = frozenset(
+        _text(identity_id) for identity_id in episode_identity_ids if _text(identity_id)
+    )
+    default_identity_ids = identity_default_map or {}
+    available_portraits = frozenset(
+        _text(character_name)
+        for character_name in available_character_portraits
+        if _text(character_name)
+    )
+    available_identity_ids = (
+        None
+        if available_character_identity_ids is None
+        else frozenset(
+            _text(identity_id)
+            for identity_id in available_character_identity_ids
+            if _text(identity_id)
+        )
+    )
+    available_scene_slots = (
+        None
+        if available_scene_reference_slots is None
+        else frozenset(
+            _text(slot_id)
+            for slot_id in available_scene_reference_slots
+            if _text(slot_id)
+        )
+    )
+    return _merge_projected_bindings(
         _binding(
             requirement,
             project_id=project_id,
@@ -603,6 +865,11 @@ def bindings_for_director_plan(
             characters=character_items,
             scenes=scene_items,
             props=prop_items,
+            episode_identity_ids=selected_identity_ids,
+            identity_default_map=default_identity_ids,
+            available_character_portraits=available_portraits,
+            available_character_identity_ids=available_identity_ids,
+            available_scene_reference_slots=available_scene_slots,
         )
         for requirement in _requirements(
             group_items, shot_items, known_scene_ids=known_scene_ids
@@ -627,6 +894,211 @@ def _asset_path(project_dir: Path, value: str) -> Path:
     return path.absolute()
 
 
+def _physical_character_root(project_dir: Path, character_name: str) -> Path:
+    project_root = project_dir.resolve()
+    canonical_characters_root = project_root / "assets" / "characters"
+    if canonical_characters_root.is_symlink():
+        raise ValueError("characters root must not be redirected")
+    characters_root = canonical_characters_root.resolve(strict=False)
+    if characters_root != canonical_characters_root:
+        raise ValueError("characters root must preserve physical identity")
+    characters_root.relative_to(project_root)
+    safe_name = validate_character_name(character_name)
+    canonical_character_root = characters_root / safe_name
+    if canonical_character_root.is_symlink():
+        raise ValueError("character root must not be redirected")
+    character_root = canonical_character_root.resolve(strict=False)
+    if character_root != canonical_character_root:
+        raise ValueError("character root must preserve physical identity")
+    character_root.relative_to(characters_root)
+    return character_root
+
+
+def _safe_scene_path_segment(value: str) -> str:
+    scene_name = _text(value)
+    if (
+        not scene_name
+        or scene_name in {".", ".."}
+        or Path(scene_name).is_absolute()
+        or "/" in scene_name
+        or "\\" in scene_name
+        or ":" in scene_name
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in scene_name
+        )
+    ):
+        raise ValueError("invalid scene name")
+    return scene_name
+
+
+def _scene_binding_slot_kind(binding: PlannedReferenceBinding) -> str | None:
+    if binding.asset_kind == "scene_base":
+        return "scene_base"
+    if binding.asset_kind == "scene_variant":
+        return (
+            "scene_base"
+            if binding.resolution == "explicit_fallback"
+            else "scene_state"
+        )
+    return None
+
+
+def _read_legacy_scene_binding(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+) -> tuple[AssetSlot, dict[str, AssetVersion]]:
+    scene_name = _safe_scene_path_segment(binding.entity_id)
+    expected_kind = _scene_binding_slot_kind(binding)
+    if expected_kind == "scene_state":
+        base_scene_id = _safe_scene_path_segment(binding.base_entity_id)
+        expected_slot_id = scene_state_slot_id(
+            base_scene_id, scene_name, "master"
+        )
+    elif expected_kind == "scene_base":
+        expected_slot_id = scene_base_slot_id(scene_name, "master")
+    else:
+        raise ValueError("not a scene binding")
+    if binding.asset_slot_id != expected_slot_id:
+        raise ValueError("scene binding slot does not match its identity")
+    relative_path = Path(
+        "assets", "scenes", scene_name, "master.png"
+    ).as_posix()
+    slot, version = workflow_store.read_legacy_current(
+        slot_id=binding.asset_slot_id,
+        asset_kind=expected_kind,
+        asset_path=relative_path,
+    )
+    return slot, {version.version_id: version}
+
+
+def _available_scene_state_supersedes_fallback(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+    project_dir: Path,
+    scenes: Sequence[Any],
+) -> bool:
+    """Reject a fallback only from exact structured workflow/catalog evidence."""
+    try:
+        base_scene_id = _safe_scene_path_segment(binding.base_entity_id)
+    except ValueError:
+        return False
+    if not workflow_store.read_only_reason:
+        prefix = f"scene:{base_scene_id}:state:"
+        for state_slot in workflow_store.list_slots():
+            if (
+                not state_slot.slot_id.startswith(prefix)
+                or not state_slot.slot_id.endswith(":master")
+                or state_slot.asset_kind != "scene_state"
+                or not state_slot.current_version_id
+            ):
+                continue
+            try:
+                loaded_slot, versions = workflow_store.get_slot(state_slot.slot_id)
+            except KeyError:
+                continue
+            if loaded_slot.slot_id != state_slot.slot_id:
+                continue
+            version = versions.get(str(loaded_slot.current_version_id))
+            if (
+                version is None
+                or version.slot_id != state_slot.slot_id
+                or version.adoption_status
+                not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
+                or _text((version.generation_metadata or {}).get("variant_id"))
+                != binding.variant_id
+            ):
+                continue
+            try:
+                validate_reference_image(
+                    _asset_path(project_dir, version.asset_path),
+                    allowed_roots=(project_dir / "assets",),
+                )
+            except (InvalidReferenceUpload, OSError, ValueError):
+                continue
+            return True
+
+    candidates = [
+        scene
+        for scene in scenes
+        if _text(_get(scene, "base_scene_id")) == base_scene_id
+        and _text(_get(scene, "variant_id")) == binding.variant_id
+    ]
+    if len(candidates) > 1:
+        return True
+    if len(candidates) != 1:
+        return False
+    try:
+        scene_name = _safe_scene_path_segment(_get(candidates[0], "name"))
+        root = project_dir.resolve()
+        scenes_root = root / "assets" / "scenes"
+        scene_root = scenes_root / scene_name
+        canonical = scene_root / "master.png"
+        if (
+            scenes_root.is_symlink()
+            or scenes_root.resolve(strict=False) != scenes_root
+            or scene_root.is_symlink()
+            or scene_root.resolve(strict=False) != scene_root
+            or canonical.is_symlink()
+        ):
+            return False
+        validate_reference_image(
+            canonical,
+            allowed_roots=(root / "assets",),
+            expected_mime="image/png",
+        )
+    except (InvalidReferenceUpload, OSError, ValueError):
+        return False
+    return True
+    return False
+
+
+def _available_character_state_supersedes_fallback(
+    binding: PlannedReferenceBinding,
+    workflow_store: ProductionWorkflowStore,
+    project_dir: Path,
+) -> bool:
+    """Return true only for the exact, currently usable identity state asset."""
+
+    parts = binding.asset_slot_id.split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != "character"
+        or parts[2] != "portrait"
+    ):
+        return False
+    try:
+        character_name = validate_character_name(parts[1])
+        state_slot_id = character_state_slot_id(character_name, binding.entity_id)
+        slot, versions = workflow_store.get_slot(state_slot_id)
+        if (
+            slot.slot_id != state_slot_id
+            or slot.asset_kind != "character_state"
+            or not slot.current_version_id
+        ):
+            return False
+        version = versions.get(str(slot.current_version_id))
+        if (
+            version is None
+            or version.slot_id != state_slot_id
+            or version.adoption_status
+            not in {AdoptionStatus.PROVISIONAL, AdoptionStatus.ADOPTED}
+        ):
+            return False
+        metadata_identity_id = _text(
+            (version.generation_metadata or {}).get("identity_id")
+        )
+        if metadata_identity_id and metadata_identity_id != binding.entity_id:
+            return False
+        validate_reference_image(
+            _asset_path(project_dir, version.asset_path),
+            allowed_roots=(_physical_character_root(project_dir, character_name),),
+        )
+    except (InvalidReferenceUpload, KeyError, OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def _unavailable(
     binding: PlannedReferenceBinding,
     warning: str,
@@ -642,6 +1114,7 @@ def _unavailable(
         beat_ids=binding.beat_ids,
         required=binding.required,
         status=status or binding.status,
+        resolution=binding.resolution,
         selected_by_default=False,
         asset_slot_id=binding.asset_slot_id,
         warning=warning,
@@ -654,13 +1127,57 @@ def _resolve_binding(
     binding: PlannedReferenceBinding,
     workflow_store: ProductionWorkflowStore,
     project_dir: Path,
+    scenes: Sequence[Any] = (),
 ) -> ResolvedPlannedReference:
     if binding.status != "ready":
         return _unavailable(binding, f"planned binding status is {binding.status}")
     try:
         slot, versions = workflow_store.get_slot(binding.asset_slot_id)
     except KeyError:
-        return _unavailable(binding, "asset slot is unavailable", status="missing_asset")
+        if (
+            _scene_binding_slot_kind(binding) is None
+            or workflow_store.read_only_reason
+        ):
+            return _unavailable(
+                binding, "asset slot is unavailable", status="missing_asset"
+            )
+        try:
+            slot, versions = _read_legacy_scene_binding(binding, workflow_store)
+        except ValueError:
+            return _unavailable(
+                binding, "asset slot is unavailable", status="missing_asset"
+            )
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution == "explicit_fallback"
+        and slot.asset_kind != "character_portrait"
+    ):
+        return _unavailable(
+            binding,
+            "asset slot kind is not character_portrait",
+            status="missing_asset",
+        )
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution != "explicit_fallback"
+        and slot.asset_kind != "character_state"
+    ):
+        return _unavailable(
+            binding,
+            "asset slot kind is not character_state",
+            status="missing_asset",
+        )
+    expected_slot_kind = _scene_binding_slot_kind(binding)
+    if expected_slot_kind is not None:
+        if (
+            slot.slot_id != binding.asset_slot_id
+            or slot.asset_kind != expected_slot_kind
+        ):
+            return _unavailable(
+                binding,
+                f"asset slot kind is not {expected_slot_kind}",
+                status="missing_asset",
+            )
     version_id = str(slot.current_version_id or "")
     version = versions.get(version_id)
     if version is None or version.slot_id != binding.asset_slot_id:
@@ -677,10 +1194,41 @@ def _resolve_binding(
             f"current version status is {adoption_status}",
             status="pending_confirmation",
         )
+    allowed_roots = (project_dir / "assets",)
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution != "explicit_fallback"
+    ):
+        parts = binding.asset_slot_id.split(":")
+        if (
+            len(parts) != 4
+            or parts[0] != "character"
+            or parts[2] != "state"
+            or parts[3] != binding.entity_id
+        ):
+            return _unavailable(
+                binding, "character state slot identity is invalid", status="missing_asset"
+            )
+        metadata_identity_id = str(
+            (version.generation_metadata or {}).get("identity_id") or ""
+        ).strip()
+        if metadata_identity_id and metadata_identity_id != binding.entity_id:
+            return _unavailable(
+                binding,
+                "character state version identity does not match binding",
+                status="missing_asset",
+            )
+        try:
+            character_root = _physical_character_root(project_dir, parts[1])
+        except (OSError, RuntimeError, ValueError):
+            return _unavailable(
+                binding, "character state asset root is invalid", status="missing_asset"
+            )
+        allowed_roots = (character_root,)
     try:
         validated = validate_reference_image(
             _asset_path(project_dir, version.asset_path),
-            allowed_roots=(project_dir / "assets",),
+            allowed_roots=allowed_roots,
         )
         relative_path = Path(validated.image_path).resolve().relative_to(
             project_dir.resolve()
@@ -689,6 +1237,32 @@ def _resolve_binding(
     except (InvalidReferenceUpload, OSError, ValueError):
         return _unavailable(
             binding, "current version is not a safe valid image", status="missing_image"
+        )
+    # Final consumer-side invariant: a fallback observed before a concurrent state
+    # publication must never remain selected merely because planning already ended.
+    if (
+        binding.asset_kind == "character_identity"
+        and binding.resolution == "explicit_fallback"
+        and _available_character_state_supersedes_fallback(
+            binding, workflow_store, project_dir
+        )
+    ):
+        return _unavailable(
+            binding,
+            "character identity became available; re-run identity planning",
+            status="pending_confirmation",
+        )
+    if (
+        binding.asset_kind == "scene_variant"
+        and binding.resolution == "explicit_fallback"
+        and _available_scene_state_supersedes_fallback(
+            binding, workflow_store, project_dir, scenes
+        )
+    ):
+        return _unavailable(
+            binding,
+            "scene variant became available; re-run scene planning",
+            status="pending_confirmation",
         )
     return ResolvedPlannedReference(
         binding_id=binding.binding_id,
@@ -699,6 +1273,7 @@ def _resolve_binding(
         beat_ids=binding.beat_ids,
         required=binding.required,
         status=binding.status,
+        resolution=binding.resolution,
         selected_by_default=True,
         asset_slot_id=binding.asset_slot_id,
         version_id=version.version_id,
@@ -738,6 +1313,22 @@ def _reference_revision(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+async def _read_planned_reference_catalog(
+    store: PlannedBindingStore,
+    *,
+    episode_number: int,
+    group_id: str,
+) -> tuple[tuple[PlannedReferenceBinding, ...], tuple[Any, ...]]:
+    bindings = tuple(
+        await store.list_planned_reference_bindings(
+            episode_number, group_id=group_id
+        )
+    )
+    list_scenes = getattr(store, "list_scenes", None)
+    scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
+    return bindings, scenes
+
+
 async def resolve_planned_reference_preview(
     store: PlannedBindingStore,
     workflow_store: ProductionWorkflowStore,
@@ -753,20 +1344,28 @@ async def resolve_planned_reference_preview(
     """Resolve only persisted bindings and current versions without mutation."""
     if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
         raise InvalidPlannedReference("max_images must be a positive integer")
-    bindings = await store.list_planned_reference_bindings(
-        episode_number, group_id=group_id
-    )
-    return _preview_from_bindings(
-        bindings,
-        workflow_store,
-        project_id=project_id,
+    bindings, scenes = await _read_planned_reference_catalog(
+        store,
         episode_number=episode_number,
         group_id=group_id,
-        project_dir=project_dir,
-        max_images=max_images,
-        active_plan_revision_id=active_plan_revision_id,
-        required_binding_keys=required_binding_keys,
     )
+    # Async binding/catalog reads above may yield while another publisher advances
+    # workflow state. Reload under the project lock and resolve synchronously so a
+    # stale caller-owned store cannot select a superseded fallback.
+    with production_workflow_project_lock(workflow_store.state_path.parent):
+        current_workflow = ProductionWorkflowStore(workflow_store.state_path)
+        return _preview_from_bindings(
+            bindings,
+            current_workflow,
+            project_id=project_id,
+            episode_number=episode_number,
+            group_id=group_id,
+            project_dir=project_dir,
+            scenes=scenes,
+            max_images=max_images,
+            active_plan_revision_id=active_plan_revision_id,
+            required_binding_keys=required_binding_keys,
+        )
 
 
 def _preview_from_bindings(
@@ -778,6 +1377,7 @@ def _preview_from_bindings(
     group_id: str,
     project_dir: Path,
     max_images: int,
+    scenes: Sequence[Any] = (),
     active_plan_revision_id: str | None = None,
     required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
@@ -810,7 +1410,9 @@ def _preview_from_bindings(
             )
             warnings = (f"当前导演方案仍有未发布的必需引用：{labels}",)
     root = Path(project_dir).resolve(strict=False)
-    resolved = tuple(_resolve_binding(item, workflow_store, root) for item in bindings)
+    resolved = tuple(
+        _resolve_binding(item, workflow_store, root, scenes) for item in bindings
+    )
     return PlannedReferencePreview(
         reference_revision=_reference_revision(
             bindings,
@@ -874,8 +1476,10 @@ async def build_planned_reference_snapshot(
         raise InvalidPlannedReference("duplicate selected binding IDs")
     if len(set(upload_ids)) != len(upload_ids):
         raise InvalidPlannedReference("duplicate upload IDs")
-    bindings = await store.list_planned_reference_bindings(
-        episode_number, group_id=group_id
+    bindings, scenes = await _read_planned_reference_catalog(
+        store,
+        episode_number=episode_number,
+        group_id=group_id,
     )
     with production_workflow_project_lock(workflow_store.state_path.parent):
         current_workflow = ProductionWorkflowStore(workflow_store.state_path)
@@ -886,10 +1490,18 @@ async def build_planned_reference_snapshot(
             episode_number=episode_number,
             group_id=group_id,
             project_dir=project_dir,
+            scenes=scenes,
             max_images=max_images,
             active_plan_revision_id=active_plan_revision_id,
             required_binding_keys=required_binding_keys,
         )
+    current_bindings, current_scenes = await _read_planned_reference_catalog(
+        store,
+        episode_number=episode_number,
+        group_id=group_id,
+    )
+    if current_bindings != bindings or current_scenes != scenes:
+        raise StaleReferenceBinding("planned reference catalog changed during snapshot")
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")
     by_id = {item.binding_id: item for item in preview.bindings}

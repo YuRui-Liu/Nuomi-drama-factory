@@ -9,6 +9,9 @@ from typing import Protocol
 
 from novelvideo.media_capabilities.video.h3_reference_runtime import H3FrozenFrame
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+from novelvideo.media_capabilities.video.h3_wire import H3ReferenceWire
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
 from novelvideo.media_capabilities.video.runtime import H3GenerationResult
 from novelvideo.media_capabilities.video.workflow_registry import (
@@ -35,6 +38,7 @@ class NarrativeGroupVideoRequest:
     reference_limit: int | None = None
     provider_workflow_id: str | None = None
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None
+    reference_wire: H3ReferenceWire | None = None
 
     def __post_init__(self) -> None:
         parameters = dict(self.workflow_parameters)
@@ -79,6 +83,7 @@ class H3DirectorGenerator(Protocol):
         output_path: str,
         aspect_ratio: str,
         resolution: str | None,
+        frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
 
@@ -96,6 +101,7 @@ class H3ReferenceDirectorGenerator(Protocol):
         global_references: tuple[ResolvedVideoReference, ...],
         reference_limit: int,
         workflow_id: str,
+        wire: H3ReferenceWire,
         frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
         on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> Awaitable[H3GenerationResult]: ...
@@ -146,6 +152,18 @@ class H3WorkflowAdapter:
         from novelvideo.media_capabilities.video.h3_size_settings import (
             resolve_h3_size_setting,
         )
+        from novelvideo.media_capabilities.video.runtime import resolve_h3_mode
+
+        for segment in request.segments:
+            resolved_mode = resolve_h3_mode(
+                request.mode,
+                segment.first_frame,
+                segment.last_frame,
+                supported_modes=(H3Mode.I2VA.value, H3Mode.FL2VA.value),
+            )
+            inspect_h3_prompt(
+                segment.prompt, resolved_mode, segment.duration_seconds
+            ).raise_for_failure()
 
         try:
             resolution = request.workflow_parameters["resolution"]
@@ -157,6 +175,7 @@ class H3WorkflowAdapter:
             "output_path": request.output_path,
             "aspect_ratio": request.aspect_ratio,
             "resolution": setting.resolution,
+            "frozen_frames": request.frozen_frames,
         }
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
@@ -220,6 +239,12 @@ class H3ReferenceWorkflowAdapter:
             raise ValueError("H3 reference workflow requires a reference limit")
         if request.provider_workflow_id is None:
             raise ValueError("H3 reference workflow requires a provider workflow ID")
+        if not isinstance(request.reference_wire, H3ReferenceWire):
+            raise ValueError("H3 reference workflow requires an H3ReferenceWire")
+        for segment in request.segments:
+            inspect_h3_prompt(
+                segment.prompt, H3Mode.REF2VA, segment.duration_seconds
+            ).raise_for_failure()
         resolution = request.workflow_parameters.get("resolution")
         if resolution is None:
             raise ValueError("H3 workflow parameter 'resolution' is required")
@@ -233,11 +258,15 @@ class H3ReferenceWorkflowAdapter:
             "global_references": request.global_references,
             "reference_limit": request.reference_limit,
             "workflow_id": request.provider_workflow_id,
+            "wire": request.reference_wire,
             "frozen_frames": request.frozen_frames,
         }
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
         generated = await self._generator(ctx, **kwargs)
+        transport_mode = str(generated.actual_mode)
+        if transport_mode not in {H3Mode.I2VA.value, H3Mode.FL2VA.value}:
+            raise ValueError("H3 reference provider returned an invalid transport mode")
         return NarrativeGroupVideoResult(
             output_path=str(generated.output_path),
             provider_task_id=(
@@ -245,9 +274,10 @@ class H3ReferenceWorkflowAdapter:
                 if generated.provider_task_id is not None
                 else None
             ),
-            actual_mode=str(generated.actual_mode),
+            actual_mode=H3Mode.REF2VA.value,
             provider_parameters={
                 "workflowId": request.provider_workflow_id,
+                "transport_mode": transport_mode,
                 "megapixels": setting.megapixels,
                 "multiple": setting.multiple,
                 "width": setting.width,

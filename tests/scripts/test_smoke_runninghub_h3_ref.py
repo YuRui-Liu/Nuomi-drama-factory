@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image
+
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.h3_wire import (
+    H3ReferenceWire,
+    compile_h3_wire,
+)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts import smoke_runninghub_h3_ref as smoke
 
@@ -136,6 +145,13 @@ def test_smoke_submits_refs_first_and_optional_last_frame_once(
     assert request["global_references"][0].content == reference.read_bytes()
     assert request["segments"][0].first_frame == str(first)
     assert request["segments"][0].last_frame == str(last)
+    assert isinstance(request["wire"], H3ReferenceWire)
+    assert request["segments"][0].prompt == compile_h3_wire(request["wire"])
+    assert inspect_h3_prompt(
+        request["segments"][0].prompt,
+        "ref2va",
+        5,
+    ).passed
     assert set(request["frozen_frames"]) == {str(first), str(last)}
     assert request["frozen_frames"][str(first)].content == first.read_bytes()
     assert request["frozen_frames"][str(last)].content == last.read_bytes()

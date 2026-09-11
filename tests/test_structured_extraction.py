@@ -87,6 +87,101 @@ def test_character_prompt_requires_profile_and_three_distinct_visual_proposals()
     assert "不得根据姓名" in prompt
 
 
+@pytest.mark.asyncio
+async def test_character_extraction_retries_quality_rejected_visual_proposals():
+    prompts: list[str] = []
+
+    def proposal(
+        proposal_id: str,
+        *,
+        face_shape: str,
+        facial_feature: str,
+        hair_style: str,
+        asymmetry_detail: str,
+        recommended: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "proposal_id": proposal_id,
+            "title": proposal_id,
+            "face_shape": face_shape,
+            "facial_features": [facial_feature],
+            "hair_style": hair_style,
+            "distinctive_features": [asymmetry_detail],
+            "identity_anchors": [face_shape, facial_feature, hair_style],
+            "asymmetry_detail": asymmetry_detail,
+            "recommended": recommended,
+        }
+
+    rejected = [
+        proposal(
+            f"shi-0{index}",
+            face_shape="长脸",
+            facial_feature="窄眼",
+            hair_style="短发",
+            asymmetry_detail="略有不对称",
+            recommended=index == 1,
+        )
+        for index in range(1, 4)
+    ]
+    accepted = [
+        proposal(
+            "shi-01",
+            face_shape="长脸，下颌收窄",
+            facial_feature="左眉尾有断眉",
+            hair_style="短发侧分",
+            asymmetry_detail="左眉尾有断眉",
+            recommended=True,
+        ),
+        proposal(
+            "shi-02",
+            face_shape="方脸，宽下巴",
+            facial_feature="右眼下有小痣",
+            hair_style="粗硬寸发",
+            asymmetry_detail="右眼下有小痣",
+        ),
+        proposal(
+            "shi-03",
+            face_shape="菱形脸，高颧骨",
+            facial_feature="左嘴角有凹点",
+            hair_style="细软长发",
+            asymmetry_detail="左嘴角有凹点",
+        ),
+    ]
+
+    class FakeAgent:
+        async def run(self, prompt: str):
+            prompts.append(prompt)
+            proposals = rejected if len(prompts) == 1 else accepted
+            return {
+                "characters": [
+                    {
+                        "name": "石九",
+                        "design_proposals": proposals,
+                        "evidence": [{"quote": "石九", "kind": "mention"}],
+                    }
+                ]
+            }
+
+    chunk = SourceChunk(
+        chunk_id="c-quality",
+        chunk_index=0,
+        section_type="scene",
+        section_label="片段 1",
+        source_start=0,
+        source_end=4,
+        text="石九进门",
+    )
+
+    result = await extraction_module.extract_characters_from_chunks(
+        [chunk], agent=FakeAgent()
+    )
+
+    assert len(prompts) == 2
+    assert "individual_structure:required" in prompts[1]
+    assert "structure_collision:shi-03" in prompts[1]
+    assert result[0].design_proposals[0]["asymmetry_detail"] == "左眉尾有断眉"
+
+
 def test_redaction_placeholder_cannot_become_a_character():
     chunk = SourceChunk(
         chunk_id="c2",
@@ -108,3 +203,67 @@ def test_redaction_placeholder_cannot_become_a_character():
         }
     )
     assert extraction_module.merge_character_candidates([(chunk, output)]) == []
+
+
+def test_character_outfit_state_wire_list_is_merged_back_to_mapping():
+    chunk = SourceChunk(
+        chunk_id="c3",
+        chunk_index=0,
+        section_type="scene",
+        section_label="1-3",
+        source_start=0,
+        source_end=5,
+        text="梁真推开门",
+    )
+    proposals = [
+        {
+            "proposal_id": f"proposal-{index}",
+            "title": f"方案 {index}",
+            "outfit_states": [
+                {"state": "default", "description": f"深色外套 {index}"}
+            ],
+        }
+        for index in range(1, 4)
+    ]
+    output = extraction_module.ChunkCharacterOutput.model_validate(
+        {
+            "characters": [
+                {
+                    "name": "梁真",
+                    "design_proposals": proposals,
+                    "evidence": [{"quote": "梁真", "kind": "mention"}],
+                }
+            ]
+        }
+    )
+
+    merged = extraction_module.merge_character_candidates([(chunk, output)])
+
+    assert merged[0].design_proposals[0]["outfit_states"] == {
+        "default": "深色外套 1"
+    }
+
+
+def test_character_outfit_state_accepts_legacy_mapping_input():
+    proposal = extraction_module.CharacterProposalCandidate.model_validate(
+        {
+            "proposal_id": "proposal-1",
+            "title": "旧格式",
+            "outfit_states": {"default": "深色外套"},
+        }
+    )
+
+    assert [(item.state, item.description) for item in proposal.outfit_states] == [
+        ("default", "深色外套")
+    ]
+
+
+def test_character_outfit_state_rejects_invalid_legacy_mapping_values():
+    with pytest.raises(ValueError):
+        extraction_module.CharacterProposalCandidate.model_validate(
+            {
+                "proposal_id": "proposal-1",
+                "title": "无效旧格式",
+                "outfit_states": {"default": None},
+            }
+        )

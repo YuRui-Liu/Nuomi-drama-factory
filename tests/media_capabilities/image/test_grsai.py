@@ -183,6 +183,29 @@ async def test_submit_keeps_async_running_response_compatible_with_query() -> No
 
 
 @pytest.mark.asyncio
+async def test_submit_omits_images_for_text_only_generation() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"id": "task-text", "status": "running"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://grsai.example",
+    ) as http:
+        await GrsaiClient(http).submit(
+            ImageGenerationRequest(
+                capability=MediaCapability.IMAGE_SINGLE,
+                prompt="an empty establishing shot of a stone archway at night",
+            ),
+            api_key="secret",
+        )
+
+    assert "images" not in captured
+
+
+@pytest.mark.asyncio
 async def test_submit_reports_non_json_gateway_response_without_jsondecodeerror() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

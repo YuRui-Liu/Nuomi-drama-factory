@@ -61,6 +61,23 @@ def _patch_authoritative_context(monkeypatch, runner) -> None:
     )
 
 
+def test_single_h3_mode_gate_rejects_unsupported_mode_without_fallback() -> None:
+    from novelvideo.media_capabilities.video.workflow_registry import (
+        H3ModeUnavailableError,
+    )
+    from novelvideo.task_backend.runners.video import _resolve_h3_single_mode
+
+    with pytest.raises(
+        H3ModeUnavailableError, match="h3.mode_unsupported_by_workflow"
+    ):
+        _resolve_h3_single_mode("t2va", "first.png", None)
+
+    with pytest.raises(
+        H3ModeUnavailableError, match="h3.last_frame_required"
+    ):
+        _resolve_h3_single_mode("fl2va", "first.png", None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["runninghub:minimax-h3", "runninghub_minimax_h3"])
 @pytest.mark.parametrize(("last_frame", "expected"), [("last.png", "fl2va"), (None, "i2va")])
@@ -123,7 +140,7 @@ async def test_h3_runner_selects_actual_mode_and_never_uses_legacy_generator(
     assert result["actual_provider"] == "runninghub"
     assert result["actual_model"] == "runninghub:minimax-h3"
     assert result["actual_mode"] == expected
-    assert calls[0]["mode"] == "auto"
+    assert calls[0]["mode"] == expected
     assert calls[0]["resolution"] == "1080p"
     assert calls[0]["prompt"] == _Optimized.prompt
 

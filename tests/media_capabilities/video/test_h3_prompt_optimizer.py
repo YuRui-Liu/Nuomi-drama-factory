@@ -25,7 +25,11 @@ from novelvideo.media_capabilities.video.h3_director_plan import (
 )
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.media_capabilities.video.models import H3Mode
-from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityError
+from novelvideo.media_capabilities.video.h3_prompt_quality import (
+    H3PromptQualityError,
+    H3PromptQualityIssue,
+    H3PromptQualityReport,
+)
 from novelvideo.media_capabilities.video.h3_rigid_prompt import H3RigidPromptPlan
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3ResolvedReferenceFact,
@@ -137,8 +141,8 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.cache_hit is True
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
-    assert snapshot["prompt_profile_version"] == 10
-    assert snapshot["compiler_version"] == 2
+    assert snapshot["prompt_profile_version"] == 11
+    assert snapshot["compiler_version"] == 3
 
 
 @pytest.mark.asyncio
@@ -682,7 +686,58 @@ def test_compile_and_gate_merges_contract_locks_before_wire_compile():
 
     assert result.plan.continuity_locks.count("preserve identity") == 1
     assert "cup stays in right hand" in result.plan.continuity_locks
-    assert "SCENE CONTEXT" in result.prompt
+    assert "integrated_multimodal_description: [Shot 1]" in result.prompt
+    assert "SCENE CONTEXT" not in result.prompt
+
+
+def test_compile_and_gate_rejects_a_malformed_compiler_wire(monkeypatch):
+    compile_wire = h3_prompt_optimizer.compile_h3_director_plan
+
+    def compile_with_wrong_base_layout(plan):
+        return compile_wire(plan).replace(
+            "integrated_multimodal_description: ",
+            "integrated_multimodal_description:\n",
+            1,
+        )
+
+    monkeypatch.setattr(
+        h3_prompt_optimizer,
+        "compile_h3_director_plan",
+        compile_with_wrong_base_layout,
+    )
+
+    with pytest.raises(H3PromptQualityError, match="h3.wire_format_invalid"):
+        h3_prompt_optimizer.compile_and_gate_h3_plan(
+            _director_plan(),
+            segment=_segment(),
+            context=_context(),
+            mode=H3Mode.I2VA,
+            input_hash="a" * 64,
+        )
+
+
+def test_optimization_result_dump_preserves_quality_issue_field_contract():
+    issue = H3PromptQualityIssue(
+        code="h3.wire_format_invalid",
+        message="malformed wire",
+        field="prompt",
+    )
+    result = H3PromptOptimizationResult(
+        prompt="invalid wire",
+        plan=_director_plan(),
+        quality_report=H3PromptQualityReport(passed=False, issues=(issue,)),
+        input_hash="a" * 64,
+    )
+
+    dumped_issue = result.model_dump(mode="json")["quality_report"]["issues"][0]
+
+    assert dumped_issue == {
+        "code": "h3.wire_format_invalid",
+        "message": "malformed wire",
+        "field": "prompt",
+        "severity": "error",
+        "location": "prompt",
+    }
 
 
 @pytest.mark.asyncio

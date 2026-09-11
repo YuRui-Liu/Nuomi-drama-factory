@@ -11,9 +11,24 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubClient
+from novelvideo.media_capabilities.video.h3_prompt import compile_h3
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode, MotionSpec
 
 
 WORKFLOW_ID = "2089723723468328961"
+
+
+def _smoke_mode(last_frame: object) -> H3Mode:
+    return H3Mode.FL2VA if last_frame is not None else H3Mode.I2VA
+
+
+def _canonical_smoke_prompt(mode: H3Mode) -> str:
+    return compile_h3(
+        MotionSpec(action="The actor looks up while the camera remains stable."),
+        mode,
+        duration_seconds=5,
+    )
 
 
 def build_smoke_timeline_data(
@@ -26,6 +41,8 @@ def build_smoke_timeline_data(
     """Build the one-segment version-5 Director payload used by this smoke test."""
     from novelvideo.media_capabilities.video.runninghub_h3 import _director_timeline_payload
 
+    mode = _smoke_mode(last_frame_url)
+    inspect_h3_prompt(prompt, mode, 5).raise_for_failure()
     return _director_timeline_payload(
         first_frame_url=first_frame_url,
         last_frame_url=last_frame_url,
@@ -55,9 +72,14 @@ def _load_key(env_file: Path | None) -> str:
 
 
 async def _run(args: argparse.Namespace) -> None:
+    task_id = args.task_id
+    prompt = args.prompt
+    if task_id is None:
+        mode = _smoke_mode(args.last_image)
+        prompt = prompt or _canonical_smoke_prompt(mode)
+        inspect_h3_prompt(prompt, mode, 5).raise_for_failure()
     api_key = _load_key(args.env_file)
     async with RunningHubClient(api_key) as client:
-        task_id = args.task_id
         if task_id is None:
             if args.image is None:
                 raise ValueError("--image is required when --task-id is omitted")
@@ -66,7 +88,7 @@ async def _run(args: argparse.Namespace) -> None:
             timeline_data = build_smoke_timeline_data(
                 first_frame_url=remote_image,
                 last_frame_url=remote_last_image,
-                prompt=args.prompt,
+                prompt=prompt,
                 aspect_ratio=args.aspect_ratio,
             )
             shots, total_frames = timeline_summary(json.loads(timeline_data))
@@ -116,7 +138,7 @@ def main() -> None:
     parser.add_argument("--task-id")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--env-file", type=Path)
-    parser.add_argument("--prompt", default="人物轻轻眨眼并缓慢抬头，镜头稳定")
+    parser.add_argument("--prompt")
     parser.add_argument("--aspect-ratio", choices=("9:16", "16:9"), default="9:16")
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=1200.0)

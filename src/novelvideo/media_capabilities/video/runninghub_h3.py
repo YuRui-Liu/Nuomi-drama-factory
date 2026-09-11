@@ -20,6 +20,8 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     H3DirectorSegment,
     build_h3_timeline_data,
 )
+from novelvideo.media_capabilities.video.h3_prompt_quality import inspect_h3_prompt
+from novelvideo.media_capabilities.video.models import H3Mode
 
 
 class _RunningHubClient(Protocol):
@@ -100,6 +102,8 @@ async def generate_minimax_h3_video(
     if max_polls <= 0:
         raise ValueError("max_polls must be positive")
 
+    resolved_mode = H3Mode.FL2VA if last_frame else H3Mode.I2VA
+    inspect_h3_prompt(prompt, resolved_mode, duration).raise_for_failure()
     workflow_id = runtime.workflow_id(
         MediaCapability.VIDEO_FL2VA if last_frame else MediaCapability.VIDEO_I2VA
     )
@@ -115,10 +119,7 @@ async def generate_minimax_h3_video(
             aspect_ratio=aspect_ratio,
         )
         from novelvideo.media_capabilities.runtime.compiler import compile_node_info
-        from novelvideo.media_capabilities.video.runtime import (
-            _director_semantic_values,
-            load_h3_workflow_profile,
-        )
+        from novelvideo.media_capabilities.video.runtime import load_h3_workflow_profile
 
         profile = load_h3_workflow_profile(workflow_id=workflow_id)
         node_info = compile_node_info(

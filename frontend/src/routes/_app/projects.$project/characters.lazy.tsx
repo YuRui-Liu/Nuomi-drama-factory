@@ -955,6 +955,7 @@ function PortraitBlock({
   attemptCount,
   onAttempt,
   canGeneratePortrait,
+  visualBiblePrerequisiteMessage,
 }: {
   character: Character;
   project: string;
@@ -962,6 +963,7 @@ function PortraitBlock({
   attemptCount: number;
   onAttempt: () => void;
   canGeneratePortrait: boolean;
+  visualBiblePrerequisiteMessage: string;
 }) {
   const { t } = useTranslation();
   const genPortrait = useGeneratePortraitAsync(project, character.name);
@@ -990,7 +992,7 @@ function PortraitBlock({
 
   const handleGenerate = async () => {
     if (!canGeneratePortrait) {
-      toast.error("请先确认 VisualBible");
+      toast.error(visualBiblePrerequisiteMessage);
       return;
     }
     onAttempt();
@@ -1007,6 +1009,14 @@ function PortraitBlock({
     } catch (err) {
       toast.error(backendErrorToastMessage(err, t));
     }
+  };
+
+  const handleGenerateRequest = () => {
+    if (!canGeneratePortrait) {
+      toast.error(visualBiblePrerequisiteMessage);
+      return;
+    }
+    setGenConfirm(true);
   };
 
   const genBusy = genPortrait.isPending || portraitTask.started;
@@ -1031,9 +1041,9 @@ function PortraitBlock({
         <Button
           size="sm"
           variant="outline"
-          onClick={() => setGenConfirm(true)}
-          disabled={genBusy || !canGeneratePortrait}
-          title={canGeneratePortrait ? undefined : "请先确认 VisualBible"}
+          onClick={handleGenerateRequest}
+          disabled={genBusy}
+          title={canGeneratePortrait ? undefined : visualBiblePrerequisiteMessage}
           className="relative h-7 w-full gap-1 rounded-[8px] px-2 text-xs"
         >
           {genBusy ? (
@@ -2639,6 +2649,11 @@ function DetailPanel({
   );
   const visualBible = visualWorkspace?.visual_bible;
   const canGeneratePortrait = visualBible?.status === "confirmed";
+  const visualBiblePrerequisiteMessage = visualWorkspace?.selected_proposal_id
+    ? "请先确认 VisualBible"
+    : visualWorkspace?.design_proposals.length
+      ? "请先选择视觉提案，再确认 VisualBible"
+      : "请先生成视觉提案，再确认 VisualBible";
   const visualFacts = [
     ...(visualWorkspace?.profile.facts ?? []).map((fact) => ({
       id: fact.fact_id,
@@ -2704,6 +2719,7 @@ function DetailPanel({
                 attemptCount={attemptCount}
                 onAttempt={onAttempt}
                 canGeneratePortrait={canGeneratePortrait}
+                visualBiblePrerequisiteMessage={visualBiblePrerequisiteMessage}
               />
             </div>
             <div className="min-w-0">

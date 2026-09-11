@@ -40,9 +40,18 @@ def test_prop_canonical_replace_failure_rolls_back_workflow_and_canonical(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_model", "expected_model"),
+    [
+        ("newapi_gpt_image2", "runtime-model"),
+        ("gpt-image-2", "gpt-image-2"),
+    ],
+)
 async def test_prop_reference_runner_registers_candidates_without_overwriting_current(
     monkeypatch,
     tmp_path,
+    requested_model,
+    expected_model,
 ):
     from novelvideo.models import NovelProp
     from novelvideo.task_backend.runners import prop_reference
@@ -53,6 +62,11 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         visual_prompt="黑色旧手机，右上角裂纹；屏幕内容由后期叠加",
     )
     calls: list[dict] = []
+    slot_factory_calls: list[str] = []
+
+    def prop_slot(prop_name: str) -> str:
+        slot_factory_calls.append(prop_name)
+        return f"prop:{prop_name}:reference"
 
     class FakeSQLiteStore:
         def __init__(self, *_args, **_kwargs):
@@ -94,6 +108,7 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "get_task_manager",
         lambda: SimpleNamespace(update_progress_for_project=lambda *_a, **_k: None),
     )
+    monkeypatch.setattr(prop_reference, "prop_reference_slot_id", prop_slot)
 
     ctx = SimpleNamespace(
         owner_project_label="frank/demo",
@@ -107,7 +122,7 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         "payload": {
             "prop_name": prop.name,
             "style": "anime",
-            "model": "requested-model",
+            "model": requested_model,
             "output_dir": str(tmp_path),
         },
     }
@@ -122,8 +137,9 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert first["slot_id"] == "prop:手机:reference"
     assert first["adoption_status"] == "provisional"
     assert second["adoption_status"] == "candidate"
-    assert calls[0]["model"] == "requested-model"
+    assert calls[0]["model"] == expected_model
     assert calls[0]["aspect_ratio"] == "16:9"
+    assert slot_factory_calls == ["手机", "手机"]
     assert "front, strict side, and back" in calls[0]["prompt"]
     assert "readable text" in calls[0]["prompt"]
     assert all("versions" in str(call["output_path"]) for call in calls)
@@ -138,3 +154,4 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert versions[second["version_id"]].generation_metadata["canonical_path"] == (
         "assets/props/手机/reference_3view.png"
     )
+    assert versions[first["version_id"]].generation_metadata["model"] == expected_model

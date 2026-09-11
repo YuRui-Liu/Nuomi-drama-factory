@@ -1,0 +1,165 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, it, vi } from "vitest";
+
+import { H3VideoModeSelect } from "@/components/episode/narrative-workbench/h3-video-mode-select";
+import { h3ModeAvailabilities } from "@/lib/queries/media-models";
+
+it("shows unsupported modes with stable reasons and changes only to enabled modes", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const availability = h3ModeAvailabilities({
+    id: "runninghub:minimax-h3",
+    label: "H3",
+    provider: "runninghub",
+    available: true,
+    supported_modes: ["i2va", "fl2va"],
+    default_mode: "auto",
+    parameters: [],
+  }, {
+    hasFirstFrame: true,
+    hasLastFrame: false,
+    referenceCount: 0,
+  });
+
+  render(<H3VideoModeSelect
+    value="auto"
+    availability={availability}
+    onChange={onChange}
+  />);
+
+  const select = screen.getByRole("combobox", { name: "H3 视频模式" });
+  expect(screen.getByRole("option", { name: /自动.*I2V/ })).toBeEnabled();
+  expect(screen.getByRole("option", { name: /^FL2V.*缺输入/ })).toBeDisabled();
+  expect(screen.getByRole("option", { name: /^L2V.*缺输入/ })).toBeDisabled();
+  expect(screen.getByRole("option", { name: /^Ref2V.*缺输入/ })).toBeDisabled();
+
+  await user.selectOptions(select, "i2va");
+  expect(onChange).toHaveBeenCalledWith("i2va");
+});
+
+it("uses the exact official mode labels in the options", () => {
+  render(<H3VideoModeSelect
+    value="auto"
+    availability={[
+      { mode: "auto", resolvedMode: "i2va", available: true },
+      { mode: "t2va", resolvedMode: "t2va", available: true },
+      { mode: "i2va", resolvedMode: "i2va", available: true },
+      { mode: "fl2va", resolvedMode: "fl2va", available: true },
+      { mode: "l2va", resolvedMode: "l2va", available: true },
+      { mode: "ref2va", resolvedMode: "ref2va", available: true },
+    ]}
+    onChange={vi.fn()}
+  />);
+
+  expect(screen.getByRole("option", { name: "自动（解析为 I2VA）" })).toBeEnabled();
+  for (const label of ["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"]) {
+    expect(screen.getByRole("option", { name: label })).toBeEnabled();
+  }
+});
+
+it("keeps an input-valid but unsupported mode visible with the capability reason", () => {
+  const availability = h3ModeAvailabilities({
+    id: "runninghub:minimax-h3",
+    label: "H3",
+    provider: "runninghub",
+    available: true,
+    supported_modes: ["i2va", "fl2va"],
+    default_mode: "auto",
+    parameters: [],
+  }, {
+    hasFirstFrame: false,
+    hasLastFrame: true,
+    referenceCount: 0,
+  });
+
+  render(<H3VideoModeSelect
+    value="auto"
+    availability={availability}
+    onChange={vi.fn()}
+  />);
+
+  expect(screen.getByRole("option", { name: /^L2V.*模型不支持/ })).toBeDisabled();
+});
+
+it("shows the backend workflow reason instead of calling the mode unsupported", () => {
+  const availability = h3ModeAvailabilities({
+    id: "runninghub:minimax-h3",
+    label: "H3",
+    provider: "runninghub",
+    available: true,
+    supported_modes: ["i2va", "fl2va"],
+    default_mode: "auto",
+    parameters: [],
+    mode_capabilities: [
+      {
+        mode: "t2va",
+        enabled: false,
+        reason: "workflow_capability_unverified",
+        requires_first_frame: false,
+        requires_last_frame: false,
+        requires_references: false,
+      },
+      {
+        mode: "ref2va",
+        enabled: false,
+        reason: "hybrid_input_unverified",
+        requires_first_frame: false,
+        requires_last_frame: false,
+        requires_references: true,
+      },
+    ],
+  }, {
+    hasFirstFrame: false,
+    hasLastFrame: false,
+    referenceCount: 0,
+  });
+
+  render(<H3VideoModeSelect
+    value="t2va"
+    availability={availability}
+    onChange={vi.fn()}
+  />);
+
+  expect(screen.getByRole("option", {
+    name: /^T2V.*当前工作流未验证/,
+  })).toBeDisabled();
+  expect(screen.getByText("当前工作流未验证")).toBeInTheDocument();
+  expect(screen.queryByText("模型不支持")).not.toBeInTheDocument();
+});
+
+it("maps the backend hybrid reference reason to explicit copy", () => {
+  const availability = h3ModeAvailabilities({
+    id: "runninghub:minimax-h3",
+    label: "H3",
+    provider: "runninghub",
+    available: true,
+    supported_modes: ["i2va", "fl2va"],
+    default_mode: "auto",
+    parameters: [],
+    mode_capabilities: [
+      {
+        mode: "ref2va",
+        enabled: false,
+        reason: "hybrid_input_unverified",
+        requires_first_frame: false,
+        requires_last_frame: false,
+        requires_references: true,
+      },
+    ],
+  }, {
+    hasFirstFrame: false,
+    hasLastFrame: false,
+    referenceCount: 1,
+  });
+
+  render(<H3VideoModeSelect
+    value="ref2va"
+    availability={availability}
+    onChange={vi.fn()}
+  />);
+
+  expect(screen.getByRole("option", {
+    name: /^Ref2V.*参考图混合输入工作流未验证/,
+  })).toBeDisabled();
+});

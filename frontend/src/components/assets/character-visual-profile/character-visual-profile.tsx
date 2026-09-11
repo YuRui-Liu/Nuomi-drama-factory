@@ -92,6 +92,21 @@ export function CharacterVisualProfile({
   const identityEntries = (["face", "hair", "body"] as const).filter(
     (key) => visualIdentity[key]?.trim(),
   );
+  const proposalSetInvalid =
+    proposals.length > 0 &&
+    (proposals.length !== 3 ||
+      new Set(proposals.map((proposal) => proposal.proposalId)).size !== 3 ||
+      proposals.filter((proposal) => proposal.recommended).length !== 1);
+  const proposalSetIssue = "视觉提案集必须包含三套不同方案，且只能有一套推荐方案。";
+  const recommendedProposal = proposalSetInvalid
+    ? undefined
+    : proposals.find(
+        (proposal) => proposal.recommended && proposal.qualityIssues.length === 0,
+      );
+  const selectedProposal = proposals.find(
+    (proposal) => proposal.proposalId === selectedProposalId,
+  );
+  const selectedProposalRejected = Boolean(selectedProposal?.qualityIssues.length);
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -127,6 +142,11 @@ export function CharacterVisualProfile({
       </ProfileSection>
 
       <ProfileSection title="视觉提案">
+        {proposalSetInvalid ? (
+          <p className="mb-3 rounded-md border border-amber-500/25 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+            {proposalSetIssue}
+          </p>
+        ) : null}
         {proposals.length ? (
           <div className="grid gap-3 lg:grid-cols-3">
             {proposals.map((proposal) => {
@@ -136,7 +156,12 @@ export function CharacterVisualProfile({
                   key={proposal.proposalId}
                   type="button"
                   aria-pressed={selected}
-                  disabled={isSelectingProposal || visualBibleStatus === "confirmed"}
+                  disabled={
+                    isSelectingProposal ||
+                    visualBibleStatus === "confirmed" ||
+                    proposalSetInvalid ||
+                    proposal.qualityIssues.length > 0
+                  }
                   onClick={() => void onSelectProposal?.(proposal.proposalId)}
                   className={cn(
                     "rounded-lg border p-3 text-left transition-colors disabled:cursor-default",
@@ -172,7 +197,8 @@ export function CharacterVisualProfile({
                   ) : null}
                   {proposal.qualityIssues.length ? (
                     <span className="mt-2 block rounded-md border border-amber-500/25 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
-                      {proposal.qualityIssues.join("；")}
+                      <span className="block font-medium">该提案未通过质量检查，不能选择或确认。</span>
+                      <span className="mt-1 block">{proposal.qualityIssues.join("；")}</span>
                     </span>
                   ) : null}
                 </button>
@@ -191,16 +217,40 @@ export function CharacterVisualProfile({
           <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
             VisualBible 已确认
           </div>
-        ) : visualBibleStatus === "draft" && onConfirmVisualBible ? (
+        ) : !selectedProposalId && recommendedProposal && onSelectProposal ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
             <span className="text-xs text-amber-700 dark:text-amber-300">
-              当前为草稿，确认后才可生成肖像。
+              已生成视觉提案，请先选择一套，再确认 VisualBible。
             </span>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              disabled={isConfirmingVisualBible || !selectedProposalId}
+              disabled={isSelectingProposal}
+              onClick={() => void onSelectProposal(recommendedProposal.proposalId)}
+            >
+              选择推荐提案
+            </Button>
+          </div>
+        ) : visualBibleStatus === "draft" && onConfirmVisualBible ? (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
+            <span className="text-xs text-amber-700 dark:text-amber-300">
+              {proposalSetInvalid
+                ? proposalSetIssue
+                : selectedProposalRejected
+                ? "所选提案未通过质量检查，请改选合格提案。"
+                : "当前为草稿，确认后才可生成肖像。"}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={
+                isConfirmingVisualBible ||
+                !selectedProposalId ||
+                proposalSetInvalid ||
+                selectedProposalRejected
+              }
               onClick={() => void onConfirmVisualBible()}
             >
               确认 VisualBible

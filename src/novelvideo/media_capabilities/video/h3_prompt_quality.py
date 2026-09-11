@@ -8,9 +8,16 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .h3_director_plan import H3DirectorPlan
+from .h3_rigid_prompt import H3_RIGID_SECTION_ORDER
+from .h3_wire import (
+    H3BaseWire,
+    H3ReferenceWire,
+    compile_h3_wire,
+    inspect_h3_reference_semantics,
+)
 from .models import H3Mode
 
 if TYPE_CHECKING:
@@ -18,8 +25,50 @@ if TYPE_CHECKING:
     from .h3_timeline import H3DirectorSegment
 
 
-H3_PROMPT_QUALITY_VERSION = 6
+H3_PROMPT_QUALITY_VERSION = 9
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
+_WIRE_METADATA_FIELDS = frozenset({"mode", "duration_seconds", "final_shot_number"})
+_BASE_WIRE_FIELD_ORDER = tuple(
+    name for name in H3BaseWire.model_fields if name not in _WIRE_METADATA_FIELDS
+)
+_REFERENCE_WIRE_FIELD_ORDER = tuple(
+    name for name in H3ReferenceWire.model_fields if name not in _WIRE_METADATA_FIELDS
+)
+_CANONICAL_WIRE_FIELDS = tuple(
+    dict.fromkeys((*_BASE_WIRE_FIELD_ORDER, *_REFERENCE_WIRE_FIELD_ORDER))
+)
+_WIRE_FIELD_PATTERN = re.compile(
+    rf"(?m)^({'|'.join(re.escape(field) for field in _CANONICAL_WIRE_FIELDS)}):"
+)
+_EVENT_TIMESTAMP_PATTERN = re.compile(r"\bAt (\d{2}):(\d{2})\.(\d{3}),")
+_TIMED_ACTION_PATTERN = re.compile(r"^At \d{2}:\d{2}\.\d{3},")
+_TIMED_CAMERA_PATTERN = re.compile(
+    r"^At \d{2}:\d{2}\.\d{3},\s+(?:the\s+)?camera\b",
+    re.IGNORECASE,
+)
+_DIALOGUE_PAYLOAD_PATTERN = re.compile(
+    r"(?:<scenetrans>)?<d>\[[^\]\r\n]+\][^<\r\n]+</d>(?:<cutoff>)?"
+)
+_DIALOGUE_LINE_PATTERN = re.compile(
+    r"\(S[1-9][0-9]*\).*:\s*"
+    r"(?:<scenetrans>)?<d>\[[^\]\r\n]+\][^<\r\n]+</d>(?:<cutoff>)?"
+)
+_RETENTION_ITEM_PATTERN = re.compile(
+    r"^-\s+(?P<subject><(?:Subject|Picture|Video|Audio) "
+    r"[1-9][0-9]*>[^:]*):\s*(?P<retain>\S.*)$"
+)
+_ANGLE_TAG_PATTERN = re.compile(r"</?[^>\r\n]+>")
+_ALLOWED_WIRE_TAG_PATTERN = re.compile(
+    r"(?:<d>|</d>|<scenetrans>|<cutoff>|<Picture [1-9][0-9]*>|"
+    r"<Subject [1-9][0-9]*>|<Video [1-9][0-9]*>|<Audio [1-9][0-9]*>)"
+)
+_ALIGNMENT_PREFIXES = (
+    "For the target video, at 0.00 seconds into the target video, ",
+    "How the reference pictures align with the target video — ",
+)
+_LEGACY_NO_MUSIC = frozenset(
+    {"none", "none.", "no music", "no music.", "no music. sfx only."}
+)
 _VAGUE_ACTION_PATTERNS = (
     re.compile(r"\bmoves? naturally\b", re.IGNORECASE),
     re.compile(r"\bcamera (?:slowly )?moves?\b", re.IGNORECASE),
@@ -69,8 +118,24 @@ class H3PromptQualityIssue(BaseModel):
     model_config = _MODEL_CONFIG
     code: str
     message: str
+    field: str | None = None
     severity: Literal["error"] = "error"
     location: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def synchronize_field_and_legacy_location(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        field = data.get("field")
+        location = data.get("location")
+        if field is not None and location is not None and field != location:
+            raise ValueError("field and location must match")
+        synchronized = field if field is not None else location
+        data["field"] = synchronized
+        data["location"] = synchronized
+        return data
 
 
 class H3PromptQualityReport(BaseModel):
@@ -95,6 +160,498 @@ class H3PromptQualityError(RuntimeError):
         self.report = report
         summary = ", ".join(report.codes) or "unknown_quality_failure"
         super().__init__(f"H3 director plan failed quality gate: {summary}")
+
+
+def inspect_h3_prompt(
+    prompt: str,
+    mode: H3Mode | str,
+    duration_seconds: float,
+) -> H3PromptQualityReport:
+    """Inspect a compiled official-wire prompt before transport."""
+    issues: list[H3PromptQualityIssue] = []
+    try:
+        resolved_mode = H3Mode(mode)
+    except ValueError:
+        _add(issues, "h3.mode_invalid", "mode must be an official H3 mode", "mode")
+        return H3PromptQualityReport(passed=False, issues=tuple(issues))
+
+    fields, wire_format_valid = _extract_wire_fields(prompt, resolved_mode)
+    actual_order = tuple(name for name, _ in fields)
+    expected_order = (
+        _REFERENCE_WIRE_FIELD_ORDER
+        if resolved_mode is H3Mode.REF2VA
+        else _BASE_WIRE_FIELD_ORDER
+    )
+    if sorted(actual_order) != sorted(expected_order):
+        _add(
+            issues,
+            "h3.wire_field_set",
+            "prompt fields must exactly match the mode-specific official wire",
+            "prompt",
+        )
+    elif actual_order != expected_order:
+        _add(
+            issues,
+            "h3.wire_field_order",
+            "prompt fields must follow the official wire order",
+            "prompt",
+        )
+    if not wire_format_valid:
+        _add(
+            issues,
+            "h3.wire_format_invalid",
+            "prompt must match the mode-specific official wire grammar",
+            "prompt",
+        )
+
+    values_by_field: dict[str, list[str]] = {}
+    for name, value in fields:
+        values_by_field.setdefault(name, []).append(value)
+    for field in expected_order:
+        if field in values_by_field and any(
+            not value.strip() for value in values_by_field[field]
+        ):
+            _add(
+                issues,
+                "h3.wire_field_empty",
+                "official wire fields must not be empty",
+                field,
+            )
+
+    _inspect_field_occurrences(actual_order, issues)
+    duration = _validated_wire_duration(duration_seconds)
+    if duration is None:
+        _add(
+            issues,
+            "h3.duration_out_of_range",
+            "duration_seconds must be between 4 and 15 seconds",
+            "duration_seconds",
+        )
+
+    description_field = (
+        "detailed_description"
+        if resolved_mode is H3Mode.REF2VA
+        else "integrated_multimodal_description"
+    )
+    description = _first_field_value(values_by_field, description_field)
+    if duration is not None:
+        _inspect_base_wire_contract(
+            values_by_field,
+            resolved_mode,
+            duration,
+            issues,
+        )
+        _inspect_alignment(prompt, description, resolved_mode, duration, issues)
+        _inspect_event_timestamps(prompt, duration, issues)
+        _inspect_action_budget(description, duration, issues)
+
+    if resolved_mode is H3Mode.REF2VA:
+        definitions = _first_field_value(values_by_field, "subject_definitions")
+        retention = _first_field_value(values_by_field, "retention_analysis")
+        retention_lines = tuple(
+            line for line in retention.splitlines() if line.strip()
+        )
+        retention_matches = tuple(
+            match
+            for line in retention_lines
+            if (match := _RETENTION_ITEM_PATTERN.match(line)) is not None
+        )
+        if not retention_lines or len(retention_matches) != len(retention_lines):
+            _add(
+                issues,
+                "h3.retention_analysis_missing",
+                "Ref2VA requires nonempty subject retention rules",
+                "retention_analysis",
+            )
+        semantic_issues = inspect_h3_reference_semantics(
+            definitions,
+            tuple(
+                (match.group("subject"), match.group("retain"))
+                for match in retention_matches
+            ),
+            description,
+            additional_text=(
+                _first_field_value(values_by_field, "summary"),
+                _first_field_value(values_by_field, "overall_soundscape"),
+                _first_field_value(values_by_field, "non_diegetic_music"),
+            ),
+        )
+        semantic_issue_details = {
+            "reference_definition_invalid": (
+                "h3.reference_definition_invalid",
+                "subject definitions must be unique, continuous, and map source pictures",
+                "subject_definitions",
+            ),
+            "reference_picture_out_of_range": (
+                "h3.reference_picture_out_of_range",
+                "every Picture tag must be declared by a subject definition",
+                "detailed_description",
+            ),
+            "reference_relation_invalid": (
+                "h3.reference_relation_invalid",
+                "retention relations must use the official visual relation vocabulary",
+                "retention_analysis",
+            ),
+            "reference_subject_mismatch": (
+                "h3.reference_subject_mismatch",
+                "subject definitions and retention analysis must match one-to-one",
+                "retention_analysis",
+            ),
+            "reference_subject_inactive": (
+                "h3.reference_subject_inactive",
+                "every separately defined reference label must appear in detailed_description",
+                "detailed_description",
+            ),
+            "reference_label_invalid": (
+                "h3.reference_label_invalid",
+                "reference labels must use complete official tags",
+                "prompt",
+            ),
+            "reference_label_undefined": (
+                "h3.reference_label_undefined",
+                "every reference label must be declared in subject_definitions",
+                "detailed_description",
+            ),
+        }
+        for semantic_issue in semantic_issues:
+            _add(issues, *semantic_issue_details[semantic_issue])
+
+    _inspect_dialogue_and_markers(prompt, issues)
+    _inspect_forbidden_legacy_wire(prompt, issues)
+    music = _first_field_value(values_by_field, "non_diegetic_music")
+    if " ".join(music.casefold().split()) in _LEGACY_NO_MUSIC:
+        _add(
+            issues,
+            "h3.legacy_no_music_phrase",
+            'no-music semantics must use canonical "N/A"',
+            "non_diegetic_music",
+        )
+    return H3PromptQualityReport(passed=not issues, issues=tuple(issues))
+
+
+def _extract_wire_fields(
+    prompt: str,
+    mode: H3Mode,
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    expected_order = (
+        _REFERENCE_WIRE_FIELD_ORDER
+        if mode is H3Mode.REF2VA
+        else _BASE_WIRE_FIELD_ORDER
+    )
+    body = _wire_body(prompt, mode)
+    actual_order = tuple(match.group(1) for match in _WIRE_FIELD_PATTERN.finditer(body))
+    if actual_order != expected_order:
+        return tuple((field, "") for field in actual_order), False
+
+    fields: list[tuple[str, str]] = []
+    cursor = 0
+    for index, field in enumerate(expected_order):
+        prefix = f"{field}:\n" if mode is H3Mode.REF2VA else f"{field}: "
+        if not body.startswith(prefix, cursor):
+            return tuple(fields), False
+        value_start = cursor + len(prefix)
+        if index + 1 < len(expected_order):
+            next_field = expected_order[index + 1]
+            delimiter = f"\n\n{next_field}:"
+            value_end = body.find(delimiter, value_start)
+            if value_end < 0:
+                return tuple(fields), False
+            value = body[value_start:value_end]
+            cursor = value_end + 2
+        else:
+            value = body[value_start:]
+            cursor = len(body)
+        fields.append((field, value))
+    format_valid = cursor == len(body) and all(
+        value and value == value.strip() for _, value in fields
+    )
+    return tuple(fields), format_valid
+
+
+def _wire_body(prompt: str, mode: H3Mode) -> str:
+    if mode in {H3Mode.I2VA, H3Mode.FL2VA, H3Mode.L2VA} and prompt.startswith(
+        _ALIGNMENT_PREFIXES
+    ):
+        _, separator, body = prompt.partition("\n\n")
+        return body if separator else prompt
+    return prompt
+
+
+def _first_field_value(values: dict[str, list[str]], field: str) -> str:
+    candidates = values.get(field, ())
+    return candidates[0] if candidates else ""
+
+
+def _inspect_field_occurrences(
+    fields: tuple[str, ...],
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    if fields.count("overall_soundscape") != 1:
+        _add(
+            issues,
+            "h3.soundscape_occurrence",
+            "overall_soundscape must appear exactly once",
+            "overall_soundscape",
+        )
+    if fields.count("non_diegetic_music") != 1:
+        _add(
+            issues,
+            "h3.music_occurrence",
+            "non_diegetic_music must appear exactly once",
+            "non_diegetic_music",
+        )
+
+
+def _validated_wire_duration(duration_seconds: float) -> float | None:
+    try:
+        probe = H3BaseWire(
+            mode=H3Mode.T2VA,
+            duration_seconds=duration_seconds,
+            integrated_multimodal_description="[Shot 1] duration validation.",
+            overall_soundscape="validation",
+            non_diegetic_music="N/A",
+        )
+    except ValidationError:
+        return None
+    return probe.duration_seconds
+
+
+def _inspect_base_wire_contract(
+    values: dict[str, list[str]],
+    mode: H3Mode,
+    duration_seconds: float,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    if mode is H3Mode.REF2VA:
+        return
+    description = _first_field_value(values, "integrated_multimodal_description")
+    soundscape = _first_field_value(values, "overall_soundscape")
+    music = _first_field_value(values, "non_diegetic_music")
+    if not all((description, soundscape, music)):
+        return
+    shot_numbers = tuple(
+        int(number) for number in re.findall(r"\[Shot ([1-9][0-9]*)\]", description)
+    )
+    try:
+        H3BaseWire(
+            mode=mode,
+            duration_seconds=duration_seconds,
+            final_shot_number=shot_numbers[-1] if shot_numbers else 1,
+            integrated_multimodal_description=description,
+            overall_soundscape=soundscape,
+            non_diegetic_music=music,
+        )
+    except ValidationError:
+        _add(
+            issues,
+            "h3.shot_sequence_invalid",
+            "base wire description must use the canonical ordered shot sequence",
+            "integrated_multimodal_description",
+        )
+
+
+def _canonical_alignment(
+    mode: H3Mode,
+    duration_seconds: float,
+    description: str,
+) -> str:
+    shot_numbers = tuple(
+        int(number) for number in re.findall(r"\[Shot ([1-9][0-9]*)\]", description)
+    )
+    final_shot_number = shot_numbers[-1] if shot_numbers else 1
+    probe_description = "\n".join(
+        f"[Shot {number}] alignment validation."
+        for number in range(1, final_shot_number + 1)
+    )
+    wire = H3BaseWire(
+        mode=mode,
+        duration_seconds=duration_seconds,
+        final_shot_number=final_shot_number,
+        integrated_multimodal_description=probe_description,
+        overall_soundscape="validation",
+        non_diegetic_music="N/A",
+    )
+    compiled = compile_h3_wire(wire)
+    return compiled.split("\n\nintegrated_multimodal_description:", 1)[0]
+
+
+def _inspect_alignment(
+    prompt: str,
+    description: str,
+    mode: H3Mode,
+    duration_seconds: float,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    has_alignment_prefix = prompt.startswith(_ALIGNMENT_PREFIXES)
+    if mode in {H3Mode.T2VA, H3Mode.REF2VA}:
+        if has_alignment_prefix:
+            _add(
+                issues,
+                "h3.frame_alignment_forbidden",
+                f"{mode.value} forbids a frame-alignment prefix",
+                "prompt",
+            )
+        return
+
+    expected = _canonical_alignment(mode, duration_seconds, description)
+    if mode is H3Mode.I2VA:
+        if not prompt.startswith(f"{expected}\n\n"):
+            _add(
+                issues,
+                "h3.first_image_alignment_missing",
+                "I2VA requires the canonical Picture 1 first-frame alignment",
+                "prompt",
+            )
+        return
+
+    if mode is H3Mode.FL2VA:
+        first_anchor = expected.split("; ", 1)[0]
+        if not prompt.startswith(first_anchor):
+            _add(
+                issues,
+                "h3.first_image_alignment_missing",
+                "FL2VA requires Picture 1 at the first frame",
+                "prompt",
+            )
+        if not prompt.startswith(f"{expected}\n\n"):
+            _add(
+                issues,
+                "h3.last_image_alignment_missing",
+                "FL2VA requires Picture 2 at the declared terminal time",
+                "prompt",
+            )
+        return
+
+    if not prompt.startswith(f"{expected}\n\n"):
+        _add(
+            issues,
+            "h3.last_image_alignment_missing",
+            "L2VA requires Picture 1 at the declared terminal time",
+            "prompt",
+        )
+
+
+def _inspect_event_timestamps(
+    prompt: str,
+    duration_seconds: float,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    timestamps = tuple(
+        int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
+        for minutes, seconds, milliseconds in _EVENT_TIMESTAMP_PATTERN.findall(prompt)
+    )
+    if any(timestamp > duration_seconds for timestamp in timestamps):
+        _add(
+            issues,
+            "h3.event_timestamp_out_of_range",
+            "event timestamps must not exceed the terminal video time",
+            "prompt",
+        )
+
+
+def _inspect_action_budget(
+    description: str,
+    duration_seconds: float,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    action_shots: set[str] = set()
+    current_shot: str | None = None
+    for line in description.splitlines():
+        shot = re.match(r"^\[Shot ([1-9][0-9]*)\]", line)
+        if shot is not None:
+            current_shot = shot.group(1)
+        if (
+            current_shot is not None
+            and _TIMED_ACTION_PATTERN.match(line)
+            and _TIMED_CAMERA_PATTERN.match(line) is None
+            and "<d>" not in line
+            and "converges toward" not in line.casefold()
+        ):
+            action_shots.add(current_shot)
+    action_beats = len(action_shots)
+    maximum = 1 if duration_seconds <= 6 else 2 if duration_seconds <= 10 else 3
+    if action_beats > maximum:
+        _add(
+            issues,
+            "h3.action_beat_overload",
+            f"{duration_seconds:g}s prompts allow at most {maximum} main action beats",
+            "prompt",
+        )
+
+
+def _inspect_dialogue_and_markers(
+    prompt: str,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    tags = _ANGLE_TAG_PATTERN.findall(prompt)
+    if any(_ALLOWED_WIRE_TAG_PATTERN.fullmatch(tag) is None for tag in tags):
+        _add(
+            issues,
+            "h3.control_marker_invalid",
+            "only official dialogue, scene-transition, and cutoff markers are allowed",
+            "prompt",
+        )
+
+    payloads = tuple(_DIALOGUE_PAYLOAD_PATTERN.finditer(prompt))
+    dialogue_lines = tuple(
+        line for line in prompt.splitlines() if "<d>" in line or "</d>" in line
+    )
+    if (
+        prompt.count("<d>") != prompt.count("</d>")
+        or prompt.count("<d>") != len(payloads)
+        or any(_DIALOGUE_LINE_PATTERN.search(line) is None for line in dialogue_lines)
+    ):
+        _add(
+            issues,
+            "h3.dialogue_wire_invalid",
+            "dialogue requires (S1), language, text, and canonical d-tag wrapping",
+            "prompt",
+        )
+
+    without_payloads = _DIALOGUE_PAYLOAD_PATTERN.sub("", prompt)
+    if "<scenetrans>" in without_payloads or "<cutoff>" in without_payloads:
+        _add(
+            issues,
+            "h3.control_marker_invalid",
+            "scenetrans and cutoff markers must be attached to dialogue",
+            "prompt",
+        )
+
+
+def _inspect_forbidden_legacy_wire(
+    prompt: str,
+    issues: list[H3PromptQualityIssue],
+) -> None:
+    if re.search(r"(?mi)^\s*mode\s*:", prompt):
+        _add(
+            issues,
+            "h3.mode_prefix_forbidden",
+            "the official wire does not include a mode prefix",
+            "prompt",
+        )
+    raw_dialogue = re.search(r"(?mi)^\s*dialogue\s*:", prompt) is not None
+    raw_dialogue = raw_dialogue or any(
+        re.search(r"\b(?:says|asks|shouts|whispers)\s*:", line, re.IGNORECASE)
+        and "<d>" not in line
+        for line in prompt.splitlines()
+    )
+    if raw_dialogue:
+        _add(
+            issues,
+            "h3.raw_dialogue_forbidden",
+            "dialogue text must use canonical d-tag wrapping",
+            "prompt",
+        )
+    if any(
+        re.search(rf"(?mi)^\s*{re.escape(heading)}\s*:?(?:\s|$)", prompt)
+        for heading in H3_RIGID_SECTION_ORDER
+    ):
+        _add(
+            issues,
+            "h3.internal_heading_leaked",
+            "internal rigid-plan section headings must not leak into the wire prompt",
+            "prompt",
+        )
 
 
 def inspect_h3_plan(
@@ -183,11 +740,11 @@ def inspect_h3_plan(
             _add(issues, "first_frame_anchor", "Picture 1 hash is required", "context.first_frame_sha256")
         if plan.mode is H3Mode.FL2VA and not context.last_frame_sha256:
             _add(issues, "last_frame_anchor", "Picture 2 hash is required for FL2VA", "context.last_frame_sha256")
-        if plan.schema_version != 2 or plan.rigid_prompt is None:
+        if plan.schema_version < 2 or plan.rigid_prompt is None:
             _add(
                 issues,
                 "rigid_prompt_required",
-                "paid H3 generation requires a schema_version=2 rigid prompt",
+                "paid H3 generation requires a schema_version>=2 rigid prompt",
                 "rigid_prompt",
             )
 
@@ -443,15 +1000,6 @@ def _inspect_rigid_prompt(
                     f"rigid_prompt.lighting.{field}",
                 )
 
-    music = " ".join(plan.music.casefold().split())
-    if music != "no music. sfx only.":
-        _add(
-            issues,
-            "non_diegetic_music_forbidden",
-            "H3 generation permits SFX only and no non-diegetic music",
-            "music",
-        )
-
     acting_ids = tuple(item.character_id for item in rigid.character_acting)
     if set(acting_ids) != active_set or len(acting_ids) != len(set(acting_ids)):
         _add(
@@ -652,5 +1200,6 @@ __all__ = [
     "H3PromptQualityIssue",
     "H3PromptQualityReport",
     "inspect_h3_plan",
+    "inspect_h3_prompt",
     "normalize_h3_action_timeline",
 ]

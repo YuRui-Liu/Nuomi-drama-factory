@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .h3_size_settings import resolve_h3_size_setting
 from .h3_timeline import H3Timeline
+from .h3_wire import H3ReferenceWire, compile_h3_wire
 
 
 H3_REFERENCE_TASK_TYPE = "r2v — 参考主体生视频(Reference to Video)"
@@ -296,6 +297,7 @@ def build_h3_reference_timeline_payload(
     ordered_references: Iterable[H3GlobalReference],
     *,
     max_references: int,
+    wire: H3ReferenceWire | None = None,
     mode: Literal["auto", "i2va", "fl2va"] = "auto",
     uploaded_frames: Mapping[str, object] | None = None,
     aspect_ratio: str = "9:16",
@@ -312,10 +314,13 @@ def build_h3_reference_timeline_payload(
         ordered_references,
         max_references=max_references,
     )
-    reference_facts = build_h3_resolved_reference_facts(references)
+    build_h3_resolved_reference_facts(references)
     requested_mode = str(mode).strip().lower()
     if requested_mode not in {"auto", "i2va", "fl2va"}:
         raise ValueError("mode must be auto, i2va, or fl2va")
+    if not isinstance(wire, H3ReferenceWire):
+        raise ValueError("a validated H3ReferenceWire is required")
+    final_wire = compile_h3_wire(wire)
 
     shots: list[dict[str, Any]] = []
     segments: list[dict[str, Any]] = []
@@ -356,7 +361,7 @@ def build_h3_reference_timeline_payload(
             {
                 "id": source.segment_id,
                 "durationSec": source.duration_seconds,
-                "prompt": source.prompt,
+                "prompt": final_wire,
                 "negativePrompt": "",
                 "continuityFromPrev": index > 0,
                 "startImage": first,
@@ -370,7 +375,7 @@ def build_h3_reference_timeline_payload(
                 "length": entry.frame_count,
                 "frameCount": entry.frame_count,
                 "durationSec": source.duration_seconds,
-                "prompt": source.prompt,
+                "prompt": final_wire,
                 "negativePrompt": "",
                 "continuityFromPrev": index > 0,
                 "isStartFrame": True,
@@ -413,22 +418,13 @@ def build_h3_reference_timeline_payload(
                     "length": segment["frameCount"] - half,
                     "frameCount": segment["frameCount"] - half,
                     "durationSec": segment["durationSec"],
-                    "prompt": "",
+                    "prompt": final_wire,
                     "negativePrompt": segment["negativePrompt"],
                     "isStartFrame": False,
                     "isEndFrame": True,
                 }
             )
 
-    subject_definitions = "subject_definitions:\n" + "\n".join(
-        f"{fact.provider_subject} alias {fact.tag} "
-        f"(reference kind {fact.kind}) is "
-        f"{reference.subject_description} "
-        f"from <Picture {index}>"
-        for index, (reference, fact) in enumerate(
-            zip(references, reference_facts, strict=True), start=1
-        )
-    )
     payload = {
         "version": 5,
         "editMode": "segment",
@@ -447,7 +443,7 @@ def build_h3_reference_timeline_payload(
         "videoClips": [],
         "global": {
             "taskType": H3_REFERENCE_TASK_TYPE,
-            "prompt": subject_definitions,
+            "prompt": final_wire,
             "refs": [
                 {
                     "index": index,

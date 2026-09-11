@@ -49,6 +49,7 @@ from novelvideo.utils.path_resolver import (
     compute_scene_master_path,
     compute_scene_reverse_master_path,
 )
+from novelvideo.utils.safe_paths import resolve_under_root, validate_path_segment
 
 router = APIRouter()
 
@@ -301,15 +302,18 @@ def _move_dir_if_exists(old_dir: Path, new_dir: Path) -> None:
     if not old_dir.exists():
         return
     if new_dir.exists():
-        raise ValueError(f"Target asset directory already exists: {new_dir}")
+        raise ValueError("Target asset directory already exists")
     new_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(old_dir), str(new_dir))
 
 
 def _rename_scene_asset_dirs(project_dir: Path, old_name: str, new_name: str) -> None:
+    old_name = validate_path_segment(old_name)
+    new_name = validate_path_segment(new_name)
+    scene_root = project_dir / "assets" / "scenes"
     _move_dir_if_exists(
-        project_dir / "assets" / "scenes" / old_name,
-        project_dir / "assets" / "scenes" / new_name,
+        resolve_under_root(scene_root, old_name),
+        resolve_under_root(scene_root, new_name),
     )
 
     old_stage_root = stage_manifest.stage_dir(project_dir, old_name).parent

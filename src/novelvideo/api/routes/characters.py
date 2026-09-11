@@ -44,11 +44,17 @@ from novelvideo.api.schemas import (
     CharacterVoiceTrimRequest,
 )
 from novelvideo.character_visual import (
+    CharacterDesignProposal,
     CharacterNarrativeProfile,
     CharacterVisualBible,
     CharacterVisualWorkspace,
     CharacterVisualWorkspaceStore,
     classify_legacy_visual_field,
+    validate_proposal_selection,
+)
+from novelvideo.character_visual.proposals import (
+    ProposalQualityError,
+    ProposalSetShapeError,
 )
 from novelvideo.character_visual.identity_sheet import (
     IDENTITY_SHEET_LAYOUT_VERSION,
@@ -57,7 +63,14 @@ from novelvideo.character_visual.identity_sheet import (
     classify_identity_sheet_style,
 )
 from novelvideo.character_visual.identity_sheet_qc import assess_identity_sheet_quality
-from novelvideo.production_workflow.slot_ids import character_state_slot_id
+from novelvideo.production_workflow.character_portraits import (
+    commit_character_portrait_current,
+    validate_character_name,
+)
+from novelvideo.production_workflow.models import AssetOrigin
+from novelvideo.production_workflow.slot_ids import (
+    character_state_slot_id,
+)
 from novelvideo.config import (
     image_generation_selection_options,
     character_image_selection_options,
@@ -925,7 +938,7 @@ async def restore_character_asset_history(
     user: dict = Depends(get_api_user),
 ):
     """把某个历史备份恢复到角色资产 canonical 槽位。"""
-    ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, username, _project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
     )
     character = store.get_character(name)
@@ -935,6 +948,11 @@ async def restore_character_asset_history(
     kind = str(getattr(body, "kind", "") or "").strip()
     identity_id = str(getattr(body, "identity_id", "") or "").strip()
     history_id = str(getattr(body, "history_id", "") or "").strip()
+    if kind == "portrait":
+        try:
+            validate_character_name(name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
     try:
         target, identity = _resolve_character_asset_path(
             project_dir=project_dir,
@@ -957,9 +975,22 @@ async def restore_character_asset_history(
     if not source.exists() or not source.is_file():
         return {"ok": False, "error": "History asset not found"}
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    backup = _backup_character_asset(target)
-    shutil.copy2(source, target)
+    if kind == "portrait":
+        before_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
+        target = commit_character_portrait_current(
+            state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
+            project_dir=project_dir,
+            character_name=name,
+            image_bytes=source.read_bytes(),
+            actor=str(getattr(ctx, "requester_username", "") or username),
+            origin=AssetOrigin.UPLOADED,
+        )
+        new_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
+        backup = max(new_backups - before_backups, default=None)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        backup = _backup_character_asset(target)
+        shutil.copy2(source, target)
     await _sync_restored_identity_asset(store, name, identity, kind, target)
 
     return {
@@ -1099,19 +1130,33 @@ async def update_character_visual_workspace(
         payload["visual_bible"]["confirmed_by"] = None
     if "selected_proposal_id" in patch:
         selected_id = str(patch["selected_proposal_id"] or "").strip()
-        selected = next(
-            (
-                proposal
-                for proposal in payload.get("design_proposals", [])
-                if str(proposal.get("proposal_id") or "") == selected_id
-            ),
-            None,
-        )
-        if selected is None:
+        proposal_models = [
+            CharacterDesignProposal.model_validate(proposal)
+            for proposal in payload.get("design_proposals", [])
+        ]
+        try:
+            selected_model = validate_proposal_selection(proposal_models, selected_id)
+        except ProposalSetShapeError as exc:
             return JSONResponse(
                 status_code=409,
-                content={"ok": False, "error": "Selected design proposal not found"},
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_SET_INVALID",
+                    "error": str(exc),
+                },
             )
+        except ProposalQualityError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_REJECTED",
+                    "error": str(exc),
+                },
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+        selected = selected_model.model_dump(mode="json")
         payload["visual_bible"] = {
             "character_id": name,
             "revision_id": f"proposal:{selected_id}",
@@ -1151,6 +1196,29 @@ async def confirm_character_visual_bible(
             status_code=409,
             content={"ok": False, "error": "Create a visual bible draft before confirmation"},
         )
+    if workspace.selected_proposal_id:
+        try:
+            validate_proposal_selection(
+                workspace.design_proposals, workspace.selected_proposal_id
+            )
+        except ProposalSetShapeError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_SET_INVALID",
+                    "error": str(exc),
+                },
+            )
+        except ProposalQualityError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "CHARACTER_VISUAL_PROPOSAL_REJECTED",
+                    "error": str(exc),
+                },
+            )
     bible_payload = workspace.visual_bible.model_dump(mode="json")
     bible_payload.update(status="confirmed", confirmed_by=body.confirmed_by.strip())
     try:
@@ -1608,21 +1676,18 @@ async def generate_single_portrait(
     character = store.get_character(name)
     if character is None:
         return {"ok": False, "error": f"Character '{name}' not found"}
+    try:
+        safe_name = validate_character_name(name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     proj_config = load_project_config(username, project_name)
     style = body.style or proj_config.get("visual_style", "chinese_period_drama")
 
     from novelvideo.generators.image_generator import generate_character_reference_unified
 
-    # 备份旧肖像
-    portrait_path = compute_portrait_path(project_dir, name)
-    if portrait_path and Path(portrait_path).exists():
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        backup = Path(portrait_path).with_name(f"portrait_{ts}.png")
-        shutil.copy(portrait_path, backup)
-
     paths = await generate_character_reference_unified(
-        character_name=name,
+        character_name=safe_name,
         appearance_prompt=character.face_prompt if hasattr(character, "face_prompt") else "",
         style=style,
         ethnicity=body.ethnicity,
@@ -1634,11 +1699,13 @@ async def generate_single_portrait(
     if not paths:
         return {"ok": False, "error": "Portrait generation failed"}
 
-    # 复制为标准肖像路径
-    char_dir = project_dir / "assets" / "characters" / name
-    char_dir.mkdir(parents=True, exist_ok=True)
-    final_path = char_dir / "portrait.png"
-    shutil.copy(paths[0], final_path)
+    final_path = commit_character_portrait_current(
+        state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
+        project_dir=project_dir,
+        character_name=safe_name,
+        image_bytes=Path(paths[0]).read_bytes(),
+        actor=str(getattr(ctx, "requester_username", "") or username),
+    )
 
     portrait_url = _asset_url(ctx, project_dir, final_path)
 
@@ -1654,30 +1721,27 @@ async def upload_portrait(
 ):
     """上传角色肖像图片。"""
     logger.info("[%s] upload_portrait: %s", project, name)
-    ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, username, _project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
     )
 
     character = store.get_character(name)
     if character is None:
         return {"ok": False, "error": f"Character '{name}' not found"}
-
-    from PIL import Image
+    try:
+        safe_name = validate_character_name(name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     content = await file.read()
-    img = Image.open(io.BytesIO(content)).convert("RGB")
-
-    char_dir = project_dir / "assets" / "characters" / name
-    char_dir.mkdir(parents=True, exist_ok=True)
-
-    # 备份旧肖像
-    portrait_path = char_dir / "portrait.png"
-    if portrait_path.exists():
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        backup = char_dir / f"portrait_{ts}.png"
-        shutil.copy(portrait_path, backup)
-
-    img.save(str(portrait_path), format="PNG")
+    portrait_path = commit_character_portrait_current(
+        state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
+        project_dir=project_dir,
+        character_name=safe_name,
+        image_bytes=content,
+        actor=str(getattr(ctx, "requester_username", "") or username),
+        origin=AssetOrigin.UPLOADED,
+    )
 
     portrait_url = _asset_url(ctx, project_dir, portrait_path)
 

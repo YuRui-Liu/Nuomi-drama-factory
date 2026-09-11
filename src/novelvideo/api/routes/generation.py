@@ -64,12 +64,20 @@ from novelvideo.generators.nanobanana_grid import (
 )
 from novelvideo.generators.render_identity_guard import render_ai_detection_error
 from novelvideo.manual_shots import pick_beats_by_number
+from novelvideo.media_capabilities.video.backends import (
+    H3_VIDEO_BACKEND,
+    normalize_video_backend,
+)
 from novelvideo.render_plan.ref_image_hash import RefImageHasher
 from novelvideo.seedance2_i2v.pipeline import (
     is_huimeng_seedance2_backend,
     prepare_seedance2_generation_inputs,
 )
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
+from novelvideo.media_capabilities.video.backends import (
+    H3_VIDEO_BACKEND,
+    normalize_video_backend,
+)
 from novelvideo.project_config import load_project_config, save_project_config
 from novelvideo.project_context import ProjectContext
 from novelvideo.ports import get_task_backend, get_usage_meter
@@ -741,6 +749,12 @@ SEEDANCE2_SINGLE_VIDEO_CONFIG_FIELDS = {
     "text_overlay",
 }
 
+SEEDANCE2_LOCAL_MEDIA_CONFIG_FIELDS = {
+    "reference_image_paths",
+    "reference_audio_paths",
+    "reference_video_paths",
+}
+
 
 def _seedance2_request_config_overrides(body: SingleVideoRequest) -> dict[str, Any]:
     return {
@@ -771,6 +785,8 @@ def _merge_seedance2_request_config(
             raise ValueError("seedance2_config_json must be valid JSON") from exc
         if not isinstance(incoming, dict):
             raise ValueError("seedance2_config_json must be a JSON object")
+        if SEEDANCE2_LOCAL_MEDIA_CONFIG_FIELDS.intersection(incoming):
+            raise ValueError("seedance2_config_json does not accept local media paths")
         merged.update(incoming)
     merged.update(config_overrides)
 
@@ -911,6 +927,7 @@ async def _prepare_happyhorse_api_beat(
             assets,
             reference_image_paths=list(config.reference_image_paths),
             reference_audio_paths=[],
+            allowed_roots=[Path(output_dir)],
         )
         image_paths = selected_reference_paths(assets, "reference_images")
         config.reference_image_paths = list(dict.fromkeys(image_paths))[:9]
@@ -991,6 +1008,7 @@ async def _prepare_grok_video_api_beat(
             assets,
             reference_image_paths=list(config.reference_image_paths),
             reference_audio_paths=[],
+            allowed_roots=[Path(output_dir)],
         )
         image_paths = selected_reference_paths(assets, "reference_images")
         config.reference_image_paths = list(dict.fromkeys(image_paths))[:7]
@@ -1406,6 +1424,7 @@ async def delete_seedance2_asset(
         beat=ctx["beat"],
         media_kind=body.media_kind,
         path=body.path,
+        project_dir=ctx["output_dir"],
     )
     if not removed:
         return {"ok": False, "error": "Seedance2 reference asset was not removed"}
@@ -1436,15 +1455,18 @@ async def crop_seedance2_asset(
         crop_seedance2_asset_to_reference,
     )
 
-    target = await crop_seedance2_asset_to_reference(
-        store=ctx["store"],
-        episode=episode_num,
-        beat=ctx["beat"],
-        project_dir=ctx["output_dir"],
-        asset_key=body.asset_key,
-        source_path=body.source_path,
-        crop_data=body.model_dump(),
-    )
+    try:
+        target = await crop_seedance2_asset_to_reference(
+            store=ctx["store"],
+            episode=episode_num,
+            beat=ctx["beat"],
+            project_dir=ctx["output_dir"],
+            asset_key=body.asset_key,
+            source_path=body.source_path,
+            crop_data=body.model_dump(),
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     if target is None:
         return {"ok": False, "error": "Seedance2 reference crop failed"}
     return _seedance2_status_response(
@@ -1510,14 +1532,16 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
     duration_bounds = NewApiVideoGenerator._parse_duration_bounds_config(
         NEWAPI_VIDEO_DURATION_BOUNDS
     )
-    default_backend = VideoGenerateRequest().video_backend
+    default_backend = normalize_video_backend(VideoGenerateRequest().video_backend)
     backend_options: list[VideoBackendOption] = [
         VideoBackendOption(
-            value="runninghub_minimax_h3",
+            value=H3_VIDEO_BACKEND,
             label="RunningHub MiniMax H3",
-            is_default=default_backend == "runninghub_minimax_h3",
+            is_default=default_backend == H3_VIDEO_BACKEND,
             ratio_options=["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
-            supported_modes=["first_frame", "last_frame", "keyframe"],
+            supported_modes=["auto", "i2va", "fl2va"],
+            min_duration=1,
+            max_duration=15,
             reference_image_max=2,
             reference_video_max=0,
             reference_audio_max=0,
@@ -1578,18 +1602,6 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
                 reference_audio_max=0 if is_grok_video or is_happyhorse else None,
             )
         )
-    backend_options.append(
-        VideoBackendOption(
-            value="runninghub:minimax-h3",
-            label="MiniMax H3 (RunningHub)",
-            supported_modes=["auto", "i2va", "fl2va"],
-            min_duration=1,
-            max_duration=15,
-            reference_image_max=2,
-            reference_video_max=0,
-            reference_audio_max=0,
-        )
-    )
     return backend_options
 
 
@@ -4163,15 +4175,21 @@ async def generate_single_video(
     beat = next((b for b in beats if b.get("beat_number") == beat_num), None)
     if not beat:
         return {"ok": False, "error": f"Beat {beat_num} not found"}
-    backend_error = _validate_seedance_pro_dialogue_only([beat], body.video_backend)
+    video_backend = normalize_video_backend(body.video_backend)
+    backend_error = _validate_seedance_pro_dialogue_only([beat], video_backend)
     if backend_error:
         return {"ok": False, "error": backend_error}
-    is_seedance2 = _is_seedance2_backend(body.video_backend)
-    is_happyhorse = _is_happyhorse_backend(body.video_backend)
-    is_grok_video = _is_grok_video_backend(body.video_backend)
-    is_h3 = body.video_backend == "runninghub:minimax-h3"
+    is_seedance2 = _is_seedance2_backend(video_backend)
+    is_happyhorse = _is_happyhorse_backend(video_backend)
+    is_grok_video = _is_grok_video_backend(video_backend)
+    is_h3 = video_backend == H3_VIDEO_BACKEND
+    h3_requested_capability = None
     if is_h3:
-        from novelvideo.media_capabilities.video.catalog import H3_MODEL_ID, list_video_models
+        from novelvideo.media_capabilities.video.catalog import (
+            H3_MODEL_ID,
+            h3_mode_capabilities,
+            list_video_models,
+        )
 
         h3 = next(
             item
@@ -4196,6 +4214,26 @@ async def generate_single_video(
                     "action": reasons.get(h3.unavailable_reason, "请检查 RunningHub H3 配置"),
                 },
             )
+        if body.h3_mode != "auto" and body.h3_mode not in h3.supported_modes:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "h3.mode_unsupported_by_workflow",
+                    "mode": body.h3_mode,
+                    "workflow": H3_MODEL_ID,
+                },
+            )
+        h3_requested_capability = next(
+            (
+                capability
+                for capability in h3_mode_capabilities(
+                    supported_modes=h3.supported_modes,
+                    reference_unavailable_reason="hybrid_input_unverified",
+                )
+                if capability.mode == body.h3_mode
+            ),
+            None,
+        )
 
     # 首帧路径
     from novelvideo.utils.path_resolver import PathResolver
@@ -4231,15 +4269,35 @@ async def generate_single_video(
             video_mode = "first_frame"  # 回退
             prompt = _legacy_video_prompt_for_mode(beat, video_mode)
 
-    if is_h3 and body.h3_mode in {"auto", "fl2va"} and not last_frame_path:
+    if (
+        is_h3
+        and h3_requested_capability is not None
+        and not h3_requested_capability.requires_last_frame
+    ):
+        last_frame_path = None
+        video_mode = "first_frame"
+        prompt = _legacy_video_prompt_for_mode(beat, video_mode)
+
+    h3_should_resolve_last_frame = is_h3 and (
+        body.h3_mode == "auto"
+        or bool(
+            h3_requested_capability
+            and h3_requested_capability.requires_last_frame
+        )
+    )
+    if h3_should_resolve_last_frame and not last_frame_path:
         next_frame = paths.first_frame_for_video(
             beat_num + 1,
             use_director_render=bool(body.use_director_render),
         )
-        if not next_frame.exists() and body.h3_mode == "fl2va":
+        if (
+            not next_frame.exists()
+            and h3_requested_capability is not None
+            and h3_requested_capability.requires_last_frame
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="MiniMax H3 fl2va mode requires a last frame",
+                detail=f"MiniMax H3 {body.h3_mode} mode requires a last frame",
             )
         if next_frame.exists():
             last_frame_path = str(next_frame)
@@ -4282,7 +4340,7 @@ async def generate_single_video(
                 beat=beat,
                 all_beats=beats,
                 index=beat_index,
-                video_backend=body.video_backend,
+                video_backend=video_backend,
                 resolution=body.resolution if "resolution" in body.model_fields_set else None,
                 ratio=body.ratio if "ratio" in body.model_fields_set else None,
                 prop_menu=prop_menu,
@@ -4404,7 +4462,7 @@ async def generate_single_video(
             video_duration = max(float(video_duration), float(math.ceil(float(audio_duration))))
         if "resolution" in body.model_fields_set:
             single_video_resolution = _seedance2_resolution_for_backend(
-                body.video_backend, body.resolution
+                video_backend, body.resolution
             )
 
     config = {
@@ -4413,7 +4471,7 @@ async def generate_single_video(
         "video_mode": video_mode,
         "prompt": prompt,
         "video_duration": video_duration,
-        "video_backend": body.video_backend,
+        "video_backend": video_backend,
         "h3_mode": body.h3_mode,
         "use_director_render": bool(body.use_director_render),
         "last_frame_path": last_frame_path,

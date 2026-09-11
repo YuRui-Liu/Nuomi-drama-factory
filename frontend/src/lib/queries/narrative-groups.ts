@@ -8,6 +8,7 @@ import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
 import type { ApiResponse, TaskResponse } from "@/types/api";
 import type { NarrativeImageSize } from "@/lib/narrative-image-resolution";
+import type { H3ResolvedVideoMode, H3VideoMode } from "@/lib/queries/media-models";
 
 export type NarrativeStageStatus =
   | "pending" | "queued" | "running" | "review" | "completed"
@@ -19,6 +20,10 @@ export type PlannedReferenceStatus =
   | "pending_confirmation"
   | "missing_asset"
   | "missing_image";
+export type PlannedReferenceResolution =
+  | "auto_matched"
+  | "manually_confirmed"
+  | "explicit_fallback";
 
 export interface PlannedReferenceBinding {
   binding_id: string;
@@ -28,6 +33,7 @@ export interface PlannedReferenceBinding {
   beat_ids: string[];
   required: boolean;
   status: PlannedReferenceStatus;
+  resolution: PlannedReferenceResolution;
   selected_by_default: boolean;
   asset_slot_id?: string | null;
   version_id?: string | null;
@@ -133,7 +139,7 @@ export interface NarrativeStageState {
 export interface NarrativeGroupVideoUnit {
   id?: string;
   beat_ids: [string] | [string, string];
-  mode: "i2va" | "fl2va";
+  mode: H3ResolvedVideoMode;
   duration_seconds: number;
   reason: string;
 }
@@ -259,6 +265,9 @@ export interface NarrativeGroup {
   ordinal: number;
   title?: string | null;
   beat_ids: string[];
+  source_span_ids?: string[];
+  objective?: string | null;
+  visible_turn?: string | null;
   layout: { rows: number; columns: number; capacity: number };
   stages: { sketch: NarrativeStageState; render: NarrativeStageState; video: NarrativeStageState };
   cell_to_beat: Array<{ cell: number; beat_id: string }>;
@@ -370,7 +379,7 @@ export function narrativeGroupVideoDialogueSourcePath(project: string, episode: 
 
 export function narrativeGroupVideoPayload(input: {
   model: string;
-  mode: "auto" | "i2va" | "fl2va";
+  mode: H3VideoMode;
   revision: number;
   planRevision?: number;
   settingsRevision?: number;
@@ -571,7 +580,7 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
     mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
       groupId: string;
       model: string;
-      mode: "auto" | "i2va" | "fl2va";
+      mode: H3VideoMode;
       revision: number;
       planRevision?: number;
       settingsRevision?: number;
@@ -595,7 +604,7 @@ export function useGenerateNarrativeGroupVideoSegment(project: string, episode: 
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ groupId, segmentId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
-      groupId: string; segmentId: string; model: string; mode: "auto" | "i2va" | "fl2va";
+      groupId: string; segmentId: string; model: string; mode: H3VideoMode;
       revision: number; planRevision?: number; settingsRevision?: number; referenceRevision?: number;
       aspectRatio: "9:16" | "16:9"; resolution?: string;
     }) => api.post(

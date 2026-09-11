@@ -143,7 +143,7 @@ def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
                     adapter_key="minimax-h3",
                     workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                    supported_modes=("auto", "i2va", "fl2va"),
+                    supported_modes=("i2va", "fl2va"),
                     parameters=(
                         VideoWorkflowParameterDefinition(
                             key="resolution",
@@ -178,6 +178,19 @@ def image_bytes(image_format="PNG", *, size=(8, 8)):
     return output.getvalue()
 
 
+@pytest.mark.parametrize(
+    "mode", ("auto", "t2va", "i2va", "fl2va", "l2va", "ref2va")
+)
+def test_narrative_group_video_request_accepts_official_h3_modes(mode):
+    request = narrative_groups.NarrativeGroupVideoRequest(
+        mode=mode,
+        revision=0,
+        plan_revision=1,
+    )
+
+    assert request.mode == mode
+
+
 def install_h3_reference_registry(monkeypatch, *, max_images=2):
     monkeypatch.setattr(
         narrative_groups,
@@ -192,7 +205,7 @@ def install_h3_reference_registry(monkeypatch, *, max_images=2):
                     workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
                     provider_workflow_id="2096502793044582401",
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                    supported_modes=("auto", "i2va", "fl2va"),
+                    supported_modes=("ref2va",),
                     reference_policy=VideoReferencePolicy(
                         required=True, min_images=1, max_images=max_images
                     ),
@@ -1366,6 +1379,7 @@ def test_h3_reference_successfully_enqueues_an_activated_snapshot(
 def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
@@ -1379,11 +1393,23 @@ def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_pat
 
     assert response.status_code == 202
     assert "reference_revision" not in backend.calls[0][1]["payload"]
+    payload = backend.calls[0][1]["payload"]
+    assert len(payload["reference_snapshot_id"]) == 32
+    assert len(payload["reference_snapshot_digest"]) == 64
+    descriptor = json.loads((
+        tmp_path / "h3_reference_input_snapshots"
+        / payload["reference_snapshot_id"] / "snapshot.json"
+    ).read_text(encoding="utf-8"))
+    assert descriptor["references"] == []
+    assert descriptor["reference_revision"] == 0
+    assert descriptor["reference_limit"] == 0
+    assert descriptor["frames"]
 
 
 def test_video_generate_rejects_stale_plan_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1436,7 +1462,7 @@ def test_video_generate_accepts_future_registered_model(monkeypatch, tmp_path):
                     adapter_key="director-v2",
                     workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3,
                     scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}),
-                    supported_modes=("auto",),
+                    supported_modes=("i2va",),
                 ),
             )
         ),
@@ -1482,14 +1508,38 @@ def test_video_generate_rejects_unsupported_registered_mode(monkeypatch, tmp_pat
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
         json={
             "model": "runninghub:minimax-h3",
-            "mode": "auto",
+            "mode": "t2va",
             "revision": 0,
             "plan_revision": 1,
         },
     )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "h3.mode_unsupported_by_workflow",
+        "mode": "t2va",
+        "workflow": "runninghub:minimax-h3",
+    }
     assert backend.calls == []
+
+
+def test_video_generate_accepts_auto_outside_transport_modes(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={
+            "model": "runninghub:minimax-h3",
+            "mode": "auto",
+            "revision": 0,
+            "plan_revision": 1,
+        },
+    )
+
+    assert response.status_code == 202
+    assert backend.calls[0][1]["payload"]["mode"] == "auto"
 
 
 def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_path):
@@ -1520,6 +1570,7 @@ def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_p
 def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1534,7 +1585,11 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     payload = backend.calls[0][1]["payload"]
     assert backend.calls[0][1]["task_type"] == "narrative_group_video"
     assert backend.calls[0][1]["queue_kind"] == "video"
-    assert payload == {
+    assert {
+        key: value
+        for key, value in payload.items()
+        if key not in {"reference_snapshot_id", "reference_snapshot_digest"}
+    } == {
         "episode": 1,
         "group_id": "ng-01",
         "revision": 1,
@@ -1545,11 +1600,14 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "workflow_parameters": {"resolution": "720p"},
         "settings_revision": 0,
     }
+    assert len(payload["reference_snapshot_id"]) == 32
+    assert len(payload["reference_snapshot_digest"]) == 64
 
 
 def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     endpoint = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate"
 
     request = {
@@ -1573,6 +1631,7 @@ def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypa
 def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_path):
     client, _ = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
     video = tmp_path / "videos" / "prior.mp4"
     manifest = tmp_path / "videos" / "prior.manifest.json"
     stems = [tmp_path / "videos" / name for name in ("original.wav", "dialogue.wav", "ambience.wav")]
@@ -1589,6 +1648,9 @@ def test_video_enqueue_failure_restores_complete_prior_sidecar(monkeypatch, tmp_
     before = sidecar_path(tmp_path, 1).read_bytes()
     failing = FailingBackend()
     monkeypatch.setattr(narrative_groups, "get_task_backend", lambda: failing)
+    monkeypatch.setattr(
+        narrative_groups, "_reference_enqueue_ownership", lambda **_kwargs: "unowned"
+    )
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
@@ -1721,6 +1783,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
                 display_label="Hero / casual",
                 required=True,
                 status="ready",
+                resolution="auto_matched",
                 selected_by_default=True,
                 asset_slot_id="character:Hero:state:Hero_casual",
                 version_id="hero-v1",
@@ -1750,6 +1813,7 @@ def test_reference_preview_uses_planned_bindings_and_hides_frozen_paths(
     assert data["bindings"][0]["asset_slot_id"] == (
         "character:Hero:state:Hero_casual"
     )
+    assert data["bindings"][0]["resolution"] == "auto_matched"
 
 
 def test_reference_preview_rejects_activation_during_async_resolution(
@@ -2947,6 +3011,33 @@ def _seed_prompt_review_manifest(tmp_path: Path, payload: dict) -> Path:
         actual_mode="fl2va",
     )
     return manifest
+
+
+@pytest.mark.parametrize(
+    "mode", ("auto", "t2va", "i2va", "fl2va", "l2va", "ref2va")
+)
+def test_prompt_review_preserves_every_official_h3_mode(tmp_path, mode):
+    result = narrative_groups._serialize_prompt_review(
+        "demo",
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "segment": {
+                        "segment_id": "beat-1",
+                        "beat_number": 1,
+                        "prompt": "submitted prompt",
+                    },
+                    "input_summary": {"mode": mode},
+                }
+            ]
+        },
+        SimpleNamespace(
+            actual_mode="i2va", actual_model="", actual_provider=""
+        ),
+    )
+
+    assert result["units"][0]["mode"] == mode
 
 
 def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, tmp_path):

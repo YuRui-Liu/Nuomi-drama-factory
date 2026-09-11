@@ -1,7 +1,8 @@
-"""Deterministic MiniMax H3 wire-prompt compiler for typed director plans."""
+"""Deterministic projection from typed H3 director plans to official wire prompts."""
 
 from __future__ import annotations
 
+import re
 from typing import TypeVar
 
 from .h3_director_plan import (
@@ -10,6 +11,7 @@ from .h3_director_plan import (
     H3DialogueCue,
     H3DirectorPlan,
     H3FrameDifference,
+    H3ReferenceSubjectPlan,
     H3ShotPlan,
 )
 from .h3_rigid_prompt import (
@@ -19,94 +21,324 @@ from .h3_rigid_prompt import (
     H3LocationMapPlan,
     H3OpticsPlan,
     H3PositiveConstraint,
-    H3_RIGID_SECTION_ORDER,
     H3RigidPromptPlan,
     H3SpatialBlockingPlan,
+)
+from .h3_wire import (
+    H3BaseWire,
+    H3ReferenceWire,
+    H3RetentionItem,
+    H3Wire,
+    compile_h3_wire,
+    normalize_h3_music,
 )
 from .models import H3Mode
 
 
-H3_PROMPT_COMPILER_VERSION = 2
+H3_PROMPT_COMPILER_VERSION = 3
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
+_PURE_COUNT_ASSERTION_RE = re.compile(
+    r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
+    r"(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|two|three|four|"
+    r"five|six|seven|eight|nine|ten|[0-9]+)\s+"
+    r"(?:.+\s+(?:remains?\s+visible|(?:is|are)\s+present)|resolved\s+references?)$",
+    flags=re.IGNORECASE,
+)
 
 
 def compile_h3_director_plan(plan: H3DirectorPlan) -> str:
-    """Compile a validated I2VA/FL2VA plan into the official wire layout."""
-    if plan.mode not in {H3Mode.I2VA, H3Mode.FL2VA}:
-        raise ValueError("H3 director prompt compiler supports only i2va and fl2va")
-
-    is_rigid = plan.schema_version == 2
-    if is_rigid and plan.rigid_prompt is None:
-        raise ValueError("schema_version=2 requires rigid_prompt before compilation")
-    description = (
-        _compile_rigid_description(plan, plan.rigid_prompt)
-        if is_rigid and plan.rigid_prompt is not None
-        else _compile_description(plan)
-    )
-    sections = (
-        ("integrated_multimodal_description", description),
-        ("overall_soundscape", plan.soundscape),
-        (
-            "non_diegetic_music",
-            "No music. SFX only." if is_rigid else plan.music,
-        ),
-    )
-    body = "\n\n".join(f"{name}: {value}" for name, value in sections)
-    return f"{_frame_alignment(plan)}\n\n{body}"
+    """Compile a validated director plan through the official H3 wire compiler."""
+    return compile_h3_wire(project_director_plan_to_wire(plan))
 
 
-def _frame_alignment(plan: H3DirectorPlan) -> str:
-    if plan.mode is H3Mode.I2VA:
-        return (
-            "For the target video, at 0.00 seconds into the target video, "
-            "<Picture 1> (from [Shot 1]) is fully referenced."
+def project_director_plan_to_wire(plan: H3DirectorPlan) -> H3Wire:
+    """Project an internal director plan onto its mode-specific official wire."""
+    description = _compile_playback_description(plan)
+    common = {
+        "mode": plan.mode,
+        "duration_seconds": plan.total_frames / plan.fps,
+        "overall_soundscape": plan.soundscape,
+        "non_diegetic_music": normalize_h3_music(plan.music),
+    }
+    if plan.mode is H3Mode.REF2VA:
+        return H3ReferenceWire(
+            **common,
+            subject_definitions=_compile_subject_definitions(plan.reference_subjects),
+            summary=f"[reference generation] {plan.reference_summary}",
+            retention_analysis=tuple(
+                _compile_retention_item(subject)
+                for subject in plan.reference_subjects
+            ),
+            detailed_description=description,
         )
-    end_seconds = plan.total_frames / plan.fps
-    return (
-        "How the reference pictures align with the target video — Picture 1 "
-        "(from Shot 1) aligns with the 0.00-second mark of the target video; "
-        f"Picture 2 (from Shot 1) aligns with the {end_seconds:.2f}-second "
-        "mark of the target video."
+    return H3BaseWire(
+        **common,
+        final_shot_number=len(plan.shots),
+        integrated_multimodal_description=description,
     )
 
 
-def _compile_description(plan: H3DirectorPlan) -> str:
+def _compile_playback_description(plan: H3DirectorPlan) -> str:
+    rigid = plan.rigid_prompt
+    blocking_by_shot: dict[str, H3SpatialBlockingPlan] = {}
+    optics_by_shot: dict[str, H3OpticsPlan] = {}
+    if rigid is not None:
+        blocking_by_shot = {
+            item.shot_id: item
+            for item in _ordered_shot_scoped(
+                plan, rigid.spatial_blocking, "spatial_blocking"
+            )
+        }
+        optics_by_shot = {
+            item.shot_id: item
+            for item in _ordered_shot_scoped(plan, rigid.optics, "optics")
+        }
+
     lines: list[str] = []
-    for index, shot in enumerate(plan.shots):
-        lines.append(_compile_shot_heading(plan, shot, first=index == 0))
-        if index == 0 and plan.mode is H3Mode.FL2VA:
-            lines.append("Picture 1 to Picture 2 differences:")
-        lines.extend(_compile_shot_events(plan, shot, shot_index=index))
+    subjects_by_shot = _reference_subjects_by_shot(plan)
+    speaker_subjects = {
+        subject.speaker_id: subject.subject_index
+        for subject in plan.reference_subjects
+        if subject.speaker_id is not None
+    }
+    for shot_index, shot in enumerate(plan.shots):
+        lines.append(
+            _compile_shot_intro(
+                plan,
+                shot,
+                first=shot_index == 0,
+                rigid=rigid,
+                blocking=blocking_by_shot.get(shot.shot_id),
+                optics=optics_by_shot.get(shot.shot_id),
+                reference_subjects=subjects_by_shot.get(shot.shot_id, ()),
+            )
+        )
+        lines.extend(
+            _compile_shot_events(
+                plan,
+                shot,
+                shot_index=shot_index,
+                speaker_subjects=speaker_subjects,
+            )
+        )
     return "\n".join(lines)
 
 
-def _compile_rigid_description(
-    plan: H3DirectorPlan, rigid: H3RigidPromptPlan
+def _compile_shot_intro(
+    plan: H3DirectorPlan,
+    shot: H3ShotPlan,
+    *,
+    first: bool,
+    rigid: H3RigidPromptPlan | None,
+    blocking: H3SpatialBlockingPlan | None,
+    optics: H3OpticsPlan | None,
+    reference_subjects: tuple[H3ReferenceSubjectPlan, ...],
 ) -> str:
-    spatial_blocking = _ordered_shot_scoped(
-        plan, rigid.spatial_blocking, "spatial_blocking"
-    )
-    optics = _ordered_shot_scoped(plan, rigid.optics, "optics")
-    bodies = (
-        _compile_scene_context(rigid),
+    label = _shot_label(shot.shot_id)
+    if first:
+        opening = (
+            f"[{label}] Render with {plan.visual_style} visual styling. "
+            f"Use a composition described as {shot.framing}; "
+            f"view {shot.focus} from {shot.angle}; "
+            f"{_sentence(shot.composition)}"
+        )
+    else:
+        opening = (
+            f"[{label}] At {_timestamp(shot.start_frame, plan.fps)}, "
+            f"cut to a composition described as {shot.framing}; "
+            f"view {shot.focus} from {shot.angle}; "
+            f"{_sentence(shot.composition)}"
+        )
+    parts = [f"{opening} The {_camera_text(shot.camera)}."]
+    if first:
+        parts.append(f" Throughout, preserve {'; '.join(plan.continuity_locks)}.")
+        if rigid is not None:
+            parts.append(" " + _compile_rigid_global_facts(rigid, plan.visual_style))
+    if reference_subjects:
+        rendered = "; ".join(
+            f"<Subject {subject.subject_index}> is {subject.description}"
+            for subject in reference_subjects
+        )
+        parts.append(f" In this shot, {rendered}.")
+    if blocking is not None:
+        parts.append(" " + _compile_spatial_fact(blocking))
+    if optics is not None:
+        parts.append(" " + _compile_optics_fact(optics))
+    return "".join(parts)
+
+
+def _compile_rigid_global_facts(
+    rigid: H3RigidPromptPlan, visual_style: str
+) -> str:
+    context = rigid.scene_context
+    parts = [
+        context.summary,
+        _compile_character_count_fact(
+            context.exact_character_count, context.active_characters
+        ),
         _compile_active_references(rigid.active_references),
-        _compile_location_map(rigid.location_map),
-        _compile_spatial_blocking(spatial_blocking),
-        _compile_format(rigid),
-        _compile_optics(optics),
-        _compile_rigid_camera(plan),
-        _compile_rigid_action_timing(plan),
-        "\n".join(rigid.physics.statements),
-        _compile_lighting(rigid.lighting),
-        _compile_rigid_audio(plan),
-        _compile_character_acting(rigid.character_acting),
-        rigid.style_prefix,
-        "\n".join(rigid.quality.requirements),
-        _compile_positive_constraints(rigid.positive_constraints),
+        _compile_location_fact(rigid.location_map),
+        _compile_format_fact(rigid),
+        _compile_lighting_fact(rigid.lighting),
+        _compile_acting_fact(rigid.character_acting),
+    ]
+    if rigid.style_prefix != visual_style:
+        parts.append(f"Rendering follows {rigid.style_prefix}.")
+    parts.extend(
+        f"Movement remains physically grounded: {_strip_terminal(statement)}."
+        for statement in rigid.physics.statements
     )
-    return "\n\n".join(
-        f"{heading}\n{body}"
-        for heading, body in zip(H3_RIGID_SECTION_ORDER, bodies, strict=True)
+    parts.extend(
+        f"Image quality must preserve {_lower_initial(requirement)}."
+        for requirement in rigid.quality.requirements
+    )
+    parts.extend(_compile_positive_fact(item) for item in rigid.positive_constraints)
+    return " ".join(_sentence(part) for part in parts if part)
+
+
+def _compile_character_count_fact(
+    count: int, active_characters: tuple[str, ...]
+) -> str:
+    if count == 0:
+        return "No visible characters are present."
+    names = _natural_list(active_characters) if active_characters else ""
+    if count == 1:
+        subject = f", {names}," if names else ""
+        return f"Exactly one visible character{subject} is present without duplicates."
+    subject = f", {names}," if names else ""
+    return (
+        f"Exactly {count} visible characters{subject} are present without duplicates."
+    )
+
+
+def _compile_active_references(references: tuple[H3ActiveReference, ...]) -> str:
+    facts = []
+    for reference in references:
+        inherited = ", ".join(reference.inherit) or "no attributes"
+        excluded = ", ".join(reference.exclude) or "nothing"
+        facts.append(
+            f"Resolved {reference.kind} reference {reference.tag} supplies "
+            f"{reference.role}, inheriting only {inherited} and excluding {excluded}"
+        )
+    return "; ".join(facts)
+
+
+def _compile_location_fact(location: H3LocationMapPlan) -> str:
+    geography = _lower_initial(_strip_terminal(location.geography))
+    landmarks = _natural_list(location.landmarks)
+    return (
+        f"The scene occupies {geography}. Its fixed landmarks are {landmarks}. "
+        f"The camera remains {location.camera_side}, respecting {location.axis}."
+    )
+
+
+def _compile_format_fact(rigid: H3RigidPromptPlan) -> str:
+    format_plan = rigid.format_mode
+    take = format_plan.mode.replace("_", " ")
+    timing = "in real time" if format_plan.real_time else "with altered time"
+    parts = [
+        f"The sequence runs as a {take} for "
+        f"{format_plan.total_duration_seconds:.2f} seconds {timing}"
+    ]
+    if format_plan.speed_ramps:
+        parts.append(f"using {'; '.join(format_plan.speed_ramps)}")
+    if format_plan.cut_points_seconds:
+        cuts = ", ".join(
+            f"{point:.2f} seconds" for point in format_plan.cut_points_seconds
+        )
+        parts.append(f"with cuts at {cuts}")
+    return ", ".join(parts)
+
+
+def _compile_lighting_fact(lighting: H3LightingPlan) -> str:
+    return (
+        f"The lighting follows one coherent source: "
+        f"{_strip_terminal(lighting.source_logic)}. The primary light source is "
+        f"{lighting.primary_source} originating {lighting.origin}; it casts light "
+        f"{lighting.direction} and shadows {lighting.shadow_direction}. Its quality "
+        f"is {lighting.quality}, with {lighting.color}. On the subjects, "
+        f"{_lower_initial(_strip_terminal(lighting.subject_effect))}. In the "
+        f"environment, {_lower_initial(_strip_terminal(lighting.environment_effect))}. "
+        f"Use {_lower_initial(_strip_terminal(lighting.fill_logic))}. Preserve "
+        f"{_lower_initial(_strip_terminal(lighting.catchlight))}. "
+        f"{_capitalize_initial(_sentence(lighting.contact_shadows))} Maintain the same "
+        f"{lighting.continuity_key} lighting logic throughout."
+    )
+
+
+def _compile_acting_fact(
+    acting_plans: tuple[H3CharacterActingPlan, ...],
+) -> str:
+    return "; ".join(
+        f"{acting.character_id} appears {acting.state}, moving with "
+        f"{acting.body_rhythm}; {acting.visible_behavior}; {acting.change}"
+        for acting in acting_plans
+    )
+
+
+def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
+    if constraint.count is None:
+        return constraint.assertion
+    assertion = _strip_terminal(constraint.assertion)
+    semantic_assertion = (
+        ""
+        if _PURE_COUNT_ASSERTION_RE.fullmatch(assertion)
+        or _is_target_count_directive(assertion, constraint.target)
+        else assertion
+    )
+    semantic = (
+        _sentence(_capitalize_initial(semantic_assertion))
+        if semantic_assertion
+        else ""
+    )
+    count = {0: "zero", 1: "one"}.get(constraint.count, str(constraint.count))
+    target_forms = {
+        "characters": ("character", "characters"),
+        "references": ("reference", "references"),
+        "props": ("prop", "props"),
+        "other": ("item", "items"),
+    }
+    target = target_forms[constraint.target][constraint.count != 1]
+    count_fact = f"Keep exactly {count} {target} visible."
+    return f"{semantic} {count_fact}".strip()
+
+
+def _is_target_count_directive(assertion: str, target: str) -> bool:
+    target_nouns = {
+        "characters": ("character", "characters"),
+        "references": ("reference", "references"),
+        "props": ("prop", "props"),
+        "other": ("item", "items"),
+    }[target]
+    noun_pattern = "|".join(re.escape(noun) for noun in target_nouns)
+    return (
+        re.fullmatch(
+            rf"(?:show|keep|use|preserve)\s+(?:exactly\s+)?"
+            rf"(?:(?:a\s+)?single|(?:a\s+)?pair\s+of|no|zero|one|two|"
+            rf"three|four|five|six|seven|eight|nine|ten|[0-9]+)\s+"
+            rf"(?:{noun_pattern})",
+            assertion,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
+    subjects = "; ".join(
+        f"{subject.character_id} stays {subject.position}, facing {subject.facing}, "
+        f"looking {subject.gaze}"
+        + (f", holding {', '.join(subject.held_props)}" if subject.held_props else "")
+        for subject in blocking.subjects
+    )
+    return _sentence(f"{blocking.summary} {subjects}")
+
+
+def _compile_optics_fact(optics: H3OpticsPlan) -> str:
+    return _sentence(
+        f"Use {optics.lens_or_fov} at {optics.camera_height}, "
+        f"{optics.subject_distance} from the subject, with "
+        f"{optics.depth_of_field}; {optics.focus_plan}"
     )
 
 
@@ -124,198 +356,12 @@ def _ordered_shot_scoped(
     return tuple(by_id[shot_id] for shot_id in expected)
 
 
-def _compile_scene_context(rigid: H3RigidPromptPlan) -> str:
-    context = rigid.scene_context
-    active = ", ".join(context.active_characters) or "none"
-    return "\n".join(
-        (
-            f"EXACT {context.exact_character_count} CHARACTERS — NO DUPLICATES",
-            f"Active characters: {active}.",
-            context.summary,
-        )
-    )
-
-
-def _compile_active_references(references: tuple[H3ActiveReference, ...]) -> str:
-    return "\n".join(
-        f"{reference.tag} ({reference.kind}) — role: {reference.role}; "
-        f"inherit only: {', '.join(reference.inherit) or 'none'}; "
-        f"exclude: {', '.join(reference.exclude) or 'none'}."
-        for reference in references
-    )
-
-
-def _compile_location_map(location: H3LocationMapPlan) -> str:
-    return "\n".join(
-        (
-            location.geography,
-            f"Landmarks: {'; '.join(location.landmarks)}.",
-            f"Camera side: {location.camera_side}.",
-            f"Action axis: {location.axis}.",
-        )
-    )
-
-
-def _compile_spatial_blocking(
-    blocking_plans: tuple[H3SpatialBlockingPlan, ...],
-) -> str:
-    lines: list[str] = []
-    for blocking in blocking_plans:
-        lines.append(f"[{_shot_label(blocking.shot_id)}] {blocking.summary}")
-        lines.extend(
-            f"{subject.character_id}: position {subject.position}; facing "
-            f"{subject.facing}; gaze {subject.gaze}; held props: "
-            f"{', '.join(subject.held_props) or 'none'}."
-            for subject in blocking.subjects
-        )
-    return "\n".join(lines)
-
-
-def _compile_format(rigid: H3RigidPromptPlan) -> str:
-    format_mode = rigid.format_mode
-    cut_points = ", ".join(
-        f"{cut_point:.2f} seconds" for cut_point in format_mode.cut_points_seconds
-    )
-    return (
-        f"Mode: {format_mode.mode}; duration: "
-        f"{format_mode.total_duration_seconds:.2f} seconds; real time: "
-        f"{'yes' if format_mode.real_time else 'no'}; speed ramps: "
-        f"{'; '.join(format_mode.speed_ramps) or 'none'}; cut points: "
-        f"{cut_points or 'none'}."
-    )
-
-
-def _compile_optics(optics_plans: tuple[H3OpticsPlan, ...]) -> str:
-    return "\n".join(
-        f"[{_shot_label(optics.shot_id)}] {optics.lens_or_fov}; camera height: "
-        f"{optics.camera_height}; subject distance: {optics.subject_distance}; "
-        f"depth of field: {optics.depth_of_field}; focus: {optics.focus_plan}."
-        for optics in optics_plans
-    )
-
-
-def _compile_rigid_camera(plan: H3DirectorPlan) -> str:
-    return "\n".join(
-        f"[{_shot_label(shot.shot_id)}] {shot.framing}; {shot.angle}; focus on "
-        f"{shot.focus}; composition: {shot.composition}. Camera: "
-        f"{_camera_text(shot.camera)}."
-        for shot in plan.shots
-    )
-
-
-def _compile_rigid_action_timing(plan: H3DirectorPlan) -> str:
-    lines = [
-        f"[{_shot_label(shot.shot_id)}] {_compile_action(action, plan.fps)}"
-        for shot in plan.shots
-        for action in shot.actions
-    ]
-    if plan.mode is H3Mode.FL2VA:
-        lines.extend(
-            f"[Shot 1] {_compile_difference(difference, plan.fps)}"
-            for difference in plan.frame_differences
-        )
-    return "\n".join(lines)
-
-
-def _compile_lighting(lighting: H3LightingPlan) -> str:
-    return "\n".join(
-        (
-            f"Source logic: {lighting.source_logic}",
-            f"Primary source: {lighting.primary_source}; origin: {lighting.origin}.",
-            f"Direction: {lighting.direction}; shadows: {lighting.shadow_direction}.",
-            f"Quality: {lighting.quality}; color: {lighting.color}.",
-            f"Subject effect: {lighting.subject_effect}",
-            f"Environment effect: {lighting.environment_effect}",
-            f"Fill logic: {lighting.fill_logic}",
-            f"Catchlight: {lighting.catchlight}",
-            f"Contact shadows: {lighting.contact_shadows}",
-            f"Continuity key: {lighting.continuity_key}",
-        )
-    )
-
-
-def _compile_rigid_audio(plan: H3DirectorPlan) -> str:
-    lines = [f"Soundscape and SFX: {plan.soundscape}"]
-    for shot_index, shot in enumerate(plan.shots):
-        for cue_index, cue in enumerate(shot.dialogue):
-            role = _continuation_role(
-                plan, shot, shot_index=shot_index, cue_index=cue_index
-            )
-            details = tuple(
-                detail
-                for detail in (
-                    f"voice: {cue.voice_descriptor}" if cue.voice_descriptor else None,
-                    f"delivery: {cue.delivery}" if cue.delivery else None,
-                    f"physical action: {cue.physical_action}"
-                    if cue.physical_action
-                    else None,
-                    f"facial reaction: {cue.facial_reaction}"
-                    if cue.facial_reaction
-                    else None,
-                )
-                if detail is not None
-            )
-            suffix = f" ({'; '.join(details)})" if details else ""
-            lines.append(
-                f"[{_shot_label(shot.shot_id)}] "
-                f"{_compile_dialogue(cue, plan.fps, continuation_role=role)}{suffix}"
-            )
-    return "\n".join(lines)
-
-
-def _compile_character_acting(
-    acting_plans: tuple[H3CharacterActingPlan, ...],
-) -> str:
-    return "\n".join(
-        f"{acting.character_id}: state {acting.state}; wants {acting.want}; "
-        f"hides {acting.hidden}; body rhythm: {acting.body_rhythm}; visible behavior: "
-        f"{acting.visible_behavior}; change: {acting.change}."
-        for acting in acting_plans
-    )
-
-
-def _compile_positive_constraints(
-    constraints: tuple[H3PositiveConstraint, ...],
-) -> str:
-    return "\n".join(
-        (
-            f"{constraint.assertion} (exact count: {constraint.count})."
-            if constraint.count is not None
-            else f"{constraint.assertion}."
-        )
-        for constraint in constraints
-    )
-
-
-def _compile_difference(difference: H3FrameDifference, fps: int) -> str:
-    return (
-        f"At {_timestamp(difference.convergence_frame, fps)}, "
-        f"converge toward Picture 2: {difference.description}"
-    )
-
-
-def _compile_shot_heading(
-    plan: H3DirectorPlan, shot: H3ShotPlan, *, first: bool
-) -> str:
-    shot_label = _shot_label(shot.shot_id)
-    setup = (
-        f"{shot.framing}; {shot.angle}; focus on {shot.focus}; "
-        f"composition: {shot.composition}. Camera: {_camera_text(shot.camera)}."
-    )
-    if first:
-        locks = "; ".join(plan.continuity_locks)
-        return (
-            f"[{shot_label}] {plan.visual_style} visual style; "
-            f"continuity locks: {locks}. {setup}"
-        )
-    return (
-        f"[{shot_label}] At {_timestamp(shot.start_frame, plan.fps)}, "
-        f"the camera cuts to: {setup}"
-    )
-
-
 def _compile_shot_events(
-    plan: H3DirectorPlan, shot: H3ShotPlan, *, shot_index: int
+    plan: H3DirectorPlan,
+    shot: H3ShotPlan,
+    *,
+    shot_index: int,
+    speaker_subjects: dict[str, int],
 ) -> list[str]:
     events: list[tuple[int, int, str]] = []
     events.extend(
@@ -332,16 +378,25 @@ def _compile_shot_events(
                 continuation_role=_continuation_role(
                     plan, shot, shot_index=shot_index, cue_index=cue_index
                 ),
+                subject_index=speaker_subjects.get(cue.speaker_id),
             ),
         )
         for cue_index, cue in enumerate(shot.dialogue)
     )
-    if plan.mode is H3Mode.FL2VA:
+    if plan.mode in {H3Mode.FL2VA, H3Mode.L2VA}:
         events.extend(
             (
                 difference.convergence_frame,
                 2,
-                _compile_difference(difference, plan.fps),
+                _compile_difference(
+                    difference,
+                    plan.fps,
+                    target_picture=(
+                        "Picture 2"
+                        if plan.mode is H3Mode.FL2VA
+                        else "<Picture 1>"
+                    ),
+                ),
             )
             for difference in plan.frame_differences
             if shot.start_frame <= difference.convergence_frame < shot.end_frame
@@ -349,26 +404,18 @@ def _compile_shot_events(
     return [rendered for _, _, rendered in sorted(events)]
 
 
-def _shot_label(shot_id: str) -> str:
-    normalized = shot_id.strip()
-    if normalized.casefold().startswith("shot "):
-        return f"Shot {normalized[5:].strip()}"
-    return f"Shot {normalized}"
-
-
-def _camera_text(camera: H3CameraPlan) -> str:
-    if camera.is_static:
-        return f"{camera.type} camera"
-    return (
-        f"{camera.speed}, {camera.amplitude} {camera.type} "
-        f"moving {camera.direction}"
-    )
-
-
 def _compile_action(action: H3ActionPlan, fps: int) -> str:
+    if action.start_frame == 0 and action.phase == "establish":
+        return _sentence(action.description)
+    return f"At {_timestamp(action.start_frame, fps)}, {action.description}"
+
+
+def _compile_difference(
+    difference: H3FrameDifference, fps: int, *, target_picture: str
+) -> str:
     return (
-        f"At {_timestamp(action.start_frame, fps)}, {action.phase}: "
-        f"{action.description}"
+        f"At {_timestamp(difference.convergence_frame, fps)}, the image converges "
+        f"toward {target_picture} as {difference.description}"
     )
 
 
@@ -385,25 +432,133 @@ def _continuation_role(
     incoming = shot_index > 0 and cue_index == 0
     outgoing = shot_index < len(plan.shots) - 1 and cue_index == len(shot.dialogue) - 1
     if incoming and outgoing:
-        return "carries over from the previous shot and continues seamlessly across the cut"
+        return "carries over from the previous shot and continues across the cut"
     if outgoing:
-        return "continues seamlessly across the cut"
+        return "continues across the cut"
     if incoming:
         return "carries over from the previous shot"
     raise ValueError("validated continuation cue has no adjacent shot role")
 
 
 def _compile_dialogue(
-    cue: H3DialogueCue, fps: int, *, continuation_role: str | None
+    cue: H3DialogueCue,
+    fps: int,
+    *,
+    continuation_role: str | None,
+    subject_index: int | None,
 ) -> str:
-    prefix = "<scenetrans>" if cue.continuation else ""
-    suffix = "<cutoff>" if cue.truncated else ""
-    delivery = continuation_role or "says"
-    return (
-        f"At {_timestamp(cue.start_frame, fps)}, {cue.speaker} "
-        f"({cue.speaker_id}) {delivery}: "
-        f"{prefix}<d>[{cue.language}]{cue.text}</d>{suffix}"
+    speaker = (
+        f"<Subject {subject_index}> ({cue.speaker_id})"
+        if subject_index is not None
+        else f"{cue.speaker} ({cue.speaker_id})"
     )
+    transition = "<scenetrans>" if cue.continuation else ""
+    cutoff = "<cutoff>" if cue.truncated else ""
+    delivery = continuation_role or "says"
+    text = (
+        f"At {_timestamp(cue.start_frame, fps)}, {speaker} {delivery}: "
+        f"{transition}<d>[{cue.language}]{cue.text}</d>{cutoff}"
+    )
+    details = tuple(
+        detail
+        for detail in (
+            f"in a {cue.voice_descriptor}" if cue.voice_descriptor else None,
+            cue.delivery,
+            cue.physical_action,
+            cue.facial_reaction,
+        )
+        if detail
+    )
+    if details:
+        text += ". " + _sentence("; ".join(details))
+    return text
+
+
+def _camera_text(camera: H3CameraPlan) -> str:
+    if camera.is_static:
+        return "camera remains static"
+    modifiers = tuple(
+        value
+        for value in (camera.speed, camera.amplitude)
+        if value is not None and value.casefold() not in {"normal", "medium"}
+    )
+    prefix = f"{' '.join(modifiers)} " if modifiers else ""
+    return f"camera makes a {prefix}{camera.type} moving {camera.direction}"
+
+
+def _reference_subjects_by_shot(
+    plan: H3DirectorPlan,
+) -> dict[str, tuple[H3ReferenceSubjectPlan, ...]]:
+    by_shot: dict[str, list[H3ReferenceSubjectPlan]] = {}
+    for subject in plan.reference_subjects:
+        for shot_id in subject.shot_ids:
+            by_shot.setdefault(shot_id, []).append(subject)
+    return {shot_id: tuple(subjects) for shot_id, subjects in by_shot.items()}
+
+
+def _compile_subject_definitions(
+    subjects: tuple[H3ReferenceSubjectPlan, ...],
+) -> str:
+    return "\n".join(
+        f"<Subject {subject.subject_index}> comes from "
+        f"{_picture_list(subject.source_picture_indexes)}: {subject.description}."
+        for subject in subjects
+    )
+
+
+def _picture_list(indexes: tuple[int, ...]) -> str:
+    pictures = tuple(f"<Picture {index}>" for index in indexes)
+    if len(pictures) == 1:
+        return pictures[0]
+    if len(pictures) == 2:
+        return " and ".join(pictures)
+    return f"{', '.join(pictures[:-1])}, and {pictures[-1]}"
+
+
+def _compile_retention_item(subject: H3ReferenceSubjectPlan) -> H3RetentionItem:
+    shots = ", ".join(f"[Shot {shot_id}]" for shot_id in subject.shot_ids)
+    return H3RetentionItem(
+        subject=f"<Subject {subject.subject_index}> (appears in {shots})",
+        retain=f"{subject.retention_marker} - {subject.retention_detail}",
+    )
+
+
+def _sentence(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or normalized.endswith((".", "!", "?")):
+        return normalized
+    return f"{normalized}."
+
+
+def _strip_terminal(value: str) -> str:
+    return value.strip().rstrip(".!?")
+
+
+def _lower_initial(value: str) -> str:
+    if value.startswith(("A ", "An ", "The ")):
+        return value[0].lower() + value[1:]
+    return value
+
+
+def _capitalize_initial(value: str) -> str:
+    return value[:1].upper() + value[1:]
+
+
+def _natural_list(values: tuple[str, ...]) -> str:
+    if not values:
+        return "none"
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return " and ".join(values)
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
+def _shot_label(shot_id: str) -> str:
+    normalized = shot_id.strip()
+    if normalized.casefold().startswith("shot "):
+        return f"Shot {normalized[5:].strip()}"
+    return f"Shot {normalized}"
 
 
 def _timestamp(frame: int, fps: int) -> str:
@@ -420,4 +575,5 @@ __all__ = [
     "H3_PROMPT_COMPILER_VERSION",
     "compile_h3_director_plan",
     "compile_h3_prompt",
+    "project_director_plan_to_wire",
 ]

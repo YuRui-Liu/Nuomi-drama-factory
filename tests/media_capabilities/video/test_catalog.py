@@ -23,7 +23,9 @@ def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
         "runninghub:minimax-h3-ref",
     ]
     assert models[0].available is False
-    assert models[0].supported_modes == ("auto", "i2va", "fl2va")
+    assert models[0].supported_modes == ("i2va", "fl2va")
+    assert models[0].default_mode == "auto"
+    assert "auto" not in models[0].supported_modes
     assert models[1].available is False
     assert models[1].unavailable_reason == "hybrid_input_unverified"
     assert "credential" not in models[0].model_dump_json().lower()
