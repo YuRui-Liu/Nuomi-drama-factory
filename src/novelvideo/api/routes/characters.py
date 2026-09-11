@@ -17,6 +17,8 @@ logger = logging.getLogger("novelvideo.api.characters")
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import (
+    get_media_capability_store,
+    get_media_credential_store,
     make_sqlite_store,
     make_sqlite_store_for_context,
     make_static_url_for_context,
@@ -72,13 +74,20 @@ from novelvideo.production_workflow.slot_ids import (
     character_state_slot_id,
 )
 from novelvideo.config import (
-    image_generation_selection_options,
+    IMAGE_GENERATION_SELECTIONS,
+    LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
     character_image_selection_options,
     get_character_image_selection,
-    normalize_image_generation_selection,
     normalize_character_image_selection,
 )
 from novelvideo.image_request_usage import get_image_usage_summary
+from novelvideo.media_capabilities.image.catalog import (
+    ImageModelSelectionKind,
+    classify_image_model_selection,
+    legacy_image_model_values,
+    list_image_models,
+)
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.project_config import (
     load_project_config,
     load_project_config_file,
@@ -147,27 +156,47 @@ async def _resolve_character_project(
     )
 
 
-def _character_image_selection_payload(username: str, project: str) -> dict:
-    options = character_image_selection_options()
+def _image_model_options(store, credentials) -> dict[str, str]:
+    resolver = CredentialResolver(
+        keyring_reader=credentials.get,
+        secret_reader=credentials.get,
+    )
+    return {item.id: item.label for item in list_image_models(store, resolver)}
+
+
+def _selected_image_model(
+    username: str,
+    project: str,
+    config_key: str,
+    options: dict[str, str],
+) -> str:
     config = load_project_config_file(username, project)
-    saved_selection = str(config.get(CHARACTER_IMAGE_SELECTION_CONFIG_KEY) or "").strip()
-    if saved_selection in options:
-        selection = saved_selection
-    else:
-        selection = normalize_character_image_selection(saved_selection)
-        if selection not in options:
-            selection = get_character_image_selection()
+    saved_selection = str(config.get(config_key) or "").strip()
+    return saved_selection if saved_selection in options else next(iter(options), "")
+
+
+def _character_image_selection_payload(
+    username: str,
+    project: str,
+    options: dict[str, str],
+) -> dict:
+    selection = _selected_image_model(
+        username,
+        project,
+        CHARACTER_IMAGE_SELECTION_CONFIG_KEY,
+        options,
+    )
     return {"character_image_selection": selection, "options": options}
 
 
-def _asset_image_source_selection_payload(username: str, project: str, asset_kind: str) -> dict:
-    options = image_generation_selection_options()
+def _asset_image_source_selection_payload(
+    username: str,
+    project: str,
+    asset_kind: str,
+    options: dict[str, str],
+) -> dict:
     config_key = ASSET_IMAGE_SELECTION_CONFIG_KEYS[asset_kind]
-    if asset_kind == "character":
-        selection = _character_image_selection_payload(username, project)["character_image_selection"]
-    else:
-        saved_selection = str(load_project_config_file(username, project).get(config_key) or "")
-        selection = normalize_image_generation_selection(saved_selection)
+    selection = _selected_image_model(username, project, config_key, options)
     return {
         "asset_kind": asset_kind,
         "image_source_selection": selection,
@@ -184,9 +213,41 @@ def _validate_asset_image_source_kind(asset_kind: str) -> str | None:
 
 def _resolve_character_image_model(username: str, project: str, requested_model: str | None) -> str:
     model = str(requested_model or "").strip()
-    if model:
+    legacy_values = legacy_image_model_values(
+        IMAGE_GENERATION_SELECTIONS,
+        LEGACY_IMAGE_GENERATION_SELECTION_ALIASES,
+    )
+    model_kind = classify_image_model_selection(model, legacy_values=legacy_values)
+    if model_kind in {
+        ImageModelSelectionKind.GRSAI,
+        ImageModelSelectionKind.LEGACY,
+    }:
         return model
-    return _character_image_selection_payload(username, project)["character_image_selection"]
+    if model_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported image model: {model}")
+    options = character_image_selection_options()
+    saved_selection = str(
+        load_project_config_file(username, project).get(
+            CHARACTER_IMAGE_SELECTION_CONFIG_KEY
+        )
+        or ""
+    ).strip()
+    saved_kind = classify_image_model_selection(
+        saved_selection,
+        legacy_values=legacy_values,
+    )
+    if saved_kind is ImageModelSelectionKind.GRSAI:
+        return saved_selection
+    if saved_selection in options:
+        return saved_selection
+    if saved_selection in LEGACY_IMAGE_GENERATION_SELECTION_ALIASES:
+        return normalize_character_image_selection(saved_selection)
+    for selection, entry in IMAGE_GENERATION_SELECTIONS.items():
+        if saved_selection == entry["model"]:
+            return normalize_character_image_selection(selection)
+    if saved_kind is ImageModelSelectionKind.UNKNOWN:
+        raise ValueError(f"Unsupported image model: {saved_selection}")
+    return get_character_image_selection()
 
 
 def _safe_asset_name(name: str) -> str:
@@ -687,12 +748,18 @@ async def update_character_extraction_lock(
 async def get_project_character_image_selection(
     project: str,
     user: dict = Depends(get_api_user),
+    media_store=Depends(get_media_capability_store),
+    credentials=Depends(get_media_credential_store),
 ):
     """获取项目级角色/身份图生成源选择。"""
     _ctx, username, project_name, _project_dir, _output_dir, _store = (
         await _resolve_character_project(project, user, required_role="viewer")
     )
-    return {"ok": True, "data": _character_image_selection_payload(username, project_name)}
+    options = _image_model_options(media_store, credentials)
+    return {
+        "ok": True,
+        "data": _character_image_selection_payload(username, project_name, options),
+    }
 
 
 @router.patch("/projects/{project}/character-image-selection")
@@ -700,13 +767,15 @@ async def update_project_character_image_selection(
     project: str,
     body: CharacterImageSelectionRequest,
     user: dict = Depends(get_api_user),
+    media_store=Depends(get_media_capability_store),
+    credentials=Depends(get_media_credential_store),
 ):
     """保存项目级角色/身份图生成源选择。"""
     _ctx, username, project_name, _project_dir, _output_dir, _store = (
         await _resolve_character_project(project, user)
     )
     selection = str(body.character_image_selection or "").strip()
-    options = character_image_selection_options()
+    options = _image_model_options(media_store, credentials)
     if selection not in options:
         return JSONResponse(
             status_code=400,
@@ -720,7 +789,13 @@ async def update_project_character_image_selection(
         config[CHARACTER_IMAGE_SELECTION_CONFIG_KEY] = selection
 
     update_project_config_file(username, project_name, _apply)
-    return {"ok": True, "data": _character_image_selection_payload(username, project_name)}
+    return {
+        "ok": True,
+        "data": {
+            "character_image_selection": selection,
+            "options": options,
+        },
+    }
 
 
 @router.get("/projects/{project}/image-source-selection/{asset_kind}")
@@ -728,6 +803,8 @@ async def get_project_asset_image_source_selection(
     project: str,
     asset_kind: str,
     user: dict = Depends(get_api_user),
+    media_store=Depends(get_media_capability_store),
+    credentials=Depends(get_media_credential_store),
 ):
     """获取项目级素材图源选择。"""
     normalized_kind = _validate_asset_image_source_kind(asset_kind)
@@ -739,9 +816,15 @@ async def get_project_asset_image_source_selection(
     _ctx, username, project_name, _project_dir, _output_dir, _store = (
         await _resolve_character_project(project, user, required_role="viewer")
     )
+    options = _image_model_options(media_store, credentials)
     return {
         "ok": True,
-        "data": _asset_image_source_selection_payload(username, project_name, normalized_kind),
+        "data": _asset_image_source_selection_payload(
+            username,
+            project_name,
+            normalized_kind,
+            options,
+        ),
     }
 
 
@@ -751,6 +834,8 @@ async def update_project_asset_image_source_selection(
     asset_kind: str,
     body: AssetImageSourceSelectionRequest,
     user: dict = Depends(get_api_user),
+    media_store=Depends(get_media_capability_store),
+    credentials=Depends(get_media_credential_store),
 ):
     """保存项目级素材图源选择。"""
     normalized_kind = _validate_asset_image_source_kind(asset_kind)
@@ -763,7 +848,7 @@ async def update_project_asset_image_source_selection(
         await _resolve_character_project(project, user)
     )
     selection = str(body.image_source_selection or "").strip()
-    options = image_generation_selection_options()
+    options = _image_model_options(media_store, credentials)
     if selection not in options:
         return JSONResponse(
             status_code=400,
@@ -777,7 +862,11 @@ async def update_project_asset_image_source_selection(
     update_project_config_file(username, project_name, _apply)
     return {
         "ok": True,
-        "data": _asset_image_source_selection_payload(username, project_name, normalized_kind),
+        "data": {
+            "asset_kind": normalized_kind,
+            "image_source_selection": selection,
+            "options": options,
+        },
     }
 
 

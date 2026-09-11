@@ -31,6 +31,7 @@ import { ZoomScaledToolbar } from './ZoomScaledToolbar';
 import {
   NODE_FLOATING_PANEL_SURFACE_CLASS,
   NODE_GENERATE_BUTTON_BASE_CLASS,
+  NODE_GENERATE_BUTTON_DISABLED_CLASS,
   NODE_GENERATE_BUTTON_ENABLED_CLASS,
 } from './nodeControlStyles';
 
@@ -51,8 +52,13 @@ export const Scene360Overlay = memo(
     const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
     const findNodePosition = useCanvasStore((state) => state.findNodePosition);
     const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-    const { models: imageModels } = useFreezoneImageModels();
+    const { models: imageModels, isLoading: imageModelsLoading } = useFreezoneImageModels();
     const selectedModel = imageModels[0];
+    const modelAvailabilityReason = !selectedModel
+      ? t(imageModelsLoading
+        ? 'characters.imageSource.loading'
+        : 'characters.imageSource.unavailable')
+      : null;
     const panoCost = useGenerationCreditCost(
       'image_selection',
       selectedModel?.apiModel ?? null,
@@ -68,6 +74,7 @@ export const Scene360Overlay = memo(
     );
 
     const handleSubmit = useCallback(async () => {
+      if (!selectedModel) return;
       const project = readUrl().project;
       if (!project) {
         console.error('[scene-360] no project in URL — cannot submit');
@@ -147,6 +154,7 @@ export const Scene360Overlay = memo(
       imageSource,
       node,
       onClose,
+      selectedModel,
       setSelectedNode,
       t,
       updateNodeData,
@@ -190,9 +198,15 @@ export const Scene360Overlay = memo(
 
           <button
             type="button"
-            className={`${NODE_GENERATE_BUTTON_BASE_CLASS} shrink-0 ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
+            disabled={!selectedModel}
+            className={`${NODE_GENERATE_BUTTON_BASE_CLASS} shrink-0 ${
+              selectedModel
+                ? NODE_GENERATE_BUTTON_ENABLED_CLASS
+                : NODE_GENERATE_BUTTON_DISABLED_CLASS
+            }`}
             onClick={handleSubmit}
-            title={t('scene360.submit')}
+            aria-label={modelAvailabilityReason ?? t('scene360.submit')}
+            title={modelAvailabilityReason ?? t('scene360.submit')}
           >
             <ArrowUp className="h-4 w-4" />
           </button>

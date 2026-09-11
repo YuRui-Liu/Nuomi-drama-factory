@@ -21,6 +21,7 @@ import {
   NODE_CREDIT_PILL_FLAT_CLASS,
   NODE_FLOATING_PANEL_SURFACE_CLASS,
   NODE_GENERATE_BUTTON_BASE_CLASS,
+  NODE_GENERATE_BUTTON_DISABLED_CLASS,
   NODE_GENERATE_BUTTON_ENABLED_CLASS,
 } from "@/features/canvas/ui/nodeControlStyles";
 import {
@@ -882,8 +883,13 @@ export function LightEditorPanel({
   const [imageSize, setImageSize] = useState<LightImageSize>(
     DEFAULT_LIGHT_IMAGE_SIZE,
   );
-  const { models: imageModels } = useFreezoneImageModels();
+  const { models: imageModels, isLoading: imageModelsLoading } = useFreezoneImageModels();
   const selectedModel = imageModels[0];
+  const modelAvailabilityReason = !selectedModel
+    ? t(imageModelsLoading
+      ? "characters.imageSource.loading"
+      : "characters.imageSource.unavailable")
+    : null;
   const creditCost = useGenerationCreditCost("image_selection", selectedModel?.apiModel ?? null, {
     surface: "canvas",
     params: imageModelSupportsQuality(selectedModel?.apiModel)
@@ -967,9 +973,8 @@ export function LightEditorPanel({
       presetLabel: smartMode ? presetLabel : null,
       presetPrompt: smartMode ? presetPrompt : null,
     };
-    // No model picker in this panel — just use the first model from the
-    // shared API store. The store falls back to SHARED_MODELS on failure,
-    // so this is only ever undefined if the URL has no project.
+    // No model picker in this panel — use the first model in the live project
+    // catalog and keep submission unavailable when that catalog is empty.
     if (!selectedModel) return;
     onSubmit({
       prompt,
@@ -1130,9 +1135,15 @@ export function LightEditorPanel({
             />
             <button
               type="button"
-              className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${NODE_GENERATE_BUTTON_ENABLED_CLASS}`}
+              disabled={!selectedModel}
+              className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${
+                selectedModel
+                  ? NODE_GENERATE_BUTTON_ENABLED_CLASS
+                  : NODE_GENERATE_BUTTON_DISABLED_CLASS
+              }`}
               onClick={handleSubmit}
-              aria-label={t("lightEditor.submit")}
+              aria-label={modelAvailabilityReason ?? t("lightEditor.submit")}
+              title={modelAvailabilityReason ?? t("lightEditor.submit")}
             >
               <ArrowUp className="h-4 w-4" />
             </button>

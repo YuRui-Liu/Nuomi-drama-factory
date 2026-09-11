@@ -32,6 +32,7 @@ beforeAll(async () => {
             imageSource: {
               label: "Image source",
               loading: "Loading image source",
+              unavailable: "No image models available",
               saveFailed: "Failed to update image source",
             },
           },
@@ -64,10 +65,10 @@ describe("CharacterImageSourceSelect", () => {
             ok: true,
             data: {
               asset_kind: "character",
-              image_source_selection: "identity",
+              image_source_selection: "gpt-image-2",
               options: {
-                portrait: "Character portrait",
-                identity: "Identity image",
+                "gpt-image-2": "gpt-image-2",
+                "nano-banana-pro": "nano-banana-pro",
               },
             },
           }),
@@ -80,54 +81,54 @@ describe("CharacterImageSourceSelect", () => {
     const trigger = await screen.findByRole("combobox", {
       name: "Image source",
     });
-    expect(trigger).toHaveTextContent("Identity image");
+    expect(trigger).toHaveTextContent("gpt-image-2");
 
     await user.click(trigger);
 
     expect(
-      await screen.findByRole("option", { name: "Character portrait" }),
+      await screen.findByRole("option", { name: "nano-banana-pro" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("option", { name: "Identity image" }),
+      screen.getByRole("option", { name: "gpt-image-2" }),
     ).toBeInTheDocument();
   });
 
   it("patches the selected image source when the user changes options", async () => {
     const user = userEvent.setup();
     const onSelectionChange = vi.fn();
-    let currentSelection = "identity";
+    let currentSelection = "gpt-image-2";
     let requestedPath = "";
     let patchBody: unknown = null;
     server.use(
       http.get(
-        "http://localhost:3000/api/v1/projects/demo/image-source-selection/character",
+        "http://localhost:3000/api/v1/projects/demo/image-source-selection/prop",
         () =>
           HttpResponse.json({
             ok: true,
             data: {
-              asset_kind: "character",
+              asset_kind: "prop",
               image_source_selection: currentSelection,
               options: {
-                portrait: "Character portrait",
-                identity: "Identity image",
+                "gpt-image-2": "gpt-image-2",
+                "nano-banana-pro": "nano-banana-pro",
               },
             },
           }),
       ),
       http.patch(
-        "http://localhost:3000/api/v1/projects/demo/image-source-selection/character",
+        "http://localhost:3000/api/v1/projects/demo/image-source-selection/prop",
         async ({ request }) => {
           requestedPath = new URL(request.url).pathname;
           patchBody = await request.json();
-          currentSelection = "portrait";
+          currentSelection = "nano-banana-pro";
           return HttpResponse.json({
             ok: true,
             data: {
-              asset_kind: "character",
+              asset_kind: "prop",
               image_source_selection: currentSelection,
               options: {
-                portrait: "Character portrait",
-                identity: "Identity image",
+                "gpt-image-2": "gpt-image-2",
+                "nano-banana-pro": "nano-banana-pro",
               },
             },
           });
@@ -138,6 +139,7 @@ describe("CharacterImageSourceSelect", () => {
     render(
       <CharacterImageSourceSelect
         project="demo"
+        kind="prop"
         onSelectionChange={onSelectionChange}
       />,
       { wrapper },
@@ -148,14 +150,42 @@ describe("CharacterImageSourceSelect", () => {
     });
     await user.click(trigger);
     await user.click(
-      await screen.findByRole("option", { name: "Character portrait" }),
+      await screen.findByRole("option", { name: "nano-banana-pro" }),
     );
 
     await waitFor(() => expect(patchBody).not.toBeNull());
     expect(requestedPath).toBe(
-      "/api/v1/projects/demo/image-source-selection/character",
+      "/api/v1/projects/demo/image-source-selection/prop",
     );
-    expect(patchBody).toEqual({ image_source_selection: "portrait" });
-    expect(onSelectionChange).toHaveBeenCalledWith("portrait");
+    expect(patchBody).toEqual({ image_source_selection: "nano-banana-pro" });
+    expect(onSelectionChange).toHaveBeenCalledWith("nano-banana-pro");
+  });
+
+  it("disables the picker and shows unavailable text when the project has no image models", async () => {
+    server.use(
+      http.get(
+        "http://localhost:3000/api/v1/projects/demo/image-source-selection/scene",
+        () =>
+          HttpResponse.json({
+            ok: true,
+            data: {
+              asset_kind: "scene",
+              image_source_selection: "stale-model-from-project-config",
+              options: {},
+            },
+          }),
+      ),
+    );
+
+    render(
+      <CharacterImageSourceSelect project="demo" kind="scene" />,
+      { wrapper },
+    );
+
+    const trigger = await screen.findByRole("combobox", {
+      name: "Image source",
+    });
+    await waitFor(() => expect(trigger).toBeDisabled());
+    expect(trigger).toHaveTextContent("No image models available");
   });
 });

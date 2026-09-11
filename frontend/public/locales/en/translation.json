@@ -604,6 +604,7 @@
     "imageSource": {
       "label": "Image source",
       "loading": "Loading image source",
+      "unavailable": "No image models available",
       "saveFailed": "Failed to update image source"
     },
     "projectStyle": {

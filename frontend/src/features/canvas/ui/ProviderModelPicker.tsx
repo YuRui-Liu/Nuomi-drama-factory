@@ -206,6 +206,7 @@ export function ProviderModelPicker({
     left: number;
     top: number;
   } | null>(null);
+  const hasNoModels = effectiveModels.length === 0;
   const selectedModel = effectiveModels.find((m) => m.id === selectedModelId) ?? effectiveModels[0];
 
   const syncPopoverPosition = () => {
@@ -251,14 +252,18 @@ export function ProviderModelPicker({
       <button
         ref={triggerRef}
         type="button"
+        disabled={hasNoModels}
         onClick={(event) => {
           event.stopPropagation();
+          if (hasNoModels) return;
           setIsOpen((prev) => !prev);
         }}
         className={NODE_TEXT_CONTROL_TRIGGER_CLASS}
       >
         <Box className={NODE_TEXT_CONTROL_ICON_CLASS} />
-        <span className="font-medium">{selectedModel?.label ?? selectedModelId}</span>
+        <span className="font-medium">
+          {selectedModel?.label ?? t('characters.imageSource.unavailable')}
+        </span>
         <ChevronDown className="h-3 w-3 text-text-muted/90" />
       </button>
       {isOpen && popoverPosition && createPortal(

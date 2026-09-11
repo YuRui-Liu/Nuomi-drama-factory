@@ -5,7 +5,21 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("payload_model", "project_selection", "expected_model"),
+    [
+        ("gpt-image-2-vip", None, "gpt-image-2-vip"),
+        (None, "nano-banana-pro", "nano-banana-pro"),
+        ("newapi_gpt_image2", None, "gpt-image-2"),
+    ],
+)
+async def test_character_portrait_resolves_grsai_model_precedence(
+    monkeypatch,
+    tmp_path,
+    payload_model,
+    project_selection,
+    expected_model,
+):
     from datetime import UTC, datetime
 
     from PIL import Image
@@ -106,9 +120,17 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
         "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
         lambda *_args: SimpleNamespace(model="gpt-image-2"),
     )
+    project_config = {
+        "ethnicity": "Chinese",
+        **(
+            {"character_image_selection": project_selection}
+            if project_selection
+            else {}
+        ),
+    }
     monkeypatch.setattr(
         "novelvideo.project_config.load_project_config_file",
-        lambda *_args: {"ethnicity": "Chinese"},
+        lambda *_args: dict(project_config),
     )
 
     ctx = SimpleNamespace(
@@ -125,7 +147,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
             "payload": {
                 "mode": "portrait",
                 "character_name": "小鹿",
-                "model": "newapi_gpt_image2",
+                **({"model": payload_model} if payload_model is not None else {}),
                 "output_dir": str(tmp_path),
             },
         },
@@ -136,7 +158,7 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert calls["sqlite_initialized"] is True
     assert calls["state_loaded"] is True
     assert calls["sqlite_closed"] is True
-    assert calls["grsai"]["model"] == "gpt-image-2"
+    assert calls["grsai"]["model"] == expected_model
     assert calls["grsai"]["aspect_ratio"] == "1:1"
     generated_prompt = str(calls["grsai"]["prompt"])
     assert "Gender constraint: female" in generated_prompt
@@ -162,6 +184,28 @@ async def test_character_portrait_uses_sqlite_and_persisted_grsai(monkeypatch, t
     assert archived.adoption_status.value == "superseded"
     assert archived.asset_path != "assets/characters/小鹿/portrait.png"
     assert (tmp_path / archived.asset_path).read_bytes() != Path(result["path"]).read_bytes()
+    assert result["provider"] == "grsai"
+    assert result["requested_model"] == (payload_model or project_selection or "gpt-image-2")
+    assert result["resolved_model"] == expected_model
+    assert result["resolution_source"] == (
+        "explicit" if payload_model == "gpt-image-2-vip" else
+        "project" if project_selection else
+        "runtime"
+    )
+    if payload_model is None:
+        project_config["character_image_selection"] = "outside-catalog-model"
+        with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+            await character_image._run_character_image(
+                {
+                    "task_type": "character_portrait",
+                    "payload": {
+                        "mode": "portrait",
+                        "character_name": "小鹿",
+                        "output_dir": str(tmp_path),
+                    },
+                },
+                ctx,
+            )
 
 
 @pytest.mark.asyncio

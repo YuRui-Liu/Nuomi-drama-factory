@@ -40,6 +40,9 @@ from novelvideo.freezone.skill_registry import (
     get_skill,
     list_skills,
 )
+from novelvideo.media_capabilities.models import ProviderAccount
+from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
+from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.limits import ProjectUserTaskLimitExceeded
 from novelvideo.task_state import get_task_manager
@@ -5731,37 +5734,128 @@ async def test_get_node_generation_history_uses_project_context_path(
     assert "+08:00" not in recorded_at
 
 
-@pytest.mark.asyncio
-async def test_freezone_image_models_returns_selection_keys(
+@pytest.mark.parametrize("credential_scheme", ["secret", "keyring"])
+def test_freezone_image_models_returns_executable_catalog_without_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    credential_scheme: str,
 ) -> None:
     _patch_freezone_project(monkeypatch, tmp_path, project="58")
-
-    result = await freezone_routes.freezone_image_models(
-        project="58",
-        user={"username": "admin"},
+    store = MediaCapabilityStore(tmp_path / "media-settings.db")
+    store.save_provider(
+        ProviderAccount(
+            id="grsai-main",
+            provider_type="grsai",
+            base_url="https://grsai.example",
+            model="nano-banana-2",
+            credential_ref=f"{credential_scheme}://grsai-main",
+        )
     )
 
-    assert result["ok"] is True
-    assert result["data"] == [
+    class FakeCredentialStore:
+        def get(self, reference: str) -> str | None:
+            return "test-only-secret" if reference == "grsai-main" else None
+
+    credentials = FakeCredentialStore()
+    resolver = CredentialResolver(
+        keyring_reader=credentials.get,
+        secret_reader=credentials.get,
+    )
+    expected = [
         {
-            "id": "newapi_gpt_image2",
-            "providerId": "newapi",
-            "provider": "newapi",
-            "apiModel": "newapi_gpt_image2",
-            "api_model": "newapi_gpt_image2",
-            "label": "LingShan-G2",
-        },
-        {
-            "id": "newapi_nanobanana2",
-            "providerId": "newapi",
-            "provider": "newapi",
-            "apiModel": "newapi_nanobanana2",
-            "api_model": "newapi_nanobanana2",
-            "label": "LingShan-NB-2",
-        },
+            "id": model_id,
+            "providerId": "grsai-main",
+            "provider": "grsai",
+            "apiModel": model_id,
+            "api_model": model_id,
+            "label": model_id,
+        }
+        for model_id in [
+            "nano-banana-2",
+            "gpt-image-2",
+            "gpt-image-2-vip",
+            "nano-banana",
+            "nano-banana-2-2k-cl",
+            "nano-banana-2-4k-cl",
+            "nano-banana-2-cl",
+            "nano-banana-fast",
+            "nano-banana-pro",
+            "nano-banana-pro-4k-vip",
+            "nano-banana-pro-cl",
+            "nano-banana-pro-vip",
+            "nano-banana-pro-vt",
+        ]
     ]
+
+    app = FastAPI()
+    app.include_router(freezone_routes.router, prefix="/api/v1")
+    app.dependency_overrides[freezone_routes.get_api_user] = lambda: {
+        "username": "admin"
+    }
+    app.dependency_overrides[freezone_routes.get_media_capability_store] = lambda: store
+    app.dependency_overrides[freezone_routes.get_media_credential_resolver] = (
+        lambda: resolver
+    )
+
+    response = TestClient(app).get("/api/v1/projects/58/freezone/image/models")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "data": expected}
+    assert "test-only-secret" not in response.text
+    assert "credential_ref" not in response.text
+    assert "LingShan" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("provider_enabled", "credentials"),
+    [
+        (True, {}),
+        (False, {"grsai-main": "test-only-secret"}),
+    ],
+)
+def test_freezone_image_models_returns_empty_when_catalog_is_not_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_enabled: bool,
+    credentials: dict[str, str],
+) -> None:
+    _patch_freezone_project(monkeypatch, tmp_path, project="58")
+    store = MediaCapabilityStore(tmp_path / "media-settings.db")
+    store.save_provider(
+        ProviderAccount(
+            id="grsai-main",
+            provider_type="grsai",
+            base_url="https://grsai.example",
+            credential_ref="secret://grsai-main",
+            enabled=provider_enabled,
+        )
+    )
+
+    class FakeCredentialStore:
+        def get(self, reference: str) -> str | None:
+            return credentials.get(reference)
+
+    credential_store = FakeCredentialStore()
+    resolver = CredentialResolver(
+        keyring_reader=credential_store.get,
+        secret_reader=credential_store.get,
+    )
+
+    app = FastAPI()
+    app.include_router(freezone_routes.router, prefix="/api/v1")
+    app.dependency_overrides[freezone_routes.get_api_user] = lambda: {
+        "username": "admin"
+    }
+    app.dependency_overrides[freezone_routes.get_media_capability_store] = lambda: store
+    app.dependency_overrides[freezone_routes.get_media_credential_resolver] = (
+        lambda: resolver
+    )
+
+    response = TestClient(app).get("/api/v1/projects/58/freezone/image/models")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "data": []}
+    assert "LingShan" not in response.text
 
 
 @pytest.mark.asyncio

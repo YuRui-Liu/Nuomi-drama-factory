@@ -18,7 +18,6 @@ import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
-  SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { CreditCostPill } from '@/components/credits/credit-visual';
@@ -85,8 +84,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
   const [isSubmitting, setIsSubmitting] = useState(false);
   const selectedModel =
     availableModels.find((m) => m.id === persistedModelId)
-    ?? availableModels[0]
-    ?? SHARED_MODELS.find((m) => m.id === persistedModelId);
+    ?? availableModels[0];
   const creditCost = useGenerationCreditCost(
     'image_selection',
     selectedModel?.apiModel ?? null,
@@ -125,7 +123,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
   }, [deleteNode, node.id, setSelectedNode]);
 
   const handleSubmit = useCallback(async () => {
-    if (isSubmitting) return;
+    if (isSubmitting || !selectedModel) return;
     if (!sourceUrl) {
       console.error('[upscale] missing upscaleSourceUrl on node.data — cannot submit');
       return;
@@ -136,9 +134,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
       return;
     }
 
-    const apiModel =
-      selectedModel?.apiModel
-      ?? persistedModelId;
+    const apiModel = selectedModel.apiModel;
 
     setIsSubmitting(true);
     const generationStartedAt = Date.now();
@@ -247,7 +243,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || !selectedModel}
             className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-bg-dark transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             title={t('upscaleEditor.submit')}
           >

@@ -1383,7 +1383,7 @@ async def test_legacy_newapi_image_entry_prefers_configured_grsai(monkeypatch):
 
     result = await nanobanana_grid._call_newapi_image_api(
         api_key="",
-        model="legacy-newapi-model",
+        model="LingShan-G2",
         prompt="draw a scene",
         reference_images=[b"png-bytes"],
         image_config={"aspect_ratio": "16:9", "image_size": "2K"},
@@ -1392,3 +1392,376 @@ async def test_legacy_newapi_image_entry_prefers_configured_grsai(monkeypatch):
     assert result == (b"grsai-image", "", "")
     assert calls["model"] == "gpt-image-2"
     assert calls["reference_images"][0][1] == b"png-bytes"
+
+
+@pytest.mark.asyncio
+async def test_legacy_newapi_image_entry_preserves_supported_grsai_model(monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.generators import nanobanana_grid
+
+    calls = {}
+
+    async def fake_grsai(**kwargs):
+        calls.update(kwargs)
+        return b"grsai-image", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+
+    result = await nanobanana_grid._call_newapi_image_api(
+        api_key="",
+        model="gpt-image-2-vip",
+        prompt="draw a scene",
+    )
+
+    assert result == (b"grsai-image", "", "")
+    assert calls["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
+async def test_legacy_newapi_image_entry_rejects_unknown_model_before_grsai(monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.generators import nanobanana_grid
+
+    called = False
+
+    async def fake_grsai(**_kwargs):
+        nonlocal called
+        called = True
+        return b"grsai-image", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(model="gpt-image-2"),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+
+    with pytest.raises(ValueError, match="Unsupported GRSAI image model"):
+        await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model="outside-catalog-model",
+            prompt="draw a scene",
+        )
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-image-2-vip", "outside-catalog-model"])
+async def test_newapi_gateway_fails_closed_when_grsai_runtime_is_unavailable(
+    monkeypatch, model
+):
+    from novelvideo.generators import nanobanana_grid
+    from novelvideo.media_capabilities.runtime.configuration import (
+        MediaRuntimeConfigurationError,
+    )
+
+    def fail_runtime(*_args):
+        raise MediaRuntimeConfigurationError("GRSAI credential is unavailable")
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        fail_runtime,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    expected_error = (
+        "GRSAI runtime is unavailable"
+        if model == "gpt-image-2-vip"
+        else "Unsupported GRSAI image model"
+    )
+    with pytest.raises((RuntimeError, ValueError), match=expected_error):
+        await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model=model,
+            prompt="draw a scene",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "should_fallback"),
+    [("LingShan-G2", True), ("gpt-image-2-vip", False)],
+)
+async def test_newapi_gateway_handles_runtime_infrastructure_failure_by_model_kind(
+    monkeypatch, model, should_fallback
+):
+    from novelvideo.generators import nanobanana_grid
+
+    def fail_runtime(*_args):
+        raise OSError("settings database unavailable")
+
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        fail_runtime,
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    if not should_fallback:
+        with pytest.raises(RuntimeError, match="GRSAI runtime is unavailable"):
+            await nanobanana_grid._call_newapi_image_api(
+                api_key="legacy-key",
+                model=model,
+                prompt="draw a scene",
+            )
+        return
+
+    posted = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"legacy").decode()}]}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **kwargs):
+            posted.update(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda **_kwargs: FakeClient())
+    result = await nanobanana_grid._call_newapi_image_api(
+        api_key="legacy-key",
+        model=model,
+        prompt="draw a scene",
+        base_url="https://legacy.test/v1",
+    )
+
+    assert result == (b"legacy", "", "")
+    assert posted["model"] == "LingShan-G2"
+
+
+@pytest.mark.asyncio
+async def test_newapi_gateway_preserves_raw_model_in_grsai_http_payload(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import httpx
+
+    from novelvideo.generators import nanobanana_grid
+    from novelvideo.media_capabilities.concurrency import ProviderConcurrencyCoordinator
+    from novelvideo.media_capabilities.image.grsai import GrsaiClient
+    from novelvideo.media_capabilities.models import MediaCapability
+
+    posted = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/api/generate":
+            posted.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-model",
+                    "status": "succeeded",
+                    "results": [{"url": "https://files.test/image.png"}],
+                },
+            )
+        if request.url.host == "files.test":
+            return httpx.Response(200, content=b"raw-model-image")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://grsai.test",
+    ) as http:
+        concurrency = ProviderConcurrencyCoordinator()
+        concurrency.configure(
+            "grsai-main",
+            max_concurrency=1,
+            capability_limits={MediaCapability.IMAGE_SINGLE.value: 1},
+            queue_limit=10,
+        )
+        runtime = SimpleNamespace(
+            account=SimpleNamespace(id="grsai-main"),
+            model="gpt-image-2",
+            api_key="grsai-key",
+            concurrency=concurrency,
+            create_client=lambda: GrsaiClient(http, default_model="gpt-image-2"),
+        )
+
+        class Meter:
+            async def reserve_current_model_call_credit(self, **_kwargs):
+                return "reservation-1"
+
+            async def bump_model_call(self, **_kwargs):
+                return None
+
+            async def refund_model_call_credit_reservation(self, *_args, **_kwargs):
+                return None
+
+        monkeypatch.setattr(
+            "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+            lambda *_args: runtime,
+        )
+        monkeypatch.setattr(
+            "novelvideo.media_capabilities.runtime.grsai_execution.get_usage_meter",
+            lambda: Meter(),
+        )
+        monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+        monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+        result = await nanobanana_grid._call_newapi_image_api(
+            api_key="",
+            model="gpt-image-2-vip",
+            prompt="draw a scene",
+            image_config={"aspect_ratio": "16:9", "image_size": "2K"},
+        )
+
+    assert result == (b"raw-model-image", "", "")
+    assert posted["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generator_keeps_raw_grsai_model_id(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    captured = {}
+
+    async def fake_grsai(**kwargs):
+        captured.update(kwargs)
+        return b"portrait", "", ""
+
+    monkeypatch.setattr(
+        "novelvideo.generators.scene_reference_images._call_grsai_image_api",
+        fake_grsai,
+    )
+    monkeypatch.setattr(
+        nanobanana_character,
+        "get_style_preset",
+        lambda *_args, **_kwargs: {
+            "style_instructions": "anime",
+            "avoid_instructions": "text",
+        },
+    )
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(
+            model="gpt-image-2",
+            api_key="grsai-key",
+            account=SimpleNamespace(base_url="https://grsai.test"),
+        ),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    paths = await image_generator.generate_character_reference_unified(
+        character_name="小鹿",
+        appearance_prompt="black hair",
+        output_dir=str(tmp_path),
+        model="gpt-image-2-vip",
+    )
+
+    assert paths == [str(tmp_path / "reference_portrait.png")]
+    assert (tmp_path / "reference_portrait.png").read_bytes() == b"portrait"
+    assert captured["model"] == "gpt-image-2-vip"
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generators_reject_unknown_explicit_model(monkeypatch, tmp_path):
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    class FailGenerator:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("unknown model must fail before selecting a generator")
+
+    monkeypatch.setattr(nanobanana_character, "NanoBananaCharacterGenerator", FailGenerator)
+
+    with pytest.raises(ValueError, match="Unsupported image model"):
+        await image_generator.generate_character_reference_unified(
+            character_name="小鹿",
+            appearance_prompt="black hair",
+            output_dir=str(tmp_path),
+            model="outside-catalog-model",
+        )
+
+    with pytest.raises(ValueError, match="Unsupported image model"):
+        await image_generator.generate_identity_image_unified(
+            character_name="小鹿",
+            identity_prompt="blue coat",
+            reference_image_path=str(tmp_path / "portrait.png"),
+            output_path=str(tmp_path / "identity.png"),
+            model="outside-catalog-model",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sync_character_generators_prefer_raw_grsai_id_over_legacy_model_mapping(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+    from novelvideo.generators import image_generator, nanobanana_character
+
+    configs = []
+
+    class FakeGenerator:
+        def __init__(self, *, config=None, selection=None, **_kwargs):
+            assert selection is None
+            configs.append(config)
+
+        async def generate_character_portrait(self, **_kwargs):
+            return SimpleNamespace(success=True, reference_paths=["portrait.png"], error=None)
+
+        async def generate_identity_with_reference(self, **_kwargs):
+            return SimpleNamespace(success=True, error=None)
+
+    colliding_legacy = {
+        "newapi_gpt_image2": {
+            "label": "legacy",
+            "provider": "newapi",
+            "model": "gpt-image-2",
+        }
+    }
+    monkeypatch.setattr(image_generator, "IMAGE_GENERATION_SELECTIONS", colliding_legacy)
+    monkeypatch.setattr(nanobanana_character, "NanoBananaCharacterGenerator", FakeGenerator)
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration",
+        lambda *_args: SimpleNamespace(
+            model="nano-banana-pro",
+            api_key="secret",
+            account=SimpleNamespace(base_url="https://grsai.test"),
+        ),
+    )
+    monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
+    monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
+
+    await image_generator.generate_character_reference_unified(
+        character_name="小鹿",
+        appearance_prompt="black hair",
+        output_dir=str(tmp_path),
+        model="gpt-image-2",
+    )
+    await image_generator.generate_identity_image_unified(
+        character_name="小鹿",
+        identity_prompt="blue coat",
+        reference_image_path=str(tmp_path / "portrait.png"),
+        output_path=str(tmp_path / "identity.png"),
+        model="gpt-image-2",
+    )
+
+    assert [config["model"] for config in configs] == ["gpt-image-2", "gpt-image-2"]

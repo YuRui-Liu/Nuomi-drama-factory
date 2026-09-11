@@ -7,10 +7,7 @@ import {
   type FreezoneImageModelInfo,
 } from "@/api/ops";
 import { readUrl } from "@/lib/url-params";
-import {
-  SHARED_MODELS,
-  type ModelOption,
-} from "@/features/canvas/ui/ProviderModelPicker";
+import type { ModelOption } from "@/features/canvas/ui/ProviderModelPicker";
 
 export interface UseFreezoneImageModelsResult {
   models: ModelOption[];
@@ -26,23 +23,12 @@ export interface UseFreezoneImageModelsResult {
 const states = new Map<string, UseFreezoneImageModelsResult>();
 const listeners = new Map<string, Set<() => void>>();
 
-// Lazy singleton — must NOT touch `SHARED_MODELS` at module top level
-// because we have a circular import with `ProviderModelPicker.tsx` (the
-// picker imports this hook). Reading SHARED_MODELS during this module's
-// top-level evaluation would hit a TDZ. Reading it lazily inside a
-// function dodges that.
-let noProjectStateMemo: UseFreezoneImageModelsResult | null = null;
-function getNoProjectState(): UseFreezoneImageModelsResult {
-  if (!noProjectStateMemo) {
-    noProjectStateMemo = {
-      models: SHARED_MODELS,
-      isLoading: false,
-      isFallback: true,
-      error: null,
-    };
-  }
-  return noProjectStateMemo;
-}
+const noProjectState: UseFreezoneImageModelsResult = {
+  models: [],
+  isLoading: false,
+  isFallback: true,
+  error: null,
+};
 
 function emit(project: string) {
   listeners.get(project)?.forEach((fn) => fn());
@@ -62,7 +48,7 @@ function ensureLoaded(project: string) {
   // first call so this is a true idempotent guard.
   if (states.has(project)) return;
   states.set(project, {
-    models: SHARED_MODELS,
+    models: [],
     isLoading: true,
     isFallback: true,
     error: null,
@@ -71,9 +57,9 @@ function ensureLoaded(project: string) {
     .then((models) => {
       if (models.length === 0) {
         writeState(project, {
-          models: SHARED_MODELS,
+          models: [],
           isLoading: false,
-          isFallback: true,
+          isFallback: false,
           error: null,
         });
         return;
@@ -89,13 +75,13 @@ function ensureLoaded(project: string) {
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       console.warn(
-        "[freezone] image models fetch failed, using hardcoded fallback:",
+        "[freezone] image models fetch failed:",
         normalized.message,
       );
       writeState(project, {
-        models: SHARED_MODELS,
+        models: [],
         isLoading: false,
-        isFallback: true,
+        isFallback: false,
         error: normalized,
       });
     });
@@ -132,8 +118,8 @@ function subscribe(project: string | null, callback: () => void) {
  * The first call for a given `project` triggers
  * `GET /api/v1/projects/{project}/freezone/image/models`. All subsequent
  * consumers (any picker on any panel) read the same cached snapshot and
- * re-render together when the fetch resolves. Failures fall back to the
- * hardcoded `SHARED_MODELS` so the UI is never empty.
+ * re-render together when the fetch resolves. Empty responses and failures
+ * stay empty so unavailable models cannot become executable UI choices.
  *
  * To force a refresh, reload the page — there is no manual invalidation.
  */
@@ -149,7 +135,7 @@ export function useFreezoneImageModels(
   return useSyncExternalStore(
     (callback) => subscribe(project ?? null, callback),
     () =>
-      project ? states.get(project) ?? getNoProjectState() : getNoProjectState(),
-    () => getNoProjectState(),
+      project ? states.get(project) ?? noProjectState : noProjectState,
+    () => noProjectState,
   );
 }
