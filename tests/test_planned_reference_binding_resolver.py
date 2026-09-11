@@ -10,7 +10,6 @@ from PIL import Image
 from novelvideo.narrative_groups.planned_binding_service import (
     PlannedReferencePreview,
     StaleReferenceBinding,
-    UnresolvedPlannedReference,
     build_planned_reference_snapshot,
     required_binding_keys_for_director_group,
     resolve_planned_reference_preview,
@@ -870,7 +869,7 @@ async def test_snapshot_allows_ready_required_explicit_fallback_to_be_omitted(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_still_rejects_unavailable_required_explicit_fallback(
+async def test_snapshot_allows_unavailable_required_explicit_fallback(
     tmp_path: Path,
 ) -> None:
     binding = _binding(
@@ -888,21 +887,19 @@ async def test_snapshot_still_rejects_unavailable_required_explicit_fallback(
         project_dir=tmp_path,
     )
 
-    with pytest.raises(
-        UnresolvedPlannedReference,
-        match="unresolved planned references",
-    ):
-        await build_planned_reference_snapshot(
-            store,
-            workflow,
-            project_id="p1",
-            episode_number=1,
-            group_id="group-01",
-            project_dir=tmp_path,
-            selected_binding_ids=(),
-            upload_ids=(),
-            reference_revision=preview.reference_revision,
-        )
+    snapshot = await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-01",
+        project_dir=tmp_path,
+        selected_binding_ids=(),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+    )
+
+    assert snapshot.images == ()
 
 
 def test_runner_rejects_missing_snapshot_instead_of_legacy_name_fallback(
