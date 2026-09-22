@@ -29,7 +29,7 @@ def test_pano_sharp_unavailable_is_handled_task_failure():
 
     assert handled is True
     assert payload == {"error_code": "SHARP_3D_UNAVAILABLE"}
-    assert "world" in message
+    assert message == "SHARP_3D_UNAVAILABLE"
 
 
 def test_run_pano_sharp_missing_sharp_fails_before_subprocess(tmp_path, monkeypatch):

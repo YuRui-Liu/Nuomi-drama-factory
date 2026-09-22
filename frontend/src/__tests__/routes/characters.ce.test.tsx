@@ -131,6 +131,7 @@ vi.mock("@/lib/queries/generation-credit-cost", () => ({
 vi.mock("@/lib/queries/production-assets", () => ({
   useProductionAssetSlot: () => ({ data: undefined, isLoading: false }),
   useAdoptProductionAssetVersion: mutation,
+  useDeleteProductionAssetVersion: mutation,
 }));
 
 vi.mock("@/lib/queries/asset-references", () => ({

@@ -54,7 +54,7 @@ def test_active_plan_materializes_generation_video_and_effective_style(tmp_path)
     assert [item["layout"] for item in materialized.generation_batches] == ["diptych"]
     assert len(materialized.video_segments) == 2
     assert materialized.effective_style_snapshot["style_hash"] == "style-hash"
-    assert materialized.video_plan.units[0].id.startswith("segment:ng-01")
+    assert materialized.video_plan.units[0].id.startswith(f"segment:{revision.revision_id}:ng-01:")
 
 
 def test_local_composition_plan_keeps_segment_order_and_transition_rules() -> None:

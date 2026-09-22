@@ -43,6 +43,10 @@ class ScreenplaySemanticService:
         selected_scene_ids: set[str] | None = None,
     ) -> ScreenplaySemanticRevision:
         parsed = parse_screenplay_document(source.content)
+        if not parsed.scenes:
+            raise ValueError(
+                "SCREENPLAY_SCENES_NOT_FOUND: 未识别到场次，请检查场头格式，例如 1-1 海边灯塔 外 夜"
+            )
         previous = self.store.load_active(source.episode_number)
         previous_by_hash = {
             item.content_hash: item for item in previous.scenes

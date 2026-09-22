@@ -170,7 +170,7 @@ def _store_with_three_versions(tmp_path):
     return store
 
 
-def test_delete_current_version_adopts_latest_remaining_version(tmp_path):
+def test_delete_current_version_adopts_latest_eligible_remaining_version(tmp_path):
     store = _store_with_three_versions(tmp_path)
 
     slot, versions, deleted, fallback = store.delete_version(
@@ -180,9 +180,9 @@ def test_delete_current_version_adopts_latest_remaining_version(tmp_path):
 
     assert deleted.version_id == "state-v1"
     assert fallback is not None
-    assert fallback.version_id == "state-v3"
+    assert fallback.version_id == "state-v2"
     assert fallback.adoption_status == AdoptionStatus.ADOPTED
-    assert slot.current_version_id == "state-v3"
+    assert slot.current_version_id == "state-v2"
     assert slot.version_ids == ["state-v2", "state-v3"]
     assert set(versions) == {"state-v2", "state-v3"}
 

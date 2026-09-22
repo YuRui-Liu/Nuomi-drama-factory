@@ -236,7 +236,8 @@ def test_asset_migration_context_collects_real_project_assets_safely(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_input_assembler_uses_active_semantic_revision(monkeypatch):
+@pytest.mark.parametrize("aspect_ratio", ["9:16", "16:9"])
+async def test_input_assembler_uses_active_semantic_revision(monkeypatch, tmp_path, aspect_ratio):
     from novelvideo.task_backend.runners import director_plan
 
     source = SimpleNamespace(
@@ -268,10 +269,17 @@ async def test_input_assembler_uses_active_semantic_revision(monkeypatch):
     monkeypatch.setattr(
         director_plan, "_load_active_semantic_revision", lambda *_args: semantic
     )
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file_from_state_dir",
+        lambda _path: {"aspect_ratio": aspect_ratio},
+    )
 
     value = await director_plan._build_director_plan_input(
         {"project_id": "project-1", "episode": 3, "source_revision": 7},
-        SimpleNamespace(project_id="project-1"),
+        SimpleNamespace(
+            project_id="project-1", state_dir=str(tmp_path / "state"),
+            output_dir=str(tmp_path), owner_username="owner", project_name="project",
+        ),
     )
 
     assert [span.id for span in value.source_spans] == [
@@ -289,6 +297,7 @@ async def test_input_assembler_uses_active_semantic_revision(monkeypatch):
     assert value.source_spans[2].dialogue_text == "苏青：他们来了。"
     assert value.source_script_hash == "sha256:episode-3"
     assert value.semantic_revision_id == "semantic-7"
+    assert value.aspect_ratio == aspect_ratio
 
 
 @pytest.mark.asyncio

@@ -1168,3 +1168,45 @@ async def test_director_timeline_cancellation_calls_executor_cancel(
 
     assert len(executor.cancelled) == 1
     assert executor.cancelled == executor.stepped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeline", [False, True])
+async def test_unknown_submission_stops_polling_for_reconciliation(tmp_path: Path, timeline: bool) -> None:
+    store = TaskStore(tmp_path / "tasks.db")
+
+    class UnknownExecutor:
+        calls = 0
+
+        async def step(self, task_id, **kwargs):
+            self.calls += 1
+            assert self.calls == 1, "UNKNOWN must not cause another executor step"
+            attempt = store.list_attempts(task_id)[-1]
+            store.mark_unknown(attempt.id, "PROVIDER_TIMEOUT", "reconcile before retry")
+            return store.get_task(task_id)
+
+    executor = UnknownExecutor()
+    pipeline = H3VideoPipeline(
+        store=store, executor=executor,
+        workflow_profile=WorkflowProfile(
+            id="h3", version=1, workflow_id="workflow-1",
+            capabilities=[MediaCapability.VIDEO_I2VA],
+            bindings={"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+        ),
+        provider_account_id="runninghub-main", upload_reference=FakeUploader(),
+        probe_video=lambda _: None, register_candidate=lambda _: None,
+        prompt_profile={}, poll_interval=0,
+    )
+    request = VideoGenerationRequest(
+        capability=MediaCapability.VIDEO_I2VA, prompt="director", duration=5,
+        first_frame="first.png", aspect_ratio="9:16", resolution="576x1024",
+    )
+    with pytest.raises(RuntimeError, match="reconcile before retry"):
+        if timeline:
+            await pipeline.generate_timeline(
+                request, timeline_data=_timeline_data(),
+                idempotency_input={"segments": [_timeline_segment_input()]},
+            )
+        else:
+            await pipeline.generate(request, MotionSpec(action="人物缓慢向前走并停稳。"))
+    assert executor.calls == 1

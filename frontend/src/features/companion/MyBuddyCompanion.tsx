@@ -41,6 +41,7 @@ import {
 } from "@/features/companion/use-mybuddy-companion-controller";
 import { useRewardEventsStore } from "@/features/rewards/reward-events-store";
 import { openVersionUpdateDialog } from "@/features/version-update/version-update-events";
+import { companionTopPx } from "@/features/companion/companion-position";
 
 /** 气泡可见时长按事件种类对齐宠物动作时长（成功/失败动画结束时气泡同步收尾），
  * 与 Piko 气泡共用同一组淡出节奏（{@link BUBBLE_FADE_OUT_MS}）。 */
@@ -280,7 +281,9 @@ export function MyBuddyCompanion() {
   const displayXPercent = dragPosition?.xPercent ?? xPercent;
   const displayYPercent = dragPosition?.yPercent ?? yPercent;
   const displayLeftPx = Math.round((displayXPercent / 100) * viewportSize.width);
-  const displayTopPx = Math.round((displayYPercent / 100) * viewportSize.height);
+  const displayTopPx = companionTopPx(
+    Math.round((displayYPercent / 100) * viewportSize.height), viewportSize.width, viewportSize.height,
+  );
   const pikoDiveTargetY = Math.max(96, viewportSize.height - displayTopPx - 112);
   const pikoFigureStyle = {
     position: "absolute",
@@ -384,7 +387,7 @@ export function MyBuddyCompanion() {
           Math.min(Math.max(0, moveEvent.clientX - grabX), Math.max(0, vw - COMPANION_FIGURE_W)),
         );
         const py = Math.round(
-          Math.min(Math.max(0, moveEvent.clientY - grabY), Math.max(0, vh - COMPANION_FIGURE_H)),
+          companionTopPx(moveEvent.clientY - grabY, vw, vh),
         );
         latestXPercent = (px / vw) * 100;
         latestYPercent = (py / vh) * 100;
@@ -527,6 +530,9 @@ export function MyBuddyCompanion() {
           height: 80,
           zIndex: 25,
           pointerEvents: "none",
+          // Animated sprites can extend above their drag box; keep that overflow
+          // out of navigation too, without clipping bubbles elsewhere.
+          clipPath: `inset(${(viewportSize.width >= 1024 ? 56 : 96) - displayTopPx}px -100vw -100vh -100vw)`,
         }}
       >
         <div className="mybuddy-companion-drag-trail" aria-hidden="true">

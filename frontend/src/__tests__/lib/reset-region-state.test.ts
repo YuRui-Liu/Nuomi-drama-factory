@@ -11,6 +11,44 @@ import { useSaveStatusStore } from "@/stores/save-status-store";
 import { useSeenPoolStore } from "@/stores/seen-pool-store";
 import { useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import { useTaskCenterStore } from "@/task-center/store";
+import { renderHook } from "@testing-library/react";
+import { useSuperChat } from "@/features/superchat/use-superchat";
+
+describe.each([
+  ["logout", resetUserSessionState],
+  ["region switch", resetRegionState],
+] as const)("chat isolation after %s", (_label, resetSession) => {
+  beforeEach(() => localStorage.clear());
+
+  it("does not restore the previous account's messages, pending turn, or message filters", () => {
+    const scope = "supertale:home:main";
+    localStorage.setItem(`superchat:messages:v2:${scope}`, JSON.stringify({
+      updatedAt: Date.now(),
+      messages: [{ id: "private-message", role: "user", text: "Previous account's private text", timestamp: Date.now(), turnId: "old-turn" }],
+    }));
+    localStorage.setItem(`superchat:active-turn:${scope}`, JSON.stringify({ turnId: "old-turn", startedAt: Date.now() }));
+    localStorage.setItem(`superchat:pinned:${scope}`, JSON.stringify(["private-message"]));
+    localStorage.setItem(`superchat:deleted:${scope}`, JSON.stringify(["deleted-message"]));
+    resetSession({ queryClient: new QueryClient() });
+    const hook = renderHook(() => useSuperChat({ displayName: "Next account" }));
+    try {
+      expect(hook.result.current.messages).toEqual([]);
+      expect(hook.result.current.activeTurnId).toBeNull();
+      expect(hook.result.current.busy).toBe(false);
+      expect(hook.result.current.pinnedIds.size).toBe(0);
+      expect(hook.result.current.deletedIds.size).toBe(0);
+    } finally {
+      hook.unmount();
+    }
+  });
+
+  it("removes canvas undo histories and conflict payloads from the previous session", () => {
+    const keys = ["freezone:canvas-history:p:c", "freezone:conflict:c", "freezone:canvas-viewport:p:c"];
+    keys.forEach((key) => localStorage.setItem(key, "private canvas state"));
+    resetSession({ queryClient: new QueryClient() });
+    keys.forEach((key) => expect(localStorage.getItem(key)).toBeNull());
+  });
+});
 
 describe("resetRegionState", () => {
   beforeEach(() => {

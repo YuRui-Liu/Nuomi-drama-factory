@@ -23,6 +23,64 @@ async def stores(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_post_commit_cleanup_failure_does_not_restore_old_novel(stores, monkeypatch):
+    from pathlib import Path
+
+    sqlite, repository = stores
+    old_content = "第1集\n旧内容"
+    new_content = "第1集\n新内容"
+    await repository.upsert_sources(
+        [build_episode_candidate("E01.md", old_content)],
+        expected_revision=0,
+        canonical_novel=old_content,
+    )
+    original_cleanup = repository._clear_journal
+
+    def fail_cleanup(journal):
+        raise OSError("journal cleanup unavailable")
+
+    monkeypatch.setattr(repository, "_clear_journal", fail_cleanup)
+    result = await repository.upsert_sources(
+        [build_episode_candidate("E01.md", new_content)],
+        expected_revision=1,
+        canonical_novel=new_content,
+    )
+    assert result.target_revision == 2
+    assert (Path(sqlite.project_dir) / "novel.txt").read_text() == new_content
+    monkeypatch.setattr(repository, "_clear_journal", original_cleanup)
+    assert await repository.current_revision() == 2
+    assert (await repository.list_sources())[0].content == new_content
+    assert (Path(sqlite.project_dir) / "novel.txt").read_text() == new_content
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_is_recovered_before_later_noncanonical_write(stores, monkeypatch):
+    from novelvideo.episode_source_store import EpisodeSourceStore
+
+    sqlite, repository = stores
+    await repository.upsert_sources(
+        [build_episode_candidate("E01.md", "第1集\n旧内容")],
+        expected_revision=0, canonical_novel="第1集\n旧内容",
+    )
+    cleanup = repository._clear_journal
+
+    def fail_cleanup(journal):
+        raise OSError("cleanup unavailable")
+
+    monkeypatch.setattr(repository, "_clear_journal", fail_cleanup)
+    await repository.upsert_sources(
+        [build_episode_candidate("E01.md", "第1集\n新内容")],
+        expected_revision=1, canonical_novel="第1集\n新内容",
+    )
+    monkeypatch.setattr(repository, "_clear_journal", cleanup)
+    await repository.upsert_sources(
+        [build_episode_candidate("E02.md", "第2集\n后续内容")],
+        expected_revision=2,
+    )
+    assert await EpisodeSourceStore(sqlite).current_revision() == 3
+
+
+@pytest.mark.asyncio
 async def test_schema_and_preview_are_durable_across_repository_instances(stores):
     sqlite, repository = stores
     preview = await repository.save_preview(

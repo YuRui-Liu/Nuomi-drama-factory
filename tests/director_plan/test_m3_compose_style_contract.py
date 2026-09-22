@@ -53,12 +53,22 @@ async def test_director_input_uses_redirect_style_payload(monkeypatch) -> None:
     from novelvideo.task_backend.runners import director_plan
 
     source = SimpleNamespace(
-        episode_number=1, source_revision=7, content_hash="source", content="Hero leaves."
+        episode_number=1, source_revision=7, content_hash="source",
+        content="1-1 房间 日 内\n△Hero leaves.",
     )
     monkeypatch.setattr(
         director_plan,
         "_build_episode_source_store",
         lambda _ctx: _async(SimpleNamespace(list_sources=lambda: _async([source]))),
+    )
+    from novelvideo.screenplay_semantics import parse_screenplay_document
+    parsed = parse_screenplay_document(source.content)
+    monkeypatch.setattr(
+        director_plan, "_load_active_semantic_revision",
+        lambda *_args: SimpleNamespace(
+            revision_id="semantic-7", source_revision=7,
+            scenes=parsed.scenes, beats=(),
+        ),
     )
     selected = StyleSnapshot(
         snapshot_id="selected-snapshot", style_id="selected-style", style_version="2",

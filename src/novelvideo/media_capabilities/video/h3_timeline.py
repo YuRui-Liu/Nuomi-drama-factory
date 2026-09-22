@@ -294,6 +294,8 @@ class H3DirectorOutputManifest(BaseModel):
     workflow_parameters: dict[str, str] = Field(default_factory=dict)
     provider_parameters: dict[str, object] = Field(default_factory=dict)
     transition_rules: tuple[H3TransitionRule, ...] = ()
+    cinematography_reviews: tuple[dict[str, Any], ...] = ()
+    cinematography_shots: tuple[dict[str, Any], ...] = ()
     actual_output: dict[str, int] = Field(default_factory=dict)
     original_audio_path: str | None = None
     original_audio_status: str = "not_requested"

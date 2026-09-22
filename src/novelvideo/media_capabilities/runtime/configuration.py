@@ -43,6 +43,9 @@ RUNNINGHUB_DOWNLOAD_HOSTS = (
     "rh-images.xiaoyaoyou.com",
     "rh-images-1252422369.cos.ap-beijing.myqcloud.com",
     "rh-images-switch-1252422369.cos.ap-guangzhou.myqcloud.com",
+    # Exact output bucket observed from authenticated RunningHub task queries.
+    # Do not allow the shared volces.com suffix or arbitrary storage buckets.
+    "rh-comfyui01.tos-cn-beijing.volces.com",
 )
 
 _GRSAI_CONCURRENCY = ProviderConcurrencyCoordinator()

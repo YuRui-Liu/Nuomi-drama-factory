@@ -186,7 +186,7 @@ def get_video_models(
                     ),
                 )
             ]
-            if item.id == H3_MODEL_ID
+            if item.id in {H3_MODEL_ID, H3_REFERENCE_MODEL_ID}
             else []
         )
         data.append(payload)

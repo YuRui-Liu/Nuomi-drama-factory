@@ -19,6 +19,8 @@ from pydantic import (
 )
 from ulid import ULID
 
+from .cinematography import ShotCinematography
+
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -347,6 +349,7 @@ class ShotPlan(FrozenModel):
     dialogue_source_ids: tuple[str, ...] = ()
     dramatic_beat_ids: tuple[str, ...] = ()
     intent: DirectorShotIntent | None = None
+    cinematography: ShotCinematography | None = None
     asset_requirements: tuple[AssetRequirement, ...] = ()
     duration_seconds: float = Field(gt=0, le=15)
 
@@ -397,12 +400,14 @@ class UpdateShot(FrozenModel):
     source_span_ids: tuple[str, ...] | None = None
     subject: str | None = None
     action: str | None = None
+    continuous_with_next: bool | None = None
     visible_start_state: str | None = None
     visible_end_state: str | None = None
     shot_size: str | None = None
     camera_angle: str | None = None
     composition: str | None = None
     camera_motion: str | None = None
+    cinematography: ShotCinematography | None = None
     dialogue_source_ids: tuple[str, ...] | None = None
     duration_seconds: float | None = Field(default=None, gt=0, le=15)
 

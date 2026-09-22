@@ -111,8 +111,40 @@ version: 0.3.0
 - 场景标题是 `N-M 地点 时段 内/外`，场次编号必须与集号一致；不得只写“地点·内·日”或只写“场景地点”。
 - 每个场景标题下一行必须是 `人物：角色1 角色2 ...`，角色顺序按本场首次出场或叙事重要性排列。
 - 单集 DOCX 只输出这一集，不附加封面、第零集、人物小传、故事大纲和其他集；批量 DOCX 的每一集也必须复用同一集内格式。
-- 单集导出必须使用 `build_docx.ps1 -SingleEpisode -EpisodeNumber N`，不得用批量导出命令截取一集冒充单集稿。
-- 交付前用 `tools/test_single_episode_contract.ps1` 审计集标题、时长、场次编号、人物行和旧格式残留。
+- 单集导出必须使用 `build_docx.py --single-episode --episode-number N`，不得用批量导出命令截取一集冒充单集稿。
+- 交付前用 `tools/test_single_episode_contract.py` 审计集标题、时长、场次编号、人物行和旧格式残留。
+
+命令行工具（Python 标准库实现，macOS/Linux/Windows 通用，不需要 PowerShell）：
+
+```bash
+# 契约自检
+python3 tests/skill_contract.py
+
+# 单集 Markdown 格式检查
+python3 tools/test_markdown_episode_contract.py -p manuscript/episodes/E001.md -n 1
+
+# 导出交给 Nuomi 漫剧工厂的 handoff 文件
+python3 tools/export_screenplay.py -m manuscript -o deliverables/screenplay.md
+
+# 编译批量 DOCX（30 集）
+python3 tools/build_docx.py -o deliverables/剧本.docx -m manuscript --episode-count 30
+
+# 编译单集 DOCX
+python3 tools/build_docx.py -o deliverables/E017.docx -m manuscript \
+    --single-episode --episode-number 17
+
+# 交付门禁 + 编译
+python3 tools/build_docx.py -o deliverables/剧本.docx -m manuscript --require-delivery-gate
+
+# DOCX 结构与排版审计
+python3 tools/audit_docx.py -p deliverables/剧本.docx --expected-episodes 30
+
+# 单集 DOCX 交付协议审计
+python3 tools/test_single_episode_contract.py -p deliverables/E017.docx \
+    -n 17 -t 真正的双面人 -d 185
+```
+
+同名 `.ps1` 是 Windows PowerShell 等价实现，两者行为一致；优先使用上面的 Python 命令。
 
 单集 frontmatter 最小示例：
 

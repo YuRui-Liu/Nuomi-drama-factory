@@ -101,7 +101,11 @@ class FailingBackend(FakeBackend):
         raise RuntimeError("queue unavailable")
 
 
-def make_client(monkeypatch, tmp_path: Path, *, beat_count=6):
+def make_client(monkeypatch, tmp_path: Path, *, beat_count=6, enforce_direction_preflight=False):
+    # Transport/stage tests use legacy fixtures. The dedicated direction-preflight
+    # integration tests opt in to the real prerequisite rather than bypassing it.
+    if not enforce_direction_preflight:
+        monkeypatch.setattr(narrative_groups, "_require_h3_production_directions", lambda *args: None)
     ctx = SimpleNamespace(project_id="demo", output_dir=str(tmp_path), state_dir=str(tmp_path))
     resolved = SimpleNamespace(ctx=ctx, project_dir=tmp_path, output_dir=str(tmp_path))
 
@@ -240,11 +244,13 @@ def activate_director_plan(
     *,
     group_id: str = "director-group",
     shot_id: str = "shot-1",
+    dramatic_beat_ids: tuple[str, ...] = (),
 ) -> None:
     group = NarrativeGroupPlan(
         id=group_id,
         ordinal=1,
         source_span_ids=("span-1", "span-2"),
+        dramatic_beat_ids=dramatic_beat_ids,
         scene_anchor="hallway",
         time_anchor="night",
         objective="reach the door",
@@ -382,7 +388,7 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     assert backend.calls[0][1]["payload"]["model"] == "nano-banana-2"
 
 
-def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkeypatch, tmp_path):
+def test_render_skips_sketch_by_default_but_can_require_it(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -390,11 +396,11 @@ def test_render_requires_completed_sketch_unless_explicitly_unconstrained(monkey
 
     blocked = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json=planned,
+        json={**planned, "allow_unconstrained": False},
     )
     allowed = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
-        json={**planned, "allow_unconstrained": True},
+        json=planned,
     )
 
     assert blocked.status_code == 409
@@ -1597,7 +1603,8 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "model": "runninghub:minimax-h3",
         "mode": "auto",
         "aspect_ratio": "16:9",
-        "workflow_parameters": {"resolution": "720p"},
+        "workflow_parameters": {"resolution": "720p", "continuity_policy": "enforce"},
+        "cinematography_review_required": True,
         "settings_revision": 0,
     }
     assert len(payload["reference_snapshot_id"]) == 32
@@ -1983,9 +1990,14 @@ def test_generation_time_reference_matching_helpers_are_not_public_api():
     assert not hasattr(reference_decisions, "ResolvedProjectAsset")
 
 
-def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_path):
+@pytest.mark.parametrize("stage", ["sketch", "render"])
+def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_path, stage):
     client, backend = make_client(monkeypatch, tmp_path)
-    activate_director_plan(tmp_path)
+    activate_director_plan(tmp_path, dramatic_beat_ids=("dramatic-beat-1",))
+    from dataclasses import replace
+    from novelvideo.narrative_groups.service import load_materialized_groups, save_groups
+    save_groups(tmp_path, 1, [replace(group, storyboard_contract_version=1)
+                             for group in load_materialized_groups(tmp_path, 1)])
 
     async def build(store, workflow, **kwargs):
         from novelvideo.narrative_groups.planned_binding_service import (
@@ -2023,9 +2035,10 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
     monkeypatch.setattr(narrative_groups, "build_planned_reference_snapshot", build)
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/"
-        "director-group/sketch/generate",
+        f"director-group/{stage}/generate",
         json={
             "use_style": False,
+            "allow_unconstrained": True,
             "reference_resolution": {
                 "selected_binding_ids": ["planned-ref-letter"],
                 "upload_ids": [],
@@ -2039,7 +2052,12 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
     assert snapshot["schema_version"] == "narrative-reference-decision/v2"
     assert snapshot["images"][0]["binding_id"] == "planned-ref-letter"
     assert backend.calls[0][1]["payload"]["use_style"] is False
+    assert backend.calls[0][1]["payload"]["reference_scope"]["beat_ids"] == ["dramatic-beat-1"]
     assert "image_path" not in str(response.json())
+    if stage == "render":
+        assert backend.calls[0][1]["payload"]["storyboard_contract_version"] == 1
+        batch = load_materialized_groups(tmp_path, 1)[0].generation_batches[0]
+        assert backend.calls[0][1]["payload"]["batch_id"] == batch["id"]
 
 
 def test_generate_snapshot_wait_does_not_block_activation_and_rejects_race(

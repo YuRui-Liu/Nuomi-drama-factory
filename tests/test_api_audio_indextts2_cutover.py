@@ -174,6 +174,7 @@ async def test_default_h3_alias_is_validated_and_enqueued_as_canonical(
                 id="runninghub:minimax-h3",
                 available=True,
                 unavailable_reason=None,
+                supported_modes=("t2va", "i2va", "fl2va"),
             )
         ],
     )

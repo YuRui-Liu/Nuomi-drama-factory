@@ -145,6 +145,38 @@ def test_plain_strings_do_not_count_as_env_reads(tmp_path: Path) -> None:
     assert "SH_BRACE_REF" not in report.dead_keys
 
 
+def test_explicit_class_reader_forwarding_tracks_only_proven_env_parameters(tmp_path: Path) -> None:
+    checker = _load_module()
+    source = tmp_path / "config.py"
+    _write(source, '''
+import os
+
+class Settings:
+    @staticmethod
+    def read_thinking(thinking_env, display_label):
+        return os.getenv(thinking_env)
+
+    @classmethod
+    def read_model(cls, model_env):
+        return os.environ.get(model_env)
+
+    @staticmethod
+    def ordinary(label):
+        return label
+
+def make_agent(*, thinking_env):
+    return Settings.read_thinking(thinking_env, "NOT_AN_ENV_READ")
+
+make_agent(thinking_env="FORWARDED_THINKING_LEVEL")
+Settings.read_model("CLASS_MODEL_KEY")
+Settings.ordinary("DEAD_CLASS_ARGUMENT")
+unrelated.read_thinking("DEAD_INSTANCE_ARGUMENT", "OTHER_LABEL")
+''')
+    assert checker.collect_static_env_keys([source]) == {
+        "FORWARDED_THINKING_LEVEL", "CLASS_MODEL_KEY",
+    }
+
+
 def test_literal_loop_alias_only_counts_inside_loop_body(tmp_path: Path) -> None:
     check_env_config = _load_module()
     root = tmp_path / "repo"

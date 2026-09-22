@@ -1,0 +1,176 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "MiniMax H3 UNET"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIP (minimax / Qwen3-VL)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Video VAE"
+    }
+  },
+  "4": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Audio VAE"
+    }
+  },
+  "6": {
+    "inputs": {
+      "fps": [
+        "12",
+        2
+      ],
+      "bit_depth": 8,
+      "images": [
+        "12",
+        0
+      ],
+      "audio": [
+        "12",
+        1
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "Create Video"
+    }
+  },
+  "7": {
+    "inputs": {
+      "filename_prefix": "video/MiniMaxH3_Director_t2v",
+      "format": "auto",
+      "codec": "auto",
+      "fw_video_preview": "",
+      "video": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "💾 Save Video"
+    }
+  },
+  "8": {
+    "inputs": {
+      "preview": "MiniMax H3 Director [批量生成 (r2v)] (segment): 2 segment(s), 180 frames @ 24.00 fps\nOutput: 864×480 (fixed)\nGlobal task: 参考主体生视频(Reference to Video)\n  #1 [0:107] 107f — r2v — subject_definitions:\n<Subject 1> 是来自 <Picture 1>   的棕发紫眸女性，身…\n  #2 [107:180] 73f — r2v — subject_definitions:\n<Subject 1> 是来自 <Picture 1>   的棕发紫眸女性，身…\n\nExecution path: ComfyUI official MiniMax H3\nSample: official MiniMaxH3SigmaShift → BasicScheduler → BasicGuider/CFGGuider → SamplerCustomAdvanced.\nLive preview: ON — 采样 TAE + 成片后整段 JPEG 播放。\nAudio: generate — decode MiniMax H3 AV latent audio.\nSegment continuity: OFF — official MiniMax H3 per-segment path (no motion-context pin/patch/trim; r2v/v2v/rv2v use stock ReferenceToVideo).\nSegment 1/2: r2v — Reference-to AV — subject images (+ optional tags) in prompt (MiniMax H3) (~3 ref image(s), 0 ref video(s)) (107 frames, seed=666)\nSegment 1 timing: cond=17.1s sample=95.0s decode=12.0s cache=0.2s cleanup=between-seg\nSegment 2/2: r2v — Reference-to AV — subject images (+ optional tags) in prompt (MiniMax H3) (~3 ref image(s), 0 ref video(s)) (73 frames, seed=666)\nSegment 2 timing: cond=3.2s sample=50.9s decode=4.8s cache=0.1s cleanup=skipped\n\nExport mode: all — merged 180 frame(s) on images output.\n\nGenerated audio: decoded from MiniMax H3 AV latent (frame-aligned to picture / timeline fps).\n\nimages_pre_refine: same as images (Refine node not connected).\n\n有问题联系作者：AI搅拌手  QQ交流群：551482703",
+      "source": [
+        "12",
+        5
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Director 运行报告"
+    }
+  },
+  "12": {
+    "inputs": {
+      "task_type": "r2v — 参考主体生视频(Reference to Video)",
+      "global_prompt": "subject_definitions:\n<Subject 1> 是来自 <Picture 1>   的棕发紫眸女性，身份与穿着完全锁定参考图：深海军蓝无袖高开衩丝质礼服、金线刺绣立领、黑色薄丝袜、金色尖头高跟鞋、金色耳饰与手镯。\n<Subject 2> 是来自  <Picture 2>   的可爱立体卡通小猴，浅棕皮毛、米色肚腹、橙色眼罩护目镜、蓝色大眼与细长尾巴，外形完全锁定参考图。\n<Subject 3> 是来自  <Picture 3>   的金发蓝眸女性，白色挂脖晚礼服、胸前红宝石坠饰、黑色薄丝袜、白色高跟鞋与金色手镯，身份与穿着完全锁定参考图。",
+      "bd_grp_sample": "采样设置",
+      "cfg": 1,
+      "seed": 666,
+      "frame_rate": 24,
+      "width": 864,
+      "height": 480,
+      "ref_max_size": 864,
+      "total_frames": 180,
+      "timeline_data": "{\"version\":5,\"editMode\":\"segment\",\"totalFrames\":180,\"frameRate\":24,\"video\":{\"fileName\":\"\",\"videoFile\":\"\",\"subfolder\":\"\",\"type\":\"input\",\"frames\":[],\"frameMap\":[],\"sourceFrameCount\":248,\"deletedSourceRanges\":[]},\"videoClips\":[],\"global\":{\"taskType\":\"r2v — 参考主体生视频(Reference to Video)\",\"prompt\":\"subject_definitions:\\n<Subject 1> 是来自 <Picture 1>   的棕发紫眸女性，身份与穿着完全锁定参考图：深海军蓝无袖高开衩丝质礼服、金线刺绣立领、黑色薄丝袜、金色尖头高跟鞋、金色耳饰与手镯。\\n<Subject 2> 是来自  <Picture 2>   的可爱立体卡通小猴，浅棕皮毛、米色肚腹、橙色眼罩护目镜、蓝色大眼与细长尾巴，外形完全锁定参考图。\\n<Subject 3> 是来自  <Picture 3>   的金发蓝眸女性，白色挂脖晚礼服、胸前红宝石坠饰、黑色薄丝袜、白色高跟鞋与金色手镯，身份与穿着完全锁定参考图。\",\"refs\":[{\"index\":0,\"imageFile\":\"9246042a05f7c1b56271cd8e263a31c86dcb0d67b44cd8fd8924d21a7ebdaccc.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},{\"index\":1,\"imageFile\":\"320ba9ad784a4ae762f12befbb00de12b0e1ece9666aa16dfa15b940da4ce9e0.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},{\"index\":2,\"imageFile\":\"52050358fbf81043461d0ad17821136d5c27da53862ad6542208e32f5cacc1aa.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"continuousReference\":false,\"genImage\":{\"imageFile\":\"\"},\"sourceWidth\":768,\"sourceHeight\":1024,\"refAudios\":[],\"refVideos\":[],\"commonEnabled\":true,\"commonCollapsed\":true},\"output\":{\"mode\":\"fixed\",\"aspectRatio\":\"16:9 (宽屏)\",\"megapixels\":0.4,\"multiple\":32,\"longEdge\":864,\"width\":864,\"height\":480,\"maxExportFrames\":0,\"exportMode\":\"all\",\"audioMode\":\"generate\",\"exportSourceImages\":false,\"refImageSize\":\"match\",\"continuityEnabled\":false,\"continuityOverlapFrames\":5},\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0sjvt1pniuw\",\"start\":0,\"length\":107,\"frameCount\":107,\"durationSec\":4.3,\"prompt\":\"summary:\\n[reference generation] 目标视频表现 <Subject 1> 独自站在豪华酒店夜景露台，缓慢转头、举杯、投出暧昧眼神，镜头由中远景缓推至中近景，建立等待与引诱的气氛。  \\n  @\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 面部身份、长棕发、紫眸、深蓝礼服与金绣、丝袜高跟鞋及饰品均完整保留。\\n@ @\\ndetailed_description:\\n目标视频采用电影感二次元写实风格，暖琥珀夜景侧光，浅景深，浪漫暧昧气质。\\n[Shot 1] 中远景建立豪华酒店夜景露台：玻璃栏杆外城市灯火呈柔和光斑。画面右侧站立 <Subject 1>，侧身面向栏杆，左手轻扶玻璃，右手持香槟杯，长发被夜风轻轻吹动。固定镜头短暂停留后，以小幅度、慢速 Push In 靠近她的上半身。远处隐约传来杯盏轻碰与城市底噪。\\n[Shot 2] At 00:03.500, 镜头不硬切，继续慢速推近至中景：<Subject 1> 缓缓转头看向镜头方向，紫眸半眯，嘴角漾出克制的暧昧浅笑，举杯至唇边却并未真正饮下，只是用杯沿轻触下唇。发丝掠过肩侧，金绣领口在暖光下微微反光。\\n[Shot 3] At 00:07.000, 镜头以小幅度、慢速轻微 Arc Shot 绕至她四分之三正面中近景：<Subject 1> 目光从镜头旁移向画面外一侧，像在等待某人出现，手指在杯壁上缓缓摩挲。镜头稳定停留至结尾，暧昧悬念未解。\\n\\noverall_soundscape:\\n夜风掠过露台的轻柔气流声贯穿全片，远处城市低沉环境底噪与偶尔极轻的杯盏碰击声叠入；衣料与丝袜摩擦的细微声响随人物动作出现。\\n \\nnon_diegetic_music:\\n低音量慢速爵士钢琴与柔和刷鼓点贯穿，节奏舒缓，动态平稳，无歌词。\",\"negativePrompt\":\"bad video\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":false,\"refImageSize\":\"match\"},{\"id\":\"mt0slveqtpanc\",\"start\":107,\"length\":73,\"frameCount\":73,\"durationSec\":2.5,\"prompt\":\"summary:\\n[reference generation] 目标视频承接上一段露台气氛：先短暂保持 <Subject 1> 的等待姿态，随后 <Subject 2> 俏皮跑入，扯动衣摆并指向画外，引导 <Subject 1> 看向即将出现的方向。\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - 身份、发型面容、深蓝礼服与配饰完整保留。\\n<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - 橙色眼罩、蓝眼、浅棕皮毛与立体卡通质感完整保留。\\n@\\ndetailed_description:\\n目标视频延续电影感二次元写实夜景风格，暖琥珀光与浅景深保持一致。\\n[Shot 1] 中近景先静止约 1.5 秒，保持 <Subject 1> 在露台栏杆旁侧身回望画外的等待姿态，发丝轻动，香槟杯仍在手中。随后 <Subject 2> 从画面下方小跑入画，橙色眼罩反光，尾巴轻甩，伸手轻轻拽住 <Subject 1> 礼服下摆。镜头以小幅度、慢速轻微 Tilt Down 兼顾小猴与她的视线交流。\\n[Shot 2] At 00:02.800, 镜头切到稍低角度的中景双人构图：<Subject 2> 仰头对 <Subject 1> 张开嘴巴做出兴奋表情，小爪指向画面左侧画外；<Subject 1> 低头看它，神情由惊讶转为含笑的娇嗔，再顺着它的指向抬眼望向画外。镜头以慢速、小幅度轻微 Truck Left 暗示视线方向，结束在两人共同看向画外的瞬间。\\n\\noverall_soundscape:\\n延续夜风与远处城市底噪；加入小猴轻快的爪步声、短促可爱气声，以及衣摆被轻扯时的布料细响。\\n\\nnon_diegetic_music:\\n原有慢爵士之上叠入少量轻盈钟琴音符，节奏仍偏慢，音量克制，无歌词。\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":true,\"refImageSize\":\"match\"}],\"timelineMode\":\"prompt_batch\",\"width\":864,\"height\":480,\"refMaxSize\":864,\"gen\":{\"defaultFrameCount\":124},\"keyframes\":[{\"id\":\"msdtx3zi62ktv_s\",\"imageFile\":\"d47f7c7c243b746a437dd33ac21ed163192540329ac0784ed7e6bd83b440065a.png\",\"width\":768,\"height\":1024,\"start\":0,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"一个猴子在极速奔跑，跑的过程中裤子掉在地上，但他仍然继续奔跑。过程中伴随自然的跑步声\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"msdtx3zi62ktv_e\",\"imageFile\":\"a1f4b9c98491d696b06b022b2588bf82b966a69356edc0fde952ce335820f26c.png\",\"width\":512,\"height\":682,\"start\":62,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"\",\"negativePrompt\":\"bad video\",\"isStartFrame\":false,\"isEndFrame\":true},{\"id\":\"msdtx87njf33g_s\",\"imageFile\":\"a1f4b9c98491d696b06b022b2588bf82b966a69356edc0fde952ce335820f26c.png\",\"width\":512,\"height\":682,\"start\":124,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"猴子在快速奔跑，双臂自然摆动，跑到一个岩石旁，慢慢的坐下，随着时间的流逝，沙尘慢慢消失，漏出蓝天背景。过程中伴随自然的跑步、坐下时候产生的声音\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"msdtx87njf33g_e\",\"imageFile\":\"aad0afcc1907dd5d8ce4f0c4e14f6511bde9cab23dde1da0311827d4ae4170d0.png\",\"width\":768,\"height\":1024,\"start\":186,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"\",\"negativePrompt\":\"bad video\",\"isStartFrame\":false,\"isEndFrame\":true},{\"id\":\"msdtwxyuscavj_s\",\"imageFile\":\"aad0afcc1907dd5d8ce4f0c4e14f6511bde9cab23dde1da0311827d4ae4170d0.png\",\"width\":768,\"height\":1024,\"start\":248,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"猴子从岩石上起身，起身后穿上衣服，背上书包，去教室上课，慢慢走到教室里，过程中伴随穿衣、背书包、走路的背景音\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"msdtwxyuscavj_e\",\"imageFile\":\"837b4f3722830bcbeabc138facc53c0e8fa90308543d98c2dde7e797b4a17cd4.png\",\"width\":768,\"height\":1024,\"start\":310,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"\",\"negativePrompt\":\"bad video\",\"isStartFrame\":false,\"isEndFrame\":true}],\"durationSec\":15,\"shots\":[{\"id\":\"msdtx3zi62ktv\",\"durationSec\":5,\"prompt\":\"一个猴子在极速奔跑，跑的过程中裤子掉在地上，但他仍然继续奔跑。过程中伴随自然的跑步声\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"d47f7c7c243b746a437dd33ac21ed163192540329ac0784ed7e6bd83b440065a.png\",\"width\":768,\"height\":1024},\"endImage\":{\"imageFile\":\"a1f4b9c98491d696b06b022b2588bf82b966a69356edc0fde952ce335820f26c.png\",\"width\":512,\"height\":682}},{\"id\":\"msdtx87njf33g\",\"durationSec\":5,\"prompt\":\"猴子在快速奔跑，双臂自然摆动，跑到一个岩石旁，慢慢的坐下，随着时间的流逝，沙尘慢慢消失，漏出蓝天背景。过程中伴随自然的跑步、坐下时候产生的声音\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"a1f4b9c98491d696b06b022b2588bf82b966a69356edc0fde952ce335820f26c.png\",\"width\":512,\"height\":682},\"endImage\":{\"imageFile\":\"aad0afcc1907dd5d8ce4f0c4e14f6511bde9cab23dde1da0311827d4ae4170d0.png\",\"width\":768,\"height\":1024}},{\"id\":\"msdtwxyuscavj\",\"durationSec\":5,\"prompt\":\"猴子从岩石上起身，起身后穿上衣服，背上书包，去教室上课，慢慢走到教室里，过程中伴随穿衣、背书包、走路的背景音\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"aad0afcc1907dd5d8ce4f0c4e14f6511bde9cab23dde1da0311827d4ae4170d0.png\",\"width\":768,\"height\":1024},\"endImage\":{\"imageFile\":\"837b4f3722830bcbeabc138facc53c0e8fa90308543d98c2dde7e797b4a17cd4.png\",\"width\":768,\"height\":1024}}],\"liveTaePreview\":true,\"batchDetailMode\":\"solo\",\"batchWorkspaces\":{\"r2v\":{\"selectedIndex\":0,\"editMode\":\"segment\",\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0sjvt1pniuw\",\"start\":0,\"length\":107,\"frameCount\":107,\"durationSec\":4.3,\"prompt\":\"summary:\\n[reference generation] 目标视频表现 <Subject 1> 独自站在豪华酒店夜景露台，缓慢转头、举杯、投出暧昧眼神，镜头由中远景缓推至中近景，建立等待与引诱的气氛。  \\n  @\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 面部身份、长棕发、紫眸、深蓝礼服与金绣、丝袜高跟鞋及饰品均完整保留。\\n@ @\\ndetailed_description:\\n目标视频采用电影感二次元写实风格，暖琥珀夜景侧光，浅景深，浪漫暧昧气质。\\n[Shot 1] 中远景建立豪华酒店夜景露台：玻璃栏杆外城市灯火呈柔和光斑。画面右侧站立 <Subject 1>，侧身面向栏杆，左手轻扶玻璃，右手持香槟杯，长发被夜风轻轻吹动。固定镜头短暂停留后，以小幅度、慢速 Push In 靠近她的上半身。远处隐约传来杯盏轻碰与城市底噪。\\n[Shot 2] At 00:03.500, 镜头不硬切，继续慢速推近至中景：<Subject 1> 缓缓转头看向镜头方向，紫眸半眯，嘴角漾出克制的暧昧浅笑，举杯至唇边却并未真正饮下，只是用杯沿轻触下唇。发丝掠过肩侧，金绣领口在暖光下微微反光。\\n[Shot 3] At 00:07.000, 镜头以小幅度、慢速轻微 Arc Shot 绕至她四分之三正面中近景：<Subject 1> 目光从镜头旁移向画面外一侧，像在等待某人出现，手指在杯壁上缓缓摩挲。镜头稳定停留至结尾，暧昧悬念未解。\\n\\noverall_soundscape:\\n夜风掠过露台的轻柔气流声贯穿全片，远处城市低沉环境底噪与偶尔极轻的杯盏碰击声叠入；衣料与丝袜摩擦的细微声响随人物动作出现。\\n \\nnon_diegetic_music:\\n低音量慢速爵士钢琴与柔和刷鼓点贯穿，节奏舒缓，动态平稳，无歌词。\",\"negativePrompt\":\"bad video\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":false,\"refImageSize\":\"match\",\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"_videoFrameCount\":107,\"previewFps\":24},{\"id\":\"mt0slveqtpanc\",\"start\":107,\"length\":73,\"frameCount\":73,\"durationSec\":2.5,\"prompt\":\"summary:\\n[reference generation] 目标视频承接上一段露台气氛：先短暂保持 <Subject 1> 的等待姿态，随后 <Subject 2> 俏皮跑入，扯动衣摆并指向画外，引导 <Subject 1> 看向即将出现的方向。\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - 身份、发型面容、深蓝礼服与配饰完整保留。\\n<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - 橙色眼罩、蓝眼、浅棕皮毛与立体卡通质感完整保留。\\n@\\ndetailed_description:\\n目标视频延续电影感二次元写实夜景风格，暖琥珀光与浅景深保持一致。\\n[Shot 1] 中近景先静止约 1.5 秒，保持 <Subject 1> 在露台栏杆旁侧身回望画外的等待姿态，发丝轻动，香槟杯仍在手中。随后 <Subject 2> 从画面下方小跑入画，橙色眼罩反光，尾巴轻甩，伸手轻轻拽住 <Subject 1> 礼服下摆。镜头以小幅度、慢速轻微 Tilt Down 兼顾小猴与她的视线交流。\\n[Shot 2] At 00:02.800, 镜头切到稍低角度的中景双人构图：<Subject 2> 仰头对 <Subject 1> 张开嘴巴做出兴奋表情，小爪指向画面左侧画外；<Subject 1> 低头看它，神情由惊讶转为含笑的娇嗔，再顺着它的指向抬眼望向画外。镜头以慢速、小幅度轻微 Truck Left 暗示视线方向，结束在两人共同看向画外的瞬间。\\n\\noverall_soundscape:\\n延续夜风与远处城市底噪；加入小猴轻快的爪步声、短促可爱气声，以及衣摆被轻扯时的布料细响。\\n\\nnon_diegetic_music:\\n原有慢爵士之上叠入少量轻盈钟琴音符，节奏仍偏慢，音量克制，无歌词。\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":true,\"refImageSize\":\"match\",\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"_videoFrameCount\":73,\"previewFps\":24}],\"globalCommon\":{\"commonEnabled\":true,\"commonCollapsed\":true,\"prompt\":\"subject_definitions:\\n<Subject 1> 是来自 <Picture 1>   的棕发紫眸女性，身份与穿着完全锁定参考图：深海军蓝无袖高开衩丝质礼服、金线刺绣立领、黑色薄丝袜、金色尖头高跟鞋、金色耳饰与手镯。\\n<Subject 2> 是来自  <Picture 2>   的可爱立体卡通小猴，浅棕皮毛、米色肚腹、橙色眼罩护目镜、蓝色大眼与细长尾巴，外形完全锁定参考图。\\n<Subject 3> 是来自  <Picture 3>   的金发蓝眸女性，白色挂脖晚礼服、胸前红宝石坠饰、黑色薄丝袜、白色高跟鞋与金色手镯，身份与穿着完全锁定参考图。\",\"refs\":[{\"index\":0,\"imageFile\":\"9246042a05f7c1b56271cd8e263a31c86dcb0d67b44cd8fd8924d21a7ebdaccc.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},{\"index\":1,\"imageFile\":\"320ba9ad784a4ae762f12befbb00de12b0e1ece9666aa16dfa15b940da4ce9e0.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},{\"index\":2,\"imageFile\":\"52050358fbf81043461d0ad17821136d5c27da53862ad6542208e32f5cacc1aa.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"refAudios\":[],\"refVideos\":[]}}}}",
+      "bd_grp_advanced": "高级采样",
+      "steps": 20,
+      "sampler": "res_multistep",
+      "scheduler": "simple",
+      "shift_video": 12,
+      "shift_audio": 3,
+      "export_source_images": false,
+      "bd_grp_perf": false,
+      "clear_vram_between_segments": "",
+      "minimax_director_ui": "",
+      "model": [
+        "16",
+        0
+      ],
+      "video_vae": [
+        "3",
+        0
+      ],
+      "audio_vae": [
+        "4",
+        0
+      ],
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3Director",
+    "_meta": {
+      "title": "MiniMaxH3Director"
+    }
+  },
+  "16": {
+    "inputs": {
+      "model": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "MiniMax H3 Memory Efficient Sage Attention Patch"
+    }
+  },
+  "17": {
+    "inputs": {
+      "sage_attention": "disabled",
+      "allow_compile": false,
+      "model": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention KJ"
+    }
+  },
+  "25": {
+    "inputs": {
+      "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  }
+}

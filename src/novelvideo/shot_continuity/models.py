@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from .hashing import canonical_sha256
+from novelvideo.director_plan.cinematography import ShotCinematography
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -124,6 +125,9 @@ class ShotContinuityContract(_FrozenModel):
     lighting: LightingLock = Field(default_factory=LightingLock)
     boundary: BoundaryState
     director_world: DirectorWorldBinding | None = None
+    cinematography: ShotCinematography | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def require_complete_predecessor(self) -> Self:

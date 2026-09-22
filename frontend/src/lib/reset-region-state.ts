@@ -26,6 +26,8 @@ const LOGOUT_PRESERVE_KEYS = new Set<string>([
 // these prefixes is covered without updating this list.
 const SWEEP_PREFIXES = [
   "supertale-",
+  "superchat:",
+  "freezone:",
   "st.episode.",
   "st.beats.toggles",
   "st.beats.action-panel.sections",

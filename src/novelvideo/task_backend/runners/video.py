@@ -54,6 +54,36 @@ class VideoSpan:
         return bool(self.entries)
 
 
+def director_composition_snapshot(
+    project_dir: str | Path, episode: int, *, groups: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Require every active Director group, independently of legacy beat rows."""
+    from novelvideo.director_plan.store import DirectorPlanStore
+
+    active = DirectorPlanStore(Path(project_dir)).load_active(episode)
+    if active is None or not active.groups:
+        raise ValueError("DIRECTOR_COMPOSITION_INCOMPLETE: 缺少活动导演组")
+    group_ids = [group.id for group in active.groups]
+    effective_groups = load_materialized_groups(project_dir, episode) if groups is None else groups
+    by_id = {group.id: group for group in effective_groups}
+    if len(by_id) != len(effective_groups) or set(by_id) != set(group_ids):
+        raise ValueError("DIRECTOR_COMPOSITION_INCOMPLETE: 活动导演组来源不完整")
+    video_sources = []
+    for group_id in group_ids:
+        group = by_id[group_id]
+        stage = group.stages.get("video")
+        if (group.director_revision_id != active.revision_id
+            or getattr(stage, "status", "") != "completed"
+            or getattr(stage, "needs_regeneration", False)):
+            raise ValueError(f"DIRECTOR_COMPOSITION_INCOMPLETE: {group_id} 视频未完成或已过期")
+        video_sources.append({
+            "group_id": group_id,
+            "revision": getattr(stage, "revision", 0),
+            "manifest_asset": str(getattr(stage, "manifest_asset", "") or ""),
+        })
+    return {"revision_id": active.revision_id, "group_ids": group_ids, "video_sources": video_sources}
+
+
 def resolve_episode_composition_sources(
     project_dir: str | Path,
     episode: int,
@@ -77,18 +107,32 @@ def resolve_episode_composition_sources(
     try:
         groups = load_materialized_groups(root, episode)
     except (OSError, ValueError):
+        if strict_audio:
+            raise
         groups = []
+    if strict_audio and not beats:
+        director_composition_snapshot(root, episode, groups=groups)
     for group in sorted(groups, key=lambda item: int(getattr(item, "ordinal", 0))):
         stage = getattr(group, "stages", {}).get("video")
+        if strict_audio and getattr(stage, "needs_regeneration", False):
+            raise RuntimeError("narrative group video is stale; regenerate before composition")
         manifest_name = str(getattr(stage, "manifest_asset", "") or "").strip()
-        if getattr(stage, "status", "") != "completed" or not manifest_name:
+        if getattr(stage, "status", "") != "completed":
+            continue
+        if not manifest_name:
+            if strict_audio:
+                raise RuntimeError("completed Director video is missing its manifest")
             continue
         manifest_path = Path(manifest_name)
-        if not manifest_path.exists():
+        if not manifest_path.is_file():
+            if strict_audio:
+                raise RuntimeError(f"Director manifest is missing: {manifest_path}")
             continue
         manifest = load_h3_director_manifest(manifest_path)
         video_path = Path(manifest.physical_video)
-        if not video_path.exists():
+        if not video_path.is_file():
+            if strict_audio:
+                raise RuntimeError(f"Director video is missing: {video_path}")
             continue
         entries = tuple(manifest.entries)
         if any(entry.dialogue_source is DialogueSource.EXTERNAL_TTS for entry in entries):
@@ -122,7 +166,7 @@ def resolve_episode_composition_sources(
         if beat_num in covered:
             continue
         legacy = paths.video(beat_num)
-        if legacy.exists():
+        if legacy.is_file():
             legacy_spans.append((beat_num, index, VideoSpan(video_path=legacy, beat_numbers=(beat_num,))))
 
     ordered = [
@@ -765,6 +809,12 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
     output_dir = str(payload.get("output_dir") or ctx.output_dir)
     beats = list(payload.get("beats") or [])
     resolution = str(payload.get("resolution") or "720x1280")
+    director_snapshot = None
+    if not beats:
+        director_snapshot = director_composition_snapshot(output_dir, episode)
+        frozen_snapshot = payload.get("director_composition")
+        if frozen_snapshot is not None and frozen_snapshot != director_snapshot:
+            raise ValueError("DIRECTOR_COMPOSITION_CHANGED: 活动导演组或视频来源已改变，请重新合成")
     add_subtitles = bool(payload.get("add_subtitles"))
     manager = get_task_manager()
     paths = PathResolver(output_dir, episode)
@@ -805,6 +855,14 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         sources = resolve_episode_composition_sources(output_dir, episode, beats)
+        expected_beats = {
+            int(beat.get("beat_number") or index)
+            for index, beat in enumerate(beats, start=1)
+        }
+        available_beats = {beat for source in sources for beat in source.beat_numbers}
+        missing_beats = sorted(expected_beats - available_beats)
+        if missing_beats:
+            raise RuntimeError(f"合成失败，缺少 Beat 视频: {missing_beats}")
         for index, source in enumerate(sources):
             check_cancel()
             beat_num = source.beat_numbers[0]
@@ -872,13 +930,11 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                 ])
                 result = run_checked(cmd, default_timeout_seconds=30 * 60)
                 check_cancel()
-                if result.returncode == 0:
-                    video_clips.append(str(clip_path))
-                else:
-                    manager.update_progress_for_project(
-                        ctx, "compose_episode", episode,
-                        logs=[f"导演组 {beat_num} 合成失败: {result.stderr[:500]}"],
-                    )
+                if result.returncode != 0:
+                    raise RuntimeError(f"导演组 {beat_num} 合成失败: {result.stderr[:500]}")
+                if not clip_path.is_file() or clip_path.stat().st_size == 0:
+                    raise RuntimeError(f"导演组 {beat_num} 合成失败: 空视频片段")
+                video_clips.append(str(clip_path))
                 continue
 
             audio_path = paths.audio(beat_num)
@@ -976,15 +1032,11 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             cmd.append(str(clip_path))
             result = run_checked(cmd, default_timeout_seconds=30 * 60)
             check_cancel()
-            if result.returncode == 0:
-                video_clips.append(str(clip_path))
-            else:
-                manager.update_progress_for_project(
-                    ctx,
-                    "compose_episode",
-                    episode,
-                    logs=[f"Beat {beat_num} 合成失败: {result.stderr[:500]}"],
-                )
+            if result.returncode != 0:
+                raise RuntimeError(f"Beat {beat_num} 合成失败: {result.stderr[:500]}")
+            if not clip_path.is_file() or clip_path.stat().st_size == 0:
+                raise RuntimeError(f"Beat {beat_num} 合成失败: 空视频片段")
+            video_clips.append(str(clip_path))
 
         if not video_clips:
             raise RuntimeError("没有可用的视频片段")
@@ -1045,6 +1097,10 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                 raise RuntimeError(f"拼接失败: {result.stderr[:500]}")
             if not candidate_path.is_file() or candidate_path.stat().st_size == 0:
                 raise RuntimeError("拼接失败: ffmpeg 生成了空的视频文件")
+            if director_snapshot is not None:
+                current_snapshot = director_composition_snapshot(output_dir, episode)
+                if current_snapshot != director_snapshot:
+                    raise ValueError("DIRECTOR_COMPOSITION_CHANGED: 合成期间导演组或视频来源已改变")
             candidate_path.chmod(output_mode)
             os.replace(candidate_path, output_path)
         finally:

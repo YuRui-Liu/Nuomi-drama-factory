@@ -130,19 +130,29 @@ function AppLayout() {
       return;
     }
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     setValidated(false);
-    validateSession().then((ok) => {
+    const validate = async () => {
+      const ok = await validateSession();
       if (cancelled) return;
       if (!ok) {
         validatedUsernameRef.current = null;
+        // A transient HTTP failure preserves the local identity. Keep the
+        // guard closed and retry; /login would immediately redirect it back.
+        if (useAuthStore.getState().username === username) {
+          retryTimer = setTimeout(validate, 5_000);
+          return;
+        }
         navigate({ to: "/login" });
       } else {
         validatedUsernameRef.current = username;
         setValidated(true);
       }
-    });
+    };
+    void validate();
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
     };
   }, [username, navigate, validateSession]);
 

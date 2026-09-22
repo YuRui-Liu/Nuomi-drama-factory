@@ -59,6 +59,7 @@ dependencies = [
 
 [project.scripts]
 novelvideo = "novelvideo.cli:app"
+nuomi = "novelvideo.production_cli:app"
 
 [project.optional-dependencies]
 audio-separation = [

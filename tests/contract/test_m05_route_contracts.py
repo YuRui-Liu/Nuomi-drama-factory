@@ -478,14 +478,14 @@ def test_m05_openapi_exposes_expected_operations(m05_client_factory):
         if method.lower() in {"get", "post", "patch", "put", "delete"}
     }
 
-    assert len(M05_EXPECTED_OPERATIONS) == 60
+    assert len(M05_EXPECTED_OPERATIONS) == 61
     assert not M05_EXPECTED_OPERATIONS - actual
     assert "/api/v1/projects/{project}/scenes/{name}/director-stage/world" in spec["paths"]
     assert "/api/v1/projects/{project}/scenes/{name}/director-stage/world/clear" in spec["paths"]
 
 
 def test_m05_contract_requires_promoted_world_and_sketch_candidate_routes() -> None:
-    assert len(M05_EXPECTED_OPERATIONS) == 60
+    assert len(M05_EXPECTED_OPERATIONS) == 61
     assert (
         "POST",
         "/api/v1/projects/{project}/scenes/{name}/director-stage/world",

@@ -17,6 +17,12 @@ from novelvideo.text_task_runtime.models import (
 TEXT_TASK_ROUTING_KEY = "text_task_routing_v1"
 
 _ROLE_DEFAULTS = {
+    "identity_sheet_qc": AgentTaskRoute(
+        runtime="codex",
+        model="gpt-5.6-sol",
+        reasoning_effort="low",
+        fallback="stop",
+    ),
     "episode_asset_planning": AgentTaskRoute(
         runtime="codex",
         model="gpt-5.6-sol",

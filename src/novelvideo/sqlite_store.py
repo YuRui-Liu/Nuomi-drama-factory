@@ -3638,7 +3638,10 @@ class SQLiteStore:
                     "INSERT INTO entity_evidence "
                     "(run_id, entity_type, entity_id, chunk_id, source_start, source_end, "
                     "evidence_kind, evidence_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    rows,
+                    # One quote can support multiple extracted fields, which
+                    # are not separate columns in this source-evidence table.
+                    # Collapse identical rows without suppressing real conflicts.
+                    list(dict.fromkeys(rows)),
                 )
             await db.execute(
                 "INSERT INTO active_evidence_runs (entity_type, run_id, activated_at) "

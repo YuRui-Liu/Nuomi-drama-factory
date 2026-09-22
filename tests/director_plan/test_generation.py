@@ -75,6 +75,17 @@ def test_generation_batches_never_have_blank_cells(
     assert all(batch.style_snapshot_id == "style-snapshot-1" for batch in batches)
 
 
+def test_video_segments_limit_continuous_runs_to_supported_frame_pairs() -> None:
+    group = group_with_shots(3).model_copy(update={"shots": (
+        shot(1, continuous_with_next=True, duration_seconds=3),
+        shot(2, continuous_with_next=True, duration_seconds=3),
+        shot(3, duration_seconds=3),
+    )})
+    assert [segment.shot_ids for segment in video_segments(group)] == [
+        ("shot-1", "shot-2"), ("shot-3",),
+    ]
+
+
 def test_video_segments_default_to_one_shot_and_merge_only_continuous_action() -> None:
     group = group_with_shots(4).model_copy(
         update={

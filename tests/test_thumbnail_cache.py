@@ -18,6 +18,13 @@ def _image(path: Path, size: tuple[int, int] = (1200, 800)) -> None:
     Image.new("RGB", size, "#5b8def").save(path)
 
 
+@pytest.mark.parametrize("name", ["角色#成年", "角色?成年"])
+def test_history_thumbnail_local_filename_is_not_parsed_as_url(tmp_path, name):
+    source = tmp_path / "freezone" / name / "reference.png"
+    _image(source)
+    assert history._thumbnail_source(tmp_path, str(source)) == source.resolve()
+
+
 def test_thumbnail_cache_is_project_scoped_and_keyed_by_source_version_and_size(
     tmp_path: Path,
 ) -> None:

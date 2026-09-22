@@ -50,18 +50,37 @@ def _probe_duration(path: str) -> float:
 
 
 def build_ffmpeg_filter_complex(
-    plan: LocalCompositionPlan, *, durations: tuple[float, ...]
+    plan: LocalCompositionPlan, *, durations: tuple[float, ...],
+    output_size: tuple[int, int] | None = None,
 ) -> str:
     """Compile reviewed transition rules into executable FFmpeg filters."""
     if len(durations) != len(plan.paths):
         raise ValueError("one duration is required for each composition path")
     if len(plan.transitions) != max(0, len(plan.paths) - 1):
         raise ValueError("one transition is required between adjacent paths")
-    if len(plan.paths) == 1:
-        return "[0:v]null[outv];[0:a]anull[outa]"
-
     filters: list[str] = []
-    video_label = "0:v"
+    video_sources = [f"{index}:v" for index in range(len(plan.paths))]
+    audio_sources = [f"{index}:a" for index in range(len(plan.paths))]
+    if output_size is not None:
+        width, height = output_size
+        if width <= 0 or height <= 0 or width % 2 or height % 2:
+            raise ValueError("composition output size must contain positive even dimensions")
+        for index in range(len(plan.paths)):
+            video_sources[index] = f"normalized_v{index}"
+            audio_sources[index] = f"normalized_a{index}"
+            filters.append(
+                f"[{index}:v]scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+                f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+                f"setsar=1,fps=24,settb=AVTB,setpts=PTS-STARTPTS,"
+                f"format=yuv420p[{video_sources[index]}]"
+            )
+            filters.append(f"[{index}:a]asetpts=PTS-STARTPTS[{audio_sources[index]}]")
+    if len(plan.paths) == 1:
+        filters.extend((f"[{video_sources[0]}]null[outv]", f"[{audio_sources[0]}]anull[outa]"))
+        return ";".join(filters)
+
+    video_label = video_sources[0]
     visual_overlap = 0.0
     visual_starts = [0.0]
     for index, rule in enumerate(plan.transitions, start=1):
@@ -70,14 +89,14 @@ def build_ffmpeg_filter_complex(
             duration = rule.frames / 24
             offset = sum(durations[:index]) - visual_overlap - duration
             filters.append(
-                f"[{video_label}][{index}:v]xfade=transition=fade:"
+                f"[{video_label}][{video_sources[index]}]xfade=transition=fade:"
                 f"duration={duration:.6f}:offset={offset:.6f}[{next_video}]"
             )
             visual_overlap += duration
             visual_starts.append(offset)
         else:
             filters.append(
-                f"[{video_label}][{index}:v]concat=n=2:v=1:a=0[{next_video}]"
+                f"[{video_label}][{video_sources[index]}]concat=n=2:v=1:a=0[{next_video}]"
             )
             visual_starts.append(sum(durations[:index]) - visual_overlap)
         video_label = next_video
@@ -86,13 +105,13 @@ def build_ffmpeg_filter_complex(
     for index, visual_start in enumerate(visual_starts):
         incoming = plan.transitions[index - 1] if index else None
         outgoing = plan.transitions[index] if index < len(plan.transitions) else None
-        main_source = f"{index}:a"
+        main_source = audio_sources[index]
         tail_source = main_source
         if outgoing is not None and outgoing.audio == "l_cut":
             main_source = f"a{index}-main"
             tail_source = f"a{index}-tail"
             filters.append(
-                f"[{index}:a]asplit=2[{main_source}][{tail_source}]"
+                f"[{audio_sources[index]}]asplit=2[{main_source}][{tail_source}]"
             )
         lead = (
             incoming.audio_ms / 1000
@@ -116,21 +135,41 @@ def build_ffmpeg_filter_complex(
             audio_labels.append(tail_label)
 
     mixed = "".join(f"[{label}]" for label in audio_labels)
+    total_duration = sum(durations) - visual_overlap
     filters.extend((
         f"[{video_label}]null[outv]",
-        f"{mixed}amix=inputs={len(audio_labels)}:normalize=0,apad[outa]",
+        # Unbounded apad can exhaust the filter consumer queue before the
+        # muxer's -shortest stops it. End the audio stream at the video timeline.
+        f"{mixed}amix=inputs={len(audio_labels)}:normalize=0,"
+        f"apad=whole_dur={total_duration:.6f},atrim=duration={total_duration:.6f}[outa]",
     ))
     return ";".join(filters)
 
 
-def compose_local_segments(plan: LocalCompositionPlan, output_path: Path) -> Path:
+def compose_local_segments(
+    plan: LocalCompositionPlan, output_path: Path, *,
+    output_size: tuple[int, int] | None = None,
+) -> Path:
     """Compose provider segment files in the exact reviewed order."""
+    if not plan.paths:
+        raise ValueError("at least one video segment is required for composition")
+    if output_size is None:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", plan.paths[0]],
+            capture_output=True, text=True, check=False,
+        )
+        if probe.returncode:
+            raise RuntimeError(f"failed to probe segment canvas: {probe.stderr[-500:]}")
+        stream = json.loads(probe.stdout)["streams"][0]
+        output_size = (int(stream["width"]), int(stream["height"]))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = output_path.with_suffix(".composition.json")
     manifest.write_text(
         json.dumps(
             {
                 "paths": list(plan.paths),
+                "output_size": list(output_size),
                 "transitions": [item.model_dump(mode="json") for item in plan.transitions],
             },
             ensure_ascii=False,
@@ -138,18 +177,20 @@ def compose_local_segments(plan: LocalCompositionPlan, output_path: Path) -> Pat
         ),
         encoding="utf-8",
     )
-    command = ["ffmpeg", "-y"]
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for path in plan.paths:
         command.extend(["-i", path])
     durations = tuple(_probe_duration(path) for path in plan.paths)
     command.extend(
         [
             "-filter_complex",
-            build_ffmpeg_filter_complex(plan, durations=durations),
+            build_ffmpeg_filter_complex(plan, durations=durations, output_size=output_size),
             "-map",
             "[outv]",
             "-map",
             "[outa]",
+            "-pix_fmt",
+            "yuv420p",
             "-shortest",
             str(output_path),
         ]

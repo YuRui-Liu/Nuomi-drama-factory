@@ -394,3 +394,63 @@ def test_task_state_schema_migrates_lease_and_cancel_columns(tmp_path: Path) -> 
         "heartbeat_at",
         "cancel_requested_at",
     } <= columns
+
+
+@pytest.mark.parametrize("operation", ["update", "complete", "fail"])
+@pytest.mark.parametrize("race", ["new_run", "heartbeat", "cancelled"])
+@pytest.mark.parametrize("explicit_task_id", [False, True])
+def test_project_callback_cas_preserves_concurrent_task_control_changes(
+    monkeypatch, tmp_path: Path, operation: str, race: str, explicit_task_id: bool,
+) -> None:
+    manager = TaskStateManager()
+    ctx = _ctx(tmp_path)
+    created = manager.create_task_for_project(ctx, "render", 1)
+    assert manager.claim_task_lease(ctx, created.task_id, "worker-a", lease_seconds=60)
+    original_get = manager.get_task_for_project
+    changed = None
+
+    def get_then_change_control(*args, **kwargs):
+        nonlocal changed
+        state = original_get(*args, **kwargs)
+        if changed is None:
+            if race == "new_run":
+                manager.create_task_for_project(ctx, "render", 1)
+            elif race == "heartbeat":
+                assert manager.heartbeat_task_lease(
+                    ctx, created.task_id, "worker-a", lease_seconds=120,
+                )
+                with manager._connect_context(ctx) as conn:
+                    conn.execute(
+                        "UPDATE task_states SET cancel_requested_at = ? WHERE task_id = ?",
+                        ("2026-01-01T00:00:00Z", created.task_id),
+                    )
+            else:
+                with manager._connect_context(ctx) as conn:
+                    conn.execute(
+                        "UPDATE task_states SET status = 'cancelled' WHERE task_id = ?",
+                        (created.task_id,),
+                    )
+            changed = original_get(ctx, "render", 1)
+        return state
+
+    monkeypatch.setattr(manager, "get_task_for_project", get_then_change_control)
+    common = {"expected_task_id": created.task_id} if explicit_task_id else {}
+    if operation == "update":
+        written = manager.update_progress_for_project(ctx, "render", 1, progress=0.5, **common)
+    elif operation == "complete":
+        written = manager.complete_task_for_project(ctx, "render", 1, result={"ok": True}, **common)
+    else:
+        written = manager.fail_task_for_project(ctx, "render", 1, error="boom", **common)
+
+    fresh = original_get(ctx, "render", 1)
+    assert fresh.task_id == changed.task_id
+    assert fresh.execution_owner_id == changed.execution_owner_id
+    assert fresh.lease_expires_at == changed.lease_expires_at
+    assert fresh.heartbeat_at == changed.heartbeat_at
+    assert fresh.cancel_requested_at == changed.cancel_requested_at
+    if race == "heartbeat":
+        assert written is True
+        assert fresh.status == {"update": "running", "complete": "completed", "fail": "failed"}[operation]
+    else:
+        assert written is False
+        assert fresh.status == changed.status

@@ -11,11 +11,13 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from novelvideo.backup.cli import backup_app
+from novelvideo.production_cli import app as production_app
 from novelvideo.cognee import CogneeStore
 from novelvideo.config import ensure_project_dirs
 
 app = typer.Typer(name="novelvideo", help="小说解说视频自动生成系统（Cognee 版）")
 app.add_typer(backup_app, name="backup")
+app.add_typer(production_app, name="production")
 console = Console()
 
 # nest_asyncio 延迟应用标记

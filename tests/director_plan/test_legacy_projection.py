@@ -68,12 +68,14 @@ def _activate(
     groups: tuple[NarrativeGroupPlan, ...],
     *,
     revision_id: str = "rev-active",
+    semantic_revision_id: str | None = None,
 ) -> DirectorPlanRevision:
     revision = DirectorPlanRevision(
         revision_id=revision_id,
         episode=1,
         status="review_required",
         source_script_hash="sha256:abc",
+        semantic_revision_id=semantic_revision_id,
         director_model="director-v1",
         prompt_version="v2",
         project_style_snapshot_id="style-1",
@@ -84,6 +86,33 @@ def _activate(
     store = DirectorPlanStore(project_dir)
     store.save(revision)
     return store.activate(1, revision.revision_id)
+
+
+def test_active_projection_repairs_empty_video_plan_without_losing_media(tmp_path):
+    from dataclasses import replace
+
+    _activate(tmp_path, (_group("director-a", 1, ("span-1",), ("shot-1",)),))
+    [group] = service.load_materialized_groups(tmp_path, 1)
+    stages = {**group.stages, "render": GroupStageState(status="completed", revision=2, grid_asset="paid.png")}
+    service.save_groups(tmp_path, 1, [replace(group, video_plan=VideoPlan(), stages=stages)])
+    [repaired] = service.load_materialized_groups(tmp_path, 1)
+    assert repaired.video_plan.units
+    assert repaired.video_plan.total_duration_seconds == 3
+    assert repaired.stages == stages
+
+
+def test_active_projection_repairs_unsupported_three_shot_video_unit(tmp_path):
+    from dataclasses import replace
+
+    _activate(tmp_path, (_group("director-a", 1, ("span-1",), ("shot-1", "shot-2", "shot-3")),))
+    [group] = service.load_materialized_groups(tmp_path, 1)
+    unsupported = VideoPlan(revision=1, units=(VideoPlanUnit(
+        id="old-unit", beat_ids=group.production_beat_ids, mode="fl2va",
+        duration_seconds=9, reason="continuous_action"),), total_duration_seconds=9)
+    service.save_groups(tmp_path, 1, [replace(group, video_plan=unsupported)])
+    [repaired] = service.load_materialized_groups(tmp_path, 1)
+    assert all(len(unit.beat_ids) <= 2 for unit in repaired.video_plan.units)
+    assert repaired.video_plan.total_duration_seconds == 9
 
 
 def test_active_plan_projects_exact_groups_without_legacy_bucketing(
@@ -288,7 +317,9 @@ def test_active_projection_clears_stale_generation_state_when_structure_changes(
     [projected] = service.load_effective_groups(tmp_path, 1, [])
 
     assert projected.video_settings == settings
-    assert projected.video_plan == VideoPlan()
+    assert projected.video_plan.revision == 1
+    assert projected.video_plan.units
+    assert tuple(shot for unit in projected.video_plan.units for shot in unit.beat_ids) == projected.production_beat_ids
     assert projected.stages == {
         "sketch": GroupStageState(),
         "render": GroupStageState(),

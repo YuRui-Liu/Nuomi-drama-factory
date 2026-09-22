@@ -368,18 +368,13 @@ def build_video_workflow_registry(
         resolver,
         reference_definition,
     )
-    if reference_unavailable_reason == "provider_not_configured":
-        reference_unavailable_reason = None
-    # Keep the fully described workflow contract available for local validation,
-    # but do not expose the provider transport until hybrid-input verification is
-    # complete. More specific configuration/profile errors retain precedence.
+    # Reference transport validates and freezes references and optional frames
+    # before upload. Availability follows the same runtime checks as base H3.
     reference_definition = VideoWorkflowDefinition.model_validate(
         reference_definition.model_dump()
         | {
-            "available": False,
-            "unavailable_reason": (
-                reference_unavailable_reason or "hybrid_input_unverified"
-            ),
+            "available": reference_unavailable_reason is None,
+            "unavailable_reason": reference_unavailable_reason,
         }
     )
     return VideoWorkflowRegistry(

@@ -77,7 +77,11 @@ def signals_for_shot(
             text,
             ("over shoulder", "over-the-shoulder", "过肩", "反打"),
         ),
-        exact_axis=bool(contract.scene.axis.strip() or contract.camera.axis.strip()),
+        exact_axis=(
+            contract.cinematography.requires_spatial_control
+            if contract.cinematography is not None
+            else bool(contract.scene.axis.strip() or contract.camera.axis.strip())
+        ),
         topology_change=_contains(
             text,
             ("new location", "change location", "换场", "穿越空间"),

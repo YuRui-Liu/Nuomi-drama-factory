@@ -102,6 +102,8 @@ export interface PlannedNarrativeGroupGenerationSelection extends NarrativeGroup
 }
 
 export interface NarrativeStageState {
+  selected_storyboard_id?: string;
+  selected_storyboard_sources?: Record<string, string>;
   status: NarrativeStageStatus;
   revision: number;
   grid_asset?: string | null;
@@ -424,18 +426,18 @@ export function updateNarrativeGroupVideoSettings(project: string, episode: numb
 
 export function narrativeGroupVideoPlanPayload(input: {
   expectedRevision: number;
-  units: Array<{ beatIds: string[] }>;
+  units: Array<{ beatIds: string[]; mode?: "i2va" | "fl2va" }>;
 }) {
   return {
     expected_revision: input.expectedRevision,
-    units: input.units.map((unit) => ({ beat_ids: unit.beatIds })),
+    units: input.units.map((unit) => ({ beat_ids: unit.beatIds, ...(unit.mode ? { mode: unit.mode } : {}) })),
   };
 }
 
 export function updateNarrativeGroupVideoPlan(project: string, episode: number, input: {
   groupId: string;
   expectedRevision: number;
-  units: Array<{ beatIds: string[] }>;
+  units: Array<{ beatIds: string[]; mode?: "i2va" | "fl2va" }>;
 }) {
   return api.put(narrativeGroupVideoPlanPath(project, episode, input.groupId), {
     json: narrativeGroupVideoPlanPayload(input),
@@ -656,7 +658,7 @@ export function useUpdateNarrativeGroupVideoPlan(project: string, episode: numbe
     mutationFn: (input: {
       groupId: string;
       expectedRevision: number;
-      units: Array<{ beatIds: string[] }>;
+      units: Array<{ beatIds: string[]; mode?: "i2va" | "fl2va" }>;
     }) => updateNarrativeGroupVideoPlan(project, episode, input),
     onSuccess: () => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
@@ -804,6 +806,45 @@ export function useNarrativeGroupRevisions(
       narrativeGroupRevisionPath(project, episode, groupId, stage), { signal },
     ).json<ApiResponse<NarrativeGroupRevisionHistory>>(),
     enabled: !!project && episode > 0 && !!groupId,
+  });
+}
+
+export interface StoryboardSources {
+  selected_storyboard_id: string;
+  selected_storyboard_sources: Record<string, string>;
+  items: Array<{
+    source_id: string;
+    asset_id?: string;
+    grid_url?: string;
+    validation: { valid: boolean; code?: string };
+  }>;
+}
+
+export function useStoryboardSources(project: string, episode: number, groupId: string) {
+  return useQuery({
+    queryKey: [...queryKeys.narrativeGroups(project, episode), groupId, "storyboard-sources"],
+    queryFn: ({ signal }) => api.get(
+      p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/storyboard-sources`,
+      { signal },
+    ).json<ApiResponse<StoryboardSources>>(),
+    enabled: !!project && episode > 0 && !!groupId,
+  });
+}
+
+export function useSelectStoryboardSource(project: string, episode: number, groupId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sourceId, expectedSelectedId }: { sourceId: string; expectedSelectedId: string }) =>
+      jsonWithBackendError<ApiResponse<Pick<StoryboardSources, "selected_storyboard_id">>>(api.put(
+        p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/storyboard-sources/selection`,
+        { json: { source_id: sourceId, expected_selected_id: expectedSelectedId }, retry: 0 },
+      )),
+    retry: false,
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
+      qc.invalidateQueries({ queryKey: queryKeys.grids(project, episode) }),
+      qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) }),
+    ]),
   });
 }
 

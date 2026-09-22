@@ -140,6 +140,7 @@ def _derive_video_plan(
     *,
     revision: int,
     source: str,
+    modes: Mapping[int, str] | None = None,
 ) -> VideoPlan:
     units = []
     for index, raw_ids in enumerate(partitions, start=1):
@@ -150,7 +151,7 @@ def _derive_video_plan(
             VideoPlanUnit(
                 id=f"unit-{index:02d}",
                 beat_ids=beat_ids,
-                mode="fl2va" if pair else "i2va",
+                mode=(modes or {}).get(index, "fl2va" if pair else "i2va"),
                 duration_seconds=duration,
                 reason=(
                     f"{source}_adjacent_pair" if pair else f"{source}_singleton"
@@ -271,6 +272,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
     for name, raw_state in (data.get("stages") or {}).items():
         state = dict(raw_state)
         state["cell_assets"] = tuple(state.get("cell_assets") or ())
+        state["storyboard_sources"] = tuple(state.get("storyboard_sources") or ())
         state["cleanup_reports"] = tuple(state.get("cleanup_reports") or ())
         state["revision_history"] = tuple(state.get("revision_history") or ())
         stages[name] = GroupStageState(**state)
@@ -345,6 +347,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
             dict(item) for item in data.get("video_segments") or ()
         ),
         effective_style_snapshot=dict(data.get("effective_style_snapshot") or {}),
+        storyboard_contract_version=int(data.get("storyboard_contract_version") or 0),
     )
 
 
@@ -456,6 +459,7 @@ def _materialize_active_groups(
             previous = previous_by_id.get(group.id)
             base = NarrativeGroup(
                 id=group.id,
+                storyboard_contract_version=previous.storyboard_contract_version if previous else 0,
                 ordinal=group.ordinal,
                 beat_ids=group.source_span_ids,
                 layout=layout_for_group(len(shot_ids)),
@@ -576,7 +580,14 @@ def _materialize_active_groups(
                 }
                 base = replace(
                     base,
-                    video_plan=previous.video_plan,
+                    video_plan=(
+                        previous.video_plan
+                        if previous.video_plan.revision > 0
+                        and previous.video_plan.units
+                        and (previous.video_plan.source != "recommended"
+                             or _has_valid_video_plan(previous))
+                        else base.video_plan
+                    ),
                     stages=previous.stages,
                     errors=previous.errors,
                     video_segments=tuple(
@@ -596,7 +607,7 @@ def _materialize_active_groups(
                 )
             elif previous is not None:
                 base = replace(
-                    base, video_plan=VideoPlan(), stages=_empty_stages()
+                    base, stages=_empty_stages()
                 )
             else:
                 base = replace(base, stages=_empty_stages())
@@ -683,8 +694,39 @@ def generation_beats_for_group(
     group = next((item for item in active.groups if item.id == group_id), None)
     if group is None:
         raise KeyError(group_id)
+    dialogue_sources = {}
+    if active.semantic_revision_id:
+        from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
+
+        semantic = ScreenplaySemanticStore(Path(project_dir)).load(
+            episode, active.semantic_revision_id
+        )
+        if semantic is None:
+            raise ValueError("frozen screenplay semantic source is unavailable")
+        for scene in semantic.scenes:
+            speaker = scene.characters[0] if len(scene.characters) == 1 else ""
+            tone = ""
+            for block in sorted(scene.blocks, key=lambda item: item.ordinal):
+                if block.kind == "speaker":
+                    speaker = block.text.strip().rstrip("：:")
+                    tone = ""
+                elif block.kind == "parenthetical":
+                    tone = block.text.strip()
+                elif block.kind == "dialogue":
+                    text = block.text.strip()
+                    import re
+
+                    inline = re.match(r"^([^：:\n]{1,40})[：:]\s*(.+)$", text, re.S)
+                    if inline:
+                        speaker, text = inline.group(1).strip(), inline.group(2).strip()
+                    dialogue_sources[block.id] = {"speaker": speaker, "text": text, "tone": tone}
     beats = []
     for shot in group.shots:
+        dialogue_lines = []
+        for source_id in shot.dialogue_source_ids:
+            if source_id not in dialogue_sources:
+                raise ValueError(f"dialogue source is unavailable: {source_id}")
+            dialogue_lines.append(dialogue_sources[source_id])
         asset_requirements = [
             requirement.model_dump(mode="json")
             for requirement in shot.asset_requirements
@@ -708,8 +750,12 @@ def generation_beats_for_group(
             "beat_id": shot.id,
             "source_span_ids": list(shot.source_span_ids),
             "visual_description": " ".join(
-                part for part in (shot.subject, shot.action) if part
+                part for part in (shot.subject, shot.action,
+                                  f"Scene: {group.scene_anchor}; time: {group.time_anchor}.",
+                                  shot.cinematography.prompt_facts() if shot.cinematography else "") if part
             ),
+            "scene_name": group.scene_anchor,
+            "time_of_day": group.time_anchor,
             "subject": shot.subject,
             "action": shot.action,
             "visible_start_state": shot.visible_start_state,
@@ -718,7 +764,13 @@ def generation_beats_for_group(
             "camera_angle": shot.camera_angle,
             "composition": shot.composition,
             "camera_motion": shot.camera_motion,
+            "cinematography": shot.cinematography.model_dump(mode="json") if shot.cinematography else None,
             "dialogue_source_ids": list(shot.dialogue_source_ids),
+            "dialogue_lines": dialogue_lines,
+            "dialogue": "\n".join(line["text"] for line in dialogue_lines),
+            "speaker": " / ".join(dict.fromkeys(line["speaker"] for line in dialogue_lines if line["speaker"])),
+            "tone": " / ".join(dict.fromkeys(line["tone"] for line in dialogue_lines if line["tone"])),
+            "dialogue_required": bool(dialogue_lines),
             "duration_seconds": shot.duration_seconds,
             "asset_requirements": asset_requirements,
             "detected_identities": identities,
@@ -1014,11 +1066,19 @@ def update_video_plan(
             )
 
         partitions = []
+        modes = {}
         for raw_unit in units:
             beat_ids = tuple(str(value) for value in raw_unit.get("beat_ids") or ())
             if len(beat_ids) not in {1, 2}:
                 raise ValueError("each video plan unit must contain one or two beats")
             partitions.append(beat_ids)
+            mode = raw_unit.get("mode")
+            if mode is not None:
+                if mode not in {"i2va", "fl2va"}:
+                    raise ValueError("video plan unit mode must be i2va or fl2va")
+                if mode == "fl2va" and len(beat_ids) != 2:
+                    raise ValueError("fl2va video plan units must contain two beats")
+                modes[len(partitions)] = mode
         flattened = tuple(beat_id for unit in partitions for beat_id in unit)
         if flattened != group.production_beat_ids:
             raise ValueError(
@@ -1039,6 +1099,7 @@ def update_video_plan(
             partitions,
             revision=group.video_plan.revision + 1,
             source="manual",
+            modes=modes,
         )
         current = group.stages.get("video", GroupStageState())
         invalidated = replace(
@@ -1077,6 +1138,7 @@ def advance_revision(
     stage: StageName,
     *,
     regenerate: bool = False,
+    regenerate_completed: bool = False,
     expected_revision: int | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
@@ -1087,6 +1149,14 @@ def advance_revision(
         current = original.stages.get(stage, GroupStageState())
         if expected_revision is not None and current.revision != int(expected_revision):
             raise RuntimeError(f"narrative group {stage} revision is stale")
+        # A new image request after completion buys new content. Decide under
+        # the sidecar lock so concurrent generate requests share the queued
+        # revision. Split-only and failed retries explicitly retain their input.
+        regenerate = regenerate or (
+            regenerate_completed
+            and stage in {"sketch", "render"}
+            and current.status == "completed"
+        )
         found: NarrativeGroup | None = None
         updated: list[NarrativeGroup] = []
         for group in groups:
@@ -1095,6 +1165,8 @@ def advance_revision(
                 continue
             current = group.stages.get(stage, GroupStageState())
             revision = current.revision + 1 if regenerate or current.revision == 0 else current.revision
+            new_generation = regenerate or current.revision == 0
+            preserves_selection = stage == "render" and bool(current.selected_storyboard_id)
             stages = dict(group.stages)
             history = current.revision_history
             if regenerate and current.revision:
@@ -1103,9 +1175,11 @@ def advance_revision(
                 current,
                 status="queued",
                 revision=revision,
-                grid_asset="" if regenerate else current.grid_asset,
-                cell_assets=() if regenerate else current.cell_assets,
+                grid_asset="" if regenerate and not preserves_selection else current.grid_asset,
+                cell_assets=() if regenerate and not preserves_selection else current.cell_assets,
                 error="",
+                needs_regeneration=False if new_generation else current.needs_regeneration,
+                stale_reason="" if new_generation else current.stale_reason,
                 actual_provider="" if regenerate else current.actual_provider,
                 actual_model="" if regenerate else current.actual_model,
                 actual_mode="" if regenerate else current.actual_mode,
@@ -1119,6 +1193,21 @@ def advance_revision(
                 dialogue_stem_status="not_requested" if regenerate and stage == "video" else current.dialogue_stem_status,
                 ambience_stem_status="not_requested" if regenerate and stage == "video" else current.ambience_stem_status,
             )
+            if stage == "render" and new_generation and not preserves_selection:
+                video = stages.get("video", GroupStageState())
+                if video.revision > 0 or video.video_asset:
+                    stages["video"] = replace(
+                        video, needs_regeneration=True,
+                        stale_reason="render_revision_changed",
+                    )
+            if stage == "sketch" and new_generation:
+                for downstream_stage in ("render", "video"):
+                    downstream = stages.get(downstream_stage, GroupStageState())
+                    if downstream.revision > 0 or downstream.grid_asset or downstream.video_asset:
+                        stages[downstream_stage] = replace(
+                            downstream, needs_regeneration=True,
+                            stale_reason="sketch_revision_changed",
+                        )
             found = replace(group, stages=stages)
             updated.append(found)
         if found is None:
@@ -1134,6 +1223,7 @@ class VideoRevisionReservation:
     group_id: str
     revision: int
     previous_stage: GroupStageState
+    storyboard_selection_id: str = ""
 
 
 def reserve_video_revision(
@@ -1145,6 +1235,7 @@ def reserve_video_revision(
     expected_plan_revision: int | None = None,
     expected_settings_revision: int | None = None,
     expected_reference_revision: int | None = None,
+    expected_storyboard_id: str | None = None,
 ) -> tuple[NarrativeGroup, VideoRevisionReservation]:
     """Atomically reserve the next video revision while retaining rollback data.
 
@@ -1161,6 +1252,8 @@ def reserve_video_revision(
             if group.id != group_id:
                 updated.append(group)
                 continue
+            if expected_storyboard_id is not None and group.stages["render"].selected_storyboard_id != expected_storyboard_id:
+                raise RuntimeError("storyboard selection changed")
             if (
                 expected_plan_revision is not None
                 and group.video_plan.revision != int(expected_plan_revision)
@@ -1207,7 +1300,8 @@ def reserve_video_revision(
                 ambience_stem_status="not_requested",
             )
             found = replace(group, stages=stages)
-            reservation = VideoRevisionReservation(group_id=group_id, revision=revision, previous_stage=current)
+            reservation = VideoRevisionReservation(group_id=group_id, revision=revision, previous_stage=current,
+                storyboard_selection_id=group.stages["render"].selected_storyboard_id)
             updated.append(found)
         if found is None or reservation is None:
             raise KeyError(group_id)
@@ -1233,6 +1327,9 @@ def restore_video_reservation(
             if current.revision == reservation.revision and current.status == "queued":
                 stages = dict(group.stages)
                 stages["video"] = reservation.previous_stage
+                if group.stages["render"].selected_storyboard_id != reservation.storyboard_selection_id:
+                    stages["video"] = replace(stages["video"], needs_regeneration=True,
+                                              stale_reason="storyboard_source_changed")
                 updated.append(replace(group, stages=stages))
                 restored = True
             else:
@@ -1273,6 +1370,9 @@ def record_stage_result(
     ambience_stem_path: str | None = None,
     dialogue_stem_status: str | None = None,
     ambience_stem_status: str | None = None,
+    storyboard_source: Mapping[str, Any] | None = None,
+    storyboard_project_id: str = "",
+    source_storyboard_id: str | None = None,
 ) -> NarrativeGroup:
     """Atomically merge a runner outcome into the durable group sidecar."""
     with _sidecar_guard(project_dir, episode):
@@ -1288,13 +1388,23 @@ def record_stage_result(
                 found = group
                 updated.append(group)
                 continue
+            if storyboard_source is not None:
+                if stage != "render":
+                    raise ValueError("storyboard sources require render stage")
+                group = register_storyboard_source(
+                    project_dir, episode, group_id, source=storyboard_source,
+                    project_id=storyboard_project_id,
+                )
+                current = group.stages[stage]
             state = replace(
                 current,
                 status=status,
-                grid_asset=current.grid_asset if grid_asset is None else str(grid_asset),
+                source_storyboard_id=(current.source_storyboard_id if source_storyboard_id is None
+                                      else source_storyboard_id),
+                grid_asset=current.grid_asset if grid_asset is None or current.selected_storyboard_id else str(grid_asset),
                 cell_assets=(
                     current.cell_assets
-                    if cell_assets is None
+                    if cell_assets is None or current.selected_storyboard_id
                     else tuple(dict(item) for item in cell_assets)
                 ),
                 video_asset=current.video_asset if video_asset is None else str(video_asset),
@@ -1376,6 +1486,9 @@ def record_stage_result(
                 ),
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
+            if (stage == "video" and state.source_storyboard_id
+                and state.source_storyboard_id != group.stages["render"].selected_storyboard_id):
+                state = replace(state, needs_regeneration=True, stale_reason="storyboard_source_changed")
             stages = dict(group.stages)
             stages[stage] = state
             found = replace(group, stages=stages)
@@ -1386,12 +1499,171 @@ def record_stage_result(
         return found
 
 
+def enable_storyboard_contract(
+    project_dir: str | Path, episode: int, group_id: str, *,
+    project_id: str, expected_version: int, expected_selected_id: str,
+) -> NarrativeGroup:
+    """Opt a group into frozen visual inputs without queuing or rewriting media."""
+    from .storyboard_binding import freeze_selected_storyboard
+
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        for index, group in enumerate(groups):
+            if group.id != group_id:
+                continue
+            state = group.stages["render"]
+            if (group.storyboard_contract_version != expected_version
+                    or state.selected_storyboard_id != expected_selected_id):
+                raise RuntimeError("STORYBOARD_POLICY_CHANGED")
+            if group.storyboard_contract_version not in (0, 1):
+                raise ValueError("unsupported storyboard contract")
+            if any(stage.status in {"queued", "running"} for stage in group.stages.values()):
+                raise RuntimeError("STORYBOARD_GROUP_BUSY")
+            # Empty groups may opt in before their first render. Existing
+            # selections must be complete and valid; never fabricate provenance.
+            if state.selected_storyboard_id or state.selected_storyboard_sources or state.storyboard_sources:
+                freeze_selected_storyboard(
+                    group, media_root=Path(project_dir), project_id=project_id, episode=episode,
+                )
+            if group.storyboard_contract_version == 1:
+                return group
+            groups[index] = replace(group, storyboard_contract_version=1)
+            save_groups(project_dir, episode, groups)
+            return groups[index]
+        raise KeyError(group_id)
+
+
+def register_storyboard_source(
+    project_dir: str | Path, episode: int, group_id: str, *,
+    source: Any, project_id: str,
+) -> NarrativeGroup:
+    """Retain a validated candidate without replacing an existing selection."""
+    from .storyboard_sources import StoryboardSource
+
+    source = StoryboardSource.model_validate(source)
+    if source.episode != episode or source.group_id != group_id:
+        raise ValueError("storyboard source scope mismatch")
+    source.validate_files(Path(project_dir), project_id=project_id)
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        for index, group in enumerate(groups):
+            if group.id != group_id:
+                continue
+            if not set(cell.shot_id for cell in source.cells).issubset(group.production_beat_ids):
+                raise ValueError("storyboard source contains unknown shots")
+            _validate_storyboard_batch(group, source)
+            state = group.stages.get("render", GroupStageState())
+            previous = [StoryboardSource.model_validate(raw) for raw in state.storyboard_sources]
+            existing = next((item for item in previous if item.source_id == source.source_id), None)
+            if existing is not None and existing != source:
+                raise ValueError("storyboard source identity collision")
+            if existing is None:
+                state = replace(state, storyboard_sources=(
+                    *state.storyboard_sources, source.model_dump(mode="json"),
+                ))
+            stages = {**group.stages, "render": state}
+            groups[index] = replace(group, stages=stages)
+            save_groups(project_dir, episode, groups)
+            selected_batches = _storyboard_selection(state, previous)
+            if source.batch_id not in selected_batches:
+                return select_storyboard_source(
+                    project_dir, episode, group_id, source_id=source.source_id,
+                    expected_selected_id=state.selected_storyboard_id,
+                )
+            return groups[index]
+        raise KeyError(group_id)
+
+
+def select_storyboard_source(
+    project_dir: str | Path, episode: int, group_id: str, *,
+    source_id: str, expected_selected_id: str,
+) -> NarrativeGroup:
+    """Compare-and-swap a registered source; preserve old video files."""
+    from .storyboard_sources import StoryboardSource
+
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        for index, group in enumerate(groups):
+            if group.id != group_id:
+                continue
+            state = group.stages.get("render", GroupStageState())
+            if state.selected_storyboard_id != expected_selected_id:
+                raise RuntimeError("storyboard selection changed")
+            sources = [StoryboardSource.model_validate(raw) for raw in state.storyboard_sources]
+            source = next((item for item in sources if item.source_id == source_id), None)
+            if source is None:
+                raise KeyError("storyboard source not found")
+            if source.episode != episode or source.group_id != group_id:
+                raise ValueError("storyboard source scope mismatch")
+            _validate_storyboard_batch(group, source)
+            selection = _storyboard_selection(state, sources)
+            if selection.get(source.batch_id) == source_id:
+                source.validate_files(Path(project_dir), project_id=source.project_id)
+                return group
+            selection[source.batch_id] = source_id
+            chosen = [next(item for item in sources if item.source_id == chosen_id)
+                      for _, chosen_id in sorted(selection.items())]
+            cells_by_shot = {}
+            for item in chosen:
+                _validate_storyboard_batch(group, item)
+                item.validate_files(Path(project_dir), project_id=source.project_id)
+                for cell in item.cells:
+                    if cell.shot_id in cells_by_shot:
+                        raise ValueError("overlapping storyboard batch selection")
+                    cells_by_shot[cell.shot_id] = {
+                        "cell": cell.cell_index, "beat_id": cell.shot_id,
+                        "shot_id": cell.shot_id, "path": str(Path(project_dir) / cell.path),
+                        "sha256": cell.sha256, "storyboard_source_id": item.source_id,
+                    }
+            import hashlib
+
+            selection_id = chosen[0].source_id if len(chosen) == 1 else hashlib.sha256(
+                json.dumps(sorted(selection.items()), separators=(",", ":")).encode()
+            ).hexdigest()
+            render = replace(
+                state, selected_storyboard_id=selection_id,
+                selected_storyboard_sources=selection,
+                grid_asset=str(Path(project_dir) / chosen[0].grid_path) if len(chosen) == 1 else "",
+                cell_assets=tuple(cells_by_shot[shot] for shot in group.production_beat_ids
+                                  if shot in cells_by_shot),
+            )
+            video = replace(group.stages.get("video", GroupStageState()),
+                            needs_regeneration=True, stale_reason="storyboard_source_changed")
+            groups[index] = replace(group, stages={**group.stages, "render": render, "video": video})
+            save_groups(project_dir, episode, groups)
+            return groups[index]
+        raise KeyError(group_id)
+
+
+def _validate_storyboard_batch(group: NarrativeGroup, source: Any) -> None:
+    if source.group_id != group.id:
+        raise ValueError("storyboard source scope mismatch")
+    shots = tuple(cell.shot_id for cell in source.cells)
+    batches = {str(batch["id"]): tuple(batch.get("shot_ids") or ())
+               for batch in group.generation_batches}
+    expected = batches.get(source.batch_id) if batches else group.production_beat_ids
+    if shots != tuple(expected or ()):
+        raise ValueError("storyboard source must cover the complete group or declared batch")
+
+
+def _storyboard_selection(state: GroupStageState, sources: list[Any]) -> dict[str, str]:
+    if state.selected_storyboard_sources:
+        return dict(state.selected_storyboard_sources)
+    # Upgrade the single-source state written by the initial implementation.
+    selected = next((item for item in sources if item.source_id == state.selected_storyboard_id), None)
+    return {selected.batch_id: selected.source_id} if selected is not None else {}
+
+
 def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
     return {
         "revision": state.revision,
         "status": state.status,
         "grid_asset": state.grid_asset,
         "cell_assets": list(state.cell_assets),
+        "storyboard_sources": list(state.storyboard_sources),
+        "selected_storyboard_id": state.selected_storyboard_id,
+        "selected_storyboard_sources": dict(state.selected_storyboard_sources),
+        "source_storyboard_id": state.source_storyboard_id,
         "video_asset": state.video_asset,
         "manifest_asset": state.manifest_asset,
         "original_audio_path": state.original_audio_path,
@@ -1444,6 +1716,12 @@ def rollback_stage_revision(
                 continue
             current = group.stages.get(stage, GroupStageState())
             candidates = [*current.revision_history, _stage_snapshot(current)]
+            matching_sources = {
+                str(item.get("selected_storyboard_id") or "")
+                for item in candidates if int(item["revision"]) == int(revision)
+            }
+            if len(matching_sources) > 1:
+                raise ValueError("ambiguous storyboard revision; select a source ID instead")
             source = next(
                 (
                     item
@@ -1460,6 +1738,12 @@ def rollback_stage_revision(
                 revision=current.revision + 1,
                 grid_asset=source.get("grid_asset", ""),
                 cell_assets=tuple(source.get("cell_assets") or ()),
+                storyboard_sources=tuple(source.get("storyboard_sources") or ()),
+                selected_storyboard_id=str(source.get("selected_storyboard_id") or ""),
+                selected_storyboard_sources=dict(source.get("selected_storyboard_sources") or {}),
+                source_storyboard_id=str(source.get("source_storyboard_id") or ""),
+                needs_regeneration=bool(source.get("needs_regeneration", False)),
+                stale_reason=str(source.get("stale_reason") or ""),
                 video_asset=source.get("video_asset", ""),
                 manifest_asset=source.get("manifest_asset", ""),
                 original_audio_path=source.get("original_audio_path", ""),
@@ -1481,6 +1765,17 @@ def rollback_stage_revision(
             )
             stages = dict(group.stages)
             stages[stage] = restored
+            if stage in {"render", "video"}:
+                selected_id = stages.get("render", GroupStageState()).selected_storyboard_id
+                video = stages.get("video", GroupStageState())
+                # History can restore an older source without going through
+                # selection or runner-result publication. Apply their same
+                # freshness contract before exposing the restored video.
+                if selected_id != video.source_storyboard_id:
+                    stages["video"] = replace(
+                        video, needs_regeneration=True,
+                        stale_reason="storyboard_source_changed",
+                    )
             found = replace(group, stages=stages)
             updated.append(found)
         if found is None:
@@ -1659,7 +1954,12 @@ async def retry_split(
     grid_asset = str(payload.get("grid_asset") or "").strip()
     if not grid_asset:
         raise ValueError("grid_asset is required for split retry")
-    split_result = await _await_result(splitter(grid_asset, payload))
+    try:
+        split_result = await _await_result(splitter(grid_asset, payload))
+    except Exception as exc:
+        # Generation has already been paid for. Keep the artifact discoverable
+        # so automation retries deterministic splitting, not the provider call.
+        split_result = {"cell_assets": [], "errors": [{"message": str(exc)}]}
     errors = list(split_result.get("errors") or [])
     result = {
         "group_id": str(payload["group_id"]),
@@ -1671,7 +1971,7 @@ async def retry_split(
         "errors": errors,
         "status": "partial_failure" if errors else "completed",
     }
-    for field in ("cleanup_reports", "cleaned_cell_size"):
+    for field in ("cleanup_reports", "cleaned_cell_size", "upscaled", "degraded", "storyboard_source"):
         if split_result.get(field) is not None:
             result[field] = split_result[field]
     return result

@@ -38,7 +38,19 @@ nuomi-drama-scripts 是单独安装、调用和维护的“编剧创作层”，
 - 要前 30 集 DOCX：E001-E030 齐全，并通过结构、连续性、版权、合规和渲染 QA 后再编译。
 - 要续写/改稿：读取现稿和 reviews，先输出影响分析，再写受影响集数。
 
-工具入口：`tools/export_screenplay.ps1` 生成 Nuomi 漫剧工厂 handoff，`tools/test_markdown_episode_contract.ps1` 检查单集 Markdown，`tools/build_docx.ps1 -RequireDeliveryGate` 在完整交付门槛通过后编译 DOCX。
+工具入口（Python 标准库实现，跨平台，不需要 PowerShell）：
+
+```bash
+python3 tests/skill_contract.py                                            # Skill 契约自检
+python3 tools/test_markdown_episode_contract.py -p manuscript/episodes/E001.md -n 1
+python3 tools/export_screenplay.py -m manuscript -o deliverables/screenplay.md
+python3 tools/build_docx.py -o deliverables/剧本.docx -m manuscript --episode-count 30
+python3 tools/build_docx.py -o deliverables/E017.docx -m manuscript --single-episode --episode-number 17
+python3 tools/build_docx.py -o deliverables/剧本.docx -m manuscript --require-delivery-gate
+python3 tools/audit_docx.py -p deliverables/剧本.docx --expected-episodes 30
+```
+
+`tools/nuomi_common.py` 是共用库；同名 `.ps1` 为 Windows PowerShell 等价实现，保留以便双平台使用。
 
 ## Nuomi 漫剧工厂 交接
 

@@ -28,6 +28,31 @@ from .settings import KnowledgeRuntimeError
 MIN_CODEX_VERSION = (0, 100, 0)
 MIN_CODEX_VERSION_TEXT = "0.100.0"
 CODEX_STATUS_TIMEOUT_SECONDS = 10.0
+MAX_STRUCTURED_IMAGE_BYTES = 20 * 1024 * 1024
+_IMAGE_SUFFIXES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+@dataclass(frozen=True)
+class StructuredImage:
+    """Immutable, bounded attachment; MIME is supplied by the image producer."""
+
+    data: bytes
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data, bytes) or not 0 < len(self.data) <= MAX_STRUCTURED_IMAGE_BYTES:
+            raise ValueError("Image must contain immutable bytes, between 1 byte and 20 MiB")
+        if self.media_type not in _IMAGE_SUFFIXES:
+            raise ValueError("Unsupported image MIME type")
+
+
+def validate_structured_images(images: list[StructuredImage]) -> None:
+    for image in images:
+        if not isinstance(image, StructuredImage):
+            raise ValueError("Images must be StructuredImage objects")
+        image.__post_init__()
+    if len(images) > 8 or sum(len(image.data) for image in images) > 40 * 1024 * 1024:
+        raise ValueError("Too many image attachments or attachment bytes")
 
 
 @dataclass(frozen=True)
@@ -461,14 +486,20 @@ class CodexCliStructuredBackend:
         system_prompt: str,
         response_model: type[Any],
         validation_context: dict[str, Any] | None = None,
+        images: list[StructuredImage] | None = None,
         **_kwargs: Any,
     ) -> Any:
         schema = None if response_model is str else response_model.model_json_schema()
         repair_error = ""
+        image_kwargs = {}
+        if images:
+            validate_structured_images(images)
+            image_kwargs["images"] = images
         for attempt in range(3):
             raw = await self._run_once(
                 _build_prompt(system_prompt, text_input, schema, repair_error),
                 schema=schema,
+                **image_kwargs,
             )
             if response_model is str:
                 return raw.strip()
@@ -490,7 +521,8 @@ class CodexCliStructuredBackend:
         raise AssertionError("unreachable")
 
     async def _run_once(
-        self, prompt: str, *, schema: dict[str, Any] | None
+        self, prompt: str, *, schema: dict[str, Any] | None,
+        images: list[StructuredImage] | None = None,
     ) -> str:
         timeout_seconds = parse_exec_timeout_seconds(
             os.getenv("CODEX_EXEC_TIMEOUT_SECONDS")
@@ -513,6 +545,12 @@ class CodexCliStructuredBackend:
                 output_path=str(output_path),
                 schema_path=str(schema_path) if schema_path else None,
             )
+            if images:
+                validate_structured_images(images)
+                for index, image in enumerate(images):
+                    image_path = temp_dir / f"image-{index}{_IMAGE_SUFFIXES[image.media_type]}"
+                    image_path.write_bytes(image.data)
+                    argv[-1:-1] = ["--image", str(image_path)]
             process_argv = normalize_codex_process_argv(argv)
             try:
                 process = await _create_codex_process(

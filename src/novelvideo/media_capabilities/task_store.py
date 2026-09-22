@@ -285,6 +285,12 @@ class TaskStore:
                 """
             )
             self._migrate_schema(connection)
+            # A claim is intentionally permanent for an attempt: process death
+            # after sending a paid request must never authorize another submit.
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS media_submission_claims ("
+                "attempt_id TEXT PRIMARY KEY REFERENCES media_attempts(id) ON DELETE CASCADE)"
+            )
 
     @staticmethod
     def _migrate_schema(connection: sqlite3.Connection) -> None:
@@ -769,6 +775,30 @@ class TaskStore:
             ).fetchone()
             return self._attempt_from_row(row)
 
+    def claim_provider_submission(self, attempt_id: str) -> bool:
+        """Atomically authorize at most one paid submission for this attempt."""
+        with self._write() as connection:
+            row = self._attempt_row(connection, attempt_id)
+            if row["provider_task_id"] is not None or row["status"] not in {
+                MediaTaskStatus.PREPARING.value, MediaTaskStatus.UPLOADING.value,
+            }:
+                return False
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO media_submission_claims(attempt_id) VALUES (?)",
+                (attempt_id,),
+            )
+            return cursor.rowcount == 1
+
+    def has_provider_submission_claim(self, attempt_id: str) -> bool:
+        connection = self._connect()
+        try:
+            return connection.execute(
+                "SELECT 1 FROM media_submission_claims WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone() is not None
+        finally:
+            connection.close()
+
     def record_provider_task(
         self, attempt_id: str, provider_task_id: str
     ) -> MediaAttemptRecord:
@@ -783,8 +813,20 @@ class TaskStore:
                     )
                 return self._attempt_from_row(row)
             current = MediaTaskStatus(row["status"])
-            if current not in {MediaTaskStatus.PREPARING, MediaTaskStatus.UPLOADING}:
+            if current not in {
+                MediaTaskStatus.PREPARING,
+                MediaTaskStatus.UPLOADING,
+                MediaTaskStatus.UNKNOWN,
+            }:
                 raise InvalidTaskTransition(f"cannot record provider task from {current.value}")
+            # Cancellation may mark an in-flight submit UNKNOWN before its
+            # response arrives. Preserve the ID without reviving that attempt;
+            # the executor can now reconcile cancellation with the provider.
+            target = (
+                MediaTaskStatus.UNKNOWN
+                if current is MediaTaskStatus.UNKNOWN
+                else MediaTaskStatus.SUBMITTED
+            )
             timestamp = _iso(_now())
             connection.execute(
                 """
@@ -792,9 +834,9 @@ class TaskStore:
                 SET provider_task_id = ?, status = ?, submitted_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (remote_id, MediaTaskStatus.SUBMITTED.value, timestamp, timestamp, attempt_id),
+                (remote_id, target.value, timestamp, timestamp, attempt_id),
             )
-            self._sync_task(connection, row["task_id"], MediaTaskStatus.SUBMITTED, timestamp)
+            self._sync_task(connection, row["task_id"], target, timestamp)
             return self._attempt_from_row(self._attempt_row(connection, attempt_id))
 
     def complete_success(

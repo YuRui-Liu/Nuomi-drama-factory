@@ -48,6 +48,18 @@ def _evidence(text: str) -> list[dict]:
 
 
 @pytest.mark.asyncio
+async def test_character_publication_deduplicates_same_quote_used_by_multiple_fields(store):
+    await _insert_run(store, "duplicate-evidence")
+    quote = _evidence("海风吹动他的衣角。")[0]
+    result = await store.publish_character_analysis_atomic(
+        "duplicate-evidence", [NovelCharacter(name="林舟")],
+        {"林舟": [{**quote, "field": "gender"}, {**quote, "field": "personality"}]},
+    )
+    assert result["added"] == ["林舟"]
+    assert len(await store.list_entity_evidence("character", "林舟")) == 1
+
+
+@pytest.mark.asyncio
 async def test_entity_evidence_reads_only_active_run_but_keeps_history(store) -> None:
     await _insert_run(store, "old-run")
     await _insert_run(store, "current-run")

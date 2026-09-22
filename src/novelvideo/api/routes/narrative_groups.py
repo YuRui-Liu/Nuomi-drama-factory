@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Mapping
@@ -84,6 +84,7 @@ from novelvideo.narrative_groups.service import (
     reserve_video_revision,
     restore_video_reservation,
     stage_history,
+    select_storyboard_source,
     update_video_manifest_dialogue_source,
     update_video_plan,
     update_video_reference_settings,
@@ -234,6 +235,19 @@ def _reference_enqueue_ownership(
         return "unknown"
 
 
+class StoryboardSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_selected_id: str = Field(pattern=r"^(?:[0-9a-f]{64})?$")
+
+
+class StoryboardContractRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal[1]
+    expected_version: Literal[0, 1]
+    expected_selected_id: str = Field(pattern=r"^(?:[0-9a-f]{64})?$")
+
+
 class NarrativeGroupGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -242,7 +256,7 @@ class NarrativeGroupGenerationRequest(BaseModel):
     provider_id: str | None = None
     model: str | None = None
     image_size: Literal["1K", "2K", "4K"] | None = None
-    allow_unconstrained: bool = False
+    allow_unconstrained: bool = True
     reference_resolution: NarrativeReferenceResolutionRequest | None = None
 
 
@@ -348,6 +362,7 @@ class NarrativeGroupVideoSettingsRequest(BaseModel):
 class NarrativeGroupVideoPlanUnitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     beat_ids: list[str] = Field(min_length=1, max_length=2)
+    mode: Literal["i2va", "fl2va"] | None = None
 
 
 class NarrativeGroupVideoPlanRequest(BaseModel):
@@ -391,6 +406,84 @@ class NarrativeGroupStyleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     style_id: str | None = Field(default=None, min_length=1)
     action: Literal["restyle", "redirect"] = "restyle"
+
+
+@router.put("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/storyboard-contract")
+async def put_storyboard_contract(project: str, episode: int, group_id: str,
+                                 body: StoryboardContractRequest, user: dict = Depends(get_api_user)):
+    from novelvideo.narrative_groups.service import enable_storyboard_contract
+
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        group = enable_storyboard_contract(
+            resolved.project_dir, episode, group_id, project_id=str(resolved.ctx.project_id),
+            expected_version=body.expected_version, expected_selected_id=body.expected_selected_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "NARRATIVE_GROUP_NOT_FOUND"}) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "STORYBOARD_SOURCE_INVALID"}) from exc
+    return {"ok": True, "data": {"storyboard_contract_version": group.storyboard_contract_version,
+        "selected_storyboard_id": group.stages["render"].selected_storyboard_id}}
+
+
+@router.get("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/storyboard-sources")
+async def get_storyboard_sources(project: str, episode: int, group_id: str,
+                                 user: dict = Depends(get_api_user)):
+    from novelvideo.narrative_groups.storyboard_sources import StoryboardSource
+
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    state = group.stages["render"]
+    items = []
+    for raw in state.storyboard_sources:
+        source = None
+        try:
+            source = StoryboardSource.model_validate(raw)
+            if source.episode != episode or source.group_id != group_id:
+                raise ValueError("scope mismatch")
+            source.validate_files(Path(resolved.project_dir), project_id=str(resolved.ctx.project_id))
+        except (ValueError, OSError):
+            items.append({"source_id": source.source_id if source is not None else "",
+                          "validation": {"valid": False, "code": "STORYBOARD_SOURCE_INVALID"}})
+            continue
+        item = source.model_dump(mode="json")
+        item.update(source_id=source.source_id, validation={"valid": True},
+                    grid_url=_asset_url(project, resolved.project_dir, str(Path(resolved.project_dir) / source.grid_path)))
+        items.append(item)
+    return {"ok": True, "data": {"selected_storyboard_id": state.selected_storyboard_id,
+        "selected_storyboard_sources": state.selected_storyboard_sources, "items": items}}
+
+
+@router.put("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/storyboard-sources/selection")
+async def put_storyboard_selection(project: str, episode: int, group_id: str,
+                                  body: StoryboardSelectionRequest, user: dict = Depends(get_api_user)):
+    from novelvideo.narrative_groups.storyboard_sources import StoryboardSource
+
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    try:
+        sources = [StoryboardSource.model_validate(raw) for raw in group.stages["render"].storyboard_sources]
+        candidate = next((source for source in sources if source.source_id == body.source_id), None)
+        if candidate is None:
+            raise KeyError(body.source_id)
+        candidate.validate_files(Path(resolved.project_dir), project_id=str(resolved.ctx.project_id))
+        selected = select_storyboard_source(resolved.project_dir, episode, group_id,
+            source_id=body.source_id, expected_selected_id=body.expected_selected_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "STORYBOARD_SOURCE_NOT_FOUND"}) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail={"code": "STORYBOARD_SELECTION_CHANGED"}) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "STORYBOARD_SOURCE_INVALID"}) from exc
+    return {"ok": True, "data": {"selected_storyboard_id": selected.stages["render"].selected_storyboard_id,
+        "selected_storyboard_sources": selected.stages["render"].selected_storyboard_sources}}
 
 
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
@@ -1684,6 +1777,29 @@ async def _enqueue_group_action(
         ) from exc
 
     request = generation_request or NarrativeGroupGenerationRequest()
+    storyboard_payload = {}
+    if stage == "render" and source_group.storyboard_contract_version:
+        if source_group.storyboard_contract_version != 1:
+            raise HTTPException(status_code=422, detail={"code": "STORYBOARD_POLICY_UNSUPPORTED"})
+        storyboard_payload = {"storyboard_contract_version": 1, "project_id": str(resolved.ctx.project_id)}
+        if split_only:
+            from novelvideo.narrative_groups.storyboard_sources import StoryboardSplitInput
+
+            try:
+                snapshot = StoryboardSplitInput.model_validate(
+                    source_group.stages["render"].provider_parameters.get("storyboard_split_input"))
+                if snapshot.shot_ids != source_group.production_beat_ids:
+                    raise ValueError("split retry shot mapping changed")
+                storyboard_payload.update(snapshot.restore(Path(resolved.output_dir),
+                    project_id=str(resolved.ctx.project_id), episode=episode, group_id=group_id))
+                storyboard_payload["storyboard_split_input"] = snapshot.model_dump(mode="json")
+            except (ValueError, OSError) as exc:
+                raise HTTPException(status_code=422, detail={"code": "STORYBOARD_SPLIT_INPUT_INVALID"}) from exc
+        elif source_group.generation_batches:
+            batches = source_group.generation_batches
+            if len(batches) != 1 or tuple(batches[0].get("shot_ids") or ()) != source_group.production_beat_ids:
+                raise HTTPException(status_code=422, detail={"code": "STORYBOARD_BATCH_SCOPE_UNSUPPORTED"})
+            storyboard_payload["batch_id"] = batches[0]["id"]
     reference_snapshot = None
     if not split_only:
         if request.reference_resolution is not None:
@@ -1723,6 +1839,12 @@ async def _enqueue_group_action(
                 _confirm_active_plan_revision(
                     plan_store, episode, active_revision_id
                 )
+                reference_plan = plan_store.load(episode, active_revision_id)
+                reference_group = next(item for item in reference_plan.groups if item.id == group_id)
+                frozen_reference_scope = {
+                    "beat_ids": list(reference_group.dramatic_beat_ids or reference_group.source_span_ids),
+                    "shot_ids": [shot.id for shot in reference_group.shots],
+                }
             except PlannedReferenceError as exc:
                 raise _planned_reference_http_error(exc) from exc
         else:
@@ -1767,6 +1889,7 @@ async def _enqueue_group_action(
             group_id,
             stage,
             regenerate=regenerate,
+            regenerate_completed=not split_only,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -1788,14 +1911,12 @@ async def _enqueue_group_action(
         "beats": selected_beats,
         "split_only": split_only,
     }
+    payload.update(storyboard_payload)
     if reference_snapshot is not None:
         payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
         payload["use_style"] = request.use_style
         payload["project_id"] = str(resolved.ctx.project_id)
-        payload["reference_scope"] = {
-            "beat_ids": list(source_group.beat_ids),
-            "shot_ids": list(source_group.shot_ids),
-        }
+        payload["reference_scope"] = frozen_reference_scope
         payload.update({
             "provider_id": provider_id,
             "model": model,
@@ -1813,6 +1934,19 @@ async def _enqueue_group_action(
         "backend": queued.backend, "queue": queued.queue,
         "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
     }}
+
+
+def _require_h3_production_directions(project_dir: Path, episode: int, group_id: str) -> None:
+    from novelvideo.director_plan.cinematography import require_production_directions
+    from novelvideo.director_plan.store import DirectorPlanStore
+
+    try:
+        require_production_directions(DirectorPlanStore(project_dir).load_active(episode), group_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "production_directions_required", "reason": str(exc),
+            "action": "Complete and activate blocking/lighting directions before new video generation.",
+        }) from exc
 
 
 async def _enqueue_group_video(
@@ -1865,10 +1999,31 @@ async def _enqueue_group_video(
     reference_snapshot_id: str | None = None
     resolved_references = ()
     reference_segments = ()
+    storyboard_binding = None
+    storyboard_frames = None
     h3_input_snapshot_required = workflow.adapter_key in {
         "minimax-h3",
         "minimax-h3-ref",
     }
+    if h3_input_snapshot_required:
+        _require_h3_production_directions(resolved.project_dir, episode, group_id)
+    if source_group.storyboard_contract_version:
+        if source_group.storyboard_contract_version != 1 or not h3_input_snapshot_required:
+            raise HTTPException(status_code=422, detail="unsupported storyboard contract")
+        from novelvideo.narrative_groups.storyboard_binding import freeze_selected_storyboard
+
+        try:
+            storyboard_binding, storyboard_frames = freeze_selected_storyboard(
+                source_group, media_root=resolved.project_dir,
+                project_id=str(resolved.ctx.project_id), episode=episode,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "storyboard_source_invalid", "reason": str(exc),
+            }) from exc
+        source_group = replace(source_group, stages={**source_group.stages,
+            "render": replace(source_group.stages["render"],
+                              cell_assets=storyboard_binding.cell_assets(resolved.project_dir))})
     if workflow.reference_policy.required:
         reference_revision = source_group.video_reference_settings.revision
         provider_workflow_id = str(workflow.provider_workflow_id or "").strip()
@@ -1983,6 +2138,8 @@ async def _enqueue_group_video(
             workflow,
             {**project_defaults, **parameter_overrides},
         )
+        if h3_input_snapshot_required:
+            workflow_parameters["continuity_policy"] = "enforce"
     except VideoWorkflowParameterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
@@ -1992,6 +2149,8 @@ async def _enqueue_group_video(
             expected_plan_revision=request.plan_revision,
             expected_settings_revision=settings.revision,
             expected_reference_revision=reference_revision,
+            **({"expected_storyboard_id": storyboard_binding.selection_id}
+               if storyboard_binding is not None else {}),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -2008,13 +2167,20 @@ async def _enqueue_group_video(
         "mode": request.mode,
         "aspect_ratio": request.aspect_ratio,
         "workflow_parameters": workflow_parameters,
+        "cinematography_review_required": h3_input_snapshot_required,
         "settings_revision": group.video_settings.revision,
     }
     if segment_id:
         payload["segment_id"] = segment_id
+    if storyboard_binding is not None:
+        payload.update({
+            "storyboard_contract_version": 1,
+            "storyboard_source_id": storyboard_binding.selection_id,
+            "storyboard_binding": storyboard_binding.model_dump(mode="json"),
+        })
     if h3_input_snapshot_required:
         try:
-            frozen_frames = freeze_h3_reference_frames(
+            frozen_frames = storyboard_frames if storyboard_frames is not None else freeze_h3_reference_frames(
                 reference_segments,
                 project_root=resolved.project_dir,
             )
@@ -2030,8 +2196,20 @@ async def _enqueue_group_video(
                     int(reference_limit) if reference_limit is not None else 0
                 ),
                 provider_workflow_id=str(provider_workflow_id or workflow.id),
+                **({"storyboard_binding": storyboard_binding}
+                   if storyboard_binding is not None else {}),
             )
             reference_snapshot_id = persisted_snapshot.snapshot_id
+            if storyboard_binding is not None:
+                with narrative_group_sidecar_guard(resolved.project_dir, episode):
+                    latest = next(item for item in load_materialized_groups(resolved.project_dir, episode)
+                                  if item.id == group_id)
+                    if (latest.storyboard_contract_version != 1 or
+                        latest.stages["render"].selected_storyboard_id != storyboard_binding.selection_id):
+                        raise HTTPException(status_code=409, detail={
+                            "code": "storyboard_selection_changed",
+                            "reason": "分镜选择已变更，请刷新后重新提交",
+                        })
         except (OSError, TypeError, ValueError) as exc:
             restore_video_reservation(resolved.project_dir, episode, reservation)
             raise HTTPException(

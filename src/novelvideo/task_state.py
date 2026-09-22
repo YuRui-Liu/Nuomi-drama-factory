@@ -933,8 +933,10 @@ class TaskStateManager:
                 expected_execution_owner_id=expected_execution_owner_id,
                 ttl=ttl,
             )
-        self._save_for_context(ctx, state, ttl=ttl)
-        return True
+        return self._save_for_context_owner_cas(
+            ctx, state, expected_task_id=expected_task_id or state.task_id,
+            expected_execution_owner_id=None, ttl=ttl,
+        )
 
     def complete_task(
         self,
@@ -1091,7 +1093,11 @@ class TaskStateManager:
                 return False
             logger.info("Project task completed: %s/%s/%s", task_type, ctx.project_id, episode)
             return True
-        self._save_for_context(ctx, state, ttl=self.COMPLETED_TTL)
+        if not self._save_for_context_owner_cas(
+            ctx, state, expected_task_id=expected_task_id or state.task_id,
+            expected_execution_owner_id=None, ttl=self.COMPLETED_TTL,
+        ):
+            return False
         logger.info("Project task completed: %s/%s/%s", task_type, ctx.project_id, episode)
         return True
 
@@ -1247,7 +1253,11 @@ class TaskStateManager:
                 error,
             )
             return True
-        self._save_for_context(ctx, state, ttl=self.COMPLETED_TTL)
+        if not self._save_for_context_owner_cas(
+            ctx, state, expected_task_id=expected_task_id or state.task_id,
+            expected_execution_owner_id=None, ttl=self.COMPLETED_TTL,
+        ):
+            return False
         logger.warning(
             "Project task failed: %s/%s/%s: %s",
             task_type,
@@ -1617,19 +1627,24 @@ class TaskStateManager:
         state: TaskState,
         *,
         expected_task_id: str,
-        expected_execution_owner_id: str,
+        expected_execution_owner_id: str | None,
         ttl: int | None = None,
     ) -> bool:
-        """Persist an owner-scoped state transition with one lease-aware SQL CAS."""
+        """Update an active run atomically without rewriting lease control fields.
+
+        Callbacks without an explicit owner still compare the immutable task ID;
+        owner-scoped writes additionally require a matching, unexpired lease.
+        """
         expires_at = compute_expiry(ttl)
         with self._connect_context(ctx) as conn:
             cursor = conn.execute(
                 "UPDATE task_states SET status = ?, progress = ?, current_task = ?, "
                 "result_json = ?, error = ?, logs_json = ?, updated_at = ?, "
                 "completed_at = ?, expires_at = ? "
-                "WHERE project_id = ? AND task_id = ? AND execution_owner_id = ? "
+                "WHERE project_id = ? AND task_id = ? "
                 "AND status IN ('submitting', 'queued', 'running') "
-                "AND julianday(lease_expires_at) > julianday('now')",
+                "AND (? IS NULL OR (execution_owner_id = ? "
+                "AND julianday(lease_expires_at) > julianday('now')))",
                 (
                     state.status,
                     state.progress,
@@ -1646,7 +1661,8 @@ class TaskStateManager:
                     expires_at,
                     ctx.project_id,
                     str(expected_task_id),
-                    str(expected_execution_owner_id),
+                    expected_execution_owner_id,
+                    expected_execution_owner_id,
                 ),
             )
         return cursor.rowcount == 1

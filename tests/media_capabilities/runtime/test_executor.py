@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -344,12 +345,18 @@ async def test_runninghub_rejection_preserves_safe_provider_code(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    RunningHubError("RunningHub transport failed", retriable=True),
+    RunningHubError("RunningHub invalid JSON", code="INVALID_JSON", http_status=200),
+    RunningHubError("RunningHub missing task ID", code="INVALID_RESPONSE", http_status=200),
+])
 async def test_ambiguous_submit_transport_failure_stays_unknown_without_retry(
     tmp_path: Path,
+    error: RunningHubError,
 ) -> None:
     store, task, attempt = setup_attempt(tmp_path, submitted=False)
     client = FakeClient()
-    client.error = RunningHubError("RunningHub transport failed", retriable=True)
+    client.error = error
     executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
 
     first = await executor.step(task.id, profile=profile(), semantic_values={})
@@ -361,3 +368,129 @@ async def test_ambiguous_submit_transport_failure_stays_unknown_without_retry(
     assert first.status is MediaTaskStatus.UNKNOWN
     assert store.recoverable(saved.updated_at) == []
     assert len(client.submit_calls) == 1
+
+    # Re-entering the executor (including after restart) must not submit again.
+    restarted = RunningHubExecutor(
+        TaskStore(tmp_path / "tasks.db"), client, FakeArtifacts(), FakeConcurrency()
+    )
+    second = await restarted.step(task.id, profile=profile(), semantic_values={})
+    assert second.status is MediaTaskStatus.UNKNOWN
+    assert len(client.submit_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_with_claim_cannot_resubmit_or_cancel_into_retryable_state(tmp_path: Path) -> None:
+    store, task, attempt = setup_attempt(tmp_path, submitted=False)
+    assert store.claim_provider_submission(attempt.id)
+    client = FakeClient()
+    restarted = RunningHubExecutor(
+        TaskStore(tmp_path / "tasks.db"), client, FakeArtifacts(), FakeConcurrency()
+    )
+    await restarted.step(task.id, profile=profile(), semantic_values={})
+    await restarted.cancel(task.id)
+    assert store.get_task(task.id).status is MediaTaskStatus.UNKNOWN
+    assert client.submit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_two_executors_share_one_durable_submission_claim(tmp_path: Path) -> None:
+    store, task, _ = setup_attempt(tmp_path, submitted=False)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowClient(FakeClient):
+        async def submit(self, workflow_id, node_info):
+            self.submit_calls.append((workflow_id, node_info))
+            entered.set()
+            await release.wait()
+            return "remote-1"
+
+    client = SlowClient()
+    first = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+    second = RunningHubExecutor(
+        TaskStore(tmp_path / "tasks.db"), client, FakeArtifacts(), FakeConcurrency()
+    )
+    pending = asyncio.create_task(first.step(task.id, profile=profile(), semantic_values={}))
+    await entered.wait()
+    overlapping = asyncio.create_task(second.step(task.id, profile=profile(), semantic_values={}))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(pending, overlapping)
+    assert len(client.submit_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_submit_preserves_unknown_outcome(tmp_path: Path) -> None:
+    store, task, _ = setup_attempt(tmp_path, submitted=False)
+    entered = asyncio.Event()
+
+    class SlowClient(FakeClient):
+        async def submit(self, workflow_id, node_info):
+            self.submit_calls.append((workflow_id, node_info))
+            entered.set()
+            await asyncio.Event().wait()
+
+    client = SlowClient()
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+    pending = asyncio.create_task(executor.step(task.id, profile=profile(), semantic_values={}))
+    await entered.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await executor.cancel(task.id)
+    assert store.get_task(task.id).status is MediaTaskStatus.UNKNOWN
+    await executor.step(task.id, profile=profile(), semantic_values={})
+    assert len(client.submit_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_failure", [None, "provider", "timeout", "raw_timeout"])
+async def test_cancel_during_submit_preserves_late_provider_id_and_cancels_remote(
+    tmp_path: Path, cancel_failure: str | None,
+) -> None:
+    store, task, attempt = setup_attempt(tmp_path, submitted=False)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.cancel_calls = []
+
+        async def submit(self, workflow_id, node_info):
+            self.submit_calls.append((workflow_id, node_info))
+            entered.set()
+            await release.wait()
+            return "remote-late"
+
+        async def cancel(self, provider_task_id):
+            self.cancel_calls.append(provider_task_id)
+            if cancel_failure == "provider":
+                raise RunningHubError("cancellation rejected", code="CANCEL_REJECTED")
+            if cancel_failure == "timeout":
+                raise RunningHubError("cancellation timed out", code="TIMEOUT", retriable=True)
+            if cancel_failure == "raw_timeout":
+                raise TimeoutError("cancellation timed out")
+
+    client = SlowClient()
+    executor = RunningHubExecutor(store, client, FakeArtifacts(), FakeConcurrency())
+    pending = asyncio.create_task(executor.step(task.id, profile=profile(), semantic_values={}))
+    await entered.wait()
+    cancelled = await executor.cancel(task.id)
+    assert cancelled.status is MediaTaskStatus.UNKNOWN
+    release.set()
+    if cancel_failure == "raw_timeout":
+        with pytest.raises(TimeoutError, match="cancellation timed out"):
+            await pending
+        assert store.get_task(task.id).status is MediaTaskStatus.CANCEL_REQUESTED
+    else:
+        result = await pending
+        assert result.status is (
+            MediaTaskStatus.FAILED if cancel_failure else MediaTaskStatus.CANCELLED
+        )
+    assert store.get_attempt(attempt.id).provider_task_id == "remote-late"
+    assert client.cancel_calls == ["remote-late"]
+    restarted = RunningHubExecutor(TaskStore(tmp_path / "tasks.db"), client, FakeArtifacts(), FakeConcurrency())
+    await restarted.step(task.id, profile=profile(), semantic_values={})
+    assert len(client.submit_calls) == 1
+    assert TaskStore(tmp_path / "tasks.db").get_attempt(attempt.id).provider_task_id == "remote-late"

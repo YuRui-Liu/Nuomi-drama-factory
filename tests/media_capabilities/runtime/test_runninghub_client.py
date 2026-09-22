@@ -436,6 +436,35 @@ async def test_download_accepts_only_https_without_userinfo() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_cdn_accepts_observed_runninghub_tos_bucket_only() -> None:
+    from novelvideo.media_capabilities.runtime.configuration import RUNNINGHUB_DOWNLOAD_HOSTS
+
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert "authorization" not in request.headers
+        assert "api-key" not in request.headers
+        return httpx.Response(200, content=b"existing-video")
+
+    async with RunningHubClient(
+        api_key="memory-key", download_allowed_hosts=RUNNINGHUB_DOWNLOAD_HOSTS,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        assert await client.download(
+            "https://rh-comfyui01.tos-cn-beijing.volces.com/output/video.mp4"
+        ) == b"existing-video"
+        for url in (
+            "https://other-bucket.tos-cn-beijing.volces.com/output/video.mp4",
+            "https://rh-comfyui01.tos-cn-beijing.volces.com.evil.invalid/output.mp4",
+            "http://rh-comfyui01.tos-cn-beijing.volces.com/output/video.mp4",
+        ):
+            with pytest.raises(RunningHubError):
+                await client.download(url)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_download_does_not_follow_redirects() -> None:
     calls = 0
 

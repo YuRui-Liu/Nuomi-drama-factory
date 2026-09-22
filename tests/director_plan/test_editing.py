@@ -87,6 +87,26 @@ def active_plan() -> DirectorPlanRevision:
     )
 
 
+@pytest.mark.parametrize("operation", ["merge", "move"])
+def test_edit_rejects_group_exceeding_persisted_four_shot_limit(operation):
+    first_count = 3 if operation == "merge" else 4
+    total = first_count + 2
+    spans = tuple(span(f"s{i}", i) for i in range(1, total + 1))
+    first_ids = tuple(item.id for item in spans[:first_count])
+    second_ids = tuple(item.id for item in spans[first_count:])
+    original = active_plan().model_copy(update={"groups": (
+        group("ng-01", 1, first_ids, tuple(shot(f"shot-{i}", sid) for i, sid in enumerate(first_ids))),
+        group("ng-02", 2, second_ids, tuple(shot(f"second-{i}", sid) for i, sid in enumerate(second_ids))),
+    )})
+    command = (
+        MergeAdjacentGroups(left_group_id="ng-01", right_group_id="ng-02")
+        if operation == "merge"
+        else MoveShot(shot_id="second-0", target_group_id="ng-01", index=4)
+    )
+    with pytest.raises(DirectorEditError, match="4 shots"):
+        apply_edit(original, command, spans)
+
+
 def test_split_group_creates_child_revision_and_preserves_source_order() -> None:
     original = active_plan()
 

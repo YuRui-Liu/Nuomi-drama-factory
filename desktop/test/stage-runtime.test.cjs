@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const { runtimeLayout, validateInputs, sitePackagesPath } = require('../scripts/stage-runtime.cjs');
+const { runtimeLayout, validateInputs, sitePackagesPath, verifyStagedRuntime } = require('../scripts/stage-runtime.cjs');
 
 test('runtime layout has stable installer resource paths', () => {
   const layout = runtimeLayout(path.resolve('desktop-runtime'));
@@ -29,4 +29,28 @@ test('input validation reports all missing build prerequisites', () => {
     ffprobe: 'Z:\\missing-ffprobe.exe',
   });
   assert.equal(missing.length, 6);
+});
+
+test('staged verification imports the actual API application without starting a server', () => {
+  const layout = runtimeLayout(path.resolve('desktop-runtime'));
+  let calls = 0;
+  verifyStagedRuntime(layout, (executable, args, options) => {
+    calls += 1;
+    assert.equal(executable, path.join(layout.python, 'python.exe'));
+    assert.ok(args.includes('-c'));
+    assert.match(args.at(-1), /import novelvideo\.api\.app/);
+    assert.doesNotMatch(args.at(-1), /uvicorn\.run|subprocess|on_startup/);
+    assert.equal(options.env.PYTHONPATH, path.join(layout.backend, 'src'));
+    return { status: 0 };
+  });
+  assert.equal(calls, 1);
+});
+
+test('staged verification rejects API import failures', () => {
+  assert.throws(
+    () => verifyStagedRuntime(runtimeLayout('runtime'), () => ({
+      status: 1, stderr: "ModuleNotFoundError: No module named 'fcntl'",
+    })),
+    /Staged Python verification failed.*\n.*fcntl/,
+  );
 });

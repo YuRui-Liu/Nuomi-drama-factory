@@ -26,7 +26,7 @@ from .h3_prompt_profile import (
     H3_PROMPT_PROFILE_ID,
     H3_PROMPT_PROFILE_VERSION,
 )
-from .h3_rigid_prompt import H3_RIGID_SECTION_ORDER, fill_empty_fields
+from .h3_rigid_prompt import H3_RIGID_SECTION_ORDER, H3RigidPromptPlan, fill_empty_fields
 from .h3_reference_payload import H3ResolvedReferenceFact
 from .h3_prompt_quality import (
     H3_PROMPT_QUALITY_VERSION,
@@ -37,6 +37,16 @@ from .h3_prompt_quality import (
     normalize_h3_action_timeline,
 )
 from .h3_timeline import H3DirectorSegment
+from .h3_storyboard_context import (
+    STORYBOARD_PROMPT_RULES,
+    StoryboardPromptBlocked,
+    StoryboardPromptDecision,
+    StoryboardPromptImage,
+    pack_storyboard_batches,
+    require_storyboard_plan,
+    run_storyboard_agent,
+    visual_input_hash,
+)
 from .models import H3Mode
 
 
@@ -274,6 +284,39 @@ class H3PromptOptimizationResult(BaseModel):
     compiler_version: int = H3_PROMPT_COMPILER_VERSION
     format_version: int = _FORMAT_VERSION
     cache_hit: bool = False
+    storyboard_decision: StoryboardPromptDecision | None = None
+
+
+def merge_repaired_rigid_prompt(
+    previous: H3RigidPromptPlan,
+    candidate: H3RigidPromptPlan,
+    report: H3PromptQualityReport,
+) -> H3RigidPromptPlan:
+    """Preserve accepted facts; recheck replacements for explicitly rejected fields."""
+    merged = fill_empty_fields(previous, candidate)
+    if any(issue.code in {"physics_entity_mismatch", "unknown_moving_entity"}
+           and issue.field == "rigid_prompt.physics.moving_entities"
+           for issue in report.issues):
+        merged = merged.model_copy(update={"physics": merged.physics.model_copy(
+            update={"moving_entities": candidate.physics.moving_entities})})
+    if any(issue.code in {"physics_incomplete", "physics_required", "physics_entity_description_missing"}
+           and issue.field == "rigid_prompt.physics.statements"
+           for issue in report.issues):
+        merged = merged.model_copy(update={"physics": merged.physics.model_copy(
+            update={"statements": candidate.physics.statements})})
+    lighting_updates = {}
+    for issue in report.issues:
+        if issue.code != "lighting_source_conflict":
+            continue
+        prefix = "rigid_prompt.lighting."
+        if issue.field.startswith(prefix):
+            field = issue.field[len(prefix):]
+            if field in type(candidate.lighting).model_fields:
+                lighting_updates[field] = getattr(candidate.lighting, field)
+    if lighting_updates:
+        merged = merged.model_copy(update={"lighting": merged.lighting.model_copy(
+            update=lighting_updates)})
+    return merged
 
 
 def compile_and_gate_h3_plan(
@@ -339,6 +382,8 @@ class H3PromptOptimizer:
         segment: H3DirectorSegment,
         context: H3PromptContext,
         mode: H3Mode,
+        *,
+        storyboard_images: tuple[StoryboardPromptImage, ...] = (),
     ) -> H3PromptOptimizationResult:
         try:
             mode = H3Mode(mode)
@@ -346,21 +391,38 @@ class H3PromptOptimizer:
                 raise ValueError("H3 prompt optimization supports only i2va and fl2va")
             _validate_dialogue_contract(segment, dialogue_required=context.dialogue_required)
             input_hash = _input_hash(segment, context, mode)
+            storyboard_images = tuple(storyboard_images)
+            if storyboard_images:
+                packs = pack_storyboard_batches(storyboard_images)
+                if len(packs) != 1 or any(image.segment_id != segment.segment_id for image in storyboard_images):
+                    raise ValueError("storyboard images do not match segment")
+                input_hash = visual_input_hash(input_hash, storyboard_images, self._agent)
             segment_key = hashlib.sha256(
                 segment.segment_id.encode("utf-8")
             ).hexdigest()[:16]
             cache_path = self._cache_dir / f"{segment_key}-{input_hash}.json"
             cached = _load_cache(cache_path, input_hash)
             if cached is not None:
+                if storyboard_images:
+                    if cached.storyboard_decision is None:
+                        raise ValueError("visual cache lacks storyboard decision")
+                    require_storyboard_plan(cached.storyboard_decision, storyboard_images)
                 return cached.model_copy(update={"cache_hit": True})
 
             base_task = _build_task(segment, context, mode)
+            if storyboard_images:
+                base_task += "\n" + STORYBOARD_PROMPT_RULES
             task = base_task
             previous_plan: H3DirectorPlan | None = None
+            previous_report: H3PromptQualityReport | None = None
             for revision in range(self._quality_revisions + 1):
-                response = await self._run_agent(task)
+                response = await self._run_agent(task, storyboard_images)
+                decision = None
+                if storyboard_images:
+                    decision = StoryboardPromptDecision.model_validate(response.output)
+                    require_storyboard_plan(decision, storyboard_images)
                 try:
-                    plan = H3DirectorPlan.model_validate(response.output)
+                    plan = H3DirectorPlan.model_validate(decision.plan if decision else response.output)
                 except Exception as exc:
                     raise ValueError(f"invalid typed director plan: {exc}") from exc
                 if plan.mode is not mode:
@@ -369,13 +431,14 @@ class H3PromptOptimizer:
                     )
                 if (
                     previous_plan is not None
+                    and previous_report is not None
                     and previous_plan.rigid_prompt is not None
                     and plan.rigid_prompt is not None
                 ):
                     plan = plan.model_copy(
                         update={
-                            "rigid_prompt": fill_empty_fields(
-                                previous_plan.rigid_prompt, plan.rigid_prompt
+                            "rigid_prompt": merge_repaired_rigid_prompt(
+                                previous_plan.rigid_prompt, plan.rigid_prompt, previous_report
                             )
                         }
                     )
@@ -389,14 +452,18 @@ class H3PromptOptimizer:
                         mode=mode,
                         input_hash=input_hash,
                     )
+                    if decision is not None:
+                        result = result.model_copy(update={"storyboard_decision": decision.model_copy(
+                            update={"plan": result.plan})})
                     _save_cache(cache_path, result)
                     return result
                 if revision >= self._quality_revisions:
                     report.raise_for_failure()
                 previous_plan = plan
+                previous_report = report
                 task = _build_quality_revision_task(base_task, plan, report)
             raise AssertionError("unreachable")
-        except H3PromptQualityError:
+        except (H3PromptQualityError, StoryboardPromptBlocked):
             raise
         except H3PromptOptimizationError:
             raise
@@ -405,10 +472,10 @@ class H3PromptOptimizer:
                 f"H3 prompt optimization failed: {exc}"
             ) from exc
 
-    async def _run_agent(self, task: str) -> Any:
+    async def _run_agent(self, task: str, images=()) -> Any:
         for attempt in range(1, self._max_attempts + 1):
             try:
-                return await self._agent.run(task)
+                return await run_storyboard_agent(self._agent, task, images)
             except Exception as exc:
                 if not _is_transient_provider_error(exc):
                     raise
@@ -428,6 +495,7 @@ def create_h3_prompt_optimizer(
     cache_dir: Path | str,
     director_model_factory: DirectorModelFactory | None = None,
     model_settings: dict[str, Any] | None = None,
+    storyboard_grounded: bool = False,
 ) -> H3PromptOptimizer:
     """Create a planner from a generic injected director-text model factory."""
     from novelvideo.text_task_runtime.runtime import (
@@ -441,19 +509,21 @@ def create_h3_prompt_optimizer(
     kwargs: dict[str, Any] = {}
     if settings is not None:
         kwargs["model_settings"] = settings
+    output_type = StoryboardPromptDecision if storyboard_grounded else H3DirectorPlan
+    system_prompt = H3_DIRECTOR_SYSTEM_PROMPT + ("\n" + STORYBOARD_PROMPT_RULES if storyboard_grounded else "")
     agent = (
         StructuredRuntimeAgent(
             routed_runtime,
-            output_type=H3DirectorPlan,
-            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+            output_type=output_type,
+            system_prompt=system_prompt,
         )
         if routed_runtime is not None
         else Agent(
             factory(),
-            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             # DeepSeek thinking models reject tool_choice. PromptedOutput keeps the
             # typed validation contract without asking the provider to call a tool.
-            output_type=PromptedOutput(H3DirectorPlan),
+            output_type=PromptedOutput(output_type),
             name="MiniMax H3 Director Planner",
             retries={
                 "tools": 1,

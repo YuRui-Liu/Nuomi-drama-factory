@@ -16,6 +16,7 @@ logger = logging.getLogger("novelvideo.api.characters")
 
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
 from novelvideo.api.auth import get_api_user
+from novelvideo.api.routes.identity_qc import router as identity_qc_router
 from novelvideo.api.deps import (
     get_media_capability_store,
     get_media_credential_store,
@@ -115,6 +116,7 @@ from novelvideo.seedance2_i2v.character_voice_storage import (
 from novelvideo.sqlite_store import SQLiteStore
 
 router = APIRouter()
+router.include_router(identity_qc_router)
 
 CHARACTER_IMAGE_SELECTION_CONFIG_KEY = "character_image_selection"
 ASSET_IMAGE_SELECTION_CONFIG_KEYS = {

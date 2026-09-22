@@ -61,6 +61,8 @@ class IdentitySheetQualityReport(BaseModel):
     passed: bool
     checks: dict[str, bool] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     style_family: IdentitySheetStyleFamily
     technical_error: str | None = None
 
@@ -212,7 +214,7 @@ COSTUME REFERENCE (CRITICAL):
     return f"""Identity Sheet v3 for {character_tag} ({character_name}).
 Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions.
 The confirmed Portrait is an identity reference only. Never copy or paste pixels from the reference image into the output; newly render every panel:
-- LEFT 40%: HEADLESS FRONT FULL BODY in a neutral standing pose. Show the complete body from a clean collar and shoulder boundary to the soles, with no head, hair, ears, or face at all. Use no wound, hole, gore, or exposed anatomy, and do not use a mannequin head, blank face, mask, helmet, or dark void to explain the missing head.
+- LEFT 40%: HEADLESS FRONT FULL BODY in a neutral standing pose. Show the complete body from a clean collar and shoulder boundary to the soles, with no head, hair, ears, or face at all. A smooth, non-bloody neck cross-section is valid, including visible neck skin above the collar. This panel provides outfit and body proportions; facial detail belongs exclusively to the portrait. Use no wound, hole, gore, exposed bone or internal tissue, and do not use a mannequin head, blank face, mask, helmet, or dark void to explain the missing head.
 - CENTER 30%: BACK FULL BODY, naturally facing fully away, head to feet. Preserve the back of the head, hair, and neck. Never turn back; show no profile, visible face, mirror face, or reflection.
 - RIGHT 30%: LARGE THREE-QUARTER PORTRAIT. Preserve the confirmed Portrait's identity; this is the only visible face in the entire sheet. Use a clean neutral pose with no hand-to-face gesture. Keep the eyes, nose, mouth, jawline, and recognizable facial contour unobstructed: hands, arms, weapons, tools, clothing, hair, or props must not cover them. Limited shoulder and neck visibility is allowed.
 

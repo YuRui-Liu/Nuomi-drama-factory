@@ -2004,6 +2004,23 @@ async def test_generate_prop_reference_returns_scope(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_empty_prop_model_uses_default_not_none_string(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from novelvideo.api.routes import props
+    from novelvideo.api.schemas import PropReferenceGenerateRequest
+    ctx = SimpleNamespace(project_id="project")
+    resolved = SimpleNamespace(ctx=ctx, username="local", project_name="demo",
+                               output_dir=tmp_path, project_dir=tmp_path)
+    monkeypatch.setattr(props, "resolve_project_scope", AsyncMock(return_value=resolved))
+    monkeypatch.setattr(props, "make_sqlite_store_for_context", AsyncMock(return_value=_PropStore([NovelProp(name="lamp")])))
+    monkeypatch.setattr(props, "_project_style", lambda *args: "2d")
+    enqueue = AsyncMock(return_value=SimpleNamespace(task_state=SimpleNamespace(task_id="t"), backend="inline", queue=None))
+    monkeypatch.setattr(props, "get_task_backend", lambda: SimpleNamespace(enqueue_project_task=enqueue))
+    await props.generate_prop_reference("demo", "lamp", PropReferenceGenerateRequest(), {"username":"local"})
+    assert enqueue.call_args.kwargs["payload"]["model"] == ""
+
+
+@pytest.mark.asyncio
 async def test_batch_generate_prop_references_starts_batch_task(tmp_path, monkeypatch):
     from novelvideo.api.routes import props
 

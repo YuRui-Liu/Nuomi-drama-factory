@@ -4,6 +4,16 @@ from novelvideo.utils.screenplay_scene_parser import enumerate_screenplay_lines,
 from novelvideo.workflows.literal_script_writing import LiteralScriptWritingWorkflow
 
 
+def test_numbered_scene_accepts_interior_before_time():
+    from novelvideo.screenplay_semantics.parser import parse_screenplay_document
+
+    parsed = parse_screenplay_document("第1集 灯塔\n1-1 海边灯塔 外 夜\n人物：林舟\n林舟：灯还亮着。")
+    assert len(parsed.scenes) == 1
+    assert parsed.scenes[0].location == "海边灯塔"
+    assert parsed.scenes[0].time_of_day == "夜"
+
+
+
 def test_enumerate_screenplay_lines_preserves_original_blank_line_positions():
     lines = enumerate_screenplay_lines("标题\n\n1-1 广播站 深夜 内\n△撞门。")
 

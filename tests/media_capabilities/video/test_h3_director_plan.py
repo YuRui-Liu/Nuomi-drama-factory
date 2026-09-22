@@ -758,6 +758,46 @@ def test_static_camera_classification_is_shared_on_the_dto():
     assert _camera().is_static is False
 
 
+@pytest.mark.parametrize(
+    "label,canonical",
+    (
+        ("Static camera", "static"),
+        ("  STATIC   CAMERA  ", "static"),
+        ("static\u00a0camera", "static"),
+        (" Static ", "static"),
+        ("Fixed Camera", "fixed"),
+        (" LOCKED camera ", "locked"),
+        (" NONE ", "none"),
+    ),
+)
+def test_explicit_static_camera_labels_normalize(label, canonical):
+    camera = H3CameraPlan(type=label, direction=None, amplitude=None, speed=None)
+
+    assert camera.type == canonical
+    assert camera.is_static is True
+    assert H3CameraPlan.model_validate_json(camera.model_dump_json()) == camera
+
+
+@pytest.mark.parametrize("label", ("Static camera then pan", "not static", "unknown camera", "Orbit", "push in"))
+def test_non_static_camera_labels_still_require_direction(label):
+    with pytest.raises(ValidationError, match="dynamic camera requires direction"):
+        H3CameraPlan(type=label)
+
+    camera = H3CameraPlan(type=label, direction="forward")
+    assert camera.is_static is False
+    assert camera.type == label
+
+
+def test_static_camera_phrase_keeps_v3_motion_parameter_constraint():
+    payload = _director_payload(H3Mode.I2VA)
+    shot_payload = _shot().model_dump()
+    shot_payload["camera"] = {"type": "Static camera", "direction": "forward"}
+    payload["shots"] = (shot_payload,)
+
+    with pytest.raises(ValidationError, match="schema_version=3.*static camera"):
+        H3DirectorPlan(**payload)
+
+
 def test_i2va_requires_first_frame_establish_anchor_and_later_change():
     shot = _shot()
     only_anchor = shot.model_copy(update={"actions": (shot.actions[0],)})

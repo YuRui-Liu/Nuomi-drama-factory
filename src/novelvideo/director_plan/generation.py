@@ -215,10 +215,21 @@ def _can_merge(
     current: list[ShotPlan], next_shot: ShotPlan, group_space: str
 ) -> bool:
     previous = current[-1]
+    before, after = previous.cinematography, next_shot.cinematography
+    if (before is None) != (after is None):
+        return False
+    if before is not None and after is not None:
+        # A continuous flag cannot override incompatible camera or lighting locks.
+        # Keep these as separate shots; intentional cuts remain valid.
+        if any(getattr(before, field) != getattr(after, field) for field in (
+            "axis", "camera_side", "key_light_id", "shadow_direction", "exposure_priority",
+        )) or before.lights != after.lights:
+            return False
     previous_space = previous.space_anchor.strip() or group_space
     next_space = next_shot.space_anchor.strip() or group_space
     return (
-        previous.continuous_with_next
+        len(current) < 2
+        and previous.continuous_with_next
         and previous.subject.strip() == next_shot.subject.strip()
         and previous_space == next_space
         and sum(shot.duration_seconds for shot in current)

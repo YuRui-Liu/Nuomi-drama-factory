@@ -26,6 +26,36 @@ beforeAll(async () => {
 beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
+  it("distinguishes unsynchronized workflow settings from an active plan save", () => {
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame
+      plan={recommendedPlan} workflowSynchronized={false} onPlanSave={vi.fn()} onGenerate={vi.fn()} />);
+    expect(screen.queryByText("保存中…")).not.toBeInTheDocument();
+    expect(screen.getByText("视频工作流与本组设置不一致，请重新选择视频模型以同步。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+  });
+  it("preserves a paired I2VA unit when another boundary is edited", () => {
+    const save = vi.fn();
+    const plan = {
+      ...recommendedPlan,
+      source: "manual" as const,
+      units: [
+        { id: "u-1-2", beat_ids: ["1", "2"] as [string, string], mode: "i2va" as const, duration_seconds: 6.5, reason: "context" },
+        { id: "u-3", beat_ids: ["3"] as [string], mode: "i2va" as const, duration_seconds: 3.5, reason: "cut" },
+        { id: "u-4", beat_ids: ["4"] as [string], mode: "i2va" as const, duration_seconds: 3, reason: "cut" },
+      ],
+    };
+    const { rerender } = render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} plan={plan} onPlanSave={save} />);
+    expect(screen.getByText("Beat 1 → Beat 2 · 首帧 · 6.5秒")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存视频方案" })).toBeDisabled();
+    rerender(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false} plan={{ ...plan }} onPlanSave={save} />);
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "合并 Beat 3 与 Beat 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存视频方案" }));
+    expect(save).toHaveBeenCalledWith([
+      { beatIds: ["1", "2"], mode: "i2va" },
+      { beatIds: ["3", "4"], mode: "fl2va" },
+    ]);
+  });
   it("shows auto plus all five official modes and reports the automatic result", () => {
     render(<GroupVideoStage
       modelId="runninghub:minimax-h3"
@@ -338,15 +368,15 @@ describe("GroupVideoStage", () => {
     expect(screen.getByText("2 个视频单元 · 10秒 · 推荐方案")).toBeInTheDocument();
   });
 
-  it("splits a pair into singleton units and saves only Beat groups", () => {
+  it("splits a pair into singleton units with explicit first-frame modes", () => {
     const save = vi.fn();
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame plan={recommendedPlan} onPlanSave={save} />);
     fireEvent.click(screen.getByRole("button", { name: "拆分 Beat 8 与 Beat 9" }));
     fireEvent.click(screen.getByRole("button", { name: "保存视频方案" }));
     expect(save).toHaveBeenCalledWith([
-      { beatIds: ["8"] },
-      { beatIds: ["9"] },
-      { beatIds: ["10"] },
+      { beatIds: ["8"], mode: "i2va" },
+      { beatIds: ["9"], mode: "i2va" },
+      { beatIds: ["10"], mode: "i2va" },
     ]);
   });
 
@@ -392,8 +422,8 @@ describe("GroupVideoStage", () => {
     fireEvent.click(screen.getByRole("button", { name: "合并 Beat 8 与 Beat 9" }));
     fireEvent.click(screen.getByRole("button", { name: "保存视频方案" }));
     expect(save).toHaveBeenCalledWith([
-      { beatIds: ["8", "9"] },
-      { beatIds: ["10"] },
+      { beatIds: ["8", "9"], mode: "fl2va" },
+      { beatIds: ["10"], mode: "i2va" },
     ]);
   });
 
@@ -416,9 +446,9 @@ describe("GroupVideoStage", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存视频方案" }));
 
     expect(save).toHaveBeenCalledWith([
-      { beatIds: ["20"] },
-      { beatIds: ["21", "22"] },
-      { beatIds: ["23", "24"] },
+      { beatIds: ["20"], mode: "i2va" },
+      { beatIds: ["21", "22"], mode: "fl2va" },
+      { beatIds: ["23", "24"], mode: "fl2va" },
     ]);
   });
 

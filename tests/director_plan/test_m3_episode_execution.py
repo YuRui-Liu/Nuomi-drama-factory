@@ -105,7 +105,7 @@ def test_final_manifest_preserves_each_segment_outcome_and_provider_id() -> None
         actual_output={},
     )
 
-    assert finalized.status == "transport_failed"
+    assert finalized.status == "partial_failure"
     assert finalized.entries[0].status == "completed"
     assert finalized.entries[0].provider_task_id == "provider-ok"
     assert finalized.entries[1].status == "transport_failed"

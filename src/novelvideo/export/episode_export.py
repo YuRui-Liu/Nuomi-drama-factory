@@ -166,7 +166,11 @@ async def build_episode_zip_file(
         # ``original.wav``).  The stable composition order provides a compact,
         # deterministic per-group namespace.
         group_prefix = f"group_{source_index:03d}"
-        files_to_pack.append((span.video_path, f"video/{group_prefix}_{span.video_path.name}"))
+        video_name = (
+            f"{group_prefix}_{span.video_path.name}" if span.is_director
+            else span.video_path.name
+        )
+        files_to_pack.append((span.video_path, f"video/{video_name}"))
         if span.manifest_path is not None and span.manifest_path.exists():
             files_to_pack.append(
                 (span.manifest_path, f"manifests/{group_prefix}_{span.manifest_path.name}")

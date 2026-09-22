@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import hashlib
 from pathlib import Path
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from novelvideo.text_task_runtime.runtime import StructuredImage, StructuredTextRuntime
 
 from novelvideo.freezone.vision_gateway import (
     VisionInput,
@@ -38,8 +41,16 @@ _ISSUE_CODES = (
 _SAFE_DIAGNOSTIC_VALUE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _TECHNICAL_ERROR_LIMIT = 240
 
+# Aesthetic judgments remain visible, but cannot veto a usable identity asset.
+_ADVISORY_CODES = frozenset({
+    "non_neutral_presentation", "style_mismatch", "dead_eyes",
+    "unnatural_skin_texture", "plastic_material",
+})
+
 
 class _IdentitySheetQcChecks(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     front_face_detected: bool
     back_face_visible: bool
     portrait_too_small: bool
@@ -96,24 +107,41 @@ or a missing back-view head or hair. The intentionally absent front-view head is
 
 The LEFT 40% headless front full-body panel must show a clean collar and shoulder boundary
 with no head, hair, ears, or face. front_face_detected is a defect when any head, hair, ear, face,
-facial feature, mannequin head, blank face, mask, helmet, dark void, wound, hole, gore, or exposed
-anatomy appears above or replaces that boundary. The CENTER 30% back full-body panel must preserve
+facial feature, mannequin head, blank face, mask, helmet, dark void, wound, hole, gore, exposed
+bone or internal tissue appears above or replaces that boundary.
+A smooth, non-bloody neck cross-section is valid, including visible neck skin above the collar;
+do not flag a clean neck cross-section as front_face_detected. The headless front view provides
+outfit and body proportions; facial detail belongs exclusively to the portrait. Do not demand
+a small head or face on the front body, or mistake its intentional absence for body_cropped.
+The CENTER 30% back full-body panel must preserve
 the back of the head, hair, and neck and face fully away: back_face_visible is a defect when it
 contains any turned face, profile,
 reflected face, mirror face, or other visible facial detail.
-Reject text, labels, watermark, poster markings, and extra faces anywhere on the sheet;
-report the closest stable layout defect code (front_face_detected, back_face_visible,
-or non_neutral_presentation) rather than inventing a new code.
+Flag text, labels, watermark, and poster markings as non_neutral_presentation.
+Reject extra faces anywhere on the sheet: report front_face_detected, or
+back_face_visible for an additional face in the rear panel. Extra faces must never
+be reported solely under the advisory non_neutral_presentation code.
 
 Also check that the portrait is large enough to judge, all views depict the same
 identity and outfit state, and the presentation is neutral rather than an action pose
-or dramatic scene. Reject mismatch with the stated style, dead eyes, unnatural skin
+or dramatic scene. Flag mismatch with the stated style, dead eyes, unnatural skin
 texture, and plastic material according to the style policy above.
-所有风格都必须拒绝死眼和不符合该风格的错误塑料感。
+死眼和错误塑料感应作为风格相关的观感建议记录，而不是结构性不合格。
 
 Return exactly one JSON object containing all twelve boolean keys: {fields}.
 Every key is a defect flag: true means the named defect is present and false means it
 is absent. Do not add prose or markdown.
+
+Judge practical reference usability, not pixel-perfect compliance. Set a defect flag
+only when clearly visible; uncertainty or details too small to resolve are not proof.
+The 40/30/30 regions are approximate: small gutter or alignment variations are valid.
+panel_boundary_intrusion requires substantial overlap between views, not a few pixels
+near a nominal boundary. Natural bangs or side hair are valid unless they materially
+hide recognizable facial features. Do not infer missing soles from a normal standing
+view where the underside of the shoes is not visible. Perspective and lighting
+differences alone do not establish state_inconsistent.
+Material and expression flags are advisory aesthetic observations, evaluated relative
+to the project's style, not reasons to demand photorealism from stylized characters.
 """
 
 
@@ -161,6 +189,7 @@ def _unavailable_report(
         passed=False,
         checks={"qc_unavailable": False},
         issues=["qc_unavailable"],
+        blocking_issues=["qc_unavailable"],
         style_family=style_family,
         technical_error=_safe_technical_error(error),
     )
@@ -174,8 +203,10 @@ async def assess_identity_sheet_quality(
     media_type: str = "image/png",
     model_override: str | None = None,
     timeout_seconds: float = 120.0,
+    runtime: StructuredTextRuntime | None = None,
+    style_family: IdentitySheetStyleFamily | None = None,
 ) -> IdentitySheetQualityReport:
-    """Analyze an identity sheet using the shared Freezone vision gateway.
+    """Analyze with an explicit QC runtime, or the legacy shared vision gateway.
 
     Provider and schema failures are represented by ``qc_unavailable`` so callers
     get a stable, fail-closed result instead of provider-specific exceptions.
@@ -184,26 +215,50 @@ async def assess_identity_sheet_quality(
     if not image_data:
         raise ValueError("image_data must not be empty")
 
-    style_family = resolve_identity_sheet_style_family(style, project_dir=project_dir)
+    style_family = style_family or resolve_identity_sheet_style_family(style, project_dir=project_dir)
     try:
-        _model, response = await call_freezone_vision_model(
-            prompt=_build_prompt(style=style, style_family=style_family),
-            images=[VisionInput(data=image_data, media_type=media_type)],
-            model_override=model_override,
-            timeout_seconds=timeout_seconds,
-            output_type=_IdentitySheetQcChecks,
-        )
+        prompt = _build_prompt(style=style, style_family=style_family)
+        if runtime is not None:
+            response = await asyncio.wait_for(runtime.run_structured(
+                prompt=prompt,
+                images=[StructuredImage(data=image_data, media_type=media_type)],
+                output_type=_IdentitySheetQcChecks,
+            ), timeout=timeout_seconds)
+            response = _IdentitySheetQcChecks.model_validate(
+                response.model_dump() if isinstance(response, BaseModel) else response,
+            )
+        else:
+            _model, response = await call_freezone_vision_model(
+                prompt=prompt,
+                images=[VisionInput(data=image_data, media_type=media_type)],
+                model_override=model_override,
+                timeout_seconds=timeout_seconds,
+                output_type=_IdentitySheetQcChecks,
+            )
         checks = _extract_checks(response)
     except Exception as error:
         return _unavailable_report(style_family, error)
 
     issues = [code for code in _ISSUE_CODES if checks[code]]
+    blocking_issues = [code for code in issues if code not in _ADVISORY_CODES]
     return IdentitySheetQualityReport(
-        passed=not issues,
+        passed=not blocking_issues,
         checks=checks,
         issues=issues,
+        blocking_issues=blocking_issues,
+        warnings=[code for code in issues if code in _ADVISORY_CODES],
         style_family=style_family,
     )
 
 
-__all__ = ["assess_identity_sheet_quality"]
+def identity_sheet_qc_policy_fingerprint(runtime: StructuredTextRuntime | None = None) -> str:
+    """Fingerprint policy text and effective route for persisted QC provenance."""
+    policy = {
+        "prompts": [_build_prompt(style="", style_family=family) for family in IdentitySheetStyleFamily],
+        "advisory_codes": sorted(_ADVISORY_CODES),
+        "route": runtime.snapshot.model_dump(mode="json") if runtime is not None else {"runtime": "freezone_gateway"},
+    }
+    return hashlib.sha256(json.dumps(policy, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+__all__ = ["assess_identity_sheet_quality", "identity_sheet_qc_policy_fingerprint"]

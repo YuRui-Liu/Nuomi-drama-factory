@@ -40,8 +40,9 @@ def test_safe_asset_name_rejects_relative_directory_segments(value: str, expecte
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("warnings", [[], ["dead_eyes"]])
 async def test_identity_state_generation_registers_candidates_without_overwriting_current(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, warnings
 ) -> None:
     from novelvideo.models import CharacterIdentity, NovelCharacter
     from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
@@ -113,7 +114,8 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
         return IdentitySheetQualityReport(
             passed=True,
             checks={"front_face_detected": False, "back_face_visible": False},
-            issues=[],
+            issues=warnings,
+            warnings=warnings,
             style_family=IdentitySheetStyleFamily.TWO_D,
         )
 
@@ -202,7 +204,9 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
         "quality_report": {
             "passed": True,
             "checks": {"front_face_detected": False, "back_face_visible": False},
-            "issues": [],
+            "issues": warnings,
+            "blocking_issues": [],
+            "warnings": warnings,
             "style_family": "2d",
         },
         "raw_candidate_path": versions[second["version_id"]].generation_metadata["raw_candidate_path"],
@@ -219,6 +223,7 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
     assert slot_factory_calls == [("林默", "linmo-duty"), ("林默", "linmo-duty")]
     assert first["layout_version"] == "identity_sheet_v3"
     assert first["qc_passed"] is True
+    assert versions[first["version_id"]].soft_issues == warnings
     assert json.loads((ctx.state_dir / "production_workflow.json").read_text("utf-8"))
 
 

@@ -117,8 +117,8 @@ def _merge_groups(
     if right_index != left_index + 1:
         raise _edit_error("groups_not_adjacent", "Only adjacent groups can be merged.")
     left, right = groups[left_index], groups[right_index]
-    if len(left.shots) + len(right.shots) > 5:
-        raise _edit_error("too_many_shots", "Merged group cannot contain more than 5 shots.")
+    if len(left.shots) + len(right.shots) > 4:
+        raise _edit_error("too_many_shots", "Merged group cannot contain more than 4 shots.")
     merged = left.model_copy(
         update={
             "source_span_ids": left.source_span_ids + right.source_span_ids,
@@ -144,8 +144,8 @@ def _move_shot(
     target_length = len(target_group.shots) - int(source_group_index == target_group_index)
     if command.index > target_length:
         raise _edit_error("invalid_index", "Target shot index is out of range.")
-    if source_group_index != target_group_index and len(target_group.shots) >= 5:
-        raise _edit_error("too_many_shots", "Target group cannot contain more than 5 shots.")
+    if source_group_index != target_group_index and len(target_group.shots) >= 4:
+        raise _edit_error("too_many_shots", "Target group cannot contain more than 4 shots.")
 
     mutable = list(groups)
     if source_group_index == target_group_index:
@@ -183,7 +183,9 @@ def _update_shot(
     updates = command.model_dump(
         exclude={"kind", "shot_id"}, exclude_none=True
     )
-    changed = current_group.shots[shot_index].model_copy(update=updates)
+    changed = type(current_group.shots[shot_index]).model_validate({
+        **current_group.shots[shot_index].model_dump(mode="python"), **updates,
+    })
     changed_shots = list(current_group.shots)
     changed_shots[shot_index] = changed
     changed_group = current_group.model_copy(update={"shots": tuple(changed_shots)})

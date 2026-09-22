@@ -21,11 +21,13 @@ import { server } from "@/__mocks__/msw/server";
 import { sampleTask } from "@/__mocks__/msw/handlers/tasks";
 import { queryKeys } from "@/lib/query-keys";
 import { directorPlanKeys } from "@/lib/queries/director-plans";
+import { screenplaySemanticKeys } from "@/lib/queries/screenplay-semantics";
 import { useTasks } from "@/lib/queries/tasks";
 import { TaskCenterProvider } from "@/task-center/provider";
 import { useTaskCenterStore } from "@/task-center/store";
 import { useAppStore } from "@/stores/app-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { useTaskSubscribe } from "@/task-center/use-task-subscribe";
 
 // MockEventSource copy (keeps test file self-contained — upstream stream-client test uses same pattern)
 class MockEventSource {
@@ -112,6 +114,51 @@ function TasksConsumer() {
 }
 
 describe("TaskCenterProvider", () => {
+  it.each(["reconnect", "polling"])("refreshes assets and completion subscribers when %s hydration discovers completion", async (mode) => {
+    let completed = false;
+    const task = sampleTask({ task_key: "scene", task_type: "episode_scene_planner", episode: 1, status: "running" });
+    server.use(http.get("*/api/v1/projects/demo/tasks", () => HttpResponse.json({
+      ok: true,
+      data: [completed ? { ...task, status: "completed", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() } : task],
+    })));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(queryKeys.scenes("demo"), { ok: true, data: [] });
+    const onComplete = vi.fn();
+    function Subscriber() {
+      useTaskSubscribe({ match: (task) => task.task_key === "scene", onComplete });
+      return null;
+    }
+    const view = render(<Harness queryClient={qc}><Subscriber /></Harness>);
+    await vi.waitFor(() => expect(MockEventSource.instances.length).toBe(1));
+    act(() => MockEventSource.instances[0].dispatch("heartbeat", { ts: "now" }));
+    completed = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      await act(async () => {
+        MockEventSource.instances[0].onerror?.(new Event("error"));
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (mode === "polling") {
+          MockEventSource.instances[1].onerror?.(new Event("error"));
+          await vi.advanceTimersByTimeAsync(2_000);
+          MockEventSource.instances[2].onerror?.(new Event("error"));
+          await vi.advanceTimersByTimeAsync(5_000);
+        } else {
+          MockEventSource.instances[1].dispatch("heartbeat", { ts: "now" });
+        }
+        await vi.waitFor(() => expect(useTaskCenterStore.getState().tasks.get("scene")?.status).toBe("completed"));
+      });
+      expect(qc.getQueryState(queryKeys.scenes("demo"))?.isInvalidated).toBe(true);
+      expect(onComplete).toHaveBeenCalledTimes(1);
+      if (mode === "reconnect") {
+        act(() => MockEventSource.instances[1].dispatch("task_updated", useTaskCenterStore.getState().tasks.get("scene")));
+        expect(onComplete).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("does NOT open a stream when logged out (no username)", async () => {
     useAuthStore.setState({ username: null });
     render(<Harness />);
@@ -485,8 +532,7 @@ describe("TaskCenterProvider", () => {
     });
   });
 
-  it("invalidates script data when screenplay semantics completes", async () => {
-      const taskType = "screenplay_semantics";
+  it.each(["screenplay_semantics", "screenplay_semantic_repair"])("invalidates semantic revision data when %s completes", async (taskType) => {
       server.use(
         http.get("*/api/v1/projects/demo/tasks", () =>
           HttpResponse.json({
@@ -507,6 +553,7 @@ describe("TaskCenterProvider", () => {
         defaultOptions: { queries: { retry: false } },
       });
       const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+      queryClient.setQueryData(screenplaySemanticKeys.all("demo", 1), { ok: true, data: { revisions: [] } });
       render(<Harness queryClient={queryClient} />);
       await vi.waitFor(() => expect(MockEventSource.instances.length).toBe(1));
 
@@ -533,6 +580,7 @@ describe("TaskCenterProvider", () => {
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: queryKeys.pipelineStatus("demo"),
       });
+      expect(queryClient.getQueryState(screenplaySemanticKeys.all("demo", 1))?.isInvalidated).toBe(true);
   });
 
   it("does not invalidate script data for old completed script task replays", async () => {

@@ -164,3 +164,15 @@ def test_celery_task_failure_reraises_non_business_base_exception(monkeypatch) -
 
     with pytest.raises(KeyboardInterrupt):
         celery_tasks._project_task_failure_for_exception(KeyboardInterrupt())
+
+
+def test_missing_imported_scenes_preserves_actionable_task_metadata():
+    from novelvideo.agents.asset_compiler import MissingBaseScenesError
+    from novelvideo.task_backend.run_core import _project_task_failure_for_exception
+
+    exc = MissingBaseScenesError(["海边灯塔", "码头"], 1)
+    error, metadata, handled = _project_task_failure_for_exception(exc)
+    assert handled is True
+    assert error == str(exc)
+    assert metadata == {"error_code": "BASE_SCENE_IMPORT_REQUIRED",
+                        "missing_scene_names": ["海边灯塔", "码头"], "episode_number": 1}

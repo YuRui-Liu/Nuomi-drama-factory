@@ -27,7 +27,7 @@ def test_h3_is_listed_when_unconfigured_without_leaking_key(tmp_path) -> None:
     assert models[0].default_mode == "auto"
     assert "auto" not in models[0].supported_modes
     assert models[1].available is False
-    assert models[1].unavailable_reason == "hybrid_input_unverified"
+    assert models[1].unavailable_reason == "provider_not_configured"
     assert "credential" not in models[0].model_dump_json().lower()
     assert "api_key" not in models[0].model_dump_json().lower()
 

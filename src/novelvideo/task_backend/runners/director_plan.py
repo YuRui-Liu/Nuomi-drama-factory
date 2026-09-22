@@ -149,7 +149,7 @@ async def _build_director_plan_input(
         scenes=semantic.scenes,
         dramatic_beats=semantic.beats,
         relevant_bible={},
-        aspect_ratio="9:16",
+        aspect_ratio=str(config.get("aspect_ratio") or "9:16"),
         style_director={
             "snapshot_id": snapshot.snapshot_id,
             "style_hash": snapshot.style_hash,
@@ -157,6 +157,7 @@ async def _build_director_plan_input(
         },
         project_style_snapshot_id=snapshot.snapshot_id,
         project_style_snapshot=snapshot,
+        prompt_version="director-plan-v3",
     )
 
 
@@ -190,7 +191,11 @@ def _load_asset_migration_context(
     if output_dir is None:
         return None, ()
     root = Path(output_dir).resolve()
-    active = DirectorPlanStore(root).load_active(episode)
+    from novelvideo.episode_source_versions import SourceVersionConflict
+    try:
+        active = DirectorPlanStore(root).load_active(episode)
+    except SourceVersionConflict:
+        return None, ()
     if active is None:
         return None, ()
     from novelvideo.narrative_groups.service import load_groups
@@ -364,6 +369,8 @@ async def _run_director_plan(
         code = str(getattr(exc, "code", "director_plan_failed"))
         raise DirectorPlanTaskError(code) from exc
     report = _validation_report(revision)
+    if getattr(ctx, "output_dir", None) is not None:
+        DirectorPlanStore(ctx.output_dir).require_current(revision)
     if not bool(report.get("passed")) or str(revision.status) != "review_required":
         raise DirectorPlanTaskError(
             "DIRECTOR_PLAN_VALIDATION_FAILED", validation_report=report

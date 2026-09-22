@@ -74,6 +74,21 @@ async def test_split_retry_does_not_generate_again():
 
 
 @pytest.mark.asyncio
+async def test_split_exception_preserves_paid_grid_for_retry():
+    async def generator(payload):
+        return {"grid_asset": "paid-grid.png", "actual_model": "gpt-image-2"}
+
+    def splitter(grid, payload):
+        raise IndexError("invalid cell mapping")
+
+    result = await run_group_grid(group_payload(), generator=generator, splitter=splitter)
+    assert result["status"] == "partial_failure"
+    assert result["grid_asset"] == "paid-grid.png"
+    assert result["actual_model"] == "gpt-image-2"
+    assert result["errors"][0]["message"] == "invalid cell mapping"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("wrapper", "stage"),
     [(run_group_sketch_grid, "sketch"), (run_group_render_grid, "render")],

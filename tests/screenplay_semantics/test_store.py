@@ -39,6 +39,15 @@ def test_activation_rejects_stale_source_revision(tmp_path):
         store.activate(1, "sem-1", expected_source_revision=1)
 
 
+@pytest.mark.parametrize("empty_field", ["scenes", "beats"])
+def test_activation_rejects_empty_historical_result_even_with_passed_report(tmp_path, empty_field):
+    store = ScreenplaySemanticStore(tmp_path)
+    empty = {"scenes": (), "beats": ()} if empty_field == "scenes" else {"beats": ()}
+    store.save(revision().model_copy(update=empty))
+    with pytest.raises(ScreenplaySemanticActivationConflict, match="empty"):
+        store.activate(1, "sem-1", expected_source_revision=1)
+
+
 def test_list_revisions_skips_invalid_historical_revision(tmp_path):
     store = ScreenplaySemanticStore(tmp_path)
     valid = store.save(revision(revision_id="sem-valid"))

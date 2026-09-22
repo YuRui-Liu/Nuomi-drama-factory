@@ -67,6 +67,9 @@ INLINE_LABELED_SCENE_RE = re.compile(
 SIMPLE_LOCATION_RE = re.compile(
     rf"^(?P<location>.+?)\s+(?P<time>{TIME_TOKEN_RE})\s+(?P<interior>内|外)$"
 )
+INTERIOR_FIRST_LOCATION_RE = re.compile(
+    rf"^(?P<location>.+?)\s+(?P<interior>内|外)\s+(?P<time>{TIME_TOKEN_RE})$"
+)
 PLACEHOLDER_LOCATION_RE = re.compile(
     r"^(?P<location>.+?)\s+(?:日/夜|昼/夜)\s+(?:内/外)$"
 )
@@ -290,7 +293,7 @@ def parse_location_line(line: str) -> list[tuple[str, str, bool]]:
             text = "，".join(comma_tokens[:-2]).strip()
 
     if not tod:
-        simple = SIMPLE_LOCATION_RE.match(text)
+        simple = SIMPLE_LOCATION_RE.match(text) or INTERIOR_FIRST_LOCATION_RE.match(text)
         if simple:
             tod = simple.group("time")
             interior_exterior = simple.group("interior")

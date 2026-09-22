@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nextProvider, initReactI18next } from "react-i18next";
@@ -182,6 +182,44 @@ beforeEach(() => {
 });
 
 describe("TextPane", () => {
+  it("flushes newer text on unmount after an earlier save completes", async () => {
+    let finishSave!: (value: unknown) => void;
+    mutateAsync.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const view = render(<Wrapper><TextPane beat={makeBeat()} project="demo" episode={1} /></Wrapper>);
+    const narration = screen.getByPlaceholderText("填写需要朗读的台词");
+    fireEvent.change(narration, { target: { value: "first edit" } });
+    fireEvent.blur(narration);
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    fireEvent.change(narration, { target: { value: "newer unsaved edit" } });
+    await act(async () => { finishSave({ ok: true, data: null }); });
+    view.unmount();
+    expect(mutateAsync).toHaveBeenLastCalledWith({ beatNum: 1, data: { narration_segment: "newer unsaved edit" } });
+  });
+
+  it("retains dirty text after a failed save so unmount can retry", async () => {
+    mutateAsync.mockRejectedValueOnce(new Error("offline"));
+    const view = render(<Wrapper><TextPane beat={makeBeat()} project="demo" episode={1} /></Wrapper>);
+    const narration = screen.getByPlaceholderText("填写需要朗读的台词");
+    fireEvent.change(narration, { target: { value: "retry this draft" } });
+    await act(async () => { fireEvent.blur(narration); });
+    view.unmount();
+    expect(mutateAsync).toHaveBeenCalledTimes(2);
+    expect(mutateAsync).toHaveBeenLastCalledWith({ beatNum: 1, data: { narration_segment: "retry this draft" } });
+  });
+
+  it("does not clear a new beat's dirty text when the previous beat save completes", async () => {
+    let finishSave!: (value: unknown) => void;
+    mutateAsync.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const view = render(<Wrapper><TextPane beat={makeBeat()} project="demo" episode={1} /></Wrapper>);
+    fireEvent.change(screen.getByPlaceholderText("填写需要朗读的台词"), { target: { value: "same draft" } });
+    fireEvent.blur(screen.getByPlaceholderText("填写需要朗读的台词"));
+    view.rerender(<Wrapper><TextPane beat={makeBeat({ beat_number: 2 })} project="demo" episode={1} /></Wrapper>);
+    fireEvent.change(screen.getByPlaceholderText("填写需要朗读的台词"), { target: { value: "same draft" } });
+    await act(async () => { finishSave({ ok: true, data: null }); });
+    view.unmount();
+    expect(mutateAsync).toHaveBeenLastCalledWith({ beatNum: 2, data: { narration_segment: "same draft" } });
+  });
+
   it("renders v2 scene fields without legacy staging editors", () => {
     const { container } = render(
       <Wrapper>

@@ -431,7 +431,7 @@ def _requirements(
                 kind = "scene_variant"
                 base_entity_id, variant_id = structured_scene_requirement(source)
                 if known_scene_ids is not None and not (
-                    base_entity_id in known_scene_ids and variant_id
+                    base_entity_id and variant_id
                 ):
                     base_entity_id, variant_id = parse_scene_requirement(
                         entity_key, known_scene_ids

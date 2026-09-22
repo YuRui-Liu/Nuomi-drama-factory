@@ -745,6 +745,7 @@ _SCENE_LIGHT_SOURCE_TOKENS = (
     "窗光",
     "采光窗",
     "月光灯",
+    "天空", "散射光", "日光", "阳光", "固定灯具",
 )
 _SCENE_MATERIAL_GROUPS = (
     ("地坪", "地砖", "木地板", "石材地面", "水泥地面", "地面"),
@@ -752,6 +753,9 @@ _SCENE_MATERIAL_GROUPS = (
     ("吊顶", "顶棚", "天花板", "矿棉板"),
     ("门框", "门板", "玻璃门", "木门", "金属门", "窗框", "玻璃窗"),
     ("金属", "木质", "玻璃", "石材", "瓷砖", "混凝土"),
+    ("岩石", "礁石", "花岗岩", "玄武岩", "砂岩"),
+    ("砂土", "沙土", "泥土", "碎石", "沙粒"),
+    ("灰泥", "抹灰", "涂层", "红砖", "青砖"),
 )
 _SCENE_VISIBLE_ENTITY_TOKENS = (
     "墙面", "墙体", "房门", "门框", "门板", "玻璃门", "防火门",
@@ -760,6 +764,9 @@ _SCENE_VISIBLE_ENTITY_TOKENS = (
     "座椅", "灯具", "灯带", "灯管", "管线", "配电箱", "立柱", "护栏",
     "道路", "街道", "桥梁", "河道", "树木", "岩壁", "建筑", "入口",
     "出口", "房间", "大厅", "庭院", "广场", "设备", "装置",
+    "灯塔", "塔身", "塔基", "石阶", "台阶", "礁石", "岩石",
+    "海面", "海岸", "海平线", "沙滩", "岸线", "山坡", "山脊",
+    "小径", "灌木", "草地", "树林", "河面", "湖面", "滩涂",
 )
 _SCENE_STORY_CONTAMINATION = {
     "person": (
@@ -1008,6 +1015,17 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
     Cognee project context, but its two structured LLM calls are business logic,
     not Cognee graph ingest/cognify/memify work.
     """
+    from novelvideo.text_task_runtime.runtime import (
+        StructuredRuntimeAgent,
+        current_text_task_runtime,
+    )
+
+    runtime = current_text_task_runtime()
+    if runtime is not None:
+        return StructuredRuntimeAgent(
+            runtime, output_type=output_type, system_prompt=system_prompt,
+        )
+
     from pydantic_ai import Agent
     from novelvideo.config import (
         get_newapi_text_pydantic_model,

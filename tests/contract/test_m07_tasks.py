@@ -660,11 +660,11 @@ async def test_inline_cancel_is_cooperative_runner_stop(tmp_path):
     ctx = _ctx(tmp_path)
     backend = InlineTaskBackend()
     task_type = "m07_cooperative_cancel"
-    observed_cancel = False
+    observed_cancel = threading.Event()
     runner_started = threading.Event()
+    allow_runner_stop = threading.Event()
 
     def runner(envelope, run_ctx):
-        nonlocal observed_cancel
         runner_started.set()
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -679,7 +679,8 @@ async def test_inline_cancel_is_cooperative_runner_stop(tmp_path):
                 )
             )
             if cancelled:
-                observed_cancel = True
+                observed_cancel.set()
+                assert allow_runner_stop.wait(3), "test did not release runner"
                 raise TaskCancelled()
             time.sleep(0.02)
         raise AssertionError("runner did not observe cancel flag")
@@ -701,12 +702,18 @@ async def test_inline_cancel_is_cooperative_runner_stop(tmp_path):
         is True
     )
 
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline and not observed_cancel:
-        await asyncio.sleep(0.02)
+    try:
+        assert await asyncio.to_thread(observed_cancel.wait, 3) is True
+        task = get_task_manager().get_task_for_project(ctx, task_type, 1)
+        assert task is not None
+        # Observing the cancellation request is not runner completion. Keep
+        # that boundary deterministic instead of racing the core's final write.
+        assert task.status == "running"
+    finally:
+        allow_runner_stop.set()
+        await asyncio.wait_for(asyncio.gather(*backend._background_tasks), timeout=3)
 
     task = get_task_manager().get_task_for_project(ctx, task_type, 1)
-    assert observed_cancel is True
     assert task is not None
     assert task.status == "cancelled"
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GroupPipeline } from "@/components/episode/narrative-workbench/group-pipeline";
@@ -24,16 +24,34 @@ describe("GroupPipeline", () => {
     expect(screen.getByText("渲染图自动切分")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "仅重试切分" }));
     expect(action).toHaveBeenCalledWith("render", "split");
-    const regenerateButtons = screen.getAllByRole("button", { name: "整组重新生成" });
-    fireEvent.click(regenerateButtons[regenerateButtons.length - 1]!);
+    fireEvent.click(within(screen.getByText("渲染多宫格").closest("section")!).getByRole("button", { name: "整组重新生成" }));
     expect(action).toHaveBeenCalledWith("render", "regenerate");
   });
 
   it("keeps whole-group regeneration available after completion", () => {
     const action = vi.fn();
     render(<GroupPipeline group={{ ...group, stages: { ...group.stages, render: { status: "completed", revision: 3 } } }} onAction={action} onRepairBeat={vi.fn()} />);
-    const buttons = screen.getAllByRole("button", { name: "整组重新生成" });
-    fireEvent.click(buttons[buttons.length - 1]!);
+    fireEvent.click(within(screen.getByText("渲染多宫格").closest("section")!).getByRole("button", { name: "整组重新生成" }));
     expect(action).toHaveBeenCalledWith("render", "regenerate");
+  });
+
+  it("starts with render and leaves unused sketches collapsed", () => {
+    const action = vi.fn();
+    render(<GroupPipeline group={{ ...group, stages: { ...group.stages, sketch: { status: "pending", revision: 0 }, render: { status: "pending", revision: 0 } } }} onAction={action} onRepairBeat={vi.fn()} />);
+    expect(screen.getByText("草图多宫格").closest("details")).not.toHaveAttribute("open");
+    // jsdom does not consistently exclude children of closed native details from roles.
+    const renderSection = screen.getByText("渲染多宫格").closest("section")!;
+    expect(renderSection.compareDocumentPosition(screen.getByText("草图多宫格")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(within(renderSection).getByRole("button", { name: "开始生成" }));
+    expect(action).toHaveBeenCalledWith("render", "generate");
+  });
+
+  it("disables regeneration while an image request is in flight", () => {
+    const action = vi.fn();
+    render(<GroupPipeline group={{ ...group, stages: { ...group.stages, render: { status: "running", revision: 3 } } }} onAction={action} onRepairBeat={vi.fn()} />);
+    const button = within(screen.getByText("渲染多宫格").closest("section")!).getByRole("button", { name: "整组重新生成" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(action).not.toHaveBeenCalled();
   });
 });

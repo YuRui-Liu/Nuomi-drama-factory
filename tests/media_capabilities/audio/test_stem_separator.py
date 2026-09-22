@@ -72,9 +72,9 @@ def test_executable_falls_back_to_current_virtual_environment(
 ) -> None:
     scripts = tmp_path / "Scripts"
     scripts.mkdir()
-    python = scripts / "python.exe"
+    python = scripts / ("python.exe" if stem_separator.os.name == "nt" else "python")
     python.touch()
-    demucs = scripts / "demucs.exe"
+    demucs = scripts / ("demucs.exe" if stem_separator.os.name == "nt" else "demucs")
     demucs.touch()
     monkeypatch.delenv("DRAMACLAW_DEMUCS_BIN", raising=False)
     monkeypatch.setattr("shutil.which", lambda _command: None)

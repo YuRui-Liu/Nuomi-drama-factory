@@ -50,11 +50,24 @@ class H3GenerationResult:
 def load_h3_workflow_profile(*, workflow_id: str | None = None) -> WorkflowProfile:
     """Load the shipped, versioned profile and apply the configured remote ID."""
     profile = WorkflowProfile.model_validate_json(_PROFILE_PATH.read_text(encoding="utf-8"))
+    packaged_workflow_id = profile.workflow_id
     if workflow_id is not None:
         normalized = str(workflow_id).strip()
         if not normalized or not normalized.isdecimal():
             raise ValueError("H3 workflow ID must contain digits only")
         profile = profile.model_copy(update={"workflow_id": normalized})
+    # The deployed director workflow has a connected Refine node whose saved
+    # 3:4 preset overrides timeline output dimensions. Scope these bindings to
+    # that verified graph; user-supplied graphs may not contain node 18.
+    if profile.workflow_id == packaged_workflow_id:
+        refine_bindings = {
+            f"refine_{field}": {"node_id": "18", "field": field}
+            for field in ("width", "height", "aspect_ratio", "megapixels")
+        }
+        profile = profile.model_copy(update={
+            "bindings": {**profile.bindings, **refine_bindings},
+            "version": profile.version + 1,
+        })
     required_bindings = {"timeline_data"}
     if not required_bindings.issubset(profile.bindings) or "video" not in profile.outputs:
         raise ValueError("H3 production profile is missing required bindings or output")
@@ -300,6 +313,12 @@ def _director_semantic_values(timeline_data: str) -> dict[str, object]:
         "height": data["height"],
         "ref_max_size": data["refMaxSize"],
         "total_frames": data["totalFrames"],
+        "refine_width": data["width"],
+        "refine_height": data["height"],
+        "refine_aspect_ratio": "自定义",
+        # Upstream MP uses 1024². Older Refine respects the custom dimensions;
+        # newer Refine follows source aspect and uses this area instead.
+        "refine_megapixels": data["width"] * data["height"] / (1024 * 1024),
     }
 
 
@@ -463,6 +482,10 @@ async def generate_h3_director_video(
         candidate = await pipeline.generate_timeline(
             request,
             timeline_data=timeline_data,
+            director_params={
+                key: value for key, value in _director_semantic_values(timeline_data).items()
+                if key in profile.bindings
+            },
             input_asset_hashes=tuple(uploaded.sha256 for uploaded in uploaded_frames.values()),
             idempotency_input={
                 "version": 5,

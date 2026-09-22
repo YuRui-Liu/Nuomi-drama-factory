@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import { execSync } from "node:child_process";
 import path from "path";
+import { createRequire } from "node:module";
+import { realpathSync } from "node:fs";
+
+const require = createRequire(import.meta.url);
+const interFontDirectory = path.dirname(realpathSync(require.resolve("@fontsource-variable/inter/package.json")));
 
 // YYMMDD build-date prefix (UTC), e.g. "260420-". Prepended to every
 // version string so "what shipped when" is readable at a glance without
@@ -126,6 +131,9 @@ export default defineConfig(({ mode }) => {
       exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
     },
     server: {
+      fs: {
+        allow: [searchForWorkspaceRoot(process.cwd()), interFontDirectory],
+      },
       host: true,
       port: 5173,
       proxy: {

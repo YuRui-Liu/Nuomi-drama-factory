@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import csv
+from email.message import Message
 import importlib.util
 import time
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts/compliance/generate_p0b_artifacts.py"
@@ -15,6 +19,32 @@ generator = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = generator
 SPEC.loader.exec_module(generator)
+
+
+def test_git_inventory_preserves_unicode_and_newline_paths(monkeypatch):
+    def git_output(command, **kwargs):
+        assert "-z" in command
+        return "src/角色.py\0docs/line\nbreak.md\0"
+
+    monkeypatch.setattr(generator.subprocess, "check_output", git_output)
+    assert generator.run_git_ls_files() == ["src/角色.py", "docs/line\nbreak.md"]
+
+
+def test_locked_license_does_not_use_different_installed_version(tmp_path, monkeypatch):
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "audit-test-package"\nversion = "2.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(generator, "ROOT", tmp_path)
+    metadata = Message()
+    metadata["Name"] = "audit-test-package"
+    metadata["Version"] = "1.0"
+    metadata["License"] = "MIT"
+    monkeypatch.setattr(generator.metadata, "distributions", lambda: [
+        SimpleNamespace(version="1.0", metadata=metadata),
+    ])
+    with pytest.raises(ValueError, match="Unable to resolve locked package license"):
+        generator.locked_package_licenses()
 
 
 def test_locked_package_licenses_include_project_dependencies_missing_from_environment() -> None:

@@ -82,6 +82,13 @@ def test_episode_prompt_isolates_untrusted_data_and_states_contract() -> None:
     assert "dialogue_source_ids" in before
 
 
+def test_asset_contract_reuses_entities_instead_of_transient_actions():
+    authority = build_episode_prompt(episode()).split(BEGIN_SCREENPLAY_DATA_JSON)[0]
+    assert "Do not create character_state requirements for gaze, pose, expression" in authority
+    assert "Reuse the exact canonical scene name" in authority
+    assert "Do not invent new prop or base-scene entities" in authority
+
+
 def test_repair_prompt_contains_only_failed_group_neighbors_and_relevant_spans() -> (
     None
 ):

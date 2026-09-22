@@ -112,6 +112,7 @@ async def append_chat_notification(
 ) -> dict[str, Any]:
     username = str(user["username"])
     scope = _scope_from_model(payload.scope)
+    project_ctx = await _require_chat_scope_access(user, scope, write=True)
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
@@ -119,7 +120,6 @@ async def append_chat_notification(
         raise HTTPException(status_code=400, detail="text is too long")
 
     if scope.kind == "project":
-        project_ctx = await _project_context_for_scope(user, scope)
         if not scope.id:
             raise HTTPException(status_code=400, detail="project scope id is required")
         message = chat_service.add_assistant_message(
@@ -141,8 +141,7 @@ async def append_chat_ui_event(
 ) -> dict[str, Any]:
     username = str(user["username"])
     scope = _scope_from_model(payload.scope)
-    if scope.kind == "project":
-        await _project_context_for_scope(user, scope)
+    await _require_chat_scope_access(user, scope, write=True)
     turn_id = payload.turn_id.strip()
     if not turn_id:
         raise HTTPException(status_code=400, detail="turn_id is required")
@@ -286,11 +285,57 @@ async def _requester_user_id_for_chat(user: dict[str, Any], scope: ChatScope) ->
     return str(user.get("username") or "").strip()
 
 
+async def _require_chat_scope_access(
+    user: dict[str, Any], scope: ChatScope, *, write: bool = False, delegate: bool = False,
+) -> ProjectContext | None:
+    # Asset/task chat is not implemented. Its IDs must never reach chat_store's
+    # filesystem paths without resource authorization.
+    if scope.kind not in {"home", "project"}:
+        raise HTTPException(400, "unsupported chat scope")
+    if scope.kind == "project" and not scope.id:
+        raise HTTPException(400, "project scope id is required")
+    if user.get("credential_kind") == "agent_session":
+        current_kind = user.get("current_scope_kind") or "home"
+        if scope.kind != current_kind or (
+            scope.kind == "project" and scope.id != user.get("current_project_id")
+        ):
+            raise HTTPException(403, "agent session chat scope mismatch")
+        # Chat creates a page agent with these capabilities. A caller may not
+        # use chat to mint a worker with permissions absent from its own token.
+        needed = (
+            set(chat_service.PAGE_AGENT_SCOPES) if delegate
+            else {"projects:write" if write else "projects:read"}
+        )
+        if not needed.issubset(set(user.get("scopes") or [])):
+            raise HTTPException(403, "agent chat scope missing")
+    if scope.kind != "project":
+        return None
+    if write or delegate:
+        return await resolve_project_context(
+            user=user, project_id=str(scope.id), required_role="editor",
+        )
+    return await _project_context_for_scope(user, scope)
+
+
+async def _prewarm_authorized_chat(user: dict[str, Any], username: str, scope: ChatScope) -> None:
+    try:
+        await _require_chat_scope_access(user, scope, delegate=True)
+    except HTTPException:
+        # Read-only clients can load history without creating or changing an
+        # agent worker. A later chat.message receives an explicit denial.
+        return
+    await _sync_running_agent_scope(username, scope)
+    await chat_service.prewarm_chat_backend(
+        username, project=scope.id if scope.kind == "project" else None,
+    )
+
+
 async def _require_ai_assistant_access(
     *,
     user: dict[str, Any],
     scope: ChatScope,
 ) -> None:
+    await _require_chat_scope_access(user, scope, delegate=True)
     user_id = await _requester_user_id_for_chat(user, scope)
     await get_usage_meter().require_feature_credit_balance(
         user_id=user_id,
@@ -324,9 +369,11 @@ async def _send_scope_changed(
     scope: ChatScope,
 ) -> ChatScope | None:
     try:
-        project_ctx = await _project_context_for_scope(user, scope)
+        project_ctx = await _require_chat_scope_access(user, scope)
     except HTTPException as exc:
         if scope.kind != "project" or exc.status_code != 404:
+            raise
+        if user.get("credential_kind") == "agent_session":
             raise
         scope = ChatScope(kind="home")
         project_ctx = None
@@ -719,17 +766,24 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     username = str(user["username"])
     current_scope = ChatScope(kind="home")
-    current_scope = await _send_scope_changed(websocket, user, username, current_scope)
+    if user.get("credential_kind") == "agent_session":
+        current_scope = ChatScope(
+            kind=user.get("current_scope_kind") or "home",
+            id=user.get("current_project_id"),
+        )
+    try:
+        current_scope = await _send_scope_changed(websocket, user, username, current_scope)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "message": str(exc.detail)})
+        await websocket.close(code=1008)
+        return
     if current_scope is None:
         return
     # Do not pre-warm the default home scope on connect. The React client often
     # immediately sends scope.set for the active project; warming home first
     # creates a worker that is then rotated and logs a noisy initialize timeout.
     if _should_prewarm_on_ws_connect(current_scope):
-        await chat_service.prewarm_chat_backend(
-            username,
-            project=current_scope.id if current_scope.kind == "project" else None,
-        )
+        await _prewarm_authorized_chat(user, username, current_scope)
 
     try:
         while True:
@@ -739,20 +793,31 @@ async def chat_ws(websocket: WebSocket) -> None:
                 if "WebSocket is not connected" in str(exc):
                     return
                 raise
+            # Credentials may be revoked or have their active scope changed
+            # while this socket remains open.
+            try:
+                user = await _authenticate_ws(websocket)
+            except Exception:
+                await _send_json_best_effort(websocket, {"type": "error", "message": "unauthorized"})
+                await websocket.close(code=1008)
+                return
             event_type = str(raw.get("type") or "")
             if event_type == "scope.set":
-                msg = ScopeSetIn.model_validate(raw)
-                requested_scope = _scope_from_model(msg.scope)
-                current_scope = await _send_scope_changed(websocket, user, username, requested_scope)
+                try:
+                    msg = ScopeSetIn.model_validate(raw)
+                    requested_scope = _scope_from_model(msg.scope)
+                    next_scope = await _send_scope_changed(websocket, user, username, requested_scope)
+                except (HTTPException, ValueError) as exc:
+                    await _send_json_best_effort(
+                        websocket, {"type": "error", "message": str(exc)},
+                    )
+                    continue
+                current_scope = next_scope
                 if current_scope is None:
                     return
-                await _sync_running_agent_scope(username, current_scope)
                 # Switching project rotates the worker; warm the new scope now so
                 # the first message in the project doesn't cold-start.
-                await chat_service.prewarm_chat_backend(
-                    username,
-                    project=current_scope.id if current_scope.kind == "project" else None,
-                )
+                await _prewarm_authorized_chat(user, username, current_scope)
                 continue
 
             if event_type != "chat.message":

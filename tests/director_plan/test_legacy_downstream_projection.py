@@ -16,9 +16,8 @@ from novelvideo.narrative_groups.service import (
 )
 from tests.test_api_narrative_groups import (
     activate_director_plan,
-    install_reference_resolver,
+    install_empty_planned_snapshot,
     make_client,
-    make_reference_preview,
 )
 
 
@@ -64,17 +63,17 @@ def test_active_group_generation_payload_contains_director_shots(
 ) -> None:
     client, backend = make_client(monkeypatch, tmp_path)
     activate_director_plan(tmp_path)
-    preview = make_reference_preview(tmp_path)
-    install_reference_resolver(monkeypatch, preview, [])
+    payload = install_empty_planned_snapshot(monkeypatch, tmp_path)
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/"
-        "director-group/sketch/generate"
+        "director-group/sketch/generate",
+        json=payload,
     )
 
     assert response.status_code == 202
     [shot] = backend.calls[0][1]["payload"]["beats"]
     assert shot["id"] == "shot-1"
     assert shot["source_span_ids"] == ["span-1"]
-    assert shot["visual_description"] == "hero opens the door"
+    assert shot["visual_description"] == "hero opens the door Scene: hallway; time: night."
     assert shot["duration_seconds"] == 3

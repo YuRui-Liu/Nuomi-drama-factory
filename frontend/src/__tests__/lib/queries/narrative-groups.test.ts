@@ -120,6 +120,16 @@ describe("narrative group query contract", () => {
     });
   });
 
+  it("preserves an explicit I2VA mode for a paired video unit", () => {
+    expect(narrativeGroupVideoPlanPayload({
+      expectedRevision: 2,
+      units: [{ beatIds: ["shot-1", "shot-2"], mode: "i2va" }],
+    })).toEqual({
+      expected_revision: 2,
+      units: [{ beat_ids: ["shot-1", "shot-2"], mode: "i2va" }],
+    });
+  });
+
   it("uses the exact server H3 scope for the current video revision", () => {
     expect(narrativeGroupVideoTaskScope("ng-01", 4)).toBe("group_ng-01_video_r4");
     expect(narrativeGroupTaskScope("ng-01", "sketch", 2)).toBe("group_ng-01_sketch_r2");

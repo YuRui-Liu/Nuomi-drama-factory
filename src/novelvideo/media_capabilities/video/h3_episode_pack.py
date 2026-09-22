@@ -22,6 +22,7 @@ from .h3_prompt_optimizer import (
     H3PromptContext,
     H3PromptOptimizationResult,
     compile_and_gate_h3_plan,
+    merge_repaired_rigid_prompt,
 )
 from .h3_prompt_profile import (
     H3_DIRECTOR_SYSTEM_PROMPT,
@@ -33,8 +34,11 @@ from .h3_prompt_quality import (
     H3PromptQualityError,
     H3PromptQualityReport,
 )
-from .h3_rigid_prompt import fill_empty_fields
 from .h3_timeline import H3DirectorSegment
+from .h3_storyboard_context import (
+    STORYBOARD_PROMPT_RULES, StoryboardPromptDecision, StoryboardPromptImage,
+    pack_storyboard_batches, require_storyboard_plan, run_storyboard_agent, visual_input_hash,
+)
 from .models import H3Mode
 
 
@@ -130,6 +134,19 @@ class H3EpisodeVideoSegment(BaseModel):
         return self
 
 
+class StoryboardSegmentDecision(BaseModel):
+    model_config = _MODEL_CONFIG
+    segment_id: str = Field(min_length=1)
+    decision: StoryboardPromptDecision
+
+
+class StoryboardEpisodeDecision(BaseModel):
+    model_config = _MODEL_CONFIG
+    episode: int = Field(gt=0)
+    director_revision_id: str = Field(min_length=1)
+    segments: tuple[StoryboardSegmentDecision, ...] = Field(min_length=1)
+
+
 class H3EpisodeInput(BaseModel):
     model_config = _MODEL_CONFIG
     episode: int = Field(gt=0)
@@ -156,6 +173,7 @@ class H3EpisodeSegmentResult(BaseModel):
     cache_hit: bool = False
     compiler_version: int = H3_PROMPT_COMPILER_VERSION
     format_version: int = _PACK_FORMAT_VERSION
+    storyboard_decision: StoryboardPromptDecision | None = None
 
 
 class H3EpisodeOptimizationResult(BaseModel):
@@ -177,7 +195,18 @@ class H3EpisodePackOptimizer:
         self._cache_dir = Path(cache_dir)
         self._quality_revisions = min(2, max(0, quality_revisions))
 
-    async def optimize(self, value: H3EpisodeInput) -> H3EpisodeOptimizationResult:
+    async def optimize(self, value: H3EpisodeInput, *,
+                       storyboard_images: tuple[StoryboardPromptImage, ...] = ()) -> H3EpisodeOptimizationResult:
+        storyboard_images = tuple(storyboard_images)
+        if storyboard_images:
+            pack_storyboard_batches(storyboard_images)
+            entries = {entry.segment_id: entry for entry in value.segments}
+            if {image.segment_id for image in storyboard_images} != set(entries):
+                raise ValueError("storyboard segment coverage mismatch")
+            for image in storyboard_images:
+                entry = entries[image.segment_id]
+                if image.group_id != entry.group_id or image.shot_id not in entry.shot_ids:
+                    raise ValueError("storyboard image group/shot mismatch")
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         lock = portalocker.Lock(
             str(self._cache_dir / f"episode-{value.episode}-{value.director_revision_id}.lock"),
@@ -186,12 +215,12 @@ class H3EpisodePackOptimizer:
         )
         await asyncio.to_thread(lock.acquire)
         try:
-            return await self._optimize_locked(value)
+            return await self._optimize_locked(value, storyboard_images)
         finally:
             await asyncio.to_thread(lock.release)
 
     async def _optimize_locked(
-        self, value: H3EpisodeInput
+        self, value: H3EpisodeInput, storyboard_images=()
     ) -> H3EpisodeOptimizationResult:
         cached: dict[str, H3EpisodeSegmentResult] = {}
         misses: list[H3EpisodeVideoSegment] = []
@@ -199,6 +228,9 @@ class H3EpisodePackOptimizer:
         paths: dict[str, Path] = {}
         for entry in value.segments:
             input_hash = _segment_input_hash(value, entry)
+            if storyboard_images:
+                # Whole visual request context affects the plan, not only its endpoints.
+                input_hash = visual_input_hash(input_hash, storyboard_images, self._agent)
             hashes[entry.segment_id] = input_hash
             path = _cache_path(self._cache_dir, entry.segment_id, input_hash)
             paths[entry.segment_id] = path
@@ -206,15 +238,28 @@ class H3EpisodePackOptimizer:
             if result is None:
                 misses.append(entry)
             else:
+                if storyboard_images:
+                    if result.storyboard_decision is None:
+                        raise ValueError("visual cache lacks storyboard decision")
+                    require_storyboard_plan(result.storyboard_decision, tuple(
+                        image for image in storyboard_images if image.segment_id == entry.segment_id))
                 cached[entry.segment_id] = result.model_copy(
                     update={"cache_hit": True}
                 )
 
         if misses:
-            response = await self._agent.run(_episode_task(value))
-            pack = H3EpisodePromptPack.model_validate(response.output)
-            _validate_pack(pack, value, require_all=True)
-            plans = {item.segment_id: item.director_plan for item in pack.segments}
+            decisions = {}
+            if storyboard_images:
+                missing_ids = {entry.segment_id for entry in misses}
+                for batch in pack_storyboard_batches(tuple(image for image in storyboard_images
+                                                          if image.segment_id in missing_ids)):
+                    decisions.update(await self._visual_decisions(value, _episode_task(value), batch))
+                plans = {key: decision.plan for key, decision in decisions.items()}
+            else:
+                response = await self._agent.run(_episode_task(value))
+                pack = H3EpisodePromptPack.model_validate(response.output)
+                _validate_pack(pack, value, require_all=True)
+                plans = {item.segment_id: item.director_plan for item in pack.segments}
             generated: dict[str, H3EpisodeSegmentResult] = {}
             for entry in misses:
                 plan = plans[entry.segment_id]
@@ -227,7 +272,11 @@ class H3EpisodePackOptimizer:
                         plan,
                         exc,
                         hashes[entry.segment_id],
+                        tuple(image for image in storyboard_images if image.segment_id == entry.segment_id),
                     )
+                if entry.segment_id in decisions and result.storyboard_decision is None:
+                    result = result.model_copy(update={"storyboard_decision": decisions[entry.segment_id].model_copy(
+                        update={"plan": result.plan})})
                 wrapped = _wrap(entry.segment_id, result)
                 generated[entry.segment_id] = wrapped
             for segment_id, wrapped in generated.items():
@@ -247,30 +296,56 @@ class H3EpisodePackOptimizer:
         plan: H3DirectorPlan,
         failure: H3PromptQualityError,
         input_hash: str,
+        images=(),
     ) -> H3PromptOptimizationResult:
         current = plan
         current_failure = failure
         for _attempt in range(self._quality_revisions):
-            response = await self._agent.run(
-                _repair_task(value, entry, current, current_failure)
-            )
-            pack = H3EpisodePromptPack.model_validate(response.output)
-            _validate_pack(pack, value, expected_ids={entry.segment_id})
-            candidate = pack.segments[0].director_plan
+            decision = None
+            task = _repair_task(value, entry, current, current_failure)
+            if images:
+                decision = (await self._visual_decisions(value, task, images))[entry.segment_id]
+                candidate = decision.plan
+            else:
+                response = await self._agent.run(task)
+                pack = H3EpisodePromptPack.model_validate(response.output)
+                _validate_pack(pack, value, expected_ids={entry.segment_id})
+                candidate = pack.segments[0].director_plan
             if current.rigid_prompt is not None and candidate.rigid_prompt is not None:
                 candidate = candidate.model_copy(
                     update={
-                        "rigid_prompt": fill_empty_fields(
-                            current.rigid_prompt, candidate.rigid_prompt
+                        "rigid_prompt": merge_repaired_rigid_prompt(
+                            current.rigid_prompt, candidate.rigid_prompt, current_failure.report
                         )
                     }
                 )
             current = candidate
             try:
-                return _compile(entry, current, input_hash)
+                result = _compile(entry, current, input_hash)
+                if decision is not None:
+                    result = result.model_copy(update={"storyboard_decision": decision.model_copy(
+                        update={"plan": result.plan})})
+                return result
             except H3PromptQualityError as exc:
                 current_failure = exc
         raise current_failure
+
+    async def _visual_decisions(self, value, task, images):
+        expected = {image.segment_id for image in images}
+        task += "\n" + STORYBOARD_PROMPT_RULES + "\nReturn decisions ONLY for these segment IDs: " + json.dumps(sorted(expected))
+        response = await run_storyboard_agent(self._agent, task, images)
+        pack = StoryboardEpisodeDecision.model_validate(response.output)
+        if pack.episode != value.episode or pack.director_revision_id != value.director_revision_id:
+            raise ValueError("storyboard decision episode/revision mismatch")
+        ids = [item.segment_id for item in pack.segments]
+        if len(ids) != len(set(ids)) or set(ids) != expected:
+            raise ValueError("storyboard decision segment coverage mismatch")
+        for item in pack.segments:
+            plan = require_storyboard_plan(item.decision, tuple(
+                image for image in images if image.segment_id == item.segment_id))
+            if plan.schema_version != 3:
+                raise ValueError("storyboard decision requires director schema version 3")
+        return {item.segment_id: item.decision for item in pack.segments}
 
 
 def create_h3_episode_pack_optimizer(
@@ -278,6 +353,7 @@ def create_h3_episode_pack_optimizer(
     cache_dir: Path | str,
     director_model_factory: DirectorModelFactory | None = None,
     model_settings: dict[str, Any] | None = None,
+    storyboard_grounded: bool = False,
 ) -> H3EpisodePackOptimizer:
     from .h3_prompt_optimizer import (
         _default_director_model_factory,
@@ -296,17 +372,19 @@ def create_h3_episode_pack_optimizer(
     kwargs: dict[str, Any] = {}
     if settings is not None:
         kwargs["model_settings"] = settings
+    output_type = StoryboardEpisodeDecision if storyboard_grounded else H3EpisodePromptPack
+    system_prompt = H3_DIRECTOR_SYSTEM_PROMPT + ("\n" + STORYBOARD_PROMPT_RULES if storyboard_grounded else "")
     agent = (
         StructuredRuntimeAgent(
             routed_runtime,
-            output_type=H3EpisodePromptPack,
-            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
+            output_type=output_type,
+            system_prompt=system_prompt,
         )
         if routed_runtime is not None
         else Agent(
             factory(),
-            system_prompt=H3_DIRECTOR_SYSTEM_PROMPT,
-            output_type=PromptedOutput(H3EpisodePromptPack),
+            system_prompt=system_prompt,
+            output_type=PromptedOutput(output_type),
             name="MiniMax H3 Episode Director Planner",
             retries={"tools": 1, "output": 3},
             **kwargs,
@@ -342,6 +420,7 @@ def _wrap(
         plan=result.plan,
         quality_report=result.quality_report,
         input_hash=result.input_hash,
+        storyboard_decision=result.storyboard_decision,
     )
 
 

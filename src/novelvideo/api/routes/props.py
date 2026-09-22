@@ -280,7 +280,7 @@ async def generate_prop_reference(
         else await make_sqlite_store(username, project_name)
     )
     style = (body.style if body else "") or _project_style(username, project_name)
-    model = str(body.model if body else "").strip()
+    model = str((body.model if body else None) or "").strip()
     prop = await _require_prop(store, name)
     if prop is None:
         return {"ok": False, "error": f"Prop '{name}' not found"}

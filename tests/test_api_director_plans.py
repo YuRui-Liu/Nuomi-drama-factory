@@ -106,9 +106,10 @@ def _migration_item(
         "old_asset_kind": "image",
         "old_shot_id": f"old-{shot_id}",
         "new_shot_id": shot_id,
+        "suggested_shot_id": shot_id,
         "score": 1.0 if confidence == "high" else 0.1,
         "confidence": confidence,
-        "reuse_mode": "formal",
+        "reuse_mode": "reuse",
         "suggested_decision": decision,
         "decision": decision,
         "manual_decision": None,
@@ -144,6 +145,8 @@ def _client(monkeypatch, *, store=None, source_revision=7, role="editor"):
         lambda _ctx, _episode: _async(source_revision),
     )
     if store is not None:
+        if hasattr(store, "__dict__") and not hasattr(store, "require_current"):
+            monkeypatch.setattr(store, "require_current", lambda _revision: None, raising=False)
         monkeypatch.setattr(
             director_plans, "_build_director_plan_store", lambda _ctx: store
         )

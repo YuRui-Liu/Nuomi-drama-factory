@@ -186,6 +186,14 @@ def create_app() -> FastAPI:
     application = FastAPI(title="NovelVideo API", openapi_tags=OPENAPI_TAGS)
     mount_api_coverage_middleware(application)
 
+    from novelvideo.episode_source_versions import SourceVersionConflict
+
+    @application.exception_handler(SourceVersionConflict)
+    async def _source_version_conflict(_request: Request, exc: SourceVersionConflict):
+        return JSONResponse(status_code=409, content={
+            "detail": {"code": exc.error_code, "message": str(exc)},
+        })
+
     @application.exception_handler(ProjectTaskLimitExceeded)
     async def _project_task_limit_exceeded(
         request: Request,

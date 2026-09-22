@@ -26,6 +26,16 @@ SCRIPT = """1-1 广播站 深夜 内
 
 
 @pytest.mark.asyncio
+async def test_unrecognized_script_cannot_succeed_with_zero_scenes(tmp_path):
+    async def extractor(scenes, *, concurrency):
+        return ()
+
+    service = ScreenplaySemanticService(ScreenplaySemanticStore(tmp_path), extractor=extractor)
+    with pytest.raises(ValueError, match="SCREENPLAY_SCENES_NOT_FOUND"):
+        await service.build(source("没有场头的正文。"))
+
+
+@pytest.mark.asyncio
 async def test_unchanged_scene_is_reused_and_only_changed_scene_is_extracted(tmp_path):
     calls: list[str] = []
 

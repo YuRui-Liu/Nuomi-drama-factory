@@ -45,11 +45,12 @@ export function GenerationBatchSummary({ batches }: { batches: NarrativeGenerati
 export function GroupGridStage({ title, stage, state, onAction }: { title: string; stage: NarrativeGridStage; state: NarrativeStageState; onAction: (stage: NarrativeGridStage, action: "generate" | "split" | "regenerate") => void }) {
   const splitFailed = state.status === "partial_failure" || state.status === "failed";
   return <section className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
+    {stage === "sketch" && <p className="mb-2 text-xs text-muted-foreground">可选步骤：可直接生成实图；需要预演构图时再生成草图，会产生额外图像费用。</p>}
     <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">{title}</h3><p className="text-xs text-muted-foreground">{STATUS[state.status] ?? state.status} · revision {state.revision}</p>{state.actual_model ? <p className="mt-1 text-[11px] text-muted-foreground">{state.actual_provider}/{state.actual_model}{stage === "render" ? ` · ${state.constraint_mode === "strong_sketch" ? `草图强约束 r${state.source_sketch_revision}` : "无草图约束"}` : ""}</p> : null}</div>
       <div className="flex gap-2">
         {state.status === "pending" && <Button size="sm" onClick={() => onAction(stage, "generate")}>开始生成</Button>}
         {splitFailed && <Button size="sm" variant="outline" onClick={() => onAction(stage, "split")}>仅重试切分</Button>}
-        <Button size="sm" variant="outline" onClick={() => onAction(stage, "regenerate")}>整组重新生成</Button>
+        <Button size="sm" variant="outline" disabled={state.status === "queued" || state.status === "running"} onClick={() => onAction(stage, "regenerate")}>整组重新生成</Button>
       </div>
     </div>
     {state.grid_asset && <img className="mt-3 max-h-64 rounded-lg object-contain" src={state.grid_asset} alt={`${title}多宫格`} />}

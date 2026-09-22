@@ -611,11 +611,7 @@ def _register_character_state_candidate(
                 asset_path=candidate_path,
                 source_attempt_id=source_attempt_id,
                 qc_passed=generation.quality_report.passed,
-                soft_issues=(
-                    []
-                    if generation.quality_report.passed
-                    else generation.quality_report.issues
-                ),
+                soft_issues=generation.quality_report.issues,
                 generation_metadata={
                     "character_name": character_name,
                     "identity_id": identity_id,
@@ -749,10 +745,17 @@ async def _generate_identity_image(
             aspect_ratio="3:2",
         )
     save_provider_identity_sheet(raw_candidate_path, output_path)
+    from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+
+    qc_runtime = current_text_task_runtime()
+    qc_options = {}
+    if qc_runtime is not None and qc_runtime.snapshot.task_role == "identity_sheet_qc":
+        qc_options["runtime"] = qc_runtime
     quality_report = await assess_identity_sheet_quality(
         image_data=output_path.read_bytes(),
         style=style,
         project_dir=output_dir,
+        **qc_options,
     )
     return CharacterStateGeneration(
         output_path=output_path,
@@ -767,4 +770,4 @@ async def _generate_identity_image(
 
 
 register_project_task_runner("character_portrait", run_character_image)
-register_project_task_runner("identity_image", run_character_image)
+register_project_task_runner("identity_image", run_character_image, text_task_role="identity_sheet_qc")

@@ -106,6 +106,7 @@ def _snapshot_generation_input(
         uploads_root = project_dir / ".runtime" / "reference_uploads"
         references: list[str] = []
         reference_mappings: list[str] = []
+        asset_references: list[dict[str, Any]] = []
         missing_mappings = 0
         counts = {"formal": 0, "temporary": 0, "fallback": 0}
         beats_by_id = {
@@ -182,6 +183,42 @@ def _snapshot_generation_input(
             references.append(validated.image_path)
             entity_id = str(raw.get("entity_id") or "").strip()
             shot_ids = raw.get("shot_ids")
+            if planned_snapshot and binding_id and entity_id:
+                # Retain the exact verified input version for downstream video
+                # continuity; current catalogue entries are not provenance.
+                asset_references.append({
+                    "entity_key": entity_id,
+                    "asset_id": str(raw["version_id"]),
+                    "asset_slot_id": str(raw["asset_slot_id"]),
+                    "asset_path": validated.image_path,
+                    "sha256": validated.sha256,
+                    "binding_id": binding_id,
+                    "shot_ids": list(shot_ids),
+                    "beat_ids": list(raw["beat_ids"]),
+                    "group_ids": list(raw["group_ids"]),
+                    "project_id": str(raw["project_id"]),
+                    "episode_number": raw["episode_number"],
+                })
+                if str(raw.get("asset_kind") or "") == "character_identity":
+                    # Canonical slot components forbid colons, but character
+                    # names may contain underscores. Never split identity IDs.
+                    slot_parts = str(raw["asset_slot_id"]).split(":")
+                    is_state = (
+                        len(slot_parts) == 4 and slot_parts[0] == "character"
+                        and slot_parts[2] == "state" and slot_parts[3] == entity_id
+                    )
+                    is_portrait = (
+                        len(slot_parts) == 3 and slot_parts[0] == "character"
+                        and slot_parts[2] == "portrait"
+                    )
+                    if (is_state or is_portrait) and slot_parts[1].strip():
+                        character_name = slot_parts[1]
+                        if character_name != entity_id:
+                            asset_references.append({
+                                **asset_references[-1],
+                                "entity_key": character_name,
+                                "identity_entity_id": entity_id,
+                            })
             if entity_id and isinstance(shot_ids, (list, tuple)):
                 panel_numbers = tuple(
                     beats_by_id[shot_id]
@@ -222,6 +259,8 @@ def _snapshot_generation_input(
             "ignored": len(ignored),
             "mapping_missing": missing_mappings,
         }
+        if asset_references:
+            audit["asset_references"] = asset_references
     except (KeyError, TypeError, ValueError, InvalidReferenceUpload):
         raise ReferenceSnapshotInvalid() from None
 
@@ -660,6 +699,9 @@ def _split_existing_grid(
         (1, 3): "triptych",
         (2, 2): "grid_2x2",
     }.get((rows, columns))
+    versioned = stage == "render" and payload.get("storyboard_contract_version") == 1
+    if versioned and layout_name is None:
+        raise ValueError("unsupported versioned storyboard layout")
     if layout_name is not None:
         from novelvideo.narrative_groups.grid_cleanup import split_and_cleanup
 
@@ -685,6 +727,43 @@ def _split_existing_grid(
                 resolution.target_cell_width,
                 resolution.target_cell_height,
             )
+        if versioned:
+            from novelvideo.narrative_groups.storyboard_sources import split_storyboard_source
+
+            if any(item.get("cell") != index for index, item in enumerate(mapping)):
+                raise ValueError("versioned storyboard requires ordered cell mapping")
+            source = split_storyboard_source(
+                media_root=output_dir, grid_path=grid_path.relative_to(output_dir).as_posix(),
+                project_id=str(payload.get("project_id") or ""), episode=episode,
+                group_id=str(payload.get("group_id") or ""),
+                batch_id=str(payload.get("batch_id") or payload.get("group_id") or ""),
+                asset_id=grid_path.name, generation_id=str(payload.get("generation_id") or ""),
+                rows=rows, columns=columns,
+                shot_ids=tuple(str(item["beat_id"]) for item in mapping),
+                target_aspect=str(payload.get("aspect_ratio") or "9:16"),
+                target_cell_size=target_cell_size,
+                expected_grid_sha256=payload.get("expected_grid_sha256"),
+            )
+            import json
+
+            cleanup_reports = json.loads(
+                (output_dir / source.grid_path).with_name("cleanup.json").read_text()
+            )
+            return {
+                "storyboard_source": source.model_dump(mode="json"),
+                "cell_assets": [
+                    {"cell": cell.cell_index, "beat_id": cell.shot_id,
+                     "shot_id": cell.shot_id, "path": str(output_dir / cell.path),
+                     "sha256": cell.sha256, "storyboard_source_id": source.source_id,
+                     "style_hash": str(payload.get("style_hash") or "")}
+                    for cell in source.cells
+                ],
+                "cleanup_reports": cleanup_reports,
+                "cleaned_cell_size": f"{source.cells[0].width}x{source.cells[0].height}",
+                "upscaled": any(bool(report.get("upscaled")) for report in cleanup_reports),
+                "degraded": any(bool(report.get("degraded")) for report in cleanup_reports),
+                "errors": [],
+            }
         raw_paths, cleanup_reports = split_and_cleanup(
             grid_path,
             expected_layout=layout_name,
@@ -695,7 +774,9 @@ def _split_existing_grid(
         cell_paths: list[str] = []
         import shutil
 
-        for index, raw_path in enumerate(raw_paths):
+        if len(raw_paths) < len(mapping):
+            raise ValueError("grid has fewer cells than mapped shots")
+        for index, raw_path in enumerate(raw_paths[:len(mapping)]):
             target = promote_dir / f"beat_{beat_nums[index]:02d}.png"
             shutil.copy2(raw_path, target)
             cell_paths.append(str(target))
@@ -785,6 +866,11 @@ def _split_existing_grid(
 
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only: bool) -> dict[str, Any]:
     payload = _normalize_generation_batch_payload(envelope.get("payload") or {})
+    if payload.get("storyboard_contract_version") == 1:
+        if not split_only:
+            payload.setdefault("generation_id", str(envelope.get("task_id") or ""))
+        if (not split_only and not payload.get("generation_id")) or not payload.get("project_id"):
+            raise ValueError("versioned storyboard requires project and generation identity")
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     payload["episode"] = episode
     project_dir = _project_dir(payload, ctx)
@@ -794,6 +880,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
     for field in ("layout", "beat_ids", "cell_to_beat"):
         payload.setdefault(field, saved[field])
     expected_revision = int(payload["revision"])
+    split_input = None
     record_stage_result(
         project_dir,
         episode,
@@ -804,8 +891,17 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
         error="",
     )
     try:
+        if payload.get("storyboard_contract_version") == 1 and split_only:
+            from novelvideo.narrative_groups.storyboard_sources import StoryboardSplitInput
+
+            split_input = StoryboardSplitInput.model_validate(payload.get("storyboard_split_input"))
+            payload.update(split_input.restore(
+                Path(ctx.output_dir), project_id=str(payload["project_id"]),
+                episode=episode, group_id=group_id,
+            ))
         if split_only:
-            payload["grid_asset"] = saved["grid_asset"]
+            if split_input is None:
+                payload["grid_asset"] = saved["grid_asset"]
             result = await retry_split(
                 payload, splitter=lambda grid, data: _split_existing_grid(grid, data, ctx)
             )
@@ -813,7 +909,13 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             generation_metadata: dict[str, Any] = {}
 
             async def generate(data: Mapping[str, Any]) -> dict[str, Any]:
+                nonlocal split_input
                 generated = await _generate_grid(data, ctx)
+                if payload.get("storyboard_contract_version") == 1:
+                    from novelvideo.narrative_groups.storyboard_sources import capture_storyboard_split_input
+
+                    split_input = capture_storyboard_split_input(generated["grid_asset"], payload, Path(ctx.output_dir))
+                    payload["expected_grid_sha256"] = split_input.grid_sha256
                 for field in (
                     "reference_count", "reference_warnings", "reference_audit",
                     "source_sketch_revision", "constraint_mode",
@@ -830,7 +932,11 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                 generator=generate,
                 splitter=lambda grid, data: _split_existing_grid(grid, data, ctx),
             )
+            # Cleanup can discover degradation after provider generation. Never
+            # replace that evidence with an earlier, optimistic provider flag.
+            degraded = bool(result.get("degraded") or generation_metadata.get("degraded"))
             result.update(generation_metadata)
+            result["degraded"] = degraded
         error = "; ".join(str(item.get("message") or item) for item in result.get("errors") or [])
         record_stage_result(
             project_dir,
@@ -852,7 +958,10 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             source_sketch_revision=result.get("source_sketch_revision"),
             constraint_mode=result.get("constraint_mode"),
             cleanup_reports=result.get("cleanup_reports"),
+            storyboard_source=result.get("storyboard_source"),
+            storyboard_project_id=str(payload.get("project_id") or ""),
             provider_parameters={
+                **({"storyboard_split_input": split_input.model_dump(mode="json")} if split_input else {}),
                 "batch_id": str(payload.get("batch_id") or ""),
                 "style_snapshot_id": str(payload.get("style_snapshot_id") or ""),
                 "style_hash": str(payload.get("style_hash") or ""),

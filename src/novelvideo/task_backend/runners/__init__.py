@@ -8,6 +8,7 @@ from importlib import import_module
 from novelvideo.task_backend.runners import (  # noqa: F401
     audio,
     character_image,
+    character_qc,
     director_plan,
     episode_assets,
     episode_import,

@@ -202,6 +202,10 @@ class GroupStageState:
     revision: int = 0
     grid_asset: str = ""
     cell_assets: tuple[dict, ...] = ()
+    storyboard_sources: tuple[dict[str, Any], ...] = ()
+    selected_storyboard_id: str = ""
+    selected_storyboard_sources: dict[str, str] = field(default_factory=dict)
+    source_storyboard_id: str = ""
     # A video group is one physical H3 director output containing logical shots.
     video_asset: str = ""
     manifest_asset: str = ""
@@ -260,6 +264,7 @@ class NarrativeGroup:
     generation_batches: tuple[dict[str, Any], ...] = ()
     video_segments: tuple[dict[str, Any], ...] = ()
     effective_style_snapshot: dict[str, Any] = field(default_factory=dict)
+    storyboard_contract_version: int = 0
 
     @property
     def production_beat_ids(self) -> tuple[str, ...]:

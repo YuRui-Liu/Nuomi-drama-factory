@@ -64,6 +64,8 @@ def build_shot_continuity_contract(
     asset_evidence_by_entity: Mapping[str, AssetEvidence],
 ) -> ShotContinuityContract:
     """Translate one logical director shot into an explicit continuity contract."""
+    photography = shot.cinematography
+    blocking = {item.subject_id: item for item in photography.subjects} if photography else {}
     character_ids = _stable_unique(
         tuple(
             item.entity_key
@@ -78,6 +80,9 @@ def build_shot_continuity_contract(
         SubjectLock(
             subject_id=character_id,
             state=shot.visible_start_state,
+            screen_position=blocking[character_id].screen_position if character_id in blocking else "",
+            facing=blocking[character_id].facing if character_id in blocking else "",
+            gaze_target=blocking[character_id].gaze_target if character_id in blocking else "",
             identity_assets=_asset_for(character_id, asset_evidence_by_entity),
         )
         for character_id in character_ids
@@ -115,6 +120,9 @@ def build_shot_continuity_contract(
         scene=SceneLock(
             scene_state=scene_state,
             space_anchor=shot.space_anchor,
+            axis=photography.axis if photography else "",
+            camera_side=photography.camera_side if photography else "",
+            screen_direction=photography.screen_direction if photography else "",
             assets=_asset_for(scene_id, asset_evidence_by_entity),
         ),
         subjects=subjects,
@@ -125,7 +133,16 @@ def build_shot_continuity_contract(
             composition=shot.composition,
             motion=shot.camera_motion,
         ),
-        lighting=LightingLock(),
+        lighting=(LightingLock(
+            key_source=photography.key_light_id,
+            direction=next(light.direction for light in photography.lights
+                           if light.light_id == photography.key_light_id),
+            shadow_direction=photography.shadow_direction,
+            exposure_priority=photography.exposure_priority,
+            color_temperature=next(light.color_temperature for light in photography.lights
+                                   if light.light_id == photography.key_light_id),
+        ) if photography else LightingLock()),
+        cinematography=photography,
         boundary=BoundaryState(
             carry_in=observed_predecessor_state or shot.visible_start_state,
             planned_carry_out=shot.visible_end_state,

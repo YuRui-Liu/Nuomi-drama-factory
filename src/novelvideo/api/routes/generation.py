@@ -74,10 +74,6 @@ from novelvideo.seedance2_i2v.pipeline import (
     prepare_seedance2_generation_inputs,
 )
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
-from novelvideo.media_capabilities.video.backends import (
-    H3_VIDEO_BACKEND,
-    normalize_video_backend,
-)
 from novelvideo.project_config import load_project_config, save_project_config
 from novelvideo.project_context import ProjectContext
 from novelvideo.ports import get_task_backend, get_usage_meter
@@ -1886,14 +1882,22 @@ async def compose_video(
         else await make_sqlite_store(username, project_name)
     )
     beats = await store.get_beats_as_dicts(episode_num)
+    director_composition = None
     if not beats:
-        return {"ok": False, "error": f"No beats found for episode {episode_num}"}
+        from novelvideo.task_backend.runners.video import director_composition_snapshot
+
+        try:
+            director_composition = director_composition_snapshot(output_dir, episode_num)
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     config = {
         "beats": beats,
         "add_subtitles": body.add_subtitles,
         "add_bgm": body.add_bgm,
     }
+    if director_composition is not None:
+        config["director_composition"] = director_composition
 
     if ctx is not None:
         queued = await get_task_backend().enqueue_project_task(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, Fragment, type ComponentProps, type ComponentType, type PropsWithChildren } from "react";
 
 const runtimeState = vi.hoisted(() => ({ authRequired: true }));
@@ -10,6 +10,7 @@ const authState = vi.hoisted(() => ({
   username: null as string | null,
   getCurrentUser: vi.fn<() => Promise<unknown>>(),
   validateSession: vi.fn<() => Promise<boolean>>(),
+  refreshAvatar: vi.fn(),
   reset: vi.fn(),
 }));
 const clusterState = vi.hoisted(() => ({ mode: "none" as "none" | "multi-region" }));
@@ -155,5 +156,52 @@ describe("runtime auth gating", () => {
 
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({ to: "/login" }));
     expect(authState.validateSession).not.toHaveBeenCalled();
+  });
+
+  it("retries a transient session validation failure without bouncing through login", async () => {
+    vi.useFakeTimers();
+    authState.username = "alice";
+    authState.validateSession.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const Component = appRoute.options.component as ComponentType;
+    const view = render(createElement(Component));
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(navigateMock).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("outlet")).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(authState.validateSession).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("outlet")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a pending session retry when the app unmounts", async () => {
+    vi.useFakeTimers();
+    authState.username = "alice";
+    authState.validateSession.mockResolvedValue(false);
+    const Component = appRoute.options.component as ComponentType;
+    const view = render(createElement(Component));
+    try {
+      await act(async () => { await Promise.resolve(); });
+      view.unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(authState.validateSession).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("redirects to login when session validation actually clears authentication", async () => {
+    authState.username = "alice";
+    authState.validateSession.mockImplementation(async () => {
+      authState.username = null;
+      return false;
+    });
+    const Component = appRoute.options.component as ComponentType;
+    render(createElement(Component));
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({ to: "/login" }));
   });
 });

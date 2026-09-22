@@ -51,6 +51,7 @@ from novelvideo.media_capabilities.video.h3_wire import (
     compile_h3_wire,
 )
 from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+from novelvideo.narrative_groups.storyboard_binding import StoryboardBinding
 from novelvideo.narrative_groups.video_references import (
     MAX_VIDEO_REFERENCE_BYTES,
     MAX_VIDEO_REFERENCE_PIXELS,
@@ -91,6 +92,7 @@ class H3ReferenceInputSnapshot:
     provider_workflow_id: str
     references: tuple[ResolvedVideoReference, ...]
     frames: MappingProxyType
+    storyboard_binding: StoryboardBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -495,6 +497,7 @@ def persist_h3_reference_input_snapshot(
     reference_limit: int,
     provider_workflow_id: str,
     win32_adapter: object | None = None,
+    storyboard_binding: StoryboardBinding | None = None,
 ) -> H3PersistedReferenceInputSnapshot:
     """Persist immutable enqueue inputs; only the opaque returned ID enters payloads."""
     if isinstance(reference_revision, bool) or not isinstance(reference_revision, int):
@@ -569,6 +572,9 @@ def persist_h3_reference_input_snapshot(
             "blob": blob,
         })
 
+    if storyboard_binding is not None:
+        storyboard_binding = StoryboardBinding.model_validate(storyboard_binding)
+        storyboard_binding.validate_frames(frames)
     snapshot_id = uuid4().hex
     descriptor = json.dumps({
         "version": H3_REFERENCE_INPUT_SNAPSHOT_VERSION,
@@ -577,6 +583,8 @@ def persist_h3_reference_input_snapshot(
         "provider_workflow_id": workflow_id,
         "references": reference_records,
         "frames": frame_records,
+        **({"storyboard_binding": storyboard_binding.model_dump(mode="json")}
+           if storyboard_binding is not None else {}),
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(descriptor).hexdigest()
     lease = json.dumps(
@@ -703,6 +711,10 @@ def load_h3_reference_input_snapshot(
             source=source, content=content, sha256=digest,
             width=width, height=height, suffix=suffix,
         )
+    binding = None
+    if descriptor.get("storyboard_binding") is not None:
+        binding = StoryboardBinding.model_validate(descriptor["storyboard_binding"])
+        binding.validate_frames(frames)
     return H3ReferenceInputSnapshot(
         digest=actual_digest,
         reference_revision=reference_revision,
@@ -710,6 +722,7 @@ def load_h3_reference_input_snapshot(
         provider_workflow_id=str(descriptor["provider_workflow_id"]),
         references=tuple(references),
         frames=MappingProxyType(frames),
+        storyboard_binding=binding,
     )
 
 

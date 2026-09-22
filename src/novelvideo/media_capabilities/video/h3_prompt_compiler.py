@@ -35,7 +35,7 @@ from .h3_wire import (
 from .models import H3Mode
 
 
-H3_PROMPT_COMPILER_VERSION = 3
+H3_PROMPT_COMPILER_VERSION = 4
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
 _PURE_COUNT_ASSERTION_RE = re.compile(
     r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
@@ -51,8 +51,21 @@ def compile_h3_director_plan(plan: H3DirectorPlan) -> str:
     return compile_h3_wire(project_director_plan_to_wire(plan))
 
 
+def has_unscoped_boundary_state(value: str) -> bool:
+    """Recognize the legacy boundary labels that have no segment time scope."""
+    return bool(re.search(
+        r"\b(?:frame\s*0\s*state|planned\s+terminal\s+state)\s*:", value, re.I
+    ))
+
+
 def project_director_plan_to_wire(plan: H3DirectorPlan) -> H3Wire:
     """Project an internal director plan onto its mode-specific official wire."""
+    for lock in plan.continuity_locks:
+        if has_unscoped_boundary_state(lock):
+            raise ValueError(
+                "Boundary states must be placed in the scoped ACTION timeline, "
+                "not global continuity locks; regenerate this director plan."
+            )
     description = _compile_playback_description(plan)
     common = {
         "mode": plan.mode,
@@ -151,9 +164,10 @@ def _compile_shot_intro(
         )
     parts = [f"{opening} The {_camera_text(shot.camera)}."]
     if first:
-        parts.append(f" Throughout, preserve {'; '.join(plan.continuity_locks)}.")
+        locks = _unique_constraints(plan.continuity_locks)
+        parts.append(" " + " ".join(_constraint_sentence(lock) for lock in locks))
         if rigid is not None:
-            parts.append(" " + _compile_rigid_global_facts(rigid, plan.visual_style))
+            parts.append(" " + _compile_rigid_global_facts(rigid, plan.visual_style, locks))
     if reference_subjects:
         rendered = "; ".join(
             f"<Subject {subject.subject_index}> is {subject.description}"
@@ -167,8 +181,28 @@ def _compile_shot_intro(
     return "".join(parts)
 
 
+def _constraint_key(value: str) -> str:
+    return " ".join(_strip_terminal(value).split()).casefold()
+
+
+def _unique_constraints(values: tuple[str, ...]) -> tuple[str, ...]:
+    unique: dict[str, str] = {}
+    for value in values:
+        unique.setdefault(_constraint_key(value), value)
+    return tuple(unique.values())
+
+
+def _constraint_sentence(value: str) -> str:
+    # Complete directives should not become "preserve Preserve ...". Fragments
+    # keep the legacy preservation meaning; no semantic keyword deletion.
+    if re.match(r"(?:preserve|keep|maintain|avoid|do|never|no|use)\b", value, re.I):
+        return _sentence(_strip_terminal(value))
+    return _sentence(f"Preserve {_strip_terminal(value)}")
+
+
 def _compile_rigid_global_facts(
-    rigid: H3RigidPromptPlan, visual_style: str
+    rigid: H3RigidPromptPlan, visual_style: str,
+    emitted_constraints: tuple[str, ...] = (),
 ) -> str:
     context = rigid.scene_context
     parts = [
@@ -188,10 +222,13 @@ def _compile_rigid_global_facts(
         f"Movement remains physically grounded: {_strip_terminal(statement)}."
         for statement in rigid.physics.statements
     )
-    parts.extend(
-        f"Image quality must preserve {_lower_initial(requirement)}."
-        for requirement in rigid.quality.requirements
-    )
+    emitted = {_constraint_key(value) for value in emitted_constraints}
+    for requirement in _unique_constraints(rigid.quality.requirements):
+        if _constraint_key(requirement) not in emitted:
+            if re.match(r"(?:preserve|keep|maintain|avoid|do|never|no|use)\b", requirement, re.I):
+                parts.append(_constraint_sentence(requirement))
+            else:
+                parts.append(f"Image quality must preserve {_strip_terminal(requirement)}.")
     parts.extend(_compile_positive_fact(item) for item in rigid.positive_constraints)
     return " ".join(_sentence(part) for part in parts if part)
 
@@ -326,7 +363,7 @@ def _is_target_count_directive(assertion: str, target: str) -> bool:
 
 def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
     subjects = "; ".join(
-        f"{subject.character_id} stays {subject.position}, facing {subject.facing}, "
+        f"{subject.character_id} starts at {subject.position}, facing {subject.facing}, "
         f"looking {subject.gaze}"
         + (f", holding {', '.join(subject.held_props)}" if subject.held_props else "")
         for subject in blocking.subjects

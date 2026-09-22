@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .h3_director_plan import H3DirectorPlan
+from .h3_prompt_compiler import has_unscoped_boundary_state
 from .h3_rigid_prompt import H3_RIGID_SECTION_ORDER
 from .h3_wire import (
     H3BaseWire,
@@ -663,6 +664,14 @@ def inspect_h3_plan(
     """Inspect semantics that are stricter than the structural schema."""
     issues: list[H3PromptQualityIssue] = []
     first_action = plan.shots[0].actions[0]
+    for index, lock in enumerate(plan.continuity_locks):
+        if has_unscoped_boundary_state(lock):
+            _add(
+                issues, "global_state_scope",
+                "Place source boundary states in the scoped ACTION timeline, "
+                "not in global continuity locks.",
+                f"continuity_locks.{index}",
+            )
     if first_action.start_frame != 0 or first_action.phase != "establish":
         _add(issues, "first_frame_anchor", "first action must establish Picture 1 at frame 0", "shots.0.actions.0")
 

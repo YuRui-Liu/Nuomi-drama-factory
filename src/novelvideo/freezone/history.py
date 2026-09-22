@@ -107,6 +107,18 @@ def _parse_utc_timestamp(value: Any) -> datetime | None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 
+def _thumbnail_source(project_dir: Path, value: str) -> Path:
+    # Runners persist local absolute paths; browser clients use media URLs.
+    # Only recognize local paths inside this project, including symlink checks.
+    candidate = Path(value)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        if resolved.is_relative_to(project_dir.resolve()):
+            return resolved
+    parsed = urlsplit(value)
+    return resolve_static_url_to_path(parsed.path, project_dir)
+
+
 def _attach_history_thumbnail(project_dir: Path, record: dict[str, Any]) -> None:
     """Queue one image thumbnail without exposing a path before it exists.
 
@@ -130,7 +142,7 @@ def _attach_history_thumbnail(project_dir: Path, record: dict[str, Any]) -> None
         if not isinstance(raw_url, str) or not raw_url.strip():
             continue
         try:
-            source = resolve_static_url_to_path(urlsplit(raw_url).path, project_dir)
+            source = _thumbnail_source(project_dir, raw_url)
             expected = thumbnails.thumbnail_path(
                 project_dir, source, thumbnails.DEFAULT_SIZE
             )
@@ -176,7 +188,7 @@ def _refresh_history_thumbnail(project_dir: Path, record: dict[str, Any]) -> Non
         if not isinstance(raw_url, str) or not raw_url.strip():
             continue
         try:
-            source = resolve_static_url_to_path(urlsplit(raw_url).path, project_dir)
+            source = _thumbnail_source(project_dir, raw_url)
             destination = thumbnails.thumbnail_path(
                 project_dir, source, thumbnails.DEFAULT_SIZE
             )

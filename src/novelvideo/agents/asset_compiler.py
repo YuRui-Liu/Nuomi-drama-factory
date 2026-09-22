@@ -44,6 +44,20 @@ from novelvideo.utils.screenplay_scene_parser import (
 )
 
 
+class MissingBaseScenesError(ValueError):
+    """Required physical locations must already exist in the imported catalogue."""
+
+    code = "BASE_SCENE_IMPORT_REQUIRED"
+
+    def __init__(self, missing_scene_names: list[str], episode_number: int):
+        self.missing_scene_names = tuple(dict.fromkeys(missing_scene_names))
+        self.episode_number = episode_number
+        super().__init__(
+            f"{self.code}: 第 {episode_number} 集缺失基础场景："
+            f"{'、'.join(self.missing_scene_names)}；请先从外部导入基础场景，再规划必要变体。"
+        )
+
+
 @dataclass
 class SceneBlock:
     """Asset-facing projection of a parsed screenplay Scene."""
@@ -467,13 +481,13 @@ class EpisodeBaseSceneReconcileOutput(BaseModel):
 
 BASE_SCENE_RECONCILE_PROMPT = """# 你是影视项目基础场景资产校对员
 
-任务：根据本集文本和已有基础场景表，判断文本中出现的物理地点是否应复用已有基础场景、创建新基础场景，或忽略。
+任务：根据本集文本和已有基础场景表，判断文本中出现的物理地点是否应复用已有基础场景、标记缺失基础场景，或忽略。
 
 规则：
 - 你必须优先复用已有基础场景及其别名；不要因为描述、时段、天气、状态变化创建新基础场景。
 - 基础场景名必须是中性的物理地点，如“公寓楼电梯间”“城市街道”“医院走廊”。
 - 不要把“雨夜/白天/黄昏/漏水/爆炸后/凌乱/雪景”等时间、天气、状态写进基础场景名；这些交给后续 plate/变体规划。
-- 只有明确是可复用物理地点、且有原文证据时，才输出 create。
+- 基础场景只能从外部导入；create 是兼容字段，仅表示有原文证据的缺失地点，系统将阻断并提示导入，不会自动创建。
 - “室内”“外景”“本集主场景”“路边”等泛称一律 ignore。
 - evidence_lines 必须引用原文中的短句。
 - 输出结构化结果；不要输出解释性散文。
@@ -990,7 +1004,7 @@ class AssetCompiler:
             for alias in (getattr(scene, "aliases", []) or [])
             if str(alias or "").strip()
         }
-        prepared: list[NovelScene] = []
+        missing: list[str] = []
         prepared_names: set[str] = set()
         for block in scene_blocks:
             location = str(getattr(block, "location", "") or "").strip()
@@ -999,20 +1013,10 @@ class AssetCompiler:
             prepared_names.add(location)
             if location in by_name or location in by_alias:
                 continue
-            scene_type = self._normalize_scene_type(
-                str(getattr(block, "interior_exterior", "") or "")
-            )
-            scene = NovelScene(
-                name=location,
-                scene_type=scene_type,
-                environment_prompt="",
-                description="",
-                notes=f"由 AssetCompiler 从规范场次地点创建 (ep{episode.number})",
-            )
-            prepared.append(scene)
-            by_name[location] = scene
-            log(f"  已准备规范基础场景: {location}")
-        return prepared
+            missing.append(location)
+        if missing:
+            raise MissingBaseScenesError(missing, episode.number)
+        return []
 
     async def _persist_scene_plan_atomic(self, scenes: list[NovelScene]) -> None:
         if not scenes:
@@ -1077,6 +1081,15 @@ class AssetCompiler:
         async with self._draft_store_lock:
             source_store = self.cognee_store
             source_sqlite = source_store.sqlite_store
+            # Cognee's cache enriches menu descriptions from the prop catalogue.
+            # CAS must snapshot the persisted menu before planning, otherwise an
+            # unchanged database falsely conflicts with the enriched cache.
+            load_episode = getattr(source_sqlite, "get_episode_from_graph", None)
+            if callable(load_episode):
+                persisted_episode = await load_episode(episode.number)
+                if persisted_episode is None:
+                    raise ValueError(f"Episode {episode.number} not found")
+                episode = persisted_episode
             list_scenes = getattr(source_sqlite, "list_scenes", None)
             scenes = await list_scenes() if callable(list_scenes) else []
             props = await source_sqlite.list_props()
@@ -1196,12 +1209,12 @@ class AssetCompiler:
         source_text: str,
         episode: Any,
         log: Callable[[str], None],
-    ) -> list[str]:
-        prepared: list[NovelScene] = []
+    ) -> list[NovelScene]:
+        missing: list[str] = []
         prepared_names: set[str] = set()
         generic_names = {"室内", "外景", "内景", "路边", "街边", "本集主场景", "主场景"}
         for decision in output.scenes:
-            if decision.action != "create":
+            if decision.action not in {"create", "reuse"}:
                 continue
             scene_name = str(decision.scene_name or "").strip()
             if not scene_name or scene_name in generic_names or scene_name in prepared_names:
@@ -1219,27 +1232,12 @@ class AssetCompiler:
                 continue
             if source_text and not any(line in source_text for line in evidence_lines):
                 continue
-            scene = await enrich_scene_environment_from_context(
-                scene_name=scene_name,
-                scene_type=decision.scene_type,
-                context_lines=evidence_lines,
-            )
-            scene.aliases = list(
-                dict.fromkeys(
-                    str(alias or "").strip()
-                    for alias in (decision.aliases or [])
-                    if str(alias or "").strip() and str(alias or "").strip() != scene_name
-                )
-            )
-            if decision.description and not str(scene.description or "").strip():
-                scene.description = decision.description
-            scene.notes = f"由 AssetCompiler AI 校对创建 (ep{episode.number})"
-            prepared.append(scene)
-            prepared_names.add(scene.name)
+            missing.append(scene_name)
+            prepared_names.add(scene_name)
 
-        for scene in prepared:
-            log(f"  已准备基础场景: {scene.name}")
-        return prepared
+        if missing:
+            raise MissingBaseScenesError(missing, episode.number)
+        return []
 
     def _existing_scene_reference_kinds(self, scene_name: str) -> list[str]:
         project_dir_text = str(getattr(self.cognee_store, "project_dir", "") or "").strip()
@@ -1268,7 +1266,7 @@ class AssetCompiler:
         ]
         for name in candidates:
             scene = await self.cognee_store.sqlite_store.get_scene(name)
-            if scene:
+            if scene and not str(getattr(scene, "base_scene_id", "") or "").strip():
                 return scene
 
         candidate_set = set(candidates)
@@ -1333,6 +1331,7 @@ class AssetCompiler:
         *,
         planned_scene_writes: list[NovelScene] | None = None,
     ) -> tuple[list[SceneMenuItem], list[NovelScene]]:
+        await self._prepare_source_base_scenes(scene_blocks, episode, log)
         scene_menu: list[SceneMenuItem] = []
         seen_scene_ids: set[str] = set()
         pending_scenes: list[NovelScene] = []
@@ -1363,8 +1362,7 @@ class AssetCompiler:
                 stored_scene = await self._find_matching_scene(location)
                 existing = deepcopy(stored_scene) if transactional and stored_scene else stored_scene
             if not existing:
-                log(f"  跳过缺失基础场景: {location}（AI校对未创建或未复用）")
-                continue
+                raise MissingBaseScenesError([location], episode.number)
             else:
                 previous_prompt = str(existing.environment_prompt or "").strip()
                 needs_prompt_write = not previous_prompt or is_legacy_meta_scene_prompt(
@@ -1589,6 +1587,9 @@ class AssetCompiler:
         }
 
         scenes = await self._extract_narrated_episode_scenes(source_text, episode, log)
+        await self._prepare_source_base_scenes(
+            [SceneBlock(location=scene.name) for scene in scenes], episode, log
+        )
         for scene in scenes:
             scene_name = str(getattr(scene, "name", "") or "").strip()
             if not scene_name:
@@ -1641,9 +1642,7 @@ class AssetCompiler:
                     )
                     log(f"  {action}: {existing.name}")
             else:
-                pending_scenes.append(scene)
-                pending_scene_map[scene.name] = scene
-                log(f"  新建解说场景: {scene.name}")
+                raise MissingBaseScenesError([scene_name], episode.number)
             self._add_to_scene_menu(canonical_name, scene_menu, seen_scene_ids)
             log(f"  场景: {canonical_name}")
 
@@ -1665,11 +1664,24 @@ class AssetCompiler:
         if not requirements:
             return []
 
+        resolved_bases: dict[str, NovelScene] = {}
+        missing: list[str] = []
+        for req in requirements:
+            existing = await self._find_existing_base_scene_by_name_or_alias(
+                [req.scene_name, *req.aliases]
+            )
+            if existing is None:
+                missing.append(req.scene_name)
+            else:
+                resolved_bases[req.scene_name] = existing
+        if missing:
+            raise MissingBaseScenesError(missing, episode.number)
+
         source_lines = split_screenplay_lines(source_text)
         scenes: list[NovelScene] = []
         seen: set[str] = set()
         for req in requirements[:8]:
-            scene_name = str(req.scene_name or "").strip()
+            scene_name = resolved_bases[req.scene_name].name
             if not scene_name or scene_name in seen:
                 continue
             seen.add(scene_name)
@@ -1690,7 +1702,7 @@ class AssetCompiler:
                 enriched.description = str(req.description or "").strip()
             enriched.notes = (
                 str(enriched.notes or "").strip()
-                or f"由 AssetCompiler 从解说稿自动创建 (ep{episode.number})"
+                or f"由 AssetCompiler 从解说稿补齐已有场景描述 (ep{episode.number})"
             )
             scenes.append(enriched)
 

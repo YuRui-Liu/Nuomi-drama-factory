@@ -48,6 +48,9 @@ async def _run_screenplay_semantics(envelope: dict[str, Any], ctx: ProjectContex
         expected_task_id=expected_task_id,
     )
     revision = await _build_service(ctx).build(source, concurrency=concurrency, selected_scene_ids=selected_ids)
+    current = next((item for item in await repository.list_sources() if item.episode_number == episode), None)
+    if current is None or current.source_revision != expected_revision or current.content_hash != source.content_hash:
+        raise ScreenplaySemanticTaskError("SOURCE_REVISION_CONFLICT")
     succeeded = sum(item.status in {"validated", "reused"} for item in revision.scenes)
     failed = sum(item.status == "failed" for item in revision.scenes)
     manager.update_progress_for_project(

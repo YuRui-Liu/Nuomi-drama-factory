@@ -170,8 +170,9 @@ def test_backend_api_get_ignores_stale_legacy_supertale_url(monkeypatch):
 async def test_append_chat_notification_persists_project_assistant_message(monkeypatch, tmp_path):
     seen = {}
 
-    async def fake_project_context(user, scope):
-        seen["scope"] = scope
+    async def fake_project_context(*, user, project_id, required_role):
+        assert required_role == "editor"
+        seen["scope"] = project_id
         return SimpleNamespace(output_dir=tmp_path / "out", state_dir=tmp_path / "state")
 
     def fake_add_assistant_message(
@@ -194,7 +195,7 @@ async def test_append_chat_notification_persists_project_assistant_message(monke
         )
         return {"id": "1", "role": "assistant", "content": content}
 
-    monkeypatch.setattr(chat_routes, "_project_context_for_scope", fake_project_context)
+    monkeypatch.setattr(chat_routes, "resolve_project_context", fake_project_context)
     monkeypatch.setattr(
         chat_routes.chat_service,
         "add_assistant_message",

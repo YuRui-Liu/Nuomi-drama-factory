@@ -41,7 +41,10 @@ def test_standard_logical_ratios_use_the_tier_size_table(
     assert resolution.provider_aspect_ratio == logical_ratio
     assert resolution.provider_size == size
     assert resolution.requires_aspect_normalization is False
-    assert resolution.reason is None
+    if tier == "4K" and rows * columns > 1:
+        assert "provider canvas ceiling" in resolution.reason
+    else:
+        assert resolution.reason is None
 
 
 @pytest.mark.parametrize(

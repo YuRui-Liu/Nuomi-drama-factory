@@ -147,12 +147,31 @@ export function TextPane({ beat, project, episode, spineTemplate = "drama" }: Te
     timeOfDay: false,
     speaker: false,
   });
-  const clearDirtyForPatch = (patch: BeatUpdate) => {
-    if ("narration_segment" in patch) dirtyRef.current.narration = false;
-    if ("visual_description" in patch) dirtyRef.current.visual = false;
-    if ("scene_ref" in patch) dirtyRef.current.sceneRef = false;
-    if ("time_of_day" in patch) dirtyRef.current.timeOfDay = false;
-    if ("speaker" in patch) dirtyRef.current.speaker = false;
+  const clearDirtyForPatch = (patch: BeatUpdate, submittedDirty: TextPaneDirtyFields) => {
+    // A reply for an earlier beat must never mark the new beat's draft saved.
+    if (dirtyRef.current !== submittedDirty) return;
+    const latest = latestRef.current;
+    const mentionOptions = { identities: latest.identityIds, props: latest.propIds };
+    // Edits made while this request was in flight still need to be flushed.
+    if (
+      "narration_segment" in patch &&
+      mentionsToProgramMarkers(latest.narration, mentionOptions) === patch.narration_segment
+    ) submittedDirty.narration = false;
+    if (
+      "visual_description" in patch &&
+      mentionsToProgramMarkers(latest.visual, mentionOptions) === patch.visual_description
+    ) submittedDirty.visual = false;
+    if (
+      "scene_ref" in patch &&
+      latest.sceneRef.scene_id === (patch.scene_ref?.scene_id ?? "") &&
+      latest.sceneRef.variant_id === (patch.scene_ref?.variant_id ?? "")
+    ) submittedDirty.sceneRef = false;
+    if ("time_of_day" in patch && latest.timeOfDay === patch.time_of_day) {
+      submittedDirty.timeOfDay = false;
+    }
+    if ("speaker" in patch && latest.speaker === patch.speaker) {
+      submittedDirty.speaker = false;
+    }
   };
 
   // Reset when beat_number changes (user selected a different beat).
@@ -176,11 +195,12 @@ export function TextPane({ beat, project, episode, spineTemplate = "drama" }: Te
   }, [beat.beat_number]);
 
   const saveField = async (patch: BeatUpdate) => {
+    const submittedDirty = dirtyRef.current;
     try {
       await trackSave(beatTextScope, () =>
         update.mutateAsync({ beatNum: beat.beat_number, data: patch }),
       );
-      clearDirtyForPatch(patch);
+      clearDirtyForPatch(patch, submittedDirty);
     } catch {
       toast.error(t("episode.workbench.text.saveFailed"));
     }

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import fcntl
 import json
 import os
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import portalocker
 
 from .adoption import adopt_version as apply_adoption
 from .adoption import register_candidate
@@ -35,17 +36,32 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+_PROJECT_LOCKS: dict[str, threading.RLock] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+_PROJECT_LOCK_STATE = threading.local()
+
+
 @contextmanager
 def production_workflow_project_lock(state_dir: str | Path):
-    """Serialize every workflow read-modify-write transaction for one project."""
-    directory = Path(state_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / ".production_workflow.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
+    """Reentrant thread lock and cross-platform process lock for one project."""
+    directory = Path(state_dir).resolve()
+    key = os.path.normcase(str(directory))
+    with _PROJECT_LOCKS_GUARD:
+        thread_lock = _PROJECT_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        held = getattr(_PROJECT_LOCK_STATE, "held", set())
+        if key in held:
             yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / ".production_workflow.lock").open("a+b") as lock_file:
+            portalocker.lock(lock_file, portalocker.LOCK_EX)
+            _PROJECT_LOCK_STATE.held = {*held, key}
+            try:
+                yield
+            finally:
+                _PROJECT_LOCK_STATE.held = held
+                portalocker.unlock(lock_file)
 
 
 # Compatibility name for callers introduced with character-state transactions.
@@ -234,6 +250,41 @@ class ProductionWorkflowStore:
         self._save()
         return updated_slot, updated_version, event
 
+    def record_quality_recheck(
+        self, *, slot_id: str, version_id: str, report: dict, image_sha256: str,
+        fingerprint: str, route: dict, actor: str, at: datetime,
+    ) -> AssetVersion:
+        """Append QC evidence; caller holds the project lock and verifies image CAS."""
+        from novelvideo.character_visual.identity_sheet import IdentitySheetQualityReport
+
+        quality = IdentitySheetQualityReport.model_validate(report)
+        slot, versions = self.get_slot(slot_id)
+        version = versions[version_id]
+        metadata = dict(version.generation_metadata or {})
+        history = list(metadata.get("qc_history", []))
+        if not history and metadata.get("quality_report"):
+            history.append({"report": metadata["quality_report"], "source": "generation"})
+        history.append({"report": quality.model_dump(mode="json"), "image_sha256": image_sha256,
+                        "fingerprint": fingerprint, "route": route, "actor": actor,
+                        "at": at.isoformat()})
+        metadata.update(quality_report=quality.model_dump(mode="json"), qc_history=history)
+        updated = version.model_copy(update={
+            "generation_metadata": metadata, "qc_passed": quality.passed,
+            "soft_issues": list(quality.issues),
+        })
+        if quality.passed and slot.current_version_id is None and version.adoption_status == AdoptionStatus.CANDIDATE:
+            slot = slot.model_copy(update={"current_version_id": version_id})
+            updated = updated.model_copy(update={"adoption_status": AdoptionStatus.PROVISIONAL})
+            self._events.append(AdoptionEvent(
+                slot_id=slot_id, version_id=version_id, from_status=version.adoption_status,
+                to_status=AdoptionStatus.PROVISIONAL, actor=actor, at=at,
+                reason="first QC-passed candidate after recheck",
+            ))
+        self._slots[slot_id] = slot
+        self._versions[version_id] = updated
+        self._save()
+        return updated
+
     def retarget_version_asset_paths(
         self,
         *,
@@ -311,9 +362,11 @@ class ProductionWorkflowStore:
             if item in versions
         }
         fallback: AssetVersion | None = None
+        fallback_event: AdoptionEvent | None = None
         current_version_id = slot.current_version_id
         if current_version_id == version_id:
-            if remaining_ids:
+            current_version_id = None
+            if remaining:
                 order = {item: index for index, item in enumerate(remaining_ids)}
 
                 def recency(item: AssetVersion) -> tuple[float, int]:
@@ -323,14 +376,28 @@ class ProductionWorkflowStore:
                         order[item.version_id],
                     )
 
-                selected = max(remaining.values(), key=recency)
-                fallback = selected.model_copy(
-                    update={"adoption_status": AdoptionStatus.ADOPTED}
+                empty_slot = slot.model_copy(
+                    update={"current_version_id": None, "version_ids": remaining_ids}
                 )
-                remaining[fallback.version_id] = fallback
-                current_version_id = fallback.version_id
-            else:
-                current_version_id = None
+                for selected in sorted(remaining.values(), key=recency, reverse=True):
+                    try:
+                        adopted_slot, adopted_versions, event = apply_adoption(
+                            empty_slot,
+                            remaining,
+                            version_id=selected.version_id,
+                            actor="system",
+                            # Automatic fallback has no operator justification
+                            # or QC-unavailable override to grant.
+                            reason="",
+                            at=datetime.now(timezone.utc),
+                        )
+                    except ValueError:
+                        continue
+                    remaining = adopted_versions
+                    fallback = remaining[selected.version_id]
+                    current_version_id = adopted_slot.current_version_id
+                    fallback_event = event
+                    break
 
         updated_slot = slot.model_copy(
             update={
@@ -341,5 +408,7 @@ class ProductionWorkflowStore:
         self._slots[slot_id] = updated_slot
         self._versions.pop(version_id, None)
         self._versions.update(remaining)
+        if fallback_event is not None:
+            self._events.append(fallback_event)
         self._save()
         return updated_slot, remaining, deleted, fallback

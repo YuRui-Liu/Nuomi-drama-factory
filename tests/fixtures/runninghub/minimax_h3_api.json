@@ -22,7 +22,7 @@
     "class_type": "SaveVideo",
     "inputs": {
       "codec": "auto",
-      "filename_prefix": "video/MiniMaxH3_Director_t2v",
+      "filename_prefix": "video/output",
       "format": "auto",
       "fw_video_preview": "",
       "video": [

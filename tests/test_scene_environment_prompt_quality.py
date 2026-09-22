@@ -14,6 +14,39 @@ VALID_PROMPT = """正面：磨砂玻璃双开门居中，门内连接三米宽�
 禁止元素：人物、文字、水印、移动道具、临时剧情状态。"""
 
 
+async def test_scene_enrichment_uses_frozen_text_runtime_without_api_key(monkeypatch):
+    from novelvideo import config
+    from novelvideo.cognee.pipeline import enrich_scene_environment_from_context
+    from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+    from novelvideo.text_task_runtime.runtime import (
+        current_text_task_runtime,
+        text_task_runtime_scope,
+    )
+
+    def reject_legacy_model(*args, **kwargs):
+        raise AssertionError("routed scene enrichment must not access legacy API keys")
+
+    monkeypatch.setattr(config, "get_newapi_text_pydantic_model", reject_legacy_model)
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return kwargs["output_type"].model_validate({"scenes": [{
+            "name": "设备走廊", "scene_type": "interior",
+            "environment_prompt": VALID_PROMPT, "description": "设备走廊",
+        }]})
+
+    snapshot = AgentTaskRouteSnapshot(
+        task_role="episode_asset_planning", source="global",
+        runtime="codex", model="gpt-5.6-sol",
+    )
+    with text_task_runtime_scope(snapshot):
+        monkeypatch.setattr(current_text_task_runtime(), "run_structured", generate)
+        scene = await enrich_scene_environment_from_context(scene_name="设备走廊")
+    assert scene.environment_prompt == VALID_PROMPT
+    assert len(calls) == 1
+
+
 LEGACY_META_PROMPT = """正面：以“广播站设备走廊”最能代表地点身份的主入口作为正面；根据原文证据确定固定结构。
 左侧：从正面视角向左延伸，布置与场景功能一致的侧墙和通道。
 右侧：不要复制正面主体，只做合理连续补全。
@@ -27,6 +60,18 @@ def test_quality_gate_accepts_concrete_seven_section_prompt():
     from novelvideo.cognee.pipeline import scene_environment_prompt_issues
 
     assert scene_environment_prompt_issues(VALID_PROMPT) == []
+
+
+def test_quality_gate_accepts_concrete_coastal_environment():
+    from novelvideo.cognee.pipeline import scene_environment_prompt_issues
+    prompt = """正面：圆柱灯塔居中，塔基连接沿山坡上行的石阶。
+左侧：黑色礁石沿海岸延伸，低矮灌木位于礁石上方。
+右侧：开阔海面连接远处海平线，沙滩沿岸线向右延伸。
+背面：碎石小径通向坡顶，草地沿山坡延伸到灌木丛。
+光源：自然散射光由开阔天空照入，灯塔固定灯具提供局部补光。
+材质/风格：粗糙岩石、颗粒砂土和碎石铺路，塔身白色灰泥保留盐蚀纹理。
+禁止元素：人物、文字、水印、临时剧情道具。"""
+    assert scene_environment_prompt_issues(prompt) == []
 
 
 def test_quality_gate_rejects_known_meta_template():

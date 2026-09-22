@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import re
 
 from novelvideo.screenplay_semantics.models import DramaticBeat
+from .cinematography import production_direction_errors
 
 from .models import (
     DirectorPlanRevision,
@@ -146,6 +147,11 @@ def validate_director_plan(
                     "Shot source spans must belong to their narrative group.",
                     f"{shot_location}.source_span_ids",
                 )
+
+            if revision.prompt_version == "director-plan-v3" or shot.cinematography is not None:
+                for code in production_direction_errors(shot):
+                    _add_issue(issues, code, "Complete source-attributed blocking and lighting directions are required.",
+                               f"{shot_location}.cinematography")
 
             if revision.semantic_revision_id is not None:
                 if shot.intent is None:

@@ -40,6 +40,22 @@ DYNAMIC_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 THIRD_PARTY_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = ()
 COMMON_REVERSE_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^ComSpec$"), "Windows-provided command shell path, not application configuration."),
+    (
+        re.compile(r"^NUOMI_(?:TOKEN|SESSION)$"),
+        "Short-lived production CLI session credentials documented in docs/production-cli.md; "
+        "pass in the caller environment, never persist them in an operator template.",
+    ),
+    (
+        re.compile(r"^RUNNINGHUB_(?:API_KEY|KEY)$"),
+        "Credentials passed only to scripts/smoke_runninghub_h3.py and "
+        "smoke_runninghub_aux_workflows.py; application runtime uses its credential store.",
+    ),
+    (
+        re.compile(r"^NOVELVIDEO_PUBLIC_HOST$"),
+        "Set by cli.py from the actual API bind host for the local-auth boundary, "
+        "not an independent operator override.",
+    ),
     (re.compile(r"^ST_EDITION$"), "Launcher/test gate env, not operator template config."),
     (re.compile(r"^DRAMACLAW_CE_ROOT$"), "Audit script discovery override, not runtime app config."),
     (
@@ -114,6 +130,11 @@ COMMON_REVERSE_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 CE_REVERSE_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^TEXT_MODEL_(?:PROVIDER|BASE_URL|API_KEY|NAME)$"),
+        "EE-only environment branch in text_runtime_settings.load_text_runtime_settings; "
+        "CE ordinary-text settings are managed through the model settings UI and credential store.",
+    ),
     (
         re.compile(r"^NEWAPI_(?:API_KEY|BASE_URL)$"),
         "EE deployment credentials read by shared CE/EE gateway code; CE dynamic "
@@ -365,6 +386,16 @@ def _reader_function_for_call(
     if bare_name is not None:
         function = reader_functions.get(bare_name)
         return EnvReaderCall(function) if function is not None else None
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        # Resolve only a discovered Class.method definition, whose reader
+        # parameters are proven by the fixed-point analysis below. Do not
+        # match arbitrary object attributes to global helpers by method name.
+        function = reader_functions.get(f"{node.value.id}.{node.attr}")
+        if function is not None:
+            return EnvReaderCall(
+                function,
+                bound_receiver=function.positional_params[:1] == ("cls",),
+            )
     if (
         current_class is not None
         and isinstance(node, ast.Attribute)

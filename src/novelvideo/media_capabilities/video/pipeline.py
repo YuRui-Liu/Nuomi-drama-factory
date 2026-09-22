@@ -605,6 +605,7 @@ class H3VideoPipeline:
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
             if completed.status in {
+                MediaTaskStatus.UNKNOWN,
                 MediaTaskStatus.FAILED,
                 MediaTaskStatus.CANCELLED,
                 MediaTaskStatus.QUALITY_FAILED,
@@ -783,6 +784,7 @@ class H3VideoPipeline:
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
             if completed.status in {
+                MediaTaskStatus.UNKNOWN,
                 MediaTaskStatus.FAILED,
                 MediaTaskStatus.CANCELLED,
                 MediaTaskStatus.QUALITY_FAILED,

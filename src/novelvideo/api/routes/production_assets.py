@@ -73,6 +73,24 @@ def _safe_project_target(project_dir: Path, asset_path: str) -> Path:
     return target
 
 
+def _version_file_references(
+    store: ProductionWorkflowStore, project_dir: Path,
+) -> dict[Path, set[str]]:
+    """Index remaining version and canonical paths across every asset slot."""
+    references: dict[Path, set[str]] = {}
+    for slot in store.list_slots():
+        _, versions = store.get_slot(slot.slot_id)
+        for version in versions.values():
+            paths = [version.asset_path]
+            canonical = (version.generation_metadata or {}).get("canonical_path")
+            if isinstance(canonical, str) and canonical.strip():
+                paths.append(canonical)
+            for path in paths:
+                resolved = _safe_project_target(project_dir, path)
+                references.setdefault(resolved, set()).add(slot.slot_id)
+    return references
+
+
 _SCENE_CANONICAL_FILENAMES = {
     "master": "master.png",
     "reverse_master": "reverse_master.png",
@@ -393,15 +411,20 @@ async def delete_production_asset_version(
                 slot_id=slot_id,
                 version_id=version_id,
             )
+            references = _version_file_references(store, resolved.project_dir)
 
             if canonical_path is not None:
                 if fallback is None:
-                    canonical_path.unlink(missing_ok=True)
+                    if canonical_path not in references:
+                        canonical_path.unlink(missing_ok=True)
                 else:
                     fallback_relative = _safe_project_asset(
                         resolved.project_dir, fallback.asset_path
                     )
                     fallback_path = resolved.project_dir / fallback_relative
+                    other_slots = references.get(canonical_path, set()) - {slot_id}
+                    if other_slots and fallback_path.resolve() != canonical_path:
+                        raise ValueError("canonical asset is still referenced by another slot")
                     canonical_path.parent.mkdir(parents=True, exist_ok=True)
                     staged = canonical_path.with_name(
                         f".{canonical_path.name}.delete-fallback-{uuid.uuid4().hex}.tmp"
@@ -412,9 +435,7 @@ async def delete_production_asset_version(
                     finally:
                         staged.unlink(missing_ok=True)
 
-            still_referenced = any(
-                item.asset_path == deleted.asset_path for item in versions.values()
-            )
+            still_referenced = deleted_path.resolve() in references
             if not still_referenced and deleted_path != canonical_path:
                 deleted_path.unlink()
         except KeyError as exc:

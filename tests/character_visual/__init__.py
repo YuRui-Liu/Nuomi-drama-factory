@@ -1,0 +1,1 @@
+"""Character visual test package."""

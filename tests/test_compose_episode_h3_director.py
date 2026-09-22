@@ -12,6 +12,17 @@ from novelvideo.media_capabilities.video.h3_timeline import (
 from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
 
 
+def test_stale_director_video_cannot_be_composed_after_new_render(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.task_backend.runners import video as subject
+
+    stage = SimpleNamespace(status="completed", needs_regeneration=True, manifest_asset="old.json")
+    group = SimpleNamespace(ordinal=1, stages={"video": stage})
+    monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [group])
+    with pytest.raises(RuntimeError, match="stale"):
+        resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
+
+
 def _manifest(path: Path, video: Path) -> None:
     segments = (
         H3DirectorSegment(
@@ -52,7 +63,7 @@ def test_director_manifest_replaces_covered_legacy_beats_once(tmp_path: Path, mo
         ordinal = 1
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [Group()])
     monkeypatch.setattr(subject.PathResolver, "video", lambda _self, beat: tmp_path / f"legacy-{beat}.mp4")
 
     spans = resolve_episode_composition_sources(
@@ -87,7 +98,7 @@ def test_external_tts_director_entry_without_ambience_stem_fails_closed(tmp_path
         ordinal = 1
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [Group()])
 
     with pytest.raises(RuntimeError, match="ambience stem"):
         resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
@@ -126,7 +137,7 @@ def test_read_only_beat_listing_keeps_director_span_when_ambience_is_missing(
         ordinal = 1
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [Group()])
 
     spans = resolve_episode_composition_sources(
         tmp_path, 1, [{"beat_number": 1}], strict_audio=False
@@ -167,7 +178,7 @@ def test_composition_interleaves_legacy_and_director_spans_by_beat_order(
         ordinal = 4
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(subject, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [Group()])
     monkeypatch.setattr(subject.PathResolver, "video", lambda _self, beat: tmp_path / f"legacy-{beat}.mp4")
 
     spans = resolve_episode_composition_sources(

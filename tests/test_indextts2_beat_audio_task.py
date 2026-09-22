@@ -187,7 +187,9 @@ async def test_indextts2_selected_runner_generates_narration_and_dialogue(tmp_pa
     assert result.failed == []
     assert result.generated_beats == [1, 2]
     assert [call["beat"] for call in generator.calls] == [1, 2]
-    assert generator.calls[0]["emotion_prompt"] == "以第三人称旁白视角，用客观冷静的解说语气朗读"
+    # Narration uses its resolved reference voice; only an explicit emotion
+    # override adds an instruction (same contract as seedance2 voice cloning).
+    assert generator.calls[0]["emotion_prompt"] == ""
     assert (project_dir / "audio" / "ep001" / "beat_01.mp3").read_bytes() == b"audio-1"
     assert (project_dir / "audio" / "ep001" / "beat_02.mp3").read_bytes() == b"audio-2"
 

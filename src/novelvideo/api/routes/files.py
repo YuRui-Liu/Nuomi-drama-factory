@@ -13,6 +13,21 @@ from novelvideo.api.deps import ProjectResolution, resolve_project_scope
 
 router = APIRouter()
 
+# Only passive media can be opened inline on the authenticated API origin.
+# In particular SVG is an active document, despite its image MIME type.
+_INLINE_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif", ".avif": "image/avif",
+    ".bmp": "image/bmp", ".ico": "image/x-icon",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
+}
+_MEDIA_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+}
+
 
 def _resolve_project_file(resolved: ProjectResolution, file_path: str) -> Path:
     project_dir = resolved.project_dir
@@ -41,6 +56,15 @@ def _serve_or_redirect_to_oss(requested: Path, *, as_download: bool):
     or the object is not yet readable in OSS (ossfs write-back lag), so behaviour
     degrades gracefully and same-origin frontend URLs keep working.
     """
+    media_type = _INLINE_MEDIA_TYPES.get(requested.suffix.lower())
+    if media_type is None:
+        # Keep untrusted documents local so an OSS redirect cannot drop the
+        # attachment and sandbox policy (including on a same-origin CDN).
+        return FileResponse(
+            path=str(requested), filename=requested.name,
+            media_type="application/octet-stream", headers=_MEDIA_SECURITY_HEADERS,
+        )
+
     presigned = None
     try:
         if as_download:
@@ -65,8 +89,11 @@ def _serve_or_redirect_to_oss(requested: Path, *, as_download: bool):
         )
 
     if as_download:
-        return FileResponse(path=str(requested), filename=requested.name)
-    return FileResponse(path=str(requested))
+        return FileResponse(
+            path=str(requested), filename=requested.name,
+            media_type=media_type, headers=_MEDIA_SECURITY_HEADERS,
+        )
+    return FileResponse(path=str(requested), media_type=media_type, headers=_MEDIA_SECURITY_HEADERS)
 
 
 @router.get("/projects/{project}/files/{file_path:path}")

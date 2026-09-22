@@ -48,6 +48,9 @@ export function useGenerateRewrite(project: string, episode: number) {
 export function useUpdateBeat(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
+    // Multiple editors/unmount flushes may save the same script concurrently.
+    // Queue their writes so a slow earlier PATCH cannot overwrite newer text.
+    scope: { id: JSON.stringify(["beat-edit", project, episode]) },
     mutationFn: ({ beatNum, data }: { beatNum: number; data: BeatUpdate }) =>
       api
         .patch(p`api/v1/projects/${project}/episodes/${episode}/beats/${beatNum}`, {

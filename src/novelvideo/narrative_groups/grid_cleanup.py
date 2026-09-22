@@ -64,7 +64,10 @@ def split_and_cleanup(
         "vertical": [center for center, _ in vertical],
         "horizontal": [center for center, _ in horizontal],
     }
-    for path, report in zip(paths, reports, strict=True):
+    for index, (path, report) in enumerate(zip(paths, reports, strict=True)):
+        left, right = x_ranges[index % columns]
+        top, bottom = y_ranges[index // columns]
+        report["source_crop_box"] = [left, top, right, bottom]
         report["theoretical_lines"] = theoretical
         report["actual_lines"] = actual
         report["separator_insets"] = separator_insets

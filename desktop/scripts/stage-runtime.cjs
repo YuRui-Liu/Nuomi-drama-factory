@@ -77,13 +77,18 @@ function stageRuntime(projectRoot = path.resolve(__dirname, '..', '..')) {
     path.join(layout.ffmpeg, 'NOTICE.txt'),
   );
 
-  const verification = spawnSync(
+  verifyStagedRuntime(layout);
+  return layout;
+}
+
+function verifyStagedRuntime(layout, run = spawnSync) {
+  const verification = run(
     path.join(layout.python, 'python.exe'),
     [
       '-X',
       'utf8',
       '-c',
-      'import novelvideo, transformers, uvicorn; print(novelvideo.__file__)',
+      'import novelvideo, transformers, uvicorn; import novelvideo.api.app; print(novelvideo.__file__)',
     ],
     {
       env: {
@@ -98,7 +103,6 @@ function stageRuntime(projectRoot = path.resolve(__dirname, '..', '..')) {
   if (verification.status !== 0) {
     throw new Error(`Staged Python verification failed:\n${verification.stderr || verification.stdout}`);
   }
-  return layout;
 }
 
 if (require.main === module) {
@@ -106,4 +110,4 @@ if (require.main === module) {
   console.log(`Desktop runtime staged at ${layout.root}`);
 }
 
-module.exports = { runtimeLayout, validateInputs, findManagedPython, sitePackagesPath, stageRuntime };
+module.exports = { runtimeLayout, validateInputs, findManagedPython, sitePackagesPath, stageRuntime, verifyStagedRuntime };

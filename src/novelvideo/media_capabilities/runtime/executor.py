@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import PurePosixPath
@@ -82,6 +83,15 @@ class RunningHubExecutor:
         if not attempts:
             raise TaskNotFoundError(f"task {task_id} has no attempt")
         attempt = attempts[-1]
+        if attempt.status in {
+            MediaTaskStatus.UNKNOWN,
+            MediaTaskStatus.SUCCEEDED,
+            MediaTaskStatus.FAILED,
+            MediaTaskStatus.QUALITY_FAILED,
+            MediaTaskStatus.CANCELLED,
+            MediaTaskStatus.CANCEL_REQUESTED,
+        }:
+            return task
         phase = "query" if attempt.provider_task_id else "submit"
 
         try:
@@ -94,12 +104,26 @@ class RunningHubExecutor:
                             attempt.id, MediaTaskStatus.PREPARING
                         )
                     node_info = compile_node_info(profile, semantic_values)
-                    provider_task_id = await self._client.submit(
-                        profile.workflow_id, node_info
-                    )
+                    if not self._store.claim_provider_submission(attempt.id):
+                        return self._current_task(task_id)
+                    try:
+                        provider_task_id = await self._client.submit(
+                            profile.workflow_id, node_info
+                        )
+                    except RunningHubError:
+                        raise
+                    except (Exception, asyncio.CancelledError):
+                        self._store.mark_unknown(
+                            attempt.id,
+                            error_code=MediaErrorCode.PROVIDER_TIMEOUT,
+                            error_message="RunningHub submit interrupted; reconcile before retry",
+                        )
+                        raise
                     attempt = self._store.record_provider_task(
                         attempt.id, provider_task_id
                     )
+                    if attempt.status is MediaTaskStatus.UNKNOWN:
+                        return await self.cancel(task_id)
                     await self._notify_provider_submitted(
                         attempt.provider_task_id, on_provider_submitted
                     )
@@ -186,7 +210,11 @@ class RunningHubExecutor:
                 )
                 return self._current_task(task_id)
         except RunningHubError as exc:
-            if phase == "submit" and exc.retriable and attempt.provider_task_id is None:
+            if (
+                phase == "submit"
+                and (exc.retriable or exc.code in {"INVALID_JSON", "INVALID_RESPONSE"})
+                and attempt.provider_task_id is None
+            ):
                 self._store.mark_unknown(
                     attempt.id,
                     error_code=MediaErrorCode.PROVIDER_TIMEOUT,
@@ -254,6 +282,18 @@ class RunningHubExecutor:
             MediaTaskStatus.CANCELLED,
         }:
             return task
+        if attempt.status is MediaTaskStatus.UNKNOWN and attempt.provider_task_id is None:
+            return task
+        if (
+            attempt.provider_task_id is None
+            and self._store.has_provider_submission_claim(attempt.id)
+        ):
+            self._store.mark_unknown(
+                attempt.id,
+                error_code=MediaErrorCode.PROVIDER_TIMEOUT,
+                error_message="RunningHub submit outcome is unknown; reconcile before retry",
+            )
+            return self._current_task(task_id)
         attempt = self._store.transition_attempt(
             attempt.id, MediaTaskStatus.CANCEL_REQUESTED
         )

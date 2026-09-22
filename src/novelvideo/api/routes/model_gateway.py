@@ -96,6 +96,7 @@ TEXT_TASK_ROLE_LABELS = {
     "knowledge_extraction": "知识图谱与角色/场景/道具提取",
     "director_plan": "整集导演规划",
     "episode_asset_planning": "场景规划",
+    "identity_sheet_qc": "角色身份图质检",
     "h3_episode_pack": "MiniMax H3 整集提示词",
     "h3_segment_repair": "MiniMax H3 局部修复",
 }

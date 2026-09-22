@@ -42,7 +42,7 @@ def test_block_world_unavailable_is_handled_task_failure():
 
     assert handled is True
     assert payload == {"error_code": "BLOCK_WORLD_UNAVAILABLE"}
-    assert "node" in message.lower() or "Node" in message
+    assert message == "BLOCK_WORLD_UNAVAILABLE"
 
 
 def test_run_voxel_world_missing_node_fails_before_subprocess(tmp_path, monkeypatch):

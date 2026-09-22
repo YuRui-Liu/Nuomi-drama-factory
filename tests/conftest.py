@@ -6,6 +6,32 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_gateway_credentials(monkeypatch):
+    """Unit tests must not read or overwrite the developer's OS credentials.
+
+    Platform credential-store tests exercise their own injected backends;
+    gateway consumers share only this test-local in-memory vault.
+    """
+    from novelvideo import model_gateway_settings
+
+    class MemoryCredentials:
+        def __init__(self):
+            self.values = {}
+
+        def set(self, reference, value):
+            self.values[reference] = value
+
+        def get(self, reference):
+            return self.values.get(reference)
+
+        def delete(self, reference):
+            self.values.pop(reference, None)
+
+    store = MemoryCredentials()
+    monkeypatch.setattr(model_gateway_settings, "_credential_store", lambda: store)
+
+
+@pytest.fixture(autouse=True)
 def restore_ports_registry_globals():
     from novelvideo.ports import registry
 

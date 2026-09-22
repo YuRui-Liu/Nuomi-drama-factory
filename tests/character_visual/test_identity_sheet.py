@@ -110,7 +110,8 @@ def test_v3_prompt_has_one_face_source_and_no_cinematic_baking() -> None:
     assert "only visible face" in prompt
     assert "no head, hair, ears, or face" in prompt
     assert "clean collar and shoulder boundary" in prompt
-    assert "no wound, hole, gore, or exposed anatomy" in prompt
+    assert "no wound, hole, gore, exposed bone or internal tissue" in prompt
+    assert "smooth, non-bloody neck cross-section is valid" in prompt
     assert "Do not invent blood, dirt, injury, or costume damage" in prompt
     assert "only when specified by CHARACTER STATE" in prompt
     assert "All panels depict the same age, body proportions, hair state" not in prompt

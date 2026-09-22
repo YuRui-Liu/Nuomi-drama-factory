@@ -85,6 +85,58 @@ class FakeAgent:
         return SimpleNamespace(output=self.output)
 
 
+@pytest.mark.asyncio
+async def test_visual_optimizer_retains_images_on_retry_and_caches_evidence(tmp_path):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    from novelvideo.media_capabilities.video.h3_storyboard_context import StoryboardPromptDecision
+
+    image = picture(1, segment="s1")
+    decision = StoryboardPromptDecision(status="ready", required_starting_facts_status="verified",
+        conflicts=(), plan=_director_plan(),
+        observations=[dict(image_label=image.label, framing="wide", orientation="back",
+                           spatial_relations="left of door", held_props="none", lighting="daylight")])
+
+    class RetryingAgent(FakeAgent):
+        async def run(self, task):
+            self.calls.append(task)
+            if len(self.calls) == 1:
+                raise httpx.ConnectError("offline retry")
+            return SimpleNamespace(output=self.output)
+
+    agent = RetryingAgent(decision)
+    optimizer = H3PromptOptimizer(agent, tmp_path, retry_base_delay_seconds=0)
+    result = await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA,
+                                             storyboard_images=(image,))
+    assert len(agent.calls) == 2
+    assert agent.calls[0] == agent.calls[1]
+    assert agent.calls[0][1].data == image.image.data
+    assert result.storyboard_decision.observations == decision.observations
+    cached = await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA,
+                                             storyboard_images=(image,))
+    assert cached.cache_hit
+    assert len(agent.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_visual_optimizer_conflict_is_not_repaired_or_cached(tmp_path):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    from novelvideo.media_capabilities.video.h3_storyboard_context import (
+        StoryboardPromptDecision, StoryboardPromptBlocked,
+    )
+    image = picture(1, segment="s1")
+    decision = StoryboardPromptDecision(status="conflict", plan=None,
+        observations=[dict(image_label=image.label, framing="wide", orientation="back",
+                           spatial_relations="left of door")],
+        conflicts=[dict(image_label=image.label, shot_id=image.shot_id, field="orientation",
+                        observed="back", required="front")])
+    agent = FakeAgent(decision)
+    with pytest.raises(StoryboardPromptBlocked):
+        await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+            _segment(), _context(), H3Mode.I2VA, storyboard_images=(image,))
+    assert len(agent.calls) == 1
+    assert not list(tmp_path.glob("*.json"))
+
+
 def test_production_optimizer_uses_prompted_output_without_tool_choice(
     monkeypatch, tmp_path
 ):
@@ -108,6 +160,12 @@ def test_production_optimizer_uses_prompted_output_without_tool_choice(
     assert captured["output_type"].outputs is H3DirectorPlan
     assert captured["model"] is model
     assert captured["retries"] == {"tools": 1, "output": 3}
+    h3_prompt_optimizer.create_h3_prompt_optimizer(
+        cache_dir=tmp_path, director_model_factory=lambda: model, model_settings={},
+        storyboard_grounded=True,
+    )
+    assert captured["output_type"].outputs is h3_prompt_optimizer.StoryboardPromptDecision
+    assert "Inspect every labeled storyboard image" in captured["system_prompt"]
 
 
 @pytest.mark.asyncio
@@ -141,8 +199,8 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.cache_hit is True
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
-    assert snapshot["prompt_profile_version"] == 11
-    assert snapshot["compiler_version"] == 3
+    assert snapshot["prompt_profile_version"] == 15
+    assert snapshot["compiler_version"] == 4
 
 
 @pytest.mark.asyncio
@@ -690,6 +748,29 @@ def test_compile_and_gate_merges_contract_locks_before_wire_compile():
     assert "SCENE CONTEXT" not in result.prompt
 
 
+@pytest.mark.asyncio
+async def test_optimizer_repairs_unscoped_boundary_lock_before_compilation(tmp_path):
+    invalid = _director_plan().model_copy(update={
+        "continuity_locks": ("frame 0 state: an unrelated later shot",)
+    })
+
+    class RevisingAgent:
+        def __init__(self):
+            self.calls = []
+
+        async def run(self, task):
+            self.calls.append(task)
+            return SimpleNamespace(output=invalid if len(self.calls) == 1 else _director_plan())
+
+    agent = RevisingAgent()
+    result = await H3PromptOptimizer(agent, tmp_path, quality_revisions=1).optimize_segment(
+        _segment(), _context(), H3Mode.I2VA
+    )
+    assert len(agent.calls) == 2
+    assert "global_state_scope" in agent.calls[1]
+    assert "frame 0 state:" not in result.prompt
+
+
 def test_compile_and_gate_rejects_a_malformed_compiler_wire(monkeypatch):
     compile_wire = h3_prompt_optimizer.compile_h3_director_plan
 
@@ -772,6 +853,87 @@ async def test_optimizer_quality_revision_fills_empty_rigid_fields_without_overw
 
     assert result.plan.rigid_prompt.physics.statements
     assert result.plan.rigid_prompt.lighting.origin == "frame-right window"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrected", [True, False])
+async def test_physics_entity_repair_replaces_rejected_identifiers_and_rechecks(tmp_path, corrected):
+    good = _director_plan()
+    invalid = good.model_copy(update={"rigid_prompt": good.rigid_prompt.model_copy(
+        update={"physics": good.rigid_prompt.physics.model_copy(update={
+            "moving_entities": ("translated alias",),
+            "statements": ("translated alias has weight, contact and inertia.",),
+        })})})
+    candidate = good if corrected else invalid
+
+    class RevisingAgent:
+        def __init__(self):
+            self.outputs = [invalid, candidate]
+
+        async def run(self, _task):
+            return SimpleNamespace(output=self.outputs.pop(0))
+
+    optimizer = H3PromptOptimizer(RevisingAgent(), tmp_path, quality_revisions=1)
+    if corrected:
+        result = await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
+        assert result.quality_report.passed
+        assert result.plan.rigid_prompt.physics == good.rigid_prompt.physics
+        assert result.plan.rigid_prompt.spatial_blocking == good.rigid_prompt.spatial_blocking
+    else:
+        with pytest.raises(H3PromptQualityError, match="physics_entity_mismatch"):
+            await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
+
+
+@pytest.mark.asyncio
+async def test_optimizer_repairs_rejected_nonempty_physics_statements(tmp_path):
+    good = _director_plan()
+    invalid = good.model_copy(update={"rigid_prompt": good.rigid_prompt.model_copy(
+        update={"physics": good.rigid_prompt.physics.model_copy(
+            update={"statements": ("Lin has weight.",)})})})
+
+    class RevisingAgent:
+        def __init__(self):
+            self.outputs = [invalid, good]
+
+        async def run(self, _task):
+            return SimpleNamespace(output=self.outputs.pop(0))
+
+    result = await H3PromptOptimizer(RevisingAgent(), tmp_path, quality_revisions=1).optimize_segment(
+        _segment(), _context(), H3Mode.I2VA)
+    assert result.quality_report.passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrected", [True, False])
+async def test_lighting_repair_replaces_only_rejected_field_and_rechecks_facts(tmp_path, corrected):
+    good = _director_plan()
+    expected = good.rigid_prompt.lighting.primary_source
+    invalid = good.model_copy(update={"rigid_prompt": good.rigid_prompt.model_copy(
+        update={"lighting": good.rigid_prompt.lighting.model_copy(
+            update={"primary_source": "unmotivated spotlight"})})})
+    candidate = good if corrected else invalid
+    candidate = candidate.model_copy(update={"rigid_prompt": candidate.rigid_prompt.model_copy(
+        update={"lighting": candidate.rigid_prompt.lighting.model_copy(
+            update={"origin": "unrequested replacement origin"})})})
+    context = _context().model_copy(update={
+        "lighting_facts_json": json.dumps({"primary_source": expected}),
+    })
+
+    class RevisingAgent:
+        def __init__(self):
+            self.outputs = [invalid, candidate]
+
+        async def run(self, _task):
+            return SimpleNamespace(output=self.outputs.pop(0))
+
+    optimizer = H3PromptOptimizer(RevisingAgent(), tmp_path, quality_revisions=1)
+    if corrected:
+        result = await optimizer.optimize_segment(_segment(), context, H3Mode.I2VA)
+        assert result.quality_report.passed
+        assert result.plan.rigid_prompt.lighting == good.rigid_prompt.lighting
+    else:
+        with pytest.raises(H3PromptQualityError, match="lighting_source_conflict"):
+            await optimizer.optimize_segment(_segment(), context, H3Mode.I2VA)
 
 
 @pytest.mark.asyncio

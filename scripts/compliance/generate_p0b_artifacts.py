@@ -173,8 +173,8 @@ class PackageLicense:
 
 
 def run_git_ls_files() -> list[str]:
-    output = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True)
-    return [line for line in output.splitlines() if line]
+    output = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT, text=True)
+    return [path for path in output.split("\0") if path]
 
 
 def write_text(path: Path, text: str) -> None:
@@ -302,7 +302,7 @@ def locked_package_licenses() -> list[PackageLicense]:
         if manual:
             expression, evidence = manual
             packages.append(PackageLicense(name, version, expression, "manual", evidence))
-        elif distribution := installed.get(canonical_name):
+        elif (distribution := installed.get(canonical_name)) and distribution.version == version:
             packages.append(package_license_from_metadata(name, version, distribution.metadata))
         elif override := LOCKED_LICENSE_OVERRIDES.get(canonical_name):
             expression, evidence = override

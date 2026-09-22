@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -61,9 +60,6 @@ def _ce_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("ST_EDITION", "ce")
     monkeypatch.setenv("ST_LOCAL_USERNAME", "local")
-    for module_name in list(sys.modules):
-        if module_name == "novelvideo.api" or module_name.startswith("novelvideo.api."):
-            sys.modules.pop(module_name)
     _patch_roots(monkeypatch, tmp_path)
 
     from novelvideo.ports.local import project as local_project
@@ -123,11 +119,8 @@ def test_ce_auth_me_logout_and_project_crud_contract(
         detail = client.get(f"/api/v1/projects/{project_id}")
         assert detail.status_code == 200
         assert detail.json()["data"]["project_id"] == project_id
-        assert (
-            detail.json()["data"]["cognee_embedding_model"]
-            == "DC-cognee-embedding-v2"
-        )
-        assert detail.json()["data"]["cognee_embedding_dimension"] == 1024
+        assert detail.json()["data"]["knowledge_pipeline"] == "structured_v1"
+        assert detail.json()["data"]["knowledge_pipeline_status"] == "structured_pending"
 
 
 @pytest.mark.ee

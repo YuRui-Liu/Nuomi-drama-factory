@@ -358,24 +358,22 @@ def test_reference_definitions_revalidate_model_constructed_nested_asset(
         compiler_module.compile_reference_definitions((invalid,))
 
 
-def test_continuity_locks_preserve_contract_and_domain_order() -> None:
+def test_continuity_locks_only_project_shared_identity_not_local_states() -> None:
     first = _contract("shot-1")
-    second = _contract("shot-2")
+    second = _contract("shot-2", subject_state="coat unbuttoned")
 
     locks = continuity_locks_for((first, second))
 
-    assert locks == (
-        "scene state stays door closed",
-        "space anchor stays beside the north wall",
-        "action axis stays north-south",
-        "subject lin keeps identity and coat buttoned",
-        "subject lin stays screen left",
-        "prop cup: full, owner lin, held in right hand, touching chest",
-        "camera medium, eye-level, static; composition Lin on left third",
-        "key light direction stays camera right",
-        "frame 0 state: Lin faces the door",
-        "planned terminal state: Lin grips the handle",
-    )
+    assert locks == ("subject lin keeps identity",)
+    assert first.boundary.carry_in == "Lin faces the door"
+    assert second.subjects[0].state == "coat unbuttoned"
+
+
+def test_continuity_locks_do_not_make_shot_specific_subject_global() -> None:
+    first = _contract("shot-1")
+    second = _contract("shot-2").model_copy(update={"subjects": ()})
+    assert continuity_locks_for((first, second)) == ()
+    assert continuity_locks_for(()) == ()
 
 
 def test_continuity_locks_keep_identity_without_an_empty_subject_state() -> None:
@@ -383,6 +381,21 @@ def test_continuity_locks_keep_identity_without_an_empty_subject_state() -> None
 
     assert "subject lin keeps identity" in locks
     assert "subject lin keeps identity and " not in locks
+
+
+def test_cinematography_locks_are_individual_lines_accepted_by_prompt_context():
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from tests.shot_continuity.test_cinematography import shot
+
+    photography = shot().cinematography
+    contract = _contract("shot-1").model_copy(update={"cinematography": photography})
+    locks = continuity_locks_for((contract,))
+    assert all("\n" not in lock for lock in locks)
+    assert locks == ("subject lin keeps identity",)
+    assert contract.cinematography == photography
+    H3PromptContext(continuity_locks=locks, visual_description="climb",
+                    narration="", prev_summary="", next_summary="",
+                    first_frame_sha256="a" * 64, model_id="minimax-h3")
 
 
 def test_base_bundle_freezes_ordered_contract_refs_and_real_digest() -> None:

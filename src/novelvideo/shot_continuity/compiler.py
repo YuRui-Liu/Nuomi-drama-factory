@@ -92,58 +92,24 @@ def compile_reference_definitions(
 def continuity_locks_for(
     contracts: tuple[ShotContinuityContract, ...],
 ) -> tuple[str, ...]:
-    """Return stable, de-duplicated prompt locks from ordered contracts."""
-    values: list[str] = []
-    for contract in contracts:
-        scene = contract.scene
-        if scene.scene_state:
-            values.append(f"scene state stays {scene.scene_state}")
-        if scene.space_anchor:
-            values.append(f"space anchor stays {scene.space_anchor}")
-        if scene.axis:
-            values.append(f"action axis stays {scene.axis}")
+    """Project only shared identity, never promote local states to global locks.
 
-        for subject in contract.subjects:
-            identity = f"subject {subject.subject_id} keeps identity"
-            if subject.state:
-                identity = f"{identity} and {subject.state}"
-            values.append(identity)
-            if subject.screen_position:
-                values.append(
-                    f"subject {subject.subject_id} stays {subject.screen_position}"
-                )
-
-        for prop in contract.props:
-            prop_state = ", ".join(
-                value
-                for value in (
-                    prop.state,
-                    f"owner {prop.owner_subject_id}" if prop.owner_subject_id else "",
-                    f"held in {prop.held_in_hand} hand" if prop.held_in_hand else "",
-                    prop.contact,
-                )
-                if value
-            )
-            if prop_state:
-                values.append(f"prop {prop.prop_id}: {prop_state}")
-
-        camera = contract.camera
-        values.append(
-            f"camera {camera.shot_size}, {camera.angle}, {camera.motion}; "
-            f"composition {camera.composition or 'unchanged'}"
-        )
-        if contract.lighting.direction:
-            values.append(
-                f"key light direction stays {contract.lighting.direction}"
-            )
-        if contract.boundary.carry_in:
-            values.append(f"frame 0 state: {contract.boundary.carry_in}")
-        if contract.boundary.planned_carry_out:
-            values.append(
-                "planned terminal state: "
-                f"{contract.boundary.planned_carry_out}"
-            )
-    return tuple(dict.fromkeys(values))
+    Full contracts (including cinematography and boundary states) are supplied
+    separately as ordered JSON to the director and retained in the bundle.
+    They belong in typed shot/action fields, not a second global narrative.
+    Even identical endpoint positions do not imply a stationary subject.
+    """
+    if not contracts:
+        return ()
+    common = set.intersection(*(
+        {subject.subject_id for subject in contract.subjects}
+        for contract in contracts
+    ))
+    return tuple(dict.fromkeys(
+        f"subject {subject.subject_id} keeps identity"
+        for subject in contracts[0].subjects
+        if subject.subject_id in common
+    ))
 
 
 def compile_shot_bundle(

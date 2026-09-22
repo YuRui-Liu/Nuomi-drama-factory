@@ -24,6 +24,98 @@ from novelvideo.narrative_groups.service import (
 from novelvideo.narrative_groups.models import VideoReferenceSettings
 
 
+def test_render_regeneration_persists_downstream_video_invalidation(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    stages = dict(group.stages)
+    stages["render"] = replace(stages["render"], status="completed", revision=1, grid_asset="old.png", needs_regeneration=True, stale_reason="upstream_changed")
+    stages["video"] = replace(stages["video"], status="completed", revision=1, video_asset="old.mp4")
+    save_groups(tmp_path, 1, [replace(group, stages=stages)])
+
+    advance_revision(tmp_path, 1, group.id, "render", regenerate=True)
+    persisted = load_groups(tmp_path, 1)[0]
+    assert persisted.stages["video"].needs_regeneration is True
+    assert persisted.stages["video"].stale_reason == "render_revision_changed"
+    assert persisted.stages["video"].video_asset == "old.mp4"
+    assert persisted.stages["render"].needs_regeneration is False
+    assert persisted.stages["render"].stale_reason == ""
+    assert persisted.stages["render"].status == "queued"
+
+
+def test_same_render_revision_does_not_spuriously_invalidate_video(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    stages = dict(group.stages)
+    stages["render"] = replace(stages["render"], status="completed", revision=1)
+    stages["video"] = replace(stages["video"], status="completed", revision=1, video_asset="current.mp4")
+    save_groups(tmp_path, 1, [replace(group, stages=stages)])
+
+    advance_revision(tmp_path, 1, group.id, "render")
+    assert load_groups(tmp_path, 1)[0].stages["video"].needs_regeneration is False
+
+
+def test_old_video_completion_keeps_original_storyboard_and_stays_stale(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    save_groups(tmp_path, 1, [replace(group, stages={**group.stages,
+        "render": replace(group.stages["render"], selected_storyboard_id="source-a"),
+        "video": replace(group.stages["video"], revision=1)})])
+    record_stage_result(tmp_path, 1, group.id, "video", expected_revision=1,
+        status="running", source_storyboard_id="source-a")
+    group = load_groups(tmp_path, 1)[0]
+    save_groups(tmp_path, 1, [replace(group, stages={**group.stages,
+        "render": replace(group.stages["render"], selected_storyboard_id="source-b")})])
+    done = record_stage_result(tmp_path, 1, group.id, "video", expected_revision=1,
+        status="completed", video_asset="old-source-a.mp4")
+    assert done.stages["video"].source_storyboard_id == "source-a"
+    assert done.stages["video"].video_asset == "old-source-a.mp4"
+    assert done.stages["video"].needs_regeneration is True
+
+
+def test_failed_enqueue_restore_does_not_clear_selection_invalidation(tmp_path):
+    from novelvideo.narrative_groups.service import restore_video_reservation
+
+    group = group_beats([{"id": "1"}])[0]
+    save_groups(tmp_path, 1, [replace(group, stages={**group.stages,
+        "render": replace(group.stages["render"], selected_storyboard_id="source-a"),
+        "video": replace(group.stages["video"], status="completed", video_asset="old.mp4")})])
+    reserved, reservation = reserve_video_revision(tmp_path, 1, group.id, expected_revision=0)
+    save_groups(tmp_path, 1, [replace(reserved, stages={**reserved.stages,
+        "render": replace(reserved.stages["render"], selected_storyboard_id="source-b"),
+        "video": replace(reserved.stages["video"], needs_regeneration=True)})])
+    assert restore_video_reservation(tmp_path, 1, reservation)
+    restored = load_groups(tmp_path, 1)[0].stages["video"]
+    assert restored.video_asset == "old.mp4"
+    assert restored.needs_regeneration is True
+
+
+def test_generating_candidate_preserves_selected_assets_and_current_video(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    cells = ({"beat_id": "1", "path": "selected.png"},)
+    save_groups(tmp_path, 1, [replace(group, stages={**group.stages,
+        "render": replace(group.stages["render"], revision=1, status="completed",
+                          selected_storyboard_id="source-a", grid_asset="grid-a.png", cell_assets=cells),
+        "video": replace(group.stages["video"], revision=1, status="completed", video_asset="current.mp4")})])
+    changed, _ = advance_revision(tmp_path, 1, group.id, "render", regenerate=True)
+    assert changed.stages["render"].grid_asset == "grid-a.png"
+    assert changed.stages["render"].cell_assets == cells
+    assert not changed.stages["video"].needs_regeneration
+
+
+def test_rollback_rejects_ambiguous_storyboard_revision(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    stages = dict(group.stages)
+    stages["render"] = replace(
+        stages["render"], revision=2,
+        revision_history=(
+            {"revision": 1, "status": "completed", "selected_storyboard_id": "source-a"},
+            {"revision": 1, "status": "completed", "selected_storyboard_id": "source-b"},
+        ),
+    )
+    save_groups(tmp_path, 1, [replace(group, stages=stages)])
+    original = sidecar_path(tmp_path, 1).read_bytes()
+    with pytest.raises(ValueError, match="ambiguous"):
+        rollback_stage_revision(tmp_path, 1, group.id, "render", revision=1)
+    assert sidecar_path(tmp_path, 1).read_bytes() == original
+
+
 def test_public_sidecar_guard_serializes_stage_revision_updates(tmp_path):
     save_groups(tmp_path, 1, group_beats([{"id": "1"}]))
 

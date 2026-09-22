@@ -186,6 +186,14 @@ def m09_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from novelvideo.generators.video_pool_indexer import add_video_to_pool
     from novelvideo.seedance2_i2v import panel_service
 
+    monkeypatch.setattr(
+        "novelvideo.media_capabilities.video.catalog.list_video_models",
+        lambda *_args: [SimpleNamespace(
+            id="runninghub:minimax-h3", available=True,
+            unavailable_reason=None, supported_modes=("t2va", "i2va", "fl2va"),
+        )],
+    )
+
     store = _M09Store()
     project_dir = tmp_path / "output" / _USER / _PROJECT
     state_dir = tmp_path / "state" / _USER / _PROJECT

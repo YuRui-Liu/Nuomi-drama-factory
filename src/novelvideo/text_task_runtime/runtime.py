@@ -9,10 +9,12 @@ from typing import Any, Protocol, TypeVar
 from types import SimpleNamespace
 
 from pydantic import ValidationError
-from pydantic_ai import Agent, PromptedOutput
+from pydantic_ai import Agent, BinaryContent, PromptedOutput
 
 from novelvideo.knowledge_runtime.codex import (
     CodexCliStructuredBackend as _BaseCodexCliStructuredBackend,
+    StructuredImage,
+    validate_structured_images,
 )
 from novelvideo.text_task_runtime.models import (
     AgentTaskRouteSnapshot,
@@ -39,6 +41,7 @@ class StructuredTextRuntime(Protocol):
         output_type: type[T],
         system_prompt: str = "",
         validation_context: dict[str, Any] | None = None,
+        images: list[StructuredImage] | None = None,
     ) -> T: ...
 
 
@@ -105,8 +108,12 @@ class CodexStructuredRuntime:
         output_type: type[T],
         system_prompt: str = "",
         validation_context: dict[str, Any] | None = None,
+        images: list[StructuredImage] | None = None,
     ) -> T:
         kwargs = {}
+        if images:
+            validate_structured_images(images)
+            kwargs["images"] = images
         if validation_context is not None:
             kwargs["validation_context"] = validation_context
         return await self._backend.acreate_structured_output(
@@ -138,6 +145,7 @@ class ModelApiStructuredRuntime:
         output_type: type[T],
         system_prompt: str = "",
         validation_context: dict[str, Any] | None = None,
+        images: list[StructuredImage] | None = None,
     ) -> T:
         from novelvideo.config import get_newapi_text_pydantic_model
 
@@ -159,7 +167,11 @@ class ModelApiStructuredRuntime:
         if validation_context is not None:
             agent_kwargs["validation_context"] = validation_context
         agent = self._agent_factory(**agent_kwargs)
-        result = await agent.run(prompt)
+        user_prompt = prompt
+        if images:
+            validate_structured_images(images)
+            user_prompt = [prompt, *[BinaryContent(data=image.data, media_type=image.media_type) for image in images]]
+        result = await agent.run(user_prompt)
         output = getattr(result, "output", result)
         if isinstance(output, output_type):
             return output
@@ -201,7 +213,10 @@ class StructuredRuntimeAgent:
         self.output_retries = max(0, int(output_retries))
         self.model_name = runtime.snapshot.model
 
-    async def run(self, prompt: str) -> Any:
+    async def run(self, prompt: str, *, images: list[StructuredImage] | None = None) -> Any:
+        frozen_images = tuple(images or ())
+        if frozen_images:
+            validate_structured_images(list(frozen_images))
         attempt_prompt = prompt
         for attempt in range(self.output_retries + 1):
             output = await self.runtime.run_structured(
@@ -209,6 +224,7 @@ class StructuredRuntimeAgent:
                 output_type=self.output_type,
                 system_prompt=self.system_prompt,
                 validation_context=self.validation_context,
+                **({"images": list(frozen_images)} if frozen_images else {}),
             )
             try:
                 if self.validation_context is not None and hasattr(

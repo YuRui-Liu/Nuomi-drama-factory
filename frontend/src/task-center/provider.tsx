@@ -10,6 +10,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAppStore } from "@/stores/app-store";
 import { queryKeys } from "@/lib/query-keys";
 import { directorPlanKeys } from "@/lib/queries/director-plans";
+import { screenplaySemanticKeys } from "@/lib/queries/screenplay-semantics";
 import { api } from "@/lib/api";
 import { createEventBus } from "./event-bus";
 import { EventBusContext } from "./event-bus-context";
@@ -52,8 +53,14 @@ function invalidateCompletedAssetQueries(
 ): void {
   if (task.status !== "completed") return;
 
-  if (task.task_type === TASK_TYPES.SCREENPLAY_SEMANTICS) {
+  if (
+    task.task_type === TASK_TYPES.SCREENPLAY_SEMANTICS ||
+    task.task_type === TASK_TYPES.SCREENPLAY_SEMANTIC_REPAIR
+  ) {
     if (task.episode > 0) {
+      queryClient.invalidateQueries({
+        queryKey: screenplaySemanticKeys.all(projectId, task.episode),
+      });
       queryClient.invalidateQueries({
         queryKey: queryKeys.script(projectId, task.episode),
       });
@@ -243,6 +250,25 @@ export function TaskCenterProvider({
     let cancelled = false;
     let client: ReturnType<typeof createStreamClient> | null = null;
 
+    const reconcileCompletion = (task: TaskState, prev: TaskState | null) => {
+      const sawRunning = prev !== null && !isTerminal(prev);
+      const completedAt = task.completed_at ? Date.parse(task.completed_at) : NaN;
+      const firstFreshObservation = prev === null && (
+        Number.isNaN(completedAt) || Date.now() - completedAt < TOAST_FRESHNESS_MS
+      );
+      if (firstFreshObservation || sawRunning) {
+        invalidateCompletedAssetQueries(queryClient, projectId, task);
+      }
+      // Completion subscribers drive page refreshes, including batch renders.
+      // They must receive reconciled transitions even when no live SSE arrives.
+      if (!sawRunning) return;
+      if (task.status === "completed") {
+        bus.emit({ type: "task_complete", task, previous: prev });
+      } else if (task.status === "failed") {
+        bus.emit({ type: "task_failed", task, previous: prev });
+      }
+    };
+
     const hydrate = async (): Promise<void> => {
       try {
         const res = await queryClient.fetchQuery({
@@ -255,7 +281,11 @@ export function TaskCenterProvider({
               .json<OkResponse<TaskState[]>>(),
         });
         if (!cancelled) {
+          const previous = useTaskCenterStore.getState().tasks;
           useTaskCenterStore.getState().hydrate(res.data);
+          for (const task of useTaskCenterStore.getState().tasks.values()) {
+            reconcileCompletion(task, previous.get(task.task_key) ?? null);
+          }
         }
       } catch (err) {
         if (isHydrateCancelledError(err)) return;
@@ -309,6 +339,7 @@ export function TaskCenterProvider({
           );
 
           bus.emit({ type: "task_updated", task, previous: prev });
+          reconcileCompletion(task, prev);
 
           // Belt-and-suspenders: if the BE's completed_at is old, treat it
           // as a replay even if we happened to observe it running once. A
@@ -320,18 +351,6 @@ export function TaskCenterProvider({
             Number.isNaN(completedAt) ||
             Date.now() - completedAt < TOAST_FRESHNESS_MS;
           const sawRunning = prev !== null && !isTerminal(prev);
-          const firstFreshObservation = isFresh && prev === null;
-
-          // Invalidate asset queries for any genuinely-new completion, even
-          // when it arrives via a reconnect/hydration snapshot — otherwise an
-          // async planner finishing while the stream is down leaves the asset
-          // pages stale until a manual reload. Replays stay guarded: an old
-          // completed_at on a task we never saw running is skipped, and a
-          // duplicate terminal event for an already-terminal row is ignored.
-          if (firstFreshObservation || sawRunning) {
-            invalidateCompletedAssetQueries(queryClient, projectId, task);
-          }
-
           if (source === "snapshot") return;
           if (!useTaskCenterStore.getState().isHydrated) return;
           if (!isFresh) return;
@@ -344,14 +363,12 @@ export function TaskCenterProvider({
           if (!sawRunning) return;
 
           if (task.status === "completed") {
-            bus.emit({ type: "task_complete", task, previous: prev });
             toast.success(
               tRef.current("taskCenter.toast.completed", {
                 label: displayLabel(task, tRef.current),
               }),
             );
           } else if (task.status === "failed") {
-            bus.emit({ type: "task_failed", task, previous: prev });
             toast.error(
               tRef.current("taskCenter.toast.failed", {
                 label: displayLabel(task, tRef.current),

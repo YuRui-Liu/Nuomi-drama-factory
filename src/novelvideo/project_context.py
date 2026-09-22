@@ -129,6 +129,15 @@ async def resolve_project_context(
     if record is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Query/body project selectors and WebSocket scopes do not pass through
+    # the HTTP path guard. Enforce the credential boundary on the resolved ID.
+    if user.get("credential_kind") == "agent_session":
+        if (
+            user.get("current_scope_kind") != "project"
+            or user.get("current_project_id") != record.id
+        ):
+            raise HTTPException(status_code=403, detail="agent session project scope mismatch")
+
     role = await access.effective_project_role(record, principals)
     require_role_value(role, required_role)
     return _ctx_from_record(

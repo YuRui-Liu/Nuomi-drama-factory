@@ -61,7 +61,16 @@ async def _resolve_source_revision(ctx: Any, episode: int) -> int:
 
 
 def _dump_revision(revision: Any) -> dict[str, Any]:
+    from novelvideo.director_plan.cinematography import production_direction_errors
+
     dumped = dict(revision.model_dump(mode="json"))
+    if hasattr(revision, "groups"):
+        dumped["direction_errors"] = [
+            {"shot_id": shot.id, "code": code}
+            for group in revision.groups for shot in group.shots
+            for code in production_direction_errors(shot)
+        ]
+        dumped["production_ready"] = bool(revision.groups) and not dumped["direction_errors"]
     report = dumped.get("validation_report")
     if not isinstance(report, Mapping):
         return dumped
@@ -194,8 +203,19 @@ async def list_director_plans(
     user: dict = Depends(get_api_user),
 ):
     ctx = await _resolve(project, user, role="viewer")
-    revisions = _build_director_plan_store(ctx).list(episode)
-    return {"ok": True, "data": [_dump_revision(item) for item in revisions]}
+    from novelvideo.episode_source_versions import SourceVersionConflict
+    store = _build_director_plan_store(ctx)
+    revisions = store.list(episode)
+    data = []
+    for item in revisions:
+        dumped = _dump_revision(item)
+        try:
+            store.require_current(item)
+            dumped["source_stale"] = False
+        except SourceVersionConflict:
+            dumped["source_stale"] = True
+        data.append(dumped)
+    return {"ok": True, "data": data}
 
 
 @router.get(

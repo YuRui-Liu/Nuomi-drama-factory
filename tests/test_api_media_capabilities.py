@@ -93,6 +93,34 @@ def _workflow_bytes() -> bytes:
     ).encode()
 
 
+def test_configured_h3_ref_is_selectable_and_exposes_reference_mode(store) -> None:
+    from novelvideo.media_capabilities.models import ProviderAccount
+
+    credentials = FakeCredentialStore()
+    credentials.set("runninghub-main", "test-runninghub-key")
+    store.save_provider(ProviderAccount(
+        id="runninghub-main",
+        provider_type="runninghub",
+        credential_ref="secret://runninghub-main",
+        enabled=True,
+    ))
+    response = _client(store, credential_store=credentials).get(
+        "/api/v1/media-capabilities/video/models"
+    )
+    assert response.status_code == 200
+    reference = next(item for item in response.json()["data"]
+                     if item["id"] == "runninghub:minimax-h3-ref")
+    assert reference["available"] is True
+    assert reference["unavailable_reason"] is None
+    assert reference["reference_policy"]["required"] is True
+    assert [mode["mode"] for mode in reference["mode_capabilities"]
+            if mode["enabled"]] == ["ref2va"]
+    mode = next(mode for mode in reference["mode_capabilities"]
+                if mode["mode"] == "ref2va")
+    assert mode["requires_references"] is True
+    assert mode["reason"] is None
+
+
 def test_video_models_endpoint_lists_disabled_h3_without_secrets(
     store: MediaCapabilityStore,
 ) -> None:
@@ -143,7 +171,7 @@ def test_video_models_endpoint_lists_disabled_h3_without_secrets(
         {
             "mode": "ref2va",
             "enabled": False,
-            "reason": "hybrid_input_unverified",
+            "reason": "provider_not_configured",
             "requires_first_frame": False,
             "requires_last_frame": False,
             "requires_references": True,

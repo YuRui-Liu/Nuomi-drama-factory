@@ -162,6 +162,16 @@ class H3CameraPlan(BaseModel):
     def trim_text(cls, value: object) -> object:
         return _safe_structural_text(value)
 
+    @field_validator("type")
+    @classmethod
+    def normalize_static_type(cls, value: str) -> str:
+        normalized = " ".join(value.casefold().split())
+        if normalized in H3_STATIC_CAMERA_TYPES:
+            return normalized
+        if normalized in {"static camera", "fixed camera", "locked camera"}:
+            return normalized.removesuffix(" camera")
+        return value
+
     @property
     def is_static(self) -> bool:
         return self.type.casefold() in H3_STATIC_CAMERA_TYPES

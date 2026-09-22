@@ -259,7 +259,7 @@ def test_reference_policy_defaults_are_non_reference() -> None:
     )
 
 
-def test_registry_lists_ref_after_base_as_unavailable_local_contract(
+def test_registry_resolves_configured_ref_without_changing_default(
     tmp_path,
 ) -> None:
     registry = _configured_registry(tmp_path)
@@ -288,11 +288,10 @@ def test_registry_lists_ref_after_base_as_unavailable_local_contract(
                 "temporary_upload",
             ),
         ),
-        available=False,
-        unavailable_reason="hybrid_input_unverified",
+        available=True,
+        unavailable_reason=None,
     )
-    with pytest.raises(VideoWorkflowUnavailable, match="hybrid_input_unverified"):
-        registry.resolve(ref.id, VideoWorkflowScene.NARRATIVE_GROUP)
+    assert registry.resolve(ref.id, VideoWorkflowScene.NARRATIVE_GROUP) is ref
 
 
 def test_workflow_definition_rejects_extra_fields() -> None:

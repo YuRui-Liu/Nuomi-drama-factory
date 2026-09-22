@@ -345,7 +345,15 @@ def _project_task_timeout_seconds() -> int:
 
 
 def _project_task_failure_for_exception(exc: BaseException) -> tuple[str, dict[str, Any], bool]:
+    from novelvideo.agents.asset_compiler import MissingBaseScenesError
     from novelvideo.novel_source import NovelImportRequiredError
+
+    if isinstance(exc, MissingBaseScenesError):
+        return str(exc), {
+            "error_code": exc.code,
+            "missing_scene_names": list(exc.missing_scene_names),
+            "episode_number": exc.episode_number,
+        }, True
 
     if isinstance(exc, NovelImportRequiredError):
         return str(exc), {"error_code": exc.error_code}, True

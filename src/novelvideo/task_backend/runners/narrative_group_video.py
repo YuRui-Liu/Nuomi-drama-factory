@@ -82,6 +82,11 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     resolve_h3_workflow_mode,
 )
 from novelvideo.narrative_groups.nonvisual import is_nonvisual_production_note
+from novelvideo.narrative_groups.storyboard_binding import StoryboardBinding
+from novelvideo.media_capabilities.video.h3_storyboard_context import (
+    STORYBOARD_POLICY_VERSION, StoryboardPromptBlocked, build_storyboard_prompt_images,
+    storyboard_replay_matches,
+)
 from novelvideo.narrative_groups.service import (
     generation_beats_for_group,
     load_materialized_groups,
@@ -97,6 +102,12 @@ from novelvideo.shot_continuity import (
     ShotRiskReport,
 )
 from novelvideo.task_backend.registry import register_project_task_runner
+from novelvideo.task_backend.cancel import (
+    TaskCancelled,
+    TaskTimedOut,
+    await_envelope_with_cancel_watch,
+    raise_if_envelope_cancel_requested,
+)
 from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 
@@ -125,7 +136,7 @@ def _continuity_failure_is_observational(
 ) -> bool:
     from novelvideo.shot_continuity import ContinuityContractUnavailable
 
-    if isinstance(exc, MemoryError):
+    if isinstance(exc, (MemoryError, StoryboardPromptBlocked)):
         return False
     if policy == "observe":
         return True
@@ -592,12 +603,20 @@ async def _optimize_missing_prompts(
     requested_mode: str = "auto",
     workflow_id: str | None = None,
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
+    storyboard_binding: StoryboardBinding | None = None,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
     episode_segments: list[H3DirectorSegment] = []
     episode_context_beats: list[Mapping[str, Any]] = []
     segment_group_ids: dict[str, str] = {}
+    storyboard_images = ()
+    if storyboard_binding is not None:
+        if frozen_frames is None:
+            raise ValueError("storyboard prompt requires frozen frames")
+        storyboard_images = build_storyboard_prompt_images(
+            storyboard_binding, frozen_frames, segments, media_root=project_dir)
+        segment_group_ids.update({segment.segment_id: storyboard_binding.group_id for segment in segments})
     source_beats = list(episode_beats or beats)
     for group in (
         load_materialized_groups(project_dir, episode)
@@ -627,7 +646,8 @@ async def _optimize_missing_prompts(
         segments = episode_segments
         beats = list(episode_context_beats)
     optimizer = create_h3_episode_pack_optimizer(
-        cache_dir=ctx.state_dir / "h3_episode_prompt_cache"
+        cache_dir=ctx.state_dir / "h3_episode_prompt_cache",
+        **({"storyboard_grounded": True} if storyboard_images else {}),
     )
     active = _load_active_director_plan(project_dir, episode)
     style_prefix = authoritative_h3_style_prefix(active)
@@ -723,7 +743,8 @@ async def _optimize_missing_prompts(
             style_hash=style_hash,
             style_video=style_video,
             segments=entries,
-        )
+        ),
+        **({"storyboard_images": storyboard_images} if storyboard_images else {}),
     )
     by_id = {item.segment_id: item for item in result.segments}
     optimized = []
@@ -822,6 +843,14 @@ async def _optimize_missing_prompts(
                 workflow_id=workflow_id,
                 quality_report=quality_report,
             )
+            if storyboard_images:
+                input_summary.update({
+                    "storyboard_source_id": storyboard_binding.selection_id,
+                    "storyboard_policy_version": STORYBOARD_POLICY_VERSION,
+                    "storyboard_images": [image.identity() for image in storyboard_images
+                                          if image.segment_id == segment.segment_id],
+                    "storyboard_decision": item.storyboard_decision.model_dump(mode="json"),
+                })
             evidence_by_segment[segment.segment_id] = {
                 "director_plan": item.plan.model_dump(mode="json"),
                 "prompt_profile": {
@@ -1302,7 +1331,7 @@ def _build_segments(
         segments.append(H3DirectorSegment(
             segment_id=str(beat_id), source_shot_ids=(str(beat_id),),
             beat_number=_beat_number(beat, index),
-            prompt=_raw_prompt(beat), duration_seconds=_duration(beat),
+            prompt=_raw_prompt(beat), duration_seconds=max(4.0, _duration(beat)),
             first_frame=first, last_frame=last,
             dialogue=h3_dialogue_text(beat),
             speaker=h3_speaker_text(beat),
@@ -1350,7 +1379,10 @@ def _build_planned_segments(
                 source_shot_ids=(beat_ids[0],),
                 beat_number=_beat_number(beat, index),
                 prompt=_raw_prompt(beat),
-                duration_seconds=_planned_duration(unit, beat),
+                # H3 cannot generate clips shorter than four seconds. Keep the
+                # source plan untouched, but freeze a supported transport duration
+                # before prompt compilation and reference snapshot validation.
+                duration_seconds=max(4.0, _planned_duration(unit, beat)),
                 first_frame=first,
                 last_frame=None,
                 dialogue=h3_dialogue_text(beat),
@@ -1360,18 +1392,20 @@ def _build_planned_segments(
             ))
             continue
 
-        last = _first_frame(cells.get(beat_ids[1], {}))
-        if not last:
-            raise ValueError(
-                f"planned video pair requires a rendered right frame: {beat_ids[1]}"
-            )
+        last = None
+        if not (requested_mode == "auto" and unit.get("mode") == "i2va"):
+            last = _first_frame(cells.get(beat_ids[1], {}))
+            if not last:
+                raise ValueError(
+                    f"planned video pair requires a rendered right frame: {beat_ids[1]}"
+                )
         synthetic = _synthetic_pair_beat(beats[0], beats[1])
         segments.append(H3DirectorSegment(
             segment_id=str(synthetic["id"]),
             source_shot_ids=tuple(beat_ids),
             beat_number=int(synthetic["beat_number"]),
             prompt=str(synthetic["visual_description"]),
-            duration_seconds=sum(_duration(beat) for beat in beats),
+            duration_seconds=max(4.0, sum(_duration(beat) for beat in beats)),
             first_frame=first,
             last_frame=last,
             dialogue=str(synthetic["dialogue"]),
@@ -1510,13 +1544,35 @@ def _merge_risk_reports(
 def _explicit_asset_evidence(
     project_dir: Path,
     render_state: Mapping[str, Any],
+    *,
+    shot_id: str | None = None,
 ) -> dict[str, Any]:
     """Read only render-sidecar references that name both entity and real file."""
     from novelvideo.shot_continuity import AssetEvidence
 
     result: dict[str, AssetEvidence] = {}
-    for cell in render_state.get("cell_assets") or ():
+    cells = list(render_state.get("cell_assets") or ())
+    shot_ids = {
+        str(cell.get("shot_id") or cell.get("beat_id") or "")
+        for cell in cells if isinstance(cell, Mapping)
+    } - {""}
+    if shot_id is not None:
+        shot_ids.intersection_update({shot_id})
+    audit = (render_state.get("provider_parameters") or {}).get("reference_audit") or {}
+    if isinstance(audit, Mapping) and audit.get("snapshot_id"):
+        scoped_references = [
+            raw for raw in audit.get("asset_references") or ()
+            if isinstance(raw, Mapping)
+            and isinstance(raw.get("shot_ids"), (list, tuple))
+            and shot_ids.intersection(str(value) for value in raw["shot_ids"])
+            and re.fullmatch(r"[0-9a-f]{64}", str(raw.get("sha256") or ""))
+        ]
+        cells.append({"references": scoped_references})
+    for cell in cells:
         if not isinstance(cell, Mapping):
+            continue
+        cell_shot_id = str(cell.get("shot_id") or cell.get("beat_id") or "")
+        if shot_id is not None and cell_shot_id and cell_shot_id != shot_id:
             continue
         references: list[object] = []
         for field in ("references", "asset_references"):
@@ -1530,6 +1586,10 @@ def _explicit_asset_evidence(
         for raw in references:
             if not isinstance(raw, Mapping):
                 continue
+            if shot_id is not None and "shot_ids" in raw:
+                scope = raw["shot_ids"]
+                if not isinstance(scope, (list, tuple)) or shot_id not in scope:
+                    continue
             entity_key = str(raw.get("entity_key") or "").strip()
             asset_path = str(
                 raw.get("asset_path")
@@ -1699,7 +1759,6 @@ def _prepare_continuity(
         shot_id: (plan_order[index - 1] if index else None)
         for index, shot_id in enumerate(plan_order)
     }
-    assets = _explicit_asset_evidence(project_dir, render_state)
     beat_numbers = _shot_beat_numbers(segments, beats)
     continuity_store = ShotContinuityStore(project_dir)
     predicted_this_run: dict[str, ShotContinuityContract] = {}
@@ -1714,6 +1773,7 @@ def _prepare_continuity(
         reports = []
         extra_blockers: list[str] = []
         for shot_id in source_shot_ids_for(segment):
+            assets = _explicit_asset_evidence(project_dir, render_state, shot_id=shot_id)
             try:
                 shot, scene_id, scene_state = shot_context[shot_id]
             except KeyError as exc:
@@ -1751,7 +1811,14 @@ def _prepare_continuity(
             ):
                 extra_blockers.append("required_asset_evidence_missing")
             existing = continuity_store.load_active(episode, shot_id)
-            if report.continuity.level == 2 and predecessor is not None:
+            # A paired provider call has no separately generated predecessor
+            # video inside that call. Its endpoints are validated together;
+            # never invent an observed state to satisfy this external gate.
+            predecessor_in_segment = any(
+                item.shot_id == predecessor_id for item in contracts
+            )
+            if (report.continuity.level == 2 and predecessor is not None
+                    and not predecessor_in_segment):
                 if predecessor.boundary.observed_carry_out is None:
                     extra_blockers.append("predecessor_observation_required")
                 if existing is not None and (
@@ -1781,7 +1848,10 @@ def _prepare_continuity(
             requested=requested,  # type: ignore[arg-type]
             has_first_frame=bool(segment.first_frame),
             has_last_frame=bool(segment.last_frame),
-            exact_terminal_state=risk_report.continuity.level == 2,
+            # Internal shot boundaries are generated within this one call.
+            # Only the final shot can require a constrained segment endpoint;
+            # retain the merged risk report for all other quality checks.
+            exact_terminal_state=reports[-1].continuity.level == 2,
             endpoint_reachable=risk_report.motion.level < 2,
             motion_level=risk_report.motion.level,
         )
@@ -1901,6 +1971,30 @@ async def run_video_segments(
     return tuple(await asyncio.gather(*(isolated(segment) for segment in segments)))
 
 
+async def _review_cinematography(
+    phase: str, *, ctx: ProjectContext, project_dir: Path, episode: int,
+    segments: list[H3DirectorSegment], shots_by_id,
+    frozen_frames=None, generated_segments=None,
+) -> list[dict[str, Any]]:
+    from novelvideo.shot_continuity.production_review import (
+        review_generated_segments, review_reference_inputs,
+    )
+    from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+
+    kwargs = {"shots_by_id": shots_by_id, "runtime": current_text_task_runtime(),
+              "cache_dir": Path(ctx.state_dir) / "cinematography_review_cache"}
+    if phase == "reference":
+        reports = await review_reference_inputs(
+            segments=segments, frozen_frames=frozen_frames, **kwargs,
+        )
+    else:
+        reports = await review_generated_segments(
+            segments_and_paths=[(segment, Path(item.output_path))
+                                for _, segment, item in generated_segments], **kwargs,
+        )
+    return [{"phase": phase, **report.model_dump(mode="json")} for report in reports]
+
+
 async def _execute_inner(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
@@ -1999,6 +2093,8 @@ async def _execute_inner(
     started_group = record_stage_result(
         project_dir, episode, group_id, "video", expected_revision=revision,
         status="running", error="", workflow_parameters=workflow_parameters,
+        **({"source_storyboard_id": str(payload["storyboard_source_id"])}
+           if payload.get("storyboard_contract_version") == 1 else {}),
     )
     started_state = (
         started_group.stages.get("video")
@@ -2023,6 +2119,18 @@ async def _execute_inner(
         )
         # The video stage owns revision/status; frame assets are canonical render outputs.
         render_state = stage_payload(project_dir, episode, group_id, "render")
+        storyboard_binding = None
+        queued_storyboard_snapshot = None
+        if "storyboard_contract_version" in payload:
+            from novelvideo.narrative_groups.storyboard_binding import load_queued_storyboard
+
+            if not h3_input_snapshot_required:
+                raise ValueError("storyboard contract requires H3 input snapshots")
+            storyboard_binding, queued_storyboard_snapshot = load_queued_storyboard(
+                payload, media_root=project_dir, state_root=ctx.state_dir,
+                project_id=str(ctx.project_id), episode=episode, group_id=group_id,
+            )
+            render_state = {**render_state, "cell_assets": storyboard_binding.cell_assets(project_dir)}
         if plan_revision is None:
             # Tasks queued before plan revisions were frozen retain their original
             # one-beat-per-segment interpretation.
@@ -2059,7 +2167,7 @@ async def _execute_inner(
                 for source in (segment.first_frame, segment.last_frame)
                 if source
             )
-            input_snapshot = load_h3_reference_input_snapshot(
+            input_snapshot = queued_storyboard_snapshot or load_h3_reference_input_snapshot(
                 state_root=ctx.state_dir,
                 snapshot_id=reference_snapshot_id,
                 expected_digest=reference_snapshot_digest,
@@ -2105,9 +2213,20 @@ async def _execute_inner(
             if manifest_path.is_file()
             else None
         )
+        storyboard_images = (
+            build_storyboard_prompt_images(storyboard_binding, frozen_frames, raw_segments,
+                                          media_root=project_dir)
+            if storyboard_binding is not None else ()
+        )
         replay_entries = (
             {entry.segment.segment_id: entry for entry in replay_manifest.entries}
             if replay_manifest is not None
+            and (storyboard_binding is None or all(
+                storyboard_replay_matches(entry.input_summary, tuple(
+                    image for image in storyboard_images if image.segment_id == entry.segment.segment_id),
+                    storyboard_binding.selection_id)
+                for entry in replay_manifest.entries
+            ))
             and replay_manifest.workflow_id == workflow.id
             and tuple(entry.segment.segment_id for entry in replay_manifest.entries)
             == tuple(segment.segment_id for segment in raw_segments)
@@ -2125,6 +2244,26 @@ async def _execute_inner(
             )
             else {}
         )
+        review_shots = {}
+        if payload.get("cinematography_review_required"):
+            from novelvideo.director_plan.models import ShotPlan
+
+            if replay_entries:
+                if not replay_manifest.cinematography_shots:
+                    raise H3ContinuityQualityError("replay is missing frozen cinematography facts")
+                review_shots = {
+                    shot.id: shot for shot in (
+                        ShotPlan.model_validate(value)
+                        for value in replay_manifest.cinematography_shots
+                    )
+                }
+            else:
+                active = _load_active_director_plan(project_dir, episode)
+                review_shots = {
+                    shot.id: shot.model_copy(deep=True)
+                    for group in active.groups for shot in group.shots
+                    if group.id == group_id
+                } if active else {}
         requested_mode = (
             str(
                 next(iter(replay_entries.values())).input_summary.get(
@@ -2266,10 +2405,11 @@ async def _execute_inner(
                     requested_mode=requested_mode,
                     workflow_id=workflow.id,
                     frozen_frames=frozen_frames,
+                    **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
                 )
             else:
                 legacy_evidence: dict[str, dict[str, Any]] = {}
-                legacy_segments = await _optimize_missing_prompts(
+                legacy_segments = raw_segments if policy == "enforce" else await _optimize_missing_prompts(
                     raw_segments, segment_beats, ctx=ctx,
                     project_dir=project_dir, episode=episode,
                     evidence_by_segment=legacy_evidence,
@@ -2279,6 +2419,7 @@ async def _execute_inner(
                     requested_mode=requested_mode,
                     workflow_id=workflow.id,
                     frozen_frames=frozen_frames,
+                    **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
                 )
                 try:
                     if continuity_by_segment is None:
@@ -2295,13 +2436,14 @@ async def _execute_inner(
                         requested_mode=requested_mode,
                         workflow_id=workflow.id,
                         frozen_frames=frozen_frames,
+                        **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
                     )
                 except Exception as shadow_exc:
                     if not _continuity_failure_is_observational(
                         policy, shadow_exc
                     ):
                         if policy == "guard" and not isinstance(
-                            shadow_exc, MemoryError
+                            shadow_exc, (MemoryError, StoryboardPromptBlocked)
                         ):
                             raise H3ContinuityQualityError(
                                 "continuity_guard_failed:"
@@ -2355,6 +2497,30 @@ async def _execute_inner(
                             if key in continuity
                         })
                         evidence_by_segment[segment_id] = selected
+        except StoryboardPromptBlocked as exc:
+            for segment in raw_segments:
+                evidence_by_segment.setdefault(segment.segment_id, {}).update({
+                    "input_summary": {
+                        "storyboard_source_id": storyboard_binding.selection_id if storyboard_binding else "",
+                        "storyboard_policy_version": STORYBOARD_POLICY_VERSION,
+                        "storyboard_images": [image.identity() for image in storyboard_images
+                                              if image.segment_id == segment.segment_id],
+                        "storyboard_blocker": exc.evidence,
+                    },
+                    "_status": "quality_rejected",
+                })
+            rejected = H3DirectorOutputManifest(
+                physical_video=None,
+                entries=_entries_with_evidence(
+                    build_h3_timeline_data(raw_segments, strict_first_frame=True).entries,
+                    evidence_by_segment, default_status="quality_rejected"),
+                workflow_id=workflow.id, workflow_parameters=workflow_parameters,
+                status="quality_rejected", **reference_manifest_fields,
+            )
+            if manifest_path.is_file():
+                rejected = _merge_replay_evidence(rejected, load_h3_director_manifest(manifest_path))
+            save_h3_director_manifest(manifest_path, rejected)
+            raise
         except H3PromptQualityError as exc:
             report = exc.report.model_dump(mode="json")
             for segment in raw_segments:
@@ -2440,6 +2606,9 @@ async def _execute_inner(
             workflow_id=workflow.id,
             workflow_parameters=workflow_parameters,
             status="submitted",
+            cinematography_shots=tuple(
+                shot.model_dump(mode="json") for shot in review_shots.values()
+            ),
             **reference_manifest_fields,
         )
         if manifest_path.is_file():
@@ -2448,6 +2617,17 @@ async def _execute_inner(
                 manifest, load_h3_director_manifest(manifest_path)
             )
         save_h3_director_manifest(manifest_path, manifest)
+        if payload.get("cinematography_review_required"):
+            reference_reviews = await _review_cinematography(
+                "reference", ctx=ctx, project_dir=project_dir, episode=episode,
+                segments=segments, frozen_frames=frozen_frames, shots_by_id=review_shots,
+            )
+            manifest = manifest.model_copy(update={"cinematography_reviews": tuple(reference_reviews)})
+            if not reference_reviews or any(item["status"] != "passed" for item in reference_reviews):
+                manifest = manifest.model_copy(update={"status": "quality_rejected"})
+                save_h3_director_manifest(manifest_path, manifest)
+                raise H3ContinuityQualityError("reference_visual_review_failed_or_unavailable: no video submitted")
+            save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
             project_dir, episode, group_id, "video",
             expected_revision=revision,
@@ -2625,6 +2805,92 @@ async def _execute_inner(
             _assert_stage_revision(
                 project_dir, episode, group_id, revision, plan_revision
             )
+            # Validate original clips before composition can conceal a bad aspect
+            # ratio with padding. The target comes from the project request, not
+            # from the last provider result (which may itself report a wrong size).
+            from novelvideo.media_capabilities.video.h3_size_settings import resolve_h3_size_setting
+            from novelvideo.media_capabilities.video.adapters import (
+                H3ReferenceWorkflowAdapter,
+                H3WorkflowAdapter,
+            )
+
+            is_h3_workflow = h3_input_snapshot_required or isinstance(
+                adapter, (H3WorkflowAdapter, H3ReferenceWorkflowAdapter)
+            )
+            size = None
+            if is_h3_workflow or len(generated_segments) > 1:
+                size = resolve_h3_size_setting(
+                    str(workflow_parameters.get("resolution") or "720p"),
+                    str(payload.get("aspect_ratio") or "9:16"),
+                )
+            expected_dimensions = (
+                {"width": size.width, "height": size.height} if size else {}
+            )
+            mismatches = {}
+            # Other adapters do not share H3's size contract. Keep their
+            # existing provider-output validation below.
+            segments_to_check = generated_segments if is_h3_workflow else ()
+            for _, segment, item in segments_to_check:
+                actual = (
+                    int(item.actual_output.get("width") or 0),
+                    int(item.actual_output.get("height") or 0),
+                )
+                if not resolution_matches((size.width, size.height), actual, tolerance_px=32):
+                    mismatches[segment.segment_id] = (
+                        f"{segment.segment_id}: expected {size.width}x{size.height}, "
+                        f"got {actual[0]}x{actual[1]}"
+                    )
+            if mismatches:
+                message = "video output resolution mismatch: " + "; ".join(mismatches.values())
+                generated_by_id = {
+                    segment.segment_id: item for _, segment, item in generated_segments
+                }
+                entries = []
+                for entry in manifest.entries:
+                    segment_id = entry.segment.segment_id
+                    item = generated_by_id.get(segment_id)
+                    if item is None:
+                        entries.append(entry)
+                        continue
+                    entries.append(entry.model_copy(update={
+                        "physical_video": str(item.output_path),
+                        "provider_task_id": item.provider_task_id,
+                        "status": "quality_mismatch" if segment_id in mismatches else "completed",
+                        "quality_report": {
+                            **(entry.quality_report or {}),
+                            "output_path": str(item.output_path),
+                            "expected_output": expected_dimensions,
+                            "actual_output": dict(item.actual_output),
+                            "resolution_matches": segment_id not in mismatches,
+                        },
+                    }))
+                manifest = manifest.model_copy(update={
+                    "status": "quality_mismatch", "physical_video": None,
+                    "entries": tuple(entries),
+                })
+                save_h3_director_manifest(manifest_path, manifest)
+                _assert_stage_revision(project_dir, episode, group_id, revision, plan_revision)
+                for index, segment, item in generated_segments:
+                    if segment.segment_id in mismatches:
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_ids[index - 1],
+                            status="partial_failure", provider_task_id=item.provider_task_id,
+                            error=mismatches[segment.segment_id],
+                            result={"output_path": str(item.output_path), "qc_passed": False,
+                                    "expected_output": expected_dimensions,
+                                    "actual_output": dict(item.actual_output)},
+                            expected_revision=revision,
+                        )
+                record_stage_result(
+                    project_dir, episode, group_id, "video", expected_revision=revision,
+                    status="partial_failure", error=message, manifest_asset=str(manifest_path),
+                )
+                return {
+                    "status": "partial_failure", "qc_passed": False, "error": message,
+                    "group_id": group_id, "revision": revision,
+                    "manifest_asset": str(manifest_path),
+                    "segment_assets": [str(item.output_path) for _, _, item in generated_segments],
+                }
             from novelvideo.task_backend.runners.narrative_group_video_compose import (
                 SegmentCompositionItem,
                 build_local_composition_plan,
@@ -2644,7 +2910,9 @@ async def _execute_inner(
                 )
             )
             if len(composition.paths) > 1:
-                compose_local_segments(composition, output)
+                compose_local_segments(
+                    composition, output, output_size=(size.width, size.height)
+                )
                 generated = replace(generated_segments[-1][2], output_path=str(output))
             else:
                 generated = generated_segments[0][2]
@@ -2694,6 +2962,44 @@ async def _execute_inner(
                 )
             })
         save_h3_director_manifest(manifest_path, manifest)
+
+        if payload.get("cinematography_review_required"):
+            generated_reviews = await _review_cinematography(
+                "generated", ctx=ctx, project_dir=project_dir, episode=episode,
+                segments=segments, generated_segments=generated_segments, shots_by_id=review_shots,
+            )
+            manifest = manifest.model_copy(update={
+                "cinematography_reviews": (*manifest.cinematography_reviews, *generated_reviews),
+            })
+            if not generated_reviews or any(item["status"] != "passed" for item in generated_reviews):
+                reviewed_ids = {segment.segment_id for _, segment, _ in generated_segments}
+                manifest = manifest.model_copy(update={
+                    "status": "quality_mismatch",
+                    "entries": tuple(
+                        entry.model_copy(update={"status": "quality_mismatch"})
+                        if entry.segment.segment_id in reviewed_ids else entry
+                        for entry in manifest.entries
+                    ),
+                })
+                save_h3_director_manifest(manifest_path, manifest)
+                _assert_stage_revision(project_dir, episode, group_id, revision, plan_revision)
+                message = "video_visual_review_failed_or_unavailable: preserve generated clips; recheck before regeneration"
+                for index, _, item in generated_segments:
+                    record_video_segment_result(
+                        project_dir, episode, group_id, durable_segment_ids[index - 1],
+                        status="partial_failure", provider_task_id=item.provider_task_id,
+                        result={"output_path": str(item.output_path), "qc_passed": False},
+                        expected_revision=revision,
+                    )
+                record_stage_result(
+                    project_dir, episode, group_id, "video", expected_revision=revision,
+                    status="partial_failure", error=message,
+                    video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
+                )
+                return {"status": "partial_failure", "qc_passed": False, "error": message,
+                        "group_id": group_id, "revision": revision,
+                        "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path)}
+            save_h3_director_manifest(manifest_path, manifest)
 
         expected_output = (
             int(generated.provider_parameters.get("width") or 0),
@@ -2855,10 +3161,36 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
         except (OSError, ValueError):
             pass
     try:
-        result = await _execute_inner(envelope, ctx)
-    except BaseException:
+        # Check before starting work: the watcher and its child otherwise race
+        # when an already-cancelled task begins a synchronous planning step.
+        await asyncio.to_thread(raise_if_envelope_cancel_requested, envelope)
+        result = await await_envelope_with_cancel_watch(
+            _execute_inner(envelope, ctx), envelope
+        )
+    except BaseException as exc:
         if has_snapshot:
             _retain_reference_snapshot(ctx, payload)
+        if isinstance(exc, (TaskCancelled, TaskTimedOut, asyncio.CancelledError)):
+            from novelvideo.narrative_groups.service import load_groups
+
+            episode = int(envelope.get("episode") or payload.get("episode") or 0)
+            project_dir = _project_dir(payload, ctx)
+            group_id = str(payload["group_id"])
+            revision = int(payload["revision"])
+            group = next((item for item in load_groups(project_dir, episode)
+                          if item.id == group_id), None)
+            saved = group.stages.get("video") if group is not None else None
+            if (saved is not None and saved.revision == revision
+                    and saved.status in {"queued", "running"}):
+                # Group stages have no cancelled state. Keep the task's native
+                # cancellation outcome and make its sidecar retryable, preserving
+                # paid provider evidence and frozen inputs for a later replay.
+                record_stage_result(
+                    project_dir, episode, group_id, "video",
+                    expected_revision=revision, status="failed",
+                    error=("Video generation timed out" if isinstance(exc, TaskTimedOut)
+                           else "Video generation cancelled"),
+                )
         raise
     if has_snapshot:
         if result.get("status") in {"completed", "skipped"}:

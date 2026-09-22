@@ -295,6 +295,13 @@ def test_episode_optimizer_factory_uses_prompted_output_without_tool_choice(
     assert captured["output_type"].outputs is H3EpisodePromptPack
     assert "tool_choice" not in captured
 
+    episode_pack.create_h3_episode_pack_optimizer(
+        cache_dir=tmp_path, director_model_factory=lambda: model, model_settings={},
+        storyboard_grounded=True,
+    )
+    assert captured["output_type"].outputs is episode_pack.StoryboardEpisodeDecision
+    assert "Inspect every labeled storyboard image" in captured["system_prompt"]
+
 
 def test_episode_task_distinguishes_internal_and_business_shot_ids():
     task = episode_pack._episode_task(_input())
@@ -526,6 +533,45 @@ async def test_episode_pack_any_bad_segment_with_no_revision_writes_no_cache(tmp
 
 
 @pytest.mark.asyncio
+async def test_quality_repair_can_replace_nonempty_rejected_physics(tmp_path):
+    good = _plan()
+    bad = good.model_copy(update={"rigid_prompt": good.rigid_prompt.model_copy(
+        update={"physics": good.rigid_prompt.physics.model_copy(
+            update={"statements": ("Lin has weight.",)})})})
+    value = _input()
+    initial = _pack(tuple((entry.segment_id, bad if index == 0 else good)
+                          for index, entry in enumerate(value.segments)))
+    agent = FakeAgent((initial, _pack((("seg-1", good),))))
+    result = await H3EpisodePackOptimizer(agent, tmp_path, quality_revisions=1).optimize(value)
+    assert result.segments[0].quality_report.passed
+    assert result.segments[0].plan.rigid_prompt.physics == good.rigid_prompt.physics
+    assert result.segments[0].plan.rigid_prompt.lighting == good.rigid_prompt.lighting
+
+
+@pytest.mark.asyncio
+async def test_episode_quality_repair_can_correct_rejected_lighting(tmp_path):
+    import json
+
+    good = _plan()
+    bad = good.model_copy(update={"rigid_prompt": good.rigid_prompt.model_copy(
+        update={"lighting": good.rigid_prompt.lighting.model_copy(
+            update={"primary_source": "unmotivated spotlight"})})})
+    value = _input()
+    entries = tuple(entry.model_copy(update={"context": entry.context.model_copy(update={
+        "lighting_facts_json": json.dumps({
+            "primary_source": good.rigid_prompt.lighting.primary_source,
+        }),
+    })}) for entry in value.segments)
+    value = value.model_copy(update={"segments": entries})
+    initial = _pack(tuple((entry.segment_id, bad if index == 0 else good)
+                          for index, entry in enumerate(entries)))
+    agent = FakeAgent((initial, _pack((("seg-1", good),))))
+    result = await H3EpisodePackOptimizer(agent, tmp_path, quality_revisions=1).optimize(value)
+    assert result.segments[0].quality_report.passed
+    assert result.segments[0].plan.rigid_prompt.lighting == good.rigid_prompt.lighting
+
+
+@pytest.mark.asyncio
 async def test_episode_pack_cache_key_tracks_revision_style_frame_and_compiler(
     tmp_path, monkeypatch
 ):
@@ -555,3 +601,82 @@ def test_episode_cache_hash_tracks_quality_version(monkeypatch):
     monkeypatch.setattr(episode_pack, "H3_PROMPT_QUALITY_VERSION", 999)
 
     assert episode_pack._segment_input_hash(value, entry) != before
+@pytest.mark.asyncio
+async def test_visual_pack_caches_observations_and_sends_actual_images(tmp_path):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    value = _input()
+    images = tuple(picture(i, segment=entry.segment_id, group=entry.group_id)
+                   for i, entry in enumerate(value.segments, start=1))
+    output = dict(episode=value.episode, director_revision_id=value.director_revision_id,
+        segments=[dict(segment_id=image.segment_id, decision=dict(status="ready", required_starting_facts_status="verified",
+            observations=[dict(image_label=image.label, framing="wide", orientation="back",
+                               spatial_relations="left of door", held_props="none", lighting="daylight")], conflicts=[], plan=_plan()))
+            for image in images])
+    agent = FakeAgent([output])
+    optimizer = H3EpisodePackOptimizer(agent, tmp_path)
+    result = await optimizer.optimize(value, storyboard_images=images)
+    assert len(agent.calls) == 1
+    assert [part.data for part in agent.calls[0][1:]] == [image.image.data for image in images]
+    assert all(entry.storyboard_decision.status == "ready" for entry in result.segments)
+    cached = await optimizer.optimize(value, storyboard_images=images)
+    assert all(entry.cache_hit for entry in cached.segments)
+    assert len(agent.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", [False, True])
+async def test_visual_pack_repair_keeps_images_and_blocks_conflict(tmp_path, blocked):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    from novelvideo.media_capabilities.video.h3_storyboard_context import StoryboardPromptBlocked
+    value = _input().model_copy(update={"segments": (_input().segments[0],)})
+    image = picture(1, segment="seg-1", group=value.segments[0].group_id)
+
+    def output(plan, conflict=False):
+        return dict(episode=value.episode, director_revision_id=value.director_revision_id,
+            segments=[dict(segment_id=image.segment_id, decision=dict(
+                status="conflict" if conflict else "ready", plan=None if conflict else plan,
+                required_starting_facts_status="verified",
+                observations=[dict(image_label=image.label, framing="wide", orientation="back",
+                                   spatial_relations="left of door", held_props="none", lighting="daylight")],
+                conflicts=[dict(image_label=image.label, shot_id=image.shot_id, field="orientation",
+                                observed="back", required="front")] if conflict else []))])
+
+    agent = FakeAgent([output(_plan(vague=True)), output(_plan(), conflict=blocked)])
+    optimizer = H3EpisodePackOptimizer(agent, tmp_path)
+    if blocked:
+        with pytest.raises(StoryboardPromptBlocked):
+            await optimizer.optimize(value, storyboard_images=(image,))
+        assert not list(tmp_path.glob("*.json"))
+    else:
+        result = await optimizer.optimize(value, storyboard_images=(image,))
+        assert result.segments[0].storyboard_decision.status == "ready"
+    assert len(agent.calls) == 2
+    assert agent.calls[0][1].data == agent.calls[1][1].data == image.image.data
+
+
+@pytest.mark.asyncio
+async def test_visual_pack_batches_whole_segments_and_rejects_response_outside_batch(tmp_path):
+    from dataclasses import replace
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+
+    value = _input()
+    images = tuple(replace(picture(index * 3 + offset + 1, segment=entry.segment_id,
+                                  group=entry.group_id), shot_id=entry.shot_ids[0],
+                           role="start_frame" if offset == 0 else "storyboard_context")
+                   for index, entry in enumerate(value.segments) for offset in range(3))
+
+    def output(batch):
+        return dict(episode=value.episode, director_revision_id=value.director_revision_id,
+            segments=[dict(segment_id=entry.segment_id, decision=dict(status="ready", required_starting_facts_status="verified",
+                observations=[dict(image_label=image.label, framing="wide", orientation="back",
+                                   spatial_relations="left of door", held_props="none", lighting="daylight") for image in batch
+                              if image.segment_id == entry.segment_id], conflicts=[], plan=_plan()))
+                for entry in value.segments if any(image.segment_id == entry.segment_id for image in batch)])
+
+    agent = FakeAgent([output(images[:6]), output(images[6:])])
+    await H3EpisodePackOptimizer(agent, tmp_path / "good").optimize(value, storyboard_images=images)
+    assert [len(call) - 1 for call in agent.calls] == [6, 3]
+    wrong = FakeAgent([output(images)])
+    with pytest.raises(ValueError, match="coverage"):
+        await H3EpisodePackOptimizer(wrong, tmp_path / "bad").optimize(value, storyboard_images=images)
+    assert not list((tmp_path / "bad").glob("*.json"))

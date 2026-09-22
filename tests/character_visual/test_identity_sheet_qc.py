@@ -9,6 +9,69 @@ def _qc_module():
     return importlib.import_module("novelvideo.character_visual.identity_sheet_qc")
 
 
+def test_generation_and_qc_allow_clean_headless_neck_cross_section():
+    from novelvideo.character_visual.identity_sheet import (
+        IdentitySheetStyleFamily, build_identity_sheet_v3_prompt,
+    )
+    generation = build_identity_sheet_v3_prompt(
+        character_name="Lin", character_tag="young", appearance="gray jacket",
+        project_style="2d", style_instructions="", avoid_instructions="",
+        ethnicity="", has_costume_reference=False,
+    )
+    review = _qc_module()._build_prompt(style="2d", style_family=IdentitySheetStyleFamily.TWO_D)
+    for prompt in (generation, review):
+        assert "smooth, non-bloody neck cross-section is valid" in prompt
+        assert "facial detail belongs exclusively to the portrait" in prompt
+        assert "no head, hair, ears, or face" in prompt
+        assert "wound" in prompt and "gore" in prompt
+    assert "do not flag a clean neck cross-section as front_face_detected" in review
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("issue", ["dead_eyes", "unnatural_skin_texture", "plastic_material", "non_neutral_presentation", "style_mismatch"])
+async def test_subjective_quality_flags_are_visible_warnings(monkeypatch, issue):
+    qc = _qc_module()
+    payload = dict.fromkeys(qc._ISSUE_CODES, False)
+    payload[issue] = True
+
+    async def fake_call(**kwargs):
+        return "vision-model", json.dumps(payload)
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+    report = await qc.assess_identity_sheet_quality(image_data=b"sheet", style="2d")
+    assert report.passed is True
+    assert report.issues == [issue]
+    assert report.warnings == [issue]
+    assert report.blocking_issues == []
+
+
+@pytest.mark.asyncio
+async def test_objective_defects_still_block_with_subjective_warnings(monkeypatch):
+    qc = _qc_module()
+    payload = dict.fromkeys(qc._ISSUE_CODES, False)
+    payload.update(body_cropped=True, dead_eyes=True)
+
+    async def fake_call(**kwargs):
+        return "vision-model", json.dumps(payload)
+
+    monkeypatch.setattr(qc, "call_freezone_vision_model", fake_call)
+    report = await qc.assess_identity_sheet_quality(image_data=b"sheet", style="2d")
+    assert report.passed is False
+    assert report.blocking_issues == ["body_cropped"]
+    assert report.warnings == ["dead_eyes"]
+
+
+def test_structured_checks_do_not_coerce_strings_or_numbers():
+    from pydantic import ValidationError
+
+    qc = _qc_module()
+    for value in ("false", "true", 0, 1):
+        payload = dict.fromkeys(qc._ISSUE_CODES, False)
+        payload["body_cropped"] = value
+        with pytest.raises(ValidationError):
+            qc._IdentitySheetQcChecks(**payload)
+
+
 @pytest.mark.asyncio
 async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch):
     qc = _qc_module()

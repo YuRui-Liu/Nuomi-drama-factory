@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from novelvideo.screenplay_semantics.models import ScreenplaySemanticRevision
+from novelvideo.episode_source_versions import SourceVersionConflict, require_current_source
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,13 @@ class ScreenplaySemanticStore:
         revision = self.load(episode, str(data["revision_id"]))
         if revision is None:
             return None
+        try:
+            require_current_source(
+                self.root.parent, episode, revision.source_hash,
+                source_revision=revision.source_revision,
+            )
+        except SourceVersionConflict:
+            return None
         activated_at = datetime.fromisoformat(str(data["activated_at"]))
         return revision.model_copy(
             update={"status": "active", "activated_at": activated_at}
@@ -103,8 +111,13 @@ class ScreenplaySemanticStore:
             raise LookupError(f"semantic revision not found: {revision_id}")
         if revision.source_revision != expected_source_revision:
             raise ScreenplaySemanticActivationConflict("source revision changed")
+        require_current_source(
+            self.root.parent, episode, revision.source_hash, source_revision=revision.source_revision,
+        )
         if not revision.validation_report.passed:
             raise ScreenplaySemanticActivationConflict("validation report did not pass")
+        if not revision.scenes or not revision.beats:
+            raise ScreenplaySemanticActivationConflict("empty scenes or dramatic beats cannot be activated")
         activated_at = datetime.now(timezone.utc)
         self._atomic_json(
             self._episode_dir(episode) / "active.json",

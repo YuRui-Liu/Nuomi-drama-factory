@@ -10,12 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from novelvideo.config import OUTPUT_DIR, STATE_DIR
+import portalocker
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
+from novelvideo.config import OUTPUT_DIR, STATE_DIR
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -88,14 +85,12 @@ def ensure_state_index_from_legacy(episode_dir: str | Path, filename: str) -> Pa
 def index_file_lock(index_path: Path) -> Iterator[None]:
     lock_path = index_path.with_suffix(f"{index_path.suffix}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        if fcntl is not None:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    with open(lock_path, "a+b") as lock_file:
+        portalocker.lock(lock_file, portalocker.LOCK_EX)
         try:
             yield
         finally:
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            portalocker.unlock(lock_file)
 
 
 def write_json_atomic(index_path: Path, payload: dict[str, Any]) -> None:

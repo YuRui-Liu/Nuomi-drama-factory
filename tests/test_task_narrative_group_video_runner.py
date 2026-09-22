@@ -4,6 +4,55 @@ import asyncio
 import pytest
 
 
+def test_storyboard_conflict_never_becomes_observational():
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from novelvideo.media_capabilities.video.h3_storyboard_context import StoryboardPromptBlocked, StoryboardPromptDecision
+    error = StoryboardPromptBlocked(StoryboardPromptDecision(
+        status="unavailable", plan=None, observations=(), conflicts=()))
+    assert not runner._continuity_failure_is_observational("observe", error)
+
+
+def test_storyboard_optimizer_receives_frozen_images_and_saves_decision(tmp_path, monkeypatch):
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.storyboard_binding import freeze_selected_storyboard
+    from novelvideo.media_capabilities.video.h3_storyboard_context import StoryboardPromptDecision
+    from tests.test_storyboard_snapshot_binding import selected_group
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    group, _ = selected_group(tmp_path)
+    binding, frames = freeze_selected_storyboard(group, media_root=tmp_path, project_id="project", episode=1)
+    segment = H3DirectorSegment(segment_id="shot-1", beat_number=1, prompt="wait",
+                               duration_seconds=5, first_frame=str(tmp_path / "cell.png"))
+    captured = {}
+
+    class Optimizer:
+        async def optimize(self, value, *, storyboard_images):
+            captured["images"] = storyboard_images
+            assert value.segments[0].group_id == group.id
+            decision = StoryboardPromptDecision(status="ready", plan=_plan(), conflicts=(),
+                observations=[dict(image_label=storyboard_images[0].label, framing="wide",
+                                   orientation="back", spatial_relations="left of door")])
+            return SimpleNamespace(segments=[SimpleNamespace(segment_id="shot-1",
+                storyboard_decision=decision, **vars(_optimizer_result("optimized")))])
+
+    def factory(**kwargs):
+        captured["factory"] = kwargs
+        return Optimizer()
+
+    monkeypatch.setattr(runner, "create_h3_episode_pack_optimizer", factory)
+    monkeypatch.setattr(runner, "_load_active_director_plan", lambda *_: _active_style_plan())
+    evidence = {}
+    asyncio.run(runner._optimize_missing_prompts([segment], [{"id": "shot-1", "beat_number": 1}],
+        ctx=SimpleNamespace(state_dir=tmp_path / "state"), project_dir=tmp_path, episode=1,
+        frozen_frames=frames, storyboard_binding=binding, evidence_by_segment=evidence))
+    assert captured["factory"]["storyboard_grounded"] is True
+    assert captured["images"][0].image.data == frames[segment.first_frame].content
+    summary = evidence["shot-1"]["input_summary"]
+    assert summary["storyboard_source_id"] == binding.selection_id
+    assert summary["storyboard_decision"]["status"] == "ready"
+
+
 class _JsonEvidence:
     def __init__(self, payload):
         self.payload = payload
@@ -208,7 +257,8 @@ def _patch_test_workflow(monkeypatch, module):
         )],
     )
 
-    def compose(_plan, output_path):
+    def compose(_plan, output_path, *, output_size):
+        assert len(output_size) == 2 and all(value > 0 for value in output_size)
         output_path.write_bytes(b"composed video")
         return output_path
 
@@ -1135,7 +1185,7 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
     )
     monkeypatch.setattr(
         narrative_group_video_compose, "compose_local_segments",
-        lambda _plan, output: Path(output).write_bytes(b"composed"),
+        lambda _plan, output, **kwargs: Path(output).write_bytes(b"composed"),
     )
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state"
@@ -1379,7 +1429,7 @@ def test_reference_manifest_replay_uses_frozen_frame_digest_and_transport(
     )
     monkeypatch.setattr(
         narrative_group_video_compose, "compose_local_segments",
-        lambda _plan, output: Path(output).write_bytes(b"composed"),
+        lambda _plan, output, **kwargs: Path(output).write_bytes(b"composed"),
     )
     ctx = SimpleNamespace(
         output_dir=str(tmp_path), runtime_dir=str(tmp_path),
@@ -1861,6 +1911,64 @@ def test_group_video_provider_submission_is_scoped_to_current_segment(
     ]
     assert all(len(entry.attempts) == 1 for entry in manifest.entries)
     assert all(entry.attempts[0].status == "completed" for entry in manifest.entries)
+
+
+@pytest.mark.parametrize("bad_index", [0, 1])
+def test_group_video_checks_every_segment_resolution_before_composition(
+    tmp_path, monkeypatch, bad_index
+):
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    from novelvideo.narrative_groups.service import load_groups
+    from novelvideo.task_backend.runners import narrative_group_video, narrative_group_video_compose
+
+    _seed_group(tmp_path)
+    paths = []
+    composed = []
+    writes = []
+
+    class Optimizer:
+        async def optimize_segment(self, segment, *_args):
+            return _optimizer_result(f"final:{segment.segment_id}", segment=segment)
+
+    async def get_beats(_ctx, _episode):
+        return [{"id": "beat-1", "beat_number": 1}, {"id": "beat-2", "beat_number": 2}]
+
+    async def generate(_ctx, *, output_path, **_kwargs):
+        index = len(paths)
+        paths.append(output_path)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"paid video")
+        return SimpleNamespace(
+            output_path=output_path, provider_task_id=f"provider-{index}", actual_mode="i2va",
+            actual_output={"width": 896, "height": 1184} if index == bad_index
+            else {"width": 736, "height": 1280},
+        )
+
+    _patch_segment_optimizer(monkeypatch, narrative_group_video, Optimizer())
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    monkeypatch.setattr(narrative_group_video, "generate_h3_director_video", generate)
+    monkeypatch.setattr(narrative_group_video, "record_video_segment_result", lambda *a, **kw: writes.append(kw))
+    monkeypatch.setattr(narrative_group_video_compose, "compose_local_segments", lambda *a, **kw: composed.append(a))
+    ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
+    result = narrative_group_video.run_narrative_group_video(
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+    )
+    assert composed == []
+    assert result["status"] == "partial_failure"
+    assert result["qc_passed"] is False
+    assert "896x1184" in result["error"]
+    assert f"beat-{bad_index + 1}" in result["error"]
+    assert len(paths) == 2
+    assert all(Path(path).read_bytes() == b"paid video" for path in paths)
+    stage = load_groups(tmp_path, 1)[0].stages["video"]
+    manifest = load_h3_director_manifest(stage.manifest_asset)
+    assert manifest.status == "quality_mismatch"
+    assert manifest.physical_video is None
+    assert [entry.quality_report["output_path"] for entry in manifest.entries] == paths
+    assert manifest.entries[bad_index].status == "quality_mismatch"
+    assert manifest.entries[1 - bad_index].status == "completed"
+    assert manifest.entries[bad_index].quality_report["actual_output"] == {"width": 896, "height": 1184}
+    assert any(write["status"] == "partial_failure" and write["result"]["output_path"] == paths[bad_index] for write in writes)
 
 
 def test_group_video_partial_failure_keeps_each_segment_attempt_evidence(
@@ -2808,7 +2916,7 @@ def test_fl2va_plan_supports_mixed_singleton_and_pair(tmp_path):
     ]
     assert segments[0].first_frame == frames["beat-1"]
     assert segments[0].last_frame is None
-    assert segments[0].duration_seconds == 3
+    assert segments[0].duration_seconds == 4
     assert segments[1].last_frame == frames["beat-3"]
 
 
@@ -2826,7 +2934,7 @@ def test_i2va_mode_expands_every_planned_unit_to_singletons(tmp_path):
     ]
     assert [segment.first_frame for segment in segments] == list(frames.values())
     assert all(segment.last_frame is None for segment in segments)
-    assert [segment.duration_seconds for segment in segments] == [3, 4, 5]
+    assert [segment.duration_seconds for segment in segments] == [4, 4, 5]
 
 
 def test_execute_rejects_stale_plan_before_provider_submit(tmp_path, monkeypatch):
@@ -3278,8 +3386,9 @@ def test_provider_parameters_strip_only_continuity_policy():
     ) == {"resolution": "1080p"}
 
 
+@pytest.mark.parametrize("internal_continuity", [False, True])
 def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, internal_continuity
 ):
     from dataclasses import replace
     from datetime import datetime, timezone
@@ -3295,6 +3404,16 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
     from novelvideo.task_backend.runners.narrative_group_video import (
         _prepare_continuity,
     )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    evidence_shots = []
+    read_evidence = narrative_group_video._explicit_asset_evidence
+
+    def scoped_evidence(*args, shot_id=None):
+        evidence_shots.append(shot_id)
+        return read_evidence(*args)
+
+    monkeypatch.setattr(narrative_group_video, "_explicit_asset_evidence", scoped_evidence)
 
     def shot(shot_id, span, *, continuous=False):
         return ShotPlan(
@@ -3326,8 +3445,8 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
             visible_turn="ready",
             relation_to_previous="single",
             shots=(
-                shot("shot--wide", "line-1"),
-                shot("shot--close", "line-2", continuous=True),
+                shot("shot--wide", "line-1", continuous=internal_continuity),
+                shot("shot--close", "line-2", continuous=not internal_continuity),
             ),
         ),),
         validation_report=ValidationReport(passed=True),
@@ -3347,7 +3466,7 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
         prompt="wait",
         duration_seconds=4,
         first_frame=str(first),
-        last_frame=str(last),
+        last_frame=None if internal_continuity else str(last),
     )
 
     prepared = _prepare_continuity(
@@ -3363,9 +3482,35 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
         "shot--wide",
         "shot--close",
     ]
+    assert evidence_shots == ["shot--wide", "shot--close"]
     assert prepared.contracts[1].predecessor_shot_id == "shot--wide"
     assert prepared.contracts[1].predecessor_revision == 1
-    assert "predecessor_observation_required" in prepared.risk_report.blockers
+    # Both shots are generated by the same provider call, so the internal
+    # predecessor cannot already have an observed video boundary.
+    assert "predecessor_observation_required" not in prepared.risk_report.blockers
+    assert "h3.exact_terminal_requires_terminal_frame" not in prepared.risk_report.blockers
+    assert prepared.risk_report.continuity.level == 2
+    if internal_continuity:
+        assert prepared.mode_decision.mode == "i2va"
+    else:
+        missing_endpoint = _prepare_continuity(
+            project_dir=tmp_path, episode=1, payload={"mode": "auto"},
+            segments=[segment.model_copy(update={"last_frame": None})],
+            beats=[{"start_beat_number": 1, "target_beat_number": 2}],
+            render_state={},
+        )[segment.segment_id]
+        assert "h3.exact_terminal_requires_terminal_frame" in missing_endpoint.risk_report.blockers
+    child_only = segment.model_copy(update={
+        "segment_id": "shot--close", "source_shot_ids": ("shot--close",),
+        "last_frame": None,
+    })
+    separate = _prepare_continuity(
+        project_dir=tmp_path, episode=1, payload={"mode": "auto"},
+        segments=[child_only], beats=[{"beat_number": 2}], render_state={},
+    )["shot--close"]
+    if not internal_continuity:
+        assert "predecessor_observation_required" in separate.risk_report.blockers
+        assert "h3.exact_terminal_requires_terminal_frame" in separate.risk_report.blockers
 
     from novelvideo.shot_continuity import (
         H3ModeDecision,
@@ -3442,7 +3587,8 @@ def test_prepare_continuity_preserves_double_shot_order_and_predecessor(
         render_state={},
     )["shot--close"]
 
-    assert "predecessor_revision_stale" in refreshed.risk_report.blockers
+    if not internal_continuity:
+        assert "predecessor_revision_stale" in refreshed.risk_report.blockers
     assert "predecessor_observation_required" not in refreshed.risk_report.blockers
 
 
@@ -3660,8 +3806,9 @@ def test_blocked_policy_rejects_before_transport_and_records_failure_once(
     assert all(entry.status == "quality_rejected" for entry in manifest.entries)
 
 
+@pytest.mark.parametrize("rejected_phase", [None, "reference", "generated"])
 def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, rejected_phase
 ):
     from novelvideo.media_capabilities.video.adapters import (
         NarrativeGroupVideoResult,
@@ -3675,6 +3822,20 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
 
     _seed_group(tmp_path)
     submitted = []
+    reviews = []
+
+    async def review(phase, **kwargs):
+        reviews.append(phase)
+        assert set(kwargs["shots_by_id"]) == {"beat-1", "beat-2"}
+        if phase == "reference":
+            monkeypatch.setattr(narrative_group_video, "_load_active_director_plan",
+                                lambda *_args: (_ for _ in ()).throw(AssertionError("QC must use frozen facts")))
+        return [{"status": "failed" if phase == rejected_phase else "passed",
+                 "evidence": [{"frame_label": phase, "observation": "observed"}],
+                 "issues": [{"dimension": "blocking", "description": "direction conflict"}]
+                 if phase == rejected_phase else []}]
+
+    monkeypatch.setattr(narrative_group_video, "_review_cinematography", review, raising=False)
     report = ShotRiskReport(
         spatial=RiskDimensionScore(dimension="spatial", level=0),
         identity=RiskDimensionScore(dimension="identity", level=0),
@@ -3709,6 +3870,7 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
         continuity_by_segment=None,
         **_kwargs,
     ):
+        assert continuity_by_segment is not None, "enforce must not purchase an unused legacy optimization"
         prefix = "bundle" if continuity_by_segment is not None else "legacy"
         if continuity_by_segment is not None:
             for segment in segments:
@@ -3739,6 +3901,13 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
 
     monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
     _patch_test_workflow(monkeypatch, narrative_group_video)
+    from tests.shot_continuity.test_builder import _plan
+    from tests.shot_continuity.test_cinematography import shot as photography_shot
+    frozen_plan = _plan(photography_shot(id="beat-1"), photography_shot(id="beat-2"))
+    frozen_plan = frozen_plan.model_copy(update={
+        "groups": (frozen_plan.groups[0].model_copy(update={"id": "ng-01"}),),
+    })
+    monkeypatch.setattr(narrative_group_video, "_load_active_director_plan", lambda *_args: frozen_plan)
     monkeypatch.setattr(narrative_group_video, "_prepare_continuity", prepare)
     monkeypatch.setattr(narrative_group_video, "_optimize_missing_prompts", optimize)
     monkeypatch.setattr(
@@ -3753,7 +3922,7 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
         project_id="demo",
     )
 
-    result = narrative_group_video.run_narrative_group_video(
+    invoke = lambda: narrative_group_video.run_narrative_group_video(
         {
             "episode": 1,
             "payload": {
@@ -3763,11 +3932,26 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
                     "resolution": "720p",
                     "continuity_policy": "enforce",
                 },
+                "cinematography_review_required": True,
             },
         },
         ctx,
     )
 
+    if rejected_phase == "reference":
+        with pytest.raises(narrative_group_video.H3ContinuityQualityError, match="no video submitted"):
+            invoke()
+        assert submitted == []
+        return
+    result = invoke()
+    if rejected_phase == "generated":
+        assert result["status"] == "partial_failure"
+        assert result["qc_passed"] is False
+        assert len(submitted) == 2
+        assert Path(result["video_asset"]).exists()
+        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+        assert all(entry.status == "quality_mismatch" for entry in load_h3_director_manifest(result["manifest_asset"]).entries)
+        return
     assert result["status"] == "completed"
     assert [request.segments[0].prompt for request in submitted] == [
         "bundle:beat-1",
@@ -3780,6 +3964,8 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
 
     manifest = load_h3_director_manifest(result["manifest_asset"])
     assert manifest.entries[0].compiled_bundle == {"prompt": "bundle:beat-1"}
+    assert reviews == ["reference", "generated"]
+    assert len(manifest.cinematography_reviews) == 2
 
 
 def test_segment_risk_merge_preserves_s2_i2_m2_c2_independently():
@@ -4220,7 +4406,7 @@ def test_enforce_shadow_compile_exception_is_fail_closed_before_transport(
     )
 
     assert isinstance(outcome.error, RuntimeError)
-    assert outcome.optimize_calls == 2
+    assert outcome.optimize_calls == 1
     assert outcome.requests == []
     assert len(outcome.stage_failures) == 1
 

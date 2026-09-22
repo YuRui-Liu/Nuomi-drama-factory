@@ -43,7 +43,7 @@ async def test_srt_uses_director_entry_timing_and_advances_silent_shots(tmp_path
         ordinal = 1
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(runner, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(runner, "load_materialized_groups", lambda *_: [Group()])
     content = await build_srt_content(tmp_path, 1, [
         {"beat_number": 1, "narration_segment": "不应覆盖对白"},
         {"beat_number": 2, "narration_segment": ""},
@@ -64,7 +64,7 @@ async def test_srt_uses_director_entry_timing_and_advances_silent_shots(tmp_path
 async def test_srt_without_director_manifest_keeps_legacy_beat_timing(tmp_path: Path, monkeypatch) -> None:
     from novelvideo.task_backend.runners import video as runner
 
-    monkeypatch.setattr(runner, "load_groups", lambda *_: [])
+    monkeypatch.setattr(runner, "load_materialized_groups", lambda *_: [])
 
     content = await build_srt_content(
         tmp_path,
@@ -103,7 +103,7 @@ async def test_srt_interleaves_legacy_and_director_spans_in_beat_order(tmp_path:
         ordinal = 3
         stages = {"video": Stage()}
 
-    monkeypatch.setattr(runner, "load_groups", lambda *_: [Group()])
+    monkeypatch.setattr(runner, "load_materialized_groups", lambda *_: [Group()])
     content = await build_srt_content(tmp_path, 1, [
         {"beat_number": 1, "narration_segment": "旧镜头"},
         {"beat_number": 2, "narration_segment": "不应覆盖"},
@@ -145,7 +145,7 @@ async def test_episode_zip_uses_unique_group_paths_for_duplicate_manifest_and_st
             stages={"video": SimpleNamespace(status="completed", manifest_asset=str(manifest))},
         ))
 
-    monkeypatch.setattr(runner, "load_groups", lambda *_: groups)
+    monkeypatch.setattr(runner, "load_materialized_groups", lambda *_: groups)
     zip_path = await build_episode_zip_file(tmp_path, "demo", 1, [
         {"beat_number": 1}, {"beat_number": 2},
     ])

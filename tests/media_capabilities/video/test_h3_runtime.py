@@ -48,6 +48,26 @@ def test_explicit_single_shot_workflow_id_is_preserved() -> None:
     assert profile.workflow_id == "2087934731806658562"
 
 
+def test_live_workflow_refine_canvas_follows_requested_canvas() -> None:
+    import json
+    from novelvideo.media_capabilities.video.runtime import _director_semantic_values
+
+    profile = load_h3_workflow_profile()
+    assert profile.bindings["refine_width"] == {"node_id": "18", "field": "width"}
+    assert profile.bindings["refine_height"] == {"node_id": "18", "field": "height"}
+    timeline = build_h3_timeline_data((H3DirectorSegment(
+        segment_id="one", beat_number=1, prompt=_official_prompt(),
+        duration_seconds=5, first_frame="first.png",
+    ),))
+    payload = _director_timeline_payload(timeline, {"first.png": {"imageFile": "uploaded.png", "width": 736, "height": 1280}}, aspect_ratio="9:16", resolution=None)
+    values = _director_semantic_values(payload)
+    output = json.loads(payload)["output"]
+    assert values["refine_width"] == output["width"]
+    assert values["refine_height"] == output["height"]
+    assert values["refine_aspect_ratio"] == "自定义"
+    assert values["refine_megapixels"] == output["width"] * output["height"] / (1024 * 1024)
+
+
 @pytest.mark.asyncio
 async def test_single_video_api_wraps_one_director_segment(monkeypatch) -> None:
     captured = {}
@@ -468,6 +488,7 @@ async def test_director_runtime_resolves_size_once_for_request_and_timeline(
         async def generate_timeline(self, request, **kwargs):
             captured["request"] = request
             captured["timeline"] = __import__("json").loads(kwargs["timeline_data"])
+            captured["director_params"] = kwargs["director_params"]
             return SimpleNamespace(
                 status=runtime_module.MediaTaskStatus.SUCCEEDED,
                 quality_issues=(),
@@ -504,6 +525,12 @@ async def test_director_runtime_resolves_size_once_for_request_and_timeline(
     )
 
     output = captured["timeline"]["output"]
+    assert captured["director_params"] == {
+        "refine_width": 736,
+        "refine_height": 1280,
+        "refine_aspect_ratio": "自定义",
+        "refine_megapixels": 736 * 1280 / (1024 * 1024),
+    }
     assert (
         calls,
         captured["request"].resolution,

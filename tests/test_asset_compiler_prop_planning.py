@@ -186,6 +186,60 @@ async def test_build_prop_plan_draft_only_links_existing_prop_without_model(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent_edit", [False, True])
+async def test_prop_draft_uses_persisted_menu_before_cache_normalization(
+    tmp_path, monkeypatch, concurrent_edit
+):
+    from novelvideo.agents.asset_compiler import AssetCompiler
+    from novelvideo.cognee.store import CogneeStore
+    from novelvideo.models import NovelEpisode, NovelProp, PropMenuItem
+    from novelvideo.sqlite_store import SQLiteStore
+
+    sqlite = SQLiteStore("owner/project", output_dir=str(tmp_path), state_dir=str(tmp_path))
+    await sqlite.initialize()
+    prop = NovelProp(name="旧油灯", description="林舟固定手提道具", visual_prompt="灰金属与玻璃灯罩")
+    await sqlite.add_prop(prop)
+    persisted = NovelEpisode(number=1, title="灯塔", prop_menu=[PropMenuItem(
+        prop_id=prop.name, description=prop.description, visual_prompt=prop.visual_prompt,
+    )])
+    await sqlite.add_episode(persisted)
+    cached = persisted.model_copy(deep=True)
+    cached.prop_menu = CogneeStore._normalize_prop_menu_items(
+        CogneeStore.__new__(CogneeStore), cached.prop_menu, props=[prop]
+    )
+    assert cached.prop_menu != persisted.prop_menu
+    compiler = AssetCompiler(SimpleNamespace(sqlite_store=sqlite))
+
+    async def empty_blocks(_episode):
+        return []
+
+    monkeypatch.setattr(compiler, "_load_prop_scene_blocks", empty_blocks)
+    draft = await compiler.build_prop_plan_draft(cached)
+    expected = sqlite.asset_menu_baseline_digest(persisted.prop_menu, asset_kind="prop")
+    assert draft.episode_prop_menu_baseline_digest == expected
+
+    if concurrent_edit:
+        edited = persisted.model_copy(deep=True)
+        edited.prop_menu = [PropMenuItem(prop_id="用户新道具")]
+        await sqlite.add_episode(edited)
+
+    async def publish():
+        return await sqlite.publish_prop_plan_atomic(
+            episode_number=1, props=draft.props, prop_menu=draft.prop_menu,
+            prop_baseline_digests=draft.prop_baseline_digests,
+            episode_prop_menu_baseline_digest=draft.episode_prop_menu_baseline_digest,
+            bindings=None,
+        )
+
+    if concurrent_edit:
+        with pytest.raises(ValueError, match="prop menu conflict"):
+            await publish()
+        assert (await sqlite.get_episode_from_graph(1)).prop_menu[0].prop_id == "用户新道具"
+    else:
+        assert (await publish())["committed"] is True
+
+
+@pytest.mark.asyncio
 async def test_load_prop_scene_blocks_keeps_director_requirements_in_matching_input():
     import novelvideo.agents.asset_compiler as asset_compiler
     from novelvideo.director_plan.models import AssetRequirement

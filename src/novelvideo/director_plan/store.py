@@ -14,6 +14,7 @@ from typing import Any
 import portalocker
 
 from .models import DirectorPlanRevision
+from novelvideo.episode_source_versions import SourceVersionConflict, current_source_version, require_current_source
 
 
 _LOCKS_GUARD = threading.Lock()
@@ -49,6 +50,8 @@ class DirectorPlanStore:
 
     def save(self, revision: DirectorPlanRevision) -> None:
         with self._guard(revision.episode):
+            if revision.status in {"draft", "validating", "review_required", "active"}:
+                self.require_current(revision)
             path = self._revision_path(revision.episode, revision.revision_id)
             if path.exists():
                 if self._read_revision(path) == revision:
@@ -87,6 +90,7 @@ class DirectorPlanStore:
     def activate(self, episode: int, revision_id: str) -> DirectorPlanRevision:
         with self._guard(episode):
             target = self._load(episode, revision_id)
+            self.require_current(target)
             if not target.validation_report.passed:
                 raise ValueError("revision validation must pass before activation")
             if target.status not in {"review_required", "superseded"}:
@@ -94,7 +98,7 @@ class DirectorPlanStore:
                     "only review_required or superseded revisions can be activated"
                 )
 
-            current = self._load_active(episode)
+            current = self._load_active(episode, check_source=False)
             activated_at = datetime.now(timezone.utc)
             journal = {
                 "old_id": current.revision_id if current is not None else None,
@@ -151,12 +155,23 @@ class DirectorPlanStore:
             raise FileNotFoundError(path)
         return self._read_revision(path)
 
-    def _load_active(self, episode: int) -> DirectorPlanRevision | None:
+    def _load_active(self, episode: int, *, check_source: bool = True) -> DirectorPlanRevision | None:
         pointer = self._active_path(episode)
         if not pointer.is_file():
             return None
         payload = json.loads(pointer.read_text(encoding="utf-8"))
-        return self._load(episode, str(payload["revision_id"]))
+        revision = self._load(episode, str(payload["revision_id"]))
+        if check_source:
+            self.require_current(revision)
+        return revision
+
+    def require_current(self, revision: DirectorPlanRevision) -> None:
+        require_current_source(self._project_dir, revision.episode, revision.source_script_hash)
+        if revision.semantic_revision_id and current_source_version(self._project_dir, revision.episode) is not None:
+            from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
+            semantic = ScreenplaySemanticStore(self._project_dir).load_active(revision.episode)
+            if semantic is None or semantic.revision_id != revision.semantic_revision_id:
+                raise SourceVersionConflict("SEMANTIC_REVISION_CONFLICT: rebuild the director plan from current semantics")
 
     def _episode_dir(self, episode: int) -> Path:
         return self._project_dir / "director_plans" / f"episode_{episode:03d}"

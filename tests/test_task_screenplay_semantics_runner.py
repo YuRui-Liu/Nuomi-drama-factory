@@ -29,7 +29,7 @@ async def test_runner_rejects_stale_source_revision(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runner_returns_revision_summary(monkeypatch):
-    source = SimpleNamespace(episode_number=1, source_revision=1)
+    source = SimpleNamespace(episode_number=1, source_revision=1, content_hash="hash")
     repository = SimpleNamespace()
 
     async def list_sources():

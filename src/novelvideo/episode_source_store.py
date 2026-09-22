@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -19,6 +20,9 @@ from novelvideo.episode_sources import (
     content_sha256,
     resolve_episode_candidates,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class EpisodeSourceRevisionConflict(RuntimeError):
@@ -96,6 +100,11 @@ class EpisodeSourceStore:
             async with self._recovery_lock:
                 if not self._recovery_complete:
                     await self._recover_pending_commit(db)
+                    from novelvideo.episode_source_versions import bind_source_database
+
+                    await bind_source_database(
+                        db, self.sqlite_store.project_dir, self.sqlite_store.state_dir
+                    )
                     self._recovery_complete = True
         return db
 
@@ -409,10 +418,6 @@ class EpisodeSourceStore:
                 os.replace(novel_temporary, novel_path)
                 novel_replaced = True
             await db.commit()
-            if canonical_novel is not None:
-                self._clear_journal(
-                    json.loads(self._journal_path.read_text(encoding="utf-8"))
-                )
         except Exception:
             await db.rollback()
             if novel_replaced:
@@ -425,6 +430,16 @@ class EpisodeSourceStore:
         finally:
             if novel_temporary is not None:
                 novel_temporary.unlink(missing_ok=True)
+        # The database and canonical file are committed. Cleanup must never
+        # trigger rollback or tell the graph orchestrator to restore old data.
+        if canonical_novel is not None:
+            try:
+                self._clear_journal(
+                    json.loads(self._journal_path.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                self._recovery_complete = False
+                logger.exception("episode sources committed; journal cleanup failed")
         return EpisodeSourceWriteResult(
             target_revision=target_revision,
             added=tuple(sorted(added)),
