@@ -275,34 +275,30 @@ pnpm desktop:test
 ```text
 前端 build:ce
   + CPython 3.11
-  + venv/Lib/site-packages
+  + .venv/Lib/site-packages
   + src/novelvideo
   + FFmpeg / FFprobe
           ↓
 desktop-runtime/
           ↓ electron-builder
-Nuomi Drama Factory Setup <version>.exe
+DramaClaw Setup <version>.exe
 ```
 
 `desktop/main.cjs` 启动时检查资源、申请随机 `127.0.0.1` 端口、设置 CE 和数据目录、启动内置 Uvicorn、轮询 `/api/v1/config`，后端就绪后显示窗口。后端日志写入 Electron 用户数据目录的 `logs/backend.log`。
 
-当前未签名的 x64 NSIS 打包命令：
+当前未签名的 Windows x64 NSIS 打包命令（在 Windows x64 构建机的 `cmd.exe` 中运行）：
 
 ```bat
-cd /d E:\Cache\Obsidian\RuiAgent\01_Active\02_Projects\副业项目\AI漫剧\Nuomi-drama-factory
+cd /d C:\path\to\Nuomi-drama-factory
 set "PYTHONUTF8=1"
+set "UV_PYTHON_INSTALL_DIR=%CD%\.python"
 uv python install 3.11
 uv sync --python 3.11
-py -3.11 -m venv venv
-call venv\Scripts\activate.bat
-python -m pip install -U pip
-python -m pip install .
-call deactivate
-corepack pnpm install
+corepack pnpm install --frozen-lockfile
 corepack pnpm desktop:build
 ```
 
-构建脚本要求 uv 的 Python 位于 `.python/cpython-3.11*`、依赖位于 `venv/Lib/site-packages`、前端输出位于 `frontend/dist`，并且 Node 依赖中存在 FFmpeg/FFprobe 包。安装包输出到 `dist-desktop/`。当前 `signAndEditExecutable=false`，Windows SmartScreen 可能提示未知发布者。
+`UV_PYTHON_INSTALL_DIR` 必须在安装 Python 和执行 `uv sync` 时保持一致。构建脚本要求 Windows Python 位于 `.python/cpython-3.11*`、依赖位于 `.venv/Lib/site-packages`，并要求根工作区安装 Electron、FFmpeg 和 FFprobe 包。`desktop:build` 会先运行桌面测试、CE 前端构建和 runtime staging；staging 使用打包后的 `python.exe` 导入 API 应用，随后 electron-builder 生成 `dist-desktop/` 中的安装包。此流程不是 macOS 到 Windows 的跨平台打包流程：macOS `.venv/lib/` 不能替代 Windows `.venv/Lib/`，也无法在本机运行 staging 的 `python.exe` 验证。当前 `signAndEditExecutable=false`，Windows SmartScreen 可能提示未知发布者。
 
 ## 14. 安全与可靠性
 
