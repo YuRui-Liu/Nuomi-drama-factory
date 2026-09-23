@@ -44,8 +44,6 @@ class Observation(BaseModel):
     def actual_evidence(self):
         if self.actual_cost is not None and (self.actual_cost.status != 'confirmed' or self.evidence is None):
             raise ValueError('actual cost requires confirmed value and provenance')
-        if self.evidence is not None and self.actual_cost is None:
-            raise ValueError('evidence requires actual cost')
         return self
 
 
@@ -79,10 +77,13 @@ class CostService:
         return self.store.get_attempt(attempt_id)
 
     def failed_before_send(self, attempt_id: str):
-        attempt = self.store.get_attempt(attempt_id)
-        if attempt.submission_status != 'pending':
-            raise ValueError('only unsent pending attempts can fail before send')
-        return self.store.update_attempt(attempt_id, dict(submission_status='failed', execution_status='failed'))
+        def apply():
+            attempt = self.store.get_attempt(attempt_id)
+            if attempt.submission_status != 'pending':
+                raise ValueError('only unsent pending attempts can fail before send')
+            self.store.update_attempt(attempt_id, dict(submission_status='failed', execution_status='failed'))
+        self.store.apply_observation(attempt_id, 'lifecycle:failed_before_send', {}, apply)
+        return self.store.get_attempt(attempt_id)
 
     def find_by_external(self, provider: str, account_id: str, external_id: str):
         return self.store.find_by_external(provider, account_id, external_id)
@@ -91,7 +92,10 @@ class CostService:
         facts = Observation.model_validate(facts)
         def apply():
             attempt = self.store.get_attempt(attempt_id)
-            changes = {'usage': {**attempt.usage, **facts.usage}}
+            # A single source describes the entire usage map. Never promote
+            # requested quantities into measured usage by merging different sources.
+            prior_usage = {} if facts.usage_source is not None and facts.usage_source != attempt.usage_source else attempt.usage
+            changes = {'usage': {**prior_usage, **facts.usage}}
             if facts.execution_status is not None and not (
                 attempt.execution_status in ('succeeded', 'failed', 'cancelled')
                 and facts.execution_status in ('pending', 'running', 'unknown')
@@ -105,7 +109,7 @@ class CostService:
         return self.store.apply_observation(attempt_id, event_id, facts, apply)
 
     def _price(self, attempt, facts):
-        if facts.actual_cost is not None:
+        if facts.evidence is not None:
             evidence = facts.evidence
             rate = evidence.cny_rate or (Decimal(1) if evidence.original_currency == 'CNY' else None)
             audit = evidence.model_dump(mode='json', exclude_none=True)
@@ -114,9 +118,11 @@ class CostService:
             if evidence.original_currency == 'CNY' and rate != 1:
                 raise ValueError('CNY exchange rate must equal one')
             amount = charge_micros(quantity='1', unit_price=evidence.original_amount, basis='1', step='1', minimum='0', cny_rate=rate)
-            if amount != facts.actual_cost.amount_micros:
+            if facts.actual_cost is not None and amount != facts.actual_cost.amount_micros:
                 raise ValueError('actual cost disagrees with original amount and exchange rate')
-            return facts.actual_cost, None, audit
+            value = facts.actual_cost or CostValue(status='confirmed', amount_micros=amount,
+                reason=evidence.reason or ('Provider explicitly reported zero charge' if amount == 0 else None))
+            return value, None, audit
         if attempt.submission_status in ('pending', 'failed'):
             return CostValue(status='unpriced', reason='Not submitted; excluded from cost'), None, {}
         for sub in self.store.list_subscriptions():

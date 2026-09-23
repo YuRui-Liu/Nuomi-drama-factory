@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, timezone, timedelta
 
 import pytest
@@ -75,8 +77,7 @@ def test_missing_evidence_and_failed_no_usage(service):
     service.submitted('a', 'external')
     service.observe('a', 'failed', Observation(execution_status='failed'))
     assert service.store.get_cost('a').status == 'unpriced'
-    service.observe('a', 'foreign', Observation(actual_cost=CostValue(status='confirmed', amount_micros=9),
-                    evidence=ActualEvidence(source='billing', original_amount='1', original_currency='USD')))
+    service.observe('a', 'foreign', Observation(evidence=ActualEvidence(source='billing', original_amount='1', original_currency='USD')))
     assert service.store.get_cost('a').status == 'unpriced'
     with pytest.raises(ValueError):
         Observation(actual_cost=CostValue(status='confirmed', amount_micros=1))
@@ -141,3 +142,34 @@ def test_late_lifecycle_events_do_not_regress_terminal_state(service):
 def test_context_rejects_sensitive_payload_fields():
     with pytest.raises(ValueError):
         CostContext(project_id='p', media_type='image', specifications=(('prompt', 'secret'),))
+
+def test_provider_usage_does_not_promote_request_quantities(service):
+    service.store.add_price_rule(rule())
+    service.prepare(attempt(usage={'item': '10'}, usage_source='request'))
+    service.submitted('a', 'external')
+    value = service.observe('a', 'failed', Observation(execution_status='failed', usage={'credit': '0'}, usage_source='provider'))
+    assert value.status == 'unpriced'
+    assert service.store.get_attempt('a').usage == {'credit': '0'}
+
+def test_original_evidence_derives_confirmed_cost(service):
+    service.prepare(attempt())
+    service.submitted('a', 'external')
+    value = service.observe('a', 'bill', Observation(evidence=ActualEvidence(source='billing', original_amount='2', original_currency='USD', cny_rate='7')))
+    assert value == CostValue(status='confirmed', amount_micros=14_000_000)
+    assert service.store.list_revisions('a')[0]['evidence']['original_amount'] == '2'
+
+def test_failed_before_send_races_submission_atomically(service):
+    service.prepare(attempt())
+    gate = Barrier(2)
+    other = CostService(CostStore(service.store.path))
+    def update(send):
+        gate.wait()
+        try:
+            return other.submitted('a', 'external') if send else service.failed_before_send('a')
+        except ValueError:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(update, [True, False]))
+    assert sum(result is not None for result in results) == 1
+    stored = service.store.get_attempt('a')
+    assert (stored.submission_status, stored.external_id) in [('submitted', 'external'), ('failed', None)]
