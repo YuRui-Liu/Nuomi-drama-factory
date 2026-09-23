@@ -1,5 +1,6 @@
 """SQLite cost ledger. Every write is serialized; snapshot() reads one transaction."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -24,10 +25,15 @@ def _json(value):
 
 class CostStore:
     def __init__(self, path):
+        self._active_connection = ContextVar('cost_store_connection', default=None)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection(write=True) as db:
             for statement in (
+                '''CREATE TABLE IF NOT EXISTS cost_observations (
+                attempt_id TEXT NOT NULL REFERENCES cost_attempts(attempt_id),
+                event_id TEXT NOT NULL, facts_json TEXT NOT NULL,
+                PRIMARY KEY(attempt_id,event_id))''',
                 '''CREATE TABLE IF NOT EXISTS cost_attempts (
                 attempt_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
                 provider TEXT NOT NULL, account_id TEXT NOT NULL, media_type TEXT NOT NULL,
@@ -61,6 +67,10 @@ class CostStore:
 
     @contextmanager
     def _connection(self, *, write=False):
+        active = self._active_connection.get()
+        if active is not None:
+            yield active
+            return
         db = sqlite3.connect(str(self.path), timeout=10)
         try:
             db.row_factory = sqlite3.Row
@@ -77,6 +87,31 @@ class CostStore:
             raise
         finally:
             db.close()
+
+    def apply_observation(self, attempt_id, event_id, facts, evaluator):
+        """Deduplicate caller facts and apply lifecycle/cost atomically.
+
+        evaluator is synchronous and must not perform network I/O. Nested store
+        operations share this transaction, including immutable rule selection.
+        """
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError('event_id is required')
+        body = _json(facts)
+        with self._connection(write=True) as db:
+            token = self._active_connection.set(db)
+            try:
+                self._attempt(db, attempt_id)
+                old = db.execute('SELECT facts_json FROM cost_observations WHERE attempt_id=? AND event_id=?',
+                                 (attempt_id, event_id)).fetchone()
+                if old:
+                    if old[0] != body:
+                        raise StoreConflictError('event replay has different facts')
+                    return self.get_cost(attempt_id)
+                evaluator()
+                db.execute('INSERT INTO cost_observations VALUES (?,?,?)', (attempt_id,event_id,body))
+                return self.get_cost(attempt_id)
+            finally:
+                self._active_connection.reset(token)
 
     def create_attempt(self, facts):
         attempt = CostAttempt.model_validate(facts)
