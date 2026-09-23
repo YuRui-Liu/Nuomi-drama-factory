@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.media_capabilities.models import ImageGenerationRequest
 from novelvideo.media_capabilities.models import DEFAULT_GRSAI_IMAGE_MODEL
+from novelvideo.costs.providers import ProviderCapture
 
 
 class GrsaiError(RuntimeError):
@@ -42,9 +43,13 @@ class GrsaiClient:
         http: httpx.AsyncClient,
         *,
         default_model: str = DEFAULT_GRSAI_IMAGE_MODEL,
+        account_id: str | None = None,
+        cost_context=None,
+        cost_service=None,
     ) -> None:
         self.http = http
         self.default_model = default_model
+        self._cost_capture = ProviderCapture('grsai', account_id=account_id, context=cost_context, service=cost_service)
         self._submitted_snapshots: dict[str, GrsaiSnapshot] = {}
 
     @staticmethod
@@ -103,6 +108,22 @@ class GrsaiClient:
         return "1024x1024"
 
     async def submit(
+        self, request: ImageGenerationRequest, *, api_key: str,
+    ) -> str:
+        attempt = self._cost_capture.prepare(model=request.model or self.default_model,
+                                             media_type='image', usage={'item': '1'})
+        try:
+            task_id = await self._submit(request, api_key=api_key)
+        except BaseException:
+            self._cost_capture.interrupted(attempt)
+            raise
+        self._cost_capture.accepted(attempt, task_id)
+        snapshot = self._submitted_snapshots.get(task_id)
+        if snapshot is not None:
+            self._cost_capture.observe(task_id, snapshot.status)
+        return task_id
+
+    async def _submit(
         self,
         request: ImageGenerationRequest,
         *,
@@ -171,6 +192,7 @@ class GrsaiClient:
     async def query(self, task_id: str, *, api_key: str) -> GrsaiSnapshot:
         submitted = self._submitted_snapshots.get(task_id)
         if submitted is not None:
+            self._cost_capture.observe(task_id, submitted.status)
             return submitted
         response = await self._request_with_connect_retry(
             "GET",
@@ -179,7 +201,9 @@ class GrsaiClient:
             headers=self._headers(api_key),
         )
         response.raise_for_status()
-        return GrsaiSnapshot.model_validate(response.json())
+        snapshot = GrsaiSnapshot.model_validate(response.json())
+        self._cost_capture.observe(task_id, snapshot.status)
+        return snapshot
 
     async def download(self, url: str) -> bytes:
         response = await self._request_with_connect_retry("GET", url)

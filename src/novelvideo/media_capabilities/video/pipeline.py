@@ -506,9 +506,12 @@ class H3VideoPipeline:
         self.wait = wait
         self.monotonic = monotonic
 
-    async def _step_with_cancellation(self, task_id: str, **kwargs):
+    async def _step_with_cancellation(self, task_id: str, *, requested_seconds=None, **kwargs):
         try:
-            return await self.executor.step(task_id, **kwargs)
+            from novelvideo.costs.providers import requested_cost_context
+            usage = {} if requested_seconds is None else {'second': str(requested_seconds)}
+            with requested_cost_context('video', usage=usage):
+                return await self.executor.step(task_id, **kwargs)
         except asyncio.CancelledError:
             await asyncio.shield(self.executor.cancel(task_id))
             raise
@@ -599,6 +602,7 @@ class H3VideoPipeline:
         while True:
             completed = await self._step_with_cancellation(
                 task.id,
+                requested_seconds=request.duration,
                 profile=self.workflow_profile,
                 semantic_values=semantic_values,
             )
@@ -780,7 +784,7 @@ class H3VideoPipeline:
             }
             if on_provider_submitted is not None:
                 step_kwargs["on_provider_submitted"] = notify_once
-            completed = await self._step_with_cancellation(task.id, **step_kwargs)
+            completed = await self._step_with_cancellation(task.id, requested_seconds=request.duration, **step_kwargs)
             if completed.status is MediaTaskStatus.SUCCEEDED:
                 break
             if completed.status in {

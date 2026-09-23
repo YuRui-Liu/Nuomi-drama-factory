@@ -127,7 +127,9 @@ async def generate_minimax_h3_video(
             {"timeline_data": timeline_data},
         )
 
-        task_id = await client.submit(workflow_id, node_info)
+        from novelvideo.costs.providers import requested_cost_context
+        with requested_cost_context('video', usage={'second': str(duration)}):
+            task_id = await client.submit(workflow_id, node_info)
         for _ in range(max_polls):
             snapshot = await client.query(task_id)
             if snapshot.status in {"failed", "cancelled"}:

@@ -11,6 +11,7 @@ from typing import Any, Collection
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from novelvideo.costs.providers import ProviderCapture
 
 from novelvideo.utils.error_redaction import redact_secrets, safe_exception_message
 
@@ -97,6 +98,10 @@ class RunningHubClient:
         max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float | httpx.Timeout = 30.0,
+        account_id: str | None = None,
+        cost_context=None,
+        cost_service=None,
+        workflow_media: dict[str, str] | None = None,
     ) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("api_key must be non-empty")
@@ -111,6 +116,8 @@ class RunningHubClient:
                 "download_allowed_hosts must be a collection of host strings"
             )
         self._api_key = api_key
+        self._cost_capture = ProviderCapture('runninghub', account_id=account_id, context=cost_context, service=cost_service)
+        self._workflow_media = workflow_media or {}
         self._download_allowed_hosts = frozenset(
             self._normalize_allowed_host(host)
             for host in (download_allowed_hosts or ())
@@ -163,6 +170,20 @@ class RunningHubClient:
         return remote_name
 
     async def submit(self, workflow_id: str, node_info: Any) -> str:
+        media = self._workflow_media.get(workflow_id)
+        context = self._cost_capture.resolve()
+        media = media or (context.media_type if context is not None and context.media_type != 'text' else None)
+        attempt = self._cost_capture.prepare(model=workflow_id, workflow=workflow_id,
+                                            media_type=media, usage={'item': '1'} if media == 'image' else {})
+        try:
+            task_id = await self._submit(workflow_id, node_info)
+        except BaseException:
+            self._cost_capture.interrupted(attempt)
+            raise
+        self._cost_capture.accepted(attempt, task_id)
+        return task_id
+
+    async def _submit(self, workflow_id: str, node_info: Any) -> str:
         payload = await self._request_json(
             "POST",
             "/task/openapi/create",
@@ -237,11 +258,13 @@ class RunningHubClient:
                 payload, "msg", "message", "failedReason", "errorMessage"
             )
         self._reject_sensitive_response(message)
-        return ProviderTaskSnapshot(
+        snapshot = ProviderTaskSnapshot(
             status=self._normalize_status(raw_status),
             results=tuple(results),
             provider_message=self._safe_provider_message(message),
         )
+        self._cost_capture.observe(task_id, snapshot.status)
+        return snapshot
 
     async def cancel(self, task_id: str) -> None:
         await self._request_json(
@@ -249,6 +272,7 @@ class RunningHubClient:
             "/task/openapi/cancel",
             json={"taskId": task_id},
         )
+        self._cost_capture.observe(task_id, 'cancelled')
 
     async def download(self, url: str) -> bytes:
         parsed = urlsplit(url)

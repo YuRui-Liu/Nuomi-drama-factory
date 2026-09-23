@@ -94,6 +94,12 @@ class RunningHubRuntimeConfiguration:
     ) -> RunningHubClient:
         return RunningHubClient(
             self.api_key,
+            account_id=self.account.id,
+            workflow_media={
+                value: ('image' if key == 'image_upscale' else 'audio' if key.startswith('tts_') else 'video')
+                for key, value in self.workflows.model_dump().items()
+                if isinstance(value, str) and value
+            },
             base_url=self.account.base_url or RunningHubClient.DEFAULT_BASE_URL,
             download_allowed_hosts=download_allowed_hosts,
         )
@@ -119,6 +125,7 @@ class GrsaiRuntimeConfiguration:
                 timeout=httpx.Timeout(connect=20, read=60, write=60, pool=20),
             ),
             default_model=self.model,
+            account_id=self.account.id,
         )
 
 

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from pydantic import JsonValue
+from novelvideo.costs.providers import requested_cost_context
 
 from novelvideo.media_capabilities.models import (
     MediaArtifact,
@@ -69,6 +70,21 @@ class RunningHubExecutor:
         self._concurrency = concurrency
 
     async def step(
+        self, task_id: str, *, profile: WorkflowProfile,
+        semantic_values: Mapping[str, JsonValue],
+        on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
+    ) -> MediaTaskRecord:
+        task = self._store.get_task(task_id)
+        attempts = self._store.list_attempts(task_id)
+        if task is None or not attempts:
+            raise TaskNotFoundError(f'task {task_id} has no attempt')
+        kind = task.capability.value.split('.')[0]
+        media = 'audio' if kind == 'tts' else kind
+        with requested_cost_context(media, attempt_id=attempts[-1].id):
+            return await self._step(task_id, profile=profile, semantic_values=semantic_values,
+                                    on_provider_submitted=on_provider_submitted)
+
+    async def _step(
         self,
         task_id: str,
         *,

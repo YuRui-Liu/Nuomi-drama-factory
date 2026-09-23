@@ -6,6 +6,21 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_provider_cost_ledger(monkeypatch, tmp_path_factory):
+    """Project-aware provider tests must never open the user's real costs.db."""
+    from novelvideo.costs import providers, service
+    from novelvideo.costs.store import CostStore
+    ledger = None
+    def isolated_service():
+        nonlocal ledger
+        if ledger is None:
+            ledger = service.CostService(CostStore(tmp_path_factory.mktemp('provider-costs') / 'costs.db'))
+        return ledger
+    monkeypatch.setattr(service, 'get_cost_service', isolated_service)
+    monkeypatch.setattr(providers, 'get_cost_service', isolated_service)
+
+
+@pytest.fixture(autouse=True)
 def isolate_gateway_credentials(monkeypatch):
     """Unit tests must not read or overwrite the developer's OS credentials.
 

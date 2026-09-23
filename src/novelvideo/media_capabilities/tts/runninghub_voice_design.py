@@ -35,7 +35,9 @@ async def generate_qwen3_voice_sample(
         {"nodeId": "15", "fieldName": "text", "fieldValue": voice_description},
     ]
     async with runtime.create_client() as client:
-        task_id = await client.submit(workflow_id, node_info)
+        from novelvideo.costs.providers import requested_cost_context
+        with requested_cost_context('audio', usage={'character': str(len(audition_text))}):
+            task_id = await client.submit(workflow_id, node_info)
         for _ in range(max_polls):
             snapshot = await client.query(task_id)
             if snapshot.status in {"failed", "cancelled"}:

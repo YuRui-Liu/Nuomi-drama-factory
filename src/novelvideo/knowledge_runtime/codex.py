@@ -457,7 +457,11 @@ def _build_prompt(
 
 
 class CodexCliStructuredBackend:
-    def __init__(self, *, codex_bin: str | None = None, model: str | None = None):
+    def __init__(self, *, codex_bin: str | None = None, model: str | None = None,
+                 account_id: str | None = 'codex-cli:local', cost_context=None, cost_service=None):
+        from novelvideo.costs.providers import ProviderCapture
+        self._cost_capture = ProviderCapture('codex', account_id=account_id,
+                                             context=cost_context, service=cost_service)
         self.codex_bin = (
             codex_bin
             or os.getenv("CODEX_BIN", "").strip()
@@ -552,21 +556,28 @@ class CodexCliStructuredBackend:
                     image_path.write_bytes(image.data)
                     argv[-1:-1] = ["--image", str(image_path)]
             process_argv = normalize_codex_process_argv(argv)
+            attempt = self._cost_capture.prepare(model=self.model, media_type='text', fresh=True)
             try:
                 process = await _create_codex_process(
                     process_argv,
                     stdin=asyncio.subprocess.PIPE,
                 )
             except OSError as exc:
+                if attempt is not None:
+                    self._cost_capture._after_send(lambda: self._cost_capture.service.failed_before_send(attempt.attempt_id))
                 raise KnowledgeRuntimeError(
                     f"Codex CLI 无法启动: {exc}", code="CODEX_NOT_INSTALLED"
                 ) from exc
-            outcome = await supervise_codex_process(
-                process,
-                prompt,
-                output_path,
-                timeout_seconds,
-            )
+            external_id = attempt.attempt_id if attempt is not None else ''
+            self._cost_capture.accepted(attempt, external_id)
+            try:
+                outcome = await supervise_codex_process(
+                    process, prompt, output_path, timeout_seconds,
+                )
+            except BaseException:
+                self._cost_capture.observe(external_id, 'unknown')
+                raise
+            self._cost_capture.observe(external_id, 'succeeded' if outcome.completed_from_final_message or outcome.returncode == 0 else 'failed')
             if outcome.completed_from_final_message:
                 return outcome.output
             if outcome.returncode != 0:

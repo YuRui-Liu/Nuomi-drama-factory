@@ -195,7 +195,9 @@ class ImageProductionPipeline:
         task_id = stage.get("task_id") if stage else None
         if not task_id:
             self._save_stage(checkpoint_path, checkpoint, "grsai_generate", stage_hash, "running")
-            task_id = await self._grsai.submit(request, api_key=api_key)
+            from novelvideo.costs.providers import requested_cost_context
+            with requested_cost_context('image', usage={'item': '1'}):
+                task_id = await self._grsai.submit(request, api_key=api_key)
             self._save_stage(
                 checkpoint_path,
                 checkpoint,
@@ -266,9 +268,11 @@ class ImageProductionPipeline:
             self._save_stage(checkpoint_path, checkpoint, "upscale", stage_hash, "running")
             remote_source = await self._runninghub.upload(source)
             submitted_node_info = self._bind_uploaded_source(node_info, remote_source)
-            task_id = await self._runninghub.submit(
-                self._upscale_workflow_id, submitted_node_info
-            )
+            from novelvideo.costs.providers import requested_cost_context
+            with requested_cost_context('image', usage={'item': '1'}):
+                task_id = await self._runninghub.submit(
+                    self._upscale_workflow_id, submitted_node_info
+                )
             self._save_stage(
                 checkpoint_path,
                 checkpoint,

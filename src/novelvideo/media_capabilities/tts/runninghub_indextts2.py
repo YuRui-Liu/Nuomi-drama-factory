@@ -164,7 +164,9 @@ async def generate_indextts2_audio(
             emotion_alpha=emotion_alpha,
         )
         workflow_id = runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE)
-        task_id = await client.submit(workflow_id, list(compiled.node_info_list))
+        from novelvideo.costs.providers import requested_cost_context
+        with requested_cost_context('audio', usage={'character': str(len(text.strip()))}):
+            task_id = await client.submit(workflow_id, list(compiled.node_info_list))
         for _ in range(max_polls):
             snapshot = await client.query(task_id)
             if snapshot.status in {"failed", "cancelled"}:
