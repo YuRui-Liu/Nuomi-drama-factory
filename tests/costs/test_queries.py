@@ -110,3 +110,16 @@ def test_cursor_stability_filters_and_project_scope(ledger):
     for limit in (0, -1, True, 501):
         with pytest.raises(ValueError):
             queries.entries('p', limit=limit)
+
+
+@pytest.mark.parametrize('submission_status', ['pending', 'failed', 'unknown'])
+def test_excluded_lifecycle_amount_is_audit_only(ledger, submission_status):
+    add(ledger, 'a', micros=1000000, submission_status=submission_status)
+    queries = CostQueries(ledger)
+    assert snap(ledger)['summary']['total_cents'] == 0
+    entry = queries.entries('p')['entries'][0]
+    assert entry['amount_cents'] is None
+    assert entry['value']['amount_micros'] == 1000000
+    detail = queries.entry_detail('p', 'a')
+    assert detail['current_cost']['amount_cents'] is None
+    assert detail['current_cost']['value']['amount_micros'] == 1000000

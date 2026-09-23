@@ -138,7 +138,8 @@ class CostQueries:
     @staticmethod
     def _entry(attempt, cost):
         return dict(**attempt.model_dump(mode='json'), cost_status=cost.status,
-                    amount_cents=_cents(cost.amount_micros), value=cost.model_dump(mode='json'))
+                    amount_cents=_cents(cost.amount_micros) if attempt.submission_status == 'submitted' else None,
+                    value=cost.model_dump(mode='json'))
 
     def entries(self, project_id, channel=None, media=None, status=None, cursor=None, limit=50):
         if type(limit) is not int or not 1 <= limit <= 500:
@@ -175,6 +176,7 @@ class CostQueries:
             raise KeyError(attempt_id)
         cost = data['costs'][attempt_id]
         current = dict(data['cost_details'].get(attempt_id, {}))
-        current.update(value=cost.model_dump(mode='json'), amount_cents=_cents(cost.amount_micros))
+        current.update(value=cost.model_dump(mode='json'),
+                       amount_cents=_cents(cost.amount_micros) if attempt.submission_status == 'submitted' else None)
         return dict(attempt=attempt.model_dump(mode='json'), current_cost=current,
                     value=cost.model_dump(mode='json'), revisions=self.store.list_revisions(attempt_id))
