@@ -30,6 +30,12 @@ class CostStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection(write=True) as db:
             for statement in (
+                '''CREATE TABLE IF NOT EXISTS cost_reprice_previews (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, body_json TEXT NOT NULL,
+                applied INTEGER NOT NULL DEFAULT 0)''',
+                '''CREATE TABLE IF NOT EXISTS cost_settings_audit (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL,
+                recorded_at TEXT NOT NULL, body_json TEXT NOT NULL)''',
                 '''CREATE TABLE IF NOT EXISTS cost_observations (
                 attempt_id TEXT NOT NULL REFERENCES cost_attempts(attempt_id),
                 event_id TEXT NOT NULL, facts_json TEXT NOT NULL,
@@ -64,6 +70,16 @@ class CostStore:
             if 'recorded_at' not in columns:
                 # Historical write times cannot be reconstructed; keep them unknown.
                 db.execute('ALTER TABLE cost_revisions ADD COLUMN recorded_at TEXT')
+
+    @contextmanager
+    def transaction(self):
+        """Serialize a multi-operation ledger write with rollback on any failure."""
+        with self._connection(write=True) as db:
+            token = self._active_connection.set(db)
+            try:
+                yield db
+            finally:
+                self._active_connection.reset(token)
 
     @contextmanager
     def _connection(self, *, write=False):

@@ -57,6 +57,7 @@ from novelvideo.api.routes import (  # noqa: E402
     ingest,
     knowledge_runtime,
     media_capabilities,
+    project_costs,
     model_gateway,
     model_credits,
     narrative_groups,
@@ -108,6 +109,8 @@ if not runtime_env.is_ce_effective():
 api_router.include_router(config.router, tags=["config"])
 api_router.include_router(chat.router, tags=["chat"])
 api_router.include_router(projects.router, tags=["projects"])
+api_router.include_router(project_costs.router, tags=["costs"])
+api_router.include_router(project_costs.settings_router, tags=["costs"])
 api_router.include_router(ingest.router, tags=["ingest"])
 api_router.include_router(knowledge_runtime.router, tags=["knowledge-runtime"])
 api_router.include_router(media_capabilities.catalog_router, tags=["media-capabilities"])
