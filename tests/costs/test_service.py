@@ -173,3 +173,12 @@ def test_failed_before_send_races_submission_atomically(service):
     assert sum(result is not None for result in results) == 1
     stored = service.store.get_attempt('a')
     assert (stored.submission_status, stored.external_id) in [('submitted', 'external'), ('failed', None)]
+
+def test_unknown_submission_after_terminal_observation_preserves_execution(service):
+    service.prepare(attempt())
+    service.observe('a', 'early_result', Observation(execution_status='succeeded'))
+    service.mark_submission_unknown('a')
+    assert service.store.get_attempt('a').execution_status == 'succeeded'
+    assert service.store.get_attempt('a').submission_status == 'unknown'
+    service.submitted('a', 'external')
+    assert service.store.get_attempt('a').execution_status == 'succeeded'

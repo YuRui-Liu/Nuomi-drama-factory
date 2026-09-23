@@ -72,7 +72,8 @@ class CostService:
         def apply():
             old = self.store.get_attempt(attempt_id)
             if old.submission_status in ('pending', 'unknown'):
-                self.store.update_attempt(attempt_id, dict(submission_status='unknown', execution_status='unknown'))
+                execution = old.execution_status if old.execution_status in ('succeeded', 'failed', 'cancelled') else 'unknown'
+                self.store.update_attempt(attempt_id, dict(submission_status='unknown', execution_status=execution))
         self.store.apply_observation(attempt_id, 'lifecycle:unknown', {}, apply)
         return self.store.get_attempt(attempt_id)
 
