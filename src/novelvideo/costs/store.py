@@ -149,14 +149,17 @@ class CostStore:
             raise ValueError('unsupported evidence fields')
         if any(not isinstance(v, (str, int, type(None))) or isinstance(v, bool) for v in evidence.values()):
             raise ValueError('evidence must contain scalar audit facts')
-        body = _json(dict(value=value.model_dump(mode='json'), rule_snapshot=rule_snapshot, evidence=evidence))
+        payload = dict(value=value.model_dump(mode='json'), rule_snapshot=rule_snapshot, evidence=evidence)
         with self._connection(write=True) as db:
-            self._attempt(db, attempt_id)
+            attempt = self._attempt(db, attempt_id)
             old = db.execute('SELECT body_json FROM cost_revisions WHERE attempt_id=? AND event_id=?', (attempt_id,event_id)).fetchone()
             if old:
-                if old[0] != body:
+                recorded = json.loads(old[0])
+                # Replay identity describes caller facts, not subsequently enriched usage.
+                if {key: recorded.get(key) for key in payload} != payload:
                     raise StoreConflictError('event replay has a different payload')
                 return False
+            body = _json(dict(payload, usage=attempt.usage, usage_source=attempt.usage_source))
             current = CostValue.model_validate_json(db.execute('SELECT body_json FROM current_costs WHERE attempt_id=?', (attempt_id,)).fetchone()[0])
             applied = not (current.status == 'confirmed' and value.status != 'confirmed')
             db.execute('INSERT INTO cost_revisions(attempt_id,event_id,amount_micros,applied,body_json,recorded_at) VALUES (?,?,?,?,?,?)',

@@ -170,3 +170,20 @@ def test_attempt_attribution_cannot_change_after_charge(tmp_path):
                 store.update_attempt('a', {field: value})
             assert store.get_attempt('a') == enriched
     assert store.list_revisions('a') == revision
+
+
+def test_revision_usage_snapshot_survives_enrichment_and_replay(tmp_path):
+    store = CostStore(tmp_path / 'cost.db')
+    store.create_attempt({**facts(), 'usage': {'second': '5'}, 'usage_source': 'request'})
+    estimate = CostValue(status='estimated', amount_micros=5)
+    store.record_cost('a', 'estimate', estimate)
+    store.update_attempt('a', {'usage': {'second': '7'}, 'usage_source': 'provider'})
+    assert not store.record_cost('a', 'estimate', estimate)
+    store.record_cost('a', 'actual', CostValue(status='confirmed', amount_micros=7))
+    revisions = store.list_revisions('a')
+    assert len(revisions) == 2
+    assert revisions[0]['usage'] == {'second': '5'}
+    assert revisions[0]['usage_source'] == 'request'
+    assert revisions[1]['usage'] == {'second': '7'}
+    assert store.get_cost_record('a')['usage_source'] == 'provider'
+    assert store.snapshot('p')['cost_details']['a']['usage'] == {'second': '7'}
