@@ -216,6 +216,23 @@ class CostStore:
             return [dict(json.loads(row['body_json']), event_id=row['event_id'], applied=bool(row['applied']), sequence=row['sequence'], recorded_at=row['recorded_at'])
                     for row in db.execute('SELECT * FROM cost_revisions WHERE attempt_id=? ORDER BY sequence', (attempt_id,))]
 
+    def get_entry_detail(self, project_id, attempt_id):
+        """Read one project's attempt, current value and audit at one DB snapshot."""
+        with self._connection() as db:
+            row = db.execute('SELECT body_json FROM cost_attempts WHERE project_id=? AND attempt_id=?',
+                             (project_id, attempt_id)).fetchone()
+            if row is None:
+                raise KeyError(attempt_id)
+            attempt = CostAttempt.model_validate_json(row[0])
+            cost = CostValue.model_validate_json(db.execute(
+                'SELECT body_json FROM current_costs WHERE attempt_id=?', (attempt_id,)).fetchone()[0])
+            revisions = [dict(json.loads(r['body_json']), event_id=r['event_id'], applied=bool(r['applied']),
+                              sequence=r['sequence'], recorded_at=r['recorded_at']) for r in db.execute(
+                                  'SELECT * FROM cost_revisions WHERE attempt_id=? ORDER BY sequence', (attempt_id,))]
+            current = next((dict(r) for r in reversed(revisions) if r['applied']), {})
+            current.pop('applied', None)
+            return dict(attempt=attempt, cost=cost, current=current, revisions=revisions)
+
     @staticmethod
     def _cost_details(db, ids):
         details = {}

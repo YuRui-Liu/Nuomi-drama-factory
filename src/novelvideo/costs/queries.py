@@ -170,13 +170,10 @@ class CostQueries:
         return dict(entries=[self._entry(a, data['costs'][a.attempt_id]) for a in selected], next_cursor=next_cursor)
 
     def entry_detail(self, project_id, attempt_id):
-        data = self.store.snapshot(project_id)
-        attempt = next((a for a in data['attempts'] if a.attempt_id == attempt_id and a.project_id == project_id), None)
-        if attempt is None:
-            raise KeyError(attempt_id)
-        cost = data['costs'][attempt_id]
-        current = dict(data['cost_details'].get(attempt_id, {}))
+        data = self.store.get_entry_detail(project_id, attempt_id)
+        attempt, cost = data['attempt'], data['cost']
+        current = data['current']
         current.update(value=cost.model_dump(mode='json'),
                        amount_cents=_cents(cost.amount_micros) if attempt.submission_status == 'submitted' else None)
         return dict(attempt=attempt.model_dump(mode='json'), current_cost=current,
-                    value=cost.model_dump(mode='json'), revisions=self.store.list_revisions(attempt_id))
+                    value=cost.model_dump(mode='json'), revisions=data['revisions'])

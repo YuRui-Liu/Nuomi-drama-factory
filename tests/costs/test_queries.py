@@ -123,3 +123,23 @@ def test_excluded_lifecycle_amount_is_audit_only(ledger, submission_status):
     detail = queries.entry_detail('p', 'a')
     assert detail['current_cost']['amount_cents'] is None
     assert detail['current_cost']['value']['amount_micros'] == 1000000
+
+
+def test_detail_keeps_current_and_revisions_in_one_read_transaction(ledger, monkeypatch):
+    add(ledger, 'a', micros=1000000)
+    original_connection = ledger._connection
+    from contextlib import contextmanager
+
+    @contextmanager
+    def interleave_after_read(*, write=False):
+        with original_connection(write=write) as db:
+            yield db
+        if not write:
+            other = CostStore(ledger.path)
+            other.record_cost('a', 'later', dict(status='confirmed', amount_micros=2000000))
+
+    monkeypatch.setattr(ledger, '_connection', interleave_after_read)
+    detail = CostQueries(ledger).entry_detail('p', 'a')
+    applied = [revision for revision in detail['revisions'] if revision['applied']]
+    assert detail['current_cost']['value'] == applied[-1]['value']
+    assert detail['current_cost']['amount_cents'] == 100
