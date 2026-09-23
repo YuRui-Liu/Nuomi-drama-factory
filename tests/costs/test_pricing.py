@@ -123,3 +123,11 @@ def test_rule_rate_and_denominators_reject_zero():
     for field in ('basis', 'step'):
         with pytest.raises(ValueError):
             PriceItem(**dict(unit='call', unit_price='1', **{field:'0'}))
+
+
+def test_native_cny_rejects_conversion_rate_other_than_one():
+    with pytest.raises(ValueError, match='CNY'):
+        rule(currency='CNY', cny_rate='7')
+    for rate in (None, '1'):
+        assert quote(attempt(), [rule(currency='CNY', cny_rate=rate)]).cost.amount_micros == 13200000
+    assert quote(attempt(), [rule(currency='USD', cny_rate='7')]).cost.amount_micros == 92400000

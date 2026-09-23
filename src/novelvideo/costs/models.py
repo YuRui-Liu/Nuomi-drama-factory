@@ -139,6 +139,8 @@ class PriceRule(BaseModel):
 
     @model_validator(mode='after')
     def valid_rule(self):
+        if self.currency == 'CNY' and self.cny_rate not in (None, Decimal('1')):
+            raise ValueError('CNY prices require cny_rate to be omitted or equal to one')
         if self.ends_at is not None and self.ends_at <= self.starts_at:
             raise ValueError('ends_at must follow starts_at')
         if len(dict(self.specifications)) != len(self.specifications):
