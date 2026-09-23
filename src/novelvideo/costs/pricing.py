@@ -4,7 +4,8 @@ quote(attempt, rules) returns PriceQuote(cost, rule_snapshot). Usage keys are th
 PriceItem.unit names. Every item requires measured usage, including call/item.
 validate_rules must run before saving a complete rule collection.
 """
-from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP, localcontext
+from decimal import Decimal
+from fractions import Fraction
 from itertools import combinations
 from typing import Iterable
 
@@ -15,24 +16,25 @@ MAX_MICROS = 2**63 - 1
 
 
 def _charge(*, quantity, unit_price, basis, step, minimum, cny_rate):
-    q, p, m = (pricing_decimal(v) for v in (quantity, unit_price, minimum))
-    b, s, r = (pricing_decimal(v, positive=True) for v in (basis, step, cny_rate))
-    return (max(q, m) / s).to_integral_value(rounding=ROUND_CEILING) * s / b * p * r
+    q, p, m = (Fraction(pricing_decimal(v)) for v in (quantity, unit_price, minimum))
+    b, s, r = (Fraction(pricing_decimal(v, positive=True)) for v in (basis, step, cny_rate))
+    steps = max(q, m) / s
+    rounded_steps = (steps.numerator + steps.denominator - 1) // steps.denominator
+    return rounded_steps * s / b * p * r
 
 
 def _micros(amount):
-    scaled = (amount * Decimal(1000000)).to_integral_value(rounding=ROUND_HALF_UP)
-    if scaled > MAX_MICROS:
+    scaled = amount * 1000000
+    rounded = (2 * scaled.numerator + scaled.denominator) // (2 * scaled.denominator)
+    if rounded > MAX_MICROS:
         raise ValueError('cost exceeds signed 64-bit micro amount')
-    return int(scaled)
+    return rounded
 
 
 def charge_micros(*, quantity, unit_price, basis, step, minimum, cny_rate) -> int:
     """Ceil to usage step after minimum, convert to CNY, round once HALF_UP."""
-    with localcontext() as context:
-        context.prec = 400
-        return _micros(_charge(quantity=quantity, unit_price=unit_price, basis=basis,
-                               step=step, minimum=minimum, cny_rate=cny_rate))
+    return _micros(_charge(quantity=quantity, unit_price=unit_price, basis=basis,
+                           step=step, minimum=minimum, cny_rate=cny_rate))
 
 
 def _specificity(rule):
@@ -79,9 +81,7 @@ def quote(attempt: CostAttempt, rules: Iterable[PriceRule]) -> PriceQuote:
         return PriceQuote(cost=CostValue(status='unpriced', reason='Missing CNY exchange rate'), rule_snapshot=rule)
     if any(item.unit not in attempt.usage for item in rule.items):
         return PriceQuote(cost=CostValue(status='unpriced', reason='Missing required usage'), rule_snapshot=rule)
-    with localcontext() as context:
-        context.prec = 400
-        amount = sum((_charge(quantity=attempt.usage[item.unit], unit_price=item.unit_price,
-                             basis=item.basis, step=item.step, minimum=item.minimum,
-                             cny_rate=rate) for item in rule.items), Decimal(0))
-        return PriceQuote(cost=CostValue(status='estimated', amount_micros=_micros(amount)), rule_snapshot=rule)
+    amount = sum((_charge(quantity=attempt.usage[item.unit], unit_price=item.unit_price,
+                         basis=item.basis, step=item.step, minimum=item.minimum,
+                         cny_rate=rate) for item in rule.items), Fraction(0))
+    return PriceQuote(cost=CostValue(status='estimated', amount_micros=_micros(amount)), rule_snapshot=rule)

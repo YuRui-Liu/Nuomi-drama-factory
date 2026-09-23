@@ -131,3 +131,11 @@ def test_native_cny_rejects_conversion_rate_other_than_one():
     for rate in (None, '1'):
         assert quote(attempt(), [rule(currency='CNY', cny_rate=rate)]).cost.amount_micros == 13200000
     assert quote(attempt(), [rule(currency='USD', cny_rate='7')]).cost.amount_micros == 92400000
+
+
+def test_exact_half_micro_after_nonterminating_division():
+    assert charge_micros(quantity='1', unit_price='0.0000165', basis='3',
+                         step='1', minimum='0', cny_rate='1') == 6
+    r = rule(items=[dict(unit='input_tokens', unit_price='0.0000165', basis='3'),
+                    dict(unit='output_tokens', unit_price='0', basis='3')])
+    assert quote(attempt(usage={'input_tokens': '1', 'output_tokens': '1'}), [r]).cost.amount_micros == 6
