@@ -41,6 +41,15 @@ def test_rounding_timezone_and_covered_zeros(ledger):
     assert result['summary']['complete']
     json.dumps(result)
 
+def test_priced_count_distinguishes_confirmed_zero_from_unsent(ledger):
+    add(ledger, 'unsent', micros=0, submission_status='failed')
+    assert snap(ledger)['summary']['priced_count'] == 0
+    add(ledger, 'zero', micros=0)
+    result = snap(ledger)
+    assert result['summary']['priced_count'] == 1
+    assert result['breakdown']['channels'][0]['priced_count'] == 1
+    assert result['breakdown']['media'][0]['priced_count'] == 1
+
 
 def test_display_states_pending_unknown_and_failed(ledger):
     assert snap(ledger)['summary']['display_state'] == 'empty'

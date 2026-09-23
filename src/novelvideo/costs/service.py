@@ -130,8 +130,17 @@ class CostService:
             if (sub.provider == attempt.provider and sub.account_id == attempt.account_id
                     and sub.starts_at <= attempt.occurred_at and (sub.ends_at is None or attempt.occurred_at < sub.ends_at)):
                 return CostValue(status='subscription_covered', reason=f'Subscription {sub.id}'), None, {}
-        snapshots = [r['rule_snapshot'] for r in self.store.list_revisions(attempt.attempt_id) if r.get('rule_snapshot')]
-        rules = [PriceRule.model_validate(snapshots[0])] if snapshots else self.store.list_price_rules()
+        active_snapshot = None
+        for revision in self.store.list_revisions(attempt.attempt_id):
+            if not revision['applied'] or not revision.get('rule_snapshot'):
+                continue
+            # Ordinary observations keep the original pricing version frozen.
+            # Explicit successful repricing supersedes it for later observations.
+            repriced = (revision.get('evidence', {}).get('type') == 'reprice'
+                        and revision['value']['status'] == 'estimated')
+            if active_snapshot is None or repriced:
+                active_snapshot = revision['rule_snapshot']
+        rules = [PriceRule.model_validate(active_snapshot)] if active_snapshot else self.store.list_price_rules()
         result = quote(attempt, rules)
         if not attempt.usage_source or (attempt.execution_status in ('failed', 'cancelled', 'unknown') and attempt.usage_source == 'request'):
             return CostValue(status='unpriced', reason='No measured billable usage'), result.rule_snapshot, {}

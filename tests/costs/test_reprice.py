@@ -64,3 +64,28 @@ def test_new_more_specific_rule_invalidates_preview(store):
     store.add_price_rule(PriceRule(id='specific',version='1',provider='x',media_type='image',starts_at=NOW,items=[{'unit':'item','unit_price':'8'}]))
     with pytest.raises(StoreConflictError):
         service(store).apply('p',preview['preview_id'])
+
+def test_successful_reprice_supersedes_initial_unpriced_snapshot(tmp_path):
+    from novelvideo.costs.service import CostService, Observation
+    store = CostStore(tmp_path/'life.db')
+    lifecycle = CostService(store)
+    lifecycle.prepare(CostAttempt(attempt_id='a',project_id='p',provider='x',account_id='x',model='m',media_type='image',occurred_at=NOW))
+    lifecycle.submitted('a','external')
+    store.add_price_rule(PriceRule(id='generic',version='1',currency='USD',media_type='image',starts_at=NOW,items=[{'unit':'item','unit_price':'2'}]))
+    lifecycle.observe('a','initial',Observation(execution_status='succeeded',usage={'item':'2'},usage_source='provider'))
+    assert store.get_cost('a').status == 'unpriced'
+    store.add_price_rule(PriceRule(id='specific',version='1',currency='USD',cny_rate='7',provider='x',media_type='image',starts_at=NOW,items=[{'unit':'item','unit_price':'2'}]))
+    preview = service(store).preview('p')
+    service(store).apply('p',preview['preview_id'])
+    lifecycle.observe('a','later',Observation(usage={'item':'3'},usage_source='provider'))
+    assert store.get_cost('a').amount_micros == 42000000
+    assert store.list_revisions('a')[0]['rule_snapshot']['id'] == 'generic'
+    assert store.list_revisions('a')[-1]['rule_snapshot']['id'] == 'specific'
+
+def test_ignored_snapshot_does_not_freeze_later_quote(store):
+    from novelvideo.costs.service import CostService, Observation
+    store.record_cost('a','actual',CostValue(status='confirmed',amount_micros=1))
+    ignored = PriceRule(id='ignored',version='1',media_type='image',starts_at=NOW,items=[{'unit':'item','unit_price':'99'}])
+    store.record_cost('a','ignored',CostValue(status='estimated',amount_micros=198000000),ignored)
+    CostService(store).observe('a','later',Observation())
+    assert store.list_revisions('a')[-1]['rule_snapshot']['id'] == 'r'

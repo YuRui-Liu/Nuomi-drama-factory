@@ -19,7 +19,8 @@ def _cents(micros):
 
 def _bucket():
     return dict(total_cents=0, confirmed_cents=0, estimated_cents=0,
-                unpriced_count=0, subscription_count=0, pending_count=0, attempt_count=0)
+                unpriced_count=0, subscription_count=0, pending_count=0, attempt_count=0,
+                priced_count=0)
 
 
 def _add(bucket, attempt, cost):
@@ -30,6 +31,7 @@ def _add(bucket, attempt, cost):
         bucket['unpriced_count'] += 1
     elif attempt.submission_status == 'submitted':
         if cost.status in ('confirmed', 'estimated'):
+            bucket['priced_count'] += 1
             amount = _cents(cost.amount_micros)
             bucket[cost.status + '_cents'] += amount
             bucket['total_cents'] += amount
