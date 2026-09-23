@@ -62,6 +62,8 @@ class CostAttempt(BaseModel):
     submission_status: SubmissionStatus = "pending"
     usage: dict[Identity, StrictStr] = Field(default_factory=dict)
     usage_source: Identity | None = None
+    workflow: Identity | None = None
+    specifications: tuple[tuple[Identity, StrictStr], ...] = ()
 
     @field_validator("usage")
     @classmethod
@@ -74,3 +76,79 @@ class CostAttempt(BaseModel):
             if not number.is_finite() or number < 0:
                 raise ValueError("usage must be finite and nonnegative")
         return usage
+
+
+MeteringUnit = Literal['item', 'second', 'call', 'character', 'input_tokens', 'output_tokens', 'credit']
+
+
+def pricing_decimal(value: object, *, positive: bool = False) -> Decimal:
+    """Bound precision/exponents and reject binary floating point inputs."""
+    if isinstance(value, (float, bool)):
+        raise ValueError('pricing requires decimal strings or Decimal values')
+    try:
+        number = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError('invalid pricing decimal') from exc
+    if not number.is_finite() or number < 0 or (positive and number == 0):
+        raise ValueError('pricing must be finite and nonnegative; denominators must be positive')
+    if len(number.as_tuple().digits) > 50 or abs(number.as_tuple().exponent) > 50:
+        raise ValueError('pricing decimal exceeds supported precision or exponent')
+    return number
+
+
+class PriceItem(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    unit: MeteringUnit
+    unit_price: Decimal
+    basis: Decimal = Decimal('1')
+    step: Decimal = Decimal('1')
+    minimum: Decimal = Decimal('0')
+
+    @field_validator('unit_price', 'minimum', mode='before')
+    @classmethod
+    def nonnegative(cls, value):
+        return pricing_decimal(value)
+
+    @field_validator('basis', 'step', mode='before')
+    @classmethod
+    def positive(cls, value):
+        return pricing_decimal(value, positive=True)
+
+
+class PriceRule(BaseModel):
+    """Versioned price in currency units; active interval is [starts_at, ends_at)."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    id: Identity
+    version: Identity
+    provider: Identity | None = None
+    account_id: Identity | None = None
+    media_type: MediaType
+    model: Identity | None = None
+    workflow: Identity | None = None
+    specifications: tuple[tuple[Identity, StrictStr], ...] = ()
+    starts_at: AwareDatetime
+    ends_at: AwareDatetime | None = None
+    currency: Identity = 'CNY'
+    cny_rate: Decimal | None = None
+    items: Annotated[tuple[PriceItem, ...], Field(min_length=1)]
+
+    @field_validator('cny_rate', mode='before')
+    @classmethod
+    def rate(cls, value):
+        return None if value is None else pricing_decimal(value, positive=True)
+
+    @model_validator(mode='after')
+    def valid_rule(self):
+        if self.ends_at is not None and self.ends_at <= self.starts_at:
+            raise ValueError('ends_at must follow starts_at')
+        if len(dict(self.specifications)) != len(self.specifications):
+            raise ValueError('duplicate specification keys')
+        if len({item.unit for item in self.items}) != len(self.items):
+            raise ValueError('duplicate metering units')
+        return self
+
+
+class PriceQuote(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    cost: CostValue
+    rule_snapshot: PriceRule | None = None
