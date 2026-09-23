@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import sqlite3
 
 import pytest
 
@@ -110,3 +112,39 @@ def test_retry_attempts_and_external_lookup(tmp_path):
     with pytest.raises(StoreConflictError):
         store.create_attempt({**facts(), 'attempt_id': 'c', 'external_id': 'b'})
     assert len(store.list_attempts('p')) == 2
+
+
+def test_revision_audit_time_is_persisted(tmp_path):
+    store = CostStore(tmp_path / 'cost.db')
+    store.create_attempt(facts())
+    store.record_cost('a', 'event', CostValue(status='confirmed', amount_micros=3))
+    recorded_at = store.list_revisions('a')[0]['recorded_at']
+    assert datetime.fromisoformat(recorded_at).utcoffset().total_seconds() == 0
+    reopened = CostStore(store.path)
+    assert reopened.get_cost_record('a')['recorded_at'] == recorded_at
+    assert reopened.snapshot('p')['cost_details']['a']['recorded_at'] == recorded_at
+
+
+@pytest.mark.parametrize('ends_at', [None, datetime(2026, 2, 1), '2026-02-01T00:00:00'])
+def test_stop_requires_aware_nonnull_timestamp(tmp_path, ends_at):
+    store = CostStore(tmp_path / 'cost.db')
+    original = store.add_price_rule(dict(id='r', version='1', media_type='image', starts_at='2026-01-01T00:00:00Z', items=[dict(unit='item', unit_price='1')]))
+    with pytest.raises(ValueError):
+        store.stop_price_rule('r', '1', ends_at)
+    assert store.list_price_rules() == [original]
+
+
+def test_migrates_legacy_revision_table_without_fabricating_time(tmp_path):
+    path = tmp_path / 'old.db'
+    with sqlite3.connect(path) as db:
+        db.execute('''CREATE TABLE cost_revisions (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL,
+            event_id TEXT NOT NULL, amount_micros INTEGER, applied INTEGER NOT NULL,
+            body_json TEXT NOT NULL, UNIQUE(attempt_id,event_id))''')
+        db.execute('INSERT INTO cost_revisions VALUES (1, ?, ?, 1, 1, ?)',
+                   ('legacy', 'event', '{"value":{"status":"confirmed","amount_micros":1},"evidence":{},"rule_snapshot":null}'))
+    store = CostStore(path)
+    assert store.list_revisions('legacy')[0]['recorded_at'] is None
+    store.create_attempt(facts())
+    store.record_cost('a', 'new', CostValue(status='estimated', amount_micros=2))
+    assert store.list_revisions('a')[0]['recorded_at'] is not None

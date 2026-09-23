@@ -1,8 +1,10 @@
 """SQLite cost ledger. Every write is serialized; snapshot() reads one transaction."""
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+from pydantic import AwareDatetime, TypeAdapter
 
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 from .models import CostAttempt, CostValue, PriceRule
@@ -39,7 +41,8 @@ class CostStore:
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 attempt_id TEXT NOT NULL REFERENCES cost_attempts(attempt_id),
                 event_id TEXT NOT NULL, amount_micros INTEGER CHECK(amount_micros >= 0),
-                applied INTEGER NOT NULL, body_json TEXT NOT NULL, UNIQUE(attempt_id,event_id))''',
+                applied INTEGER NOT NULL, body_json TEXT NOT NULL, recorded_at TEXT,
+                UNIQUE(attempt_id,event_id))''',
                 '''CREATE TABLE IF NOT EXISTS price_versions (
                 id TEXT NOT NULL, version TEXT NOT NULL, body_json TEXT NOT NULL,
                 PRIMARY KEY(id,version))''',
@@ -51,6 +54,10 @@ class CostStore:
                 PRIMARY KEY(project_id,provider))''',
             ):
                 db.execute(statement)
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(cost_revisions)')}
+            if 'recorded_at' not in columns:
+                # Historical write times cannot be reconstructed; keep them unknown.
+                db.execute('ALTER TABLE cost_revisions ADD COLUMN recorded_at TEXT')
 
     @contextmanager
     def _connection(self, *, write=False):
@@ -150,8 +157,8 @@ class CostStore:
                 return False
             current = CostValue.model_validate_json(db.execute('SELECT body_json FROM current_costs WHERE attempt_id=?', (attempt_id,)).fetchone()[0])
             applied = not (current.status == 'confirmed' and value.status != 'confirmed')
-            db.execute('INSERT INTO cost_revisions(attempt_id,event_id,amount_micros,applied,body_json) VALUES (?,?,?,?,?)',
-                       (attempt_id,event_id,value.amount_micros,int(applied),body))
+            db.execute('INSERT INTO cost_revisions(attempt_id,event_id,amount_micros,applied,body_json,recorded_at) VALUES (?,?,?,?,?,?)',
+                       (attempt_id,event_id,value.amount_micros,int(applied),body,datetime.now(timezone.utc).isoformat()))
             if applied:
                 db.execute('UPDATE current_costs SET amount_micros=?,body_json=? WHERE attempt_id=?',
                            (value.amount_micros,_json(value),attempt_id))
@@ -166,7 +173,7 @@ class CostStore:
 
     def list_revisions(self, attempt_id):
         with self._connection() as db:
-            return [dict(json.loads(row['body_json']), event_id=row['event_id'], applied=bool(row['applied']), sequence=row['sequence'])
+            return [dict(json.loads(row['body_json']), event_id=row['event_id'], applied=bool(row['applied']), sequence=row['sequence'], recorded_at=row['recorded_at'])
                     for row in db.execute('SELECT * FROM cost_revisions WHERE attempt_id=? ORDER BY sequence', (attempt_id,))]
 
     @staticmethod
@@ -174,7 +181,7 @@ class CostStore:
         details = {}
         for row in db.execute('SELECT * FROM cost_revisions WHERE applied=1 ORDER BY sequence'):
             if row['attempt_id'] in ids:
-                details[row['attempt_id']] = dict(json.loads(row['body_json']), event_id=row['event_id'], sequence=row['sequence'])
+                details[row['attempt_id']] = dict(json.loads(row['body_json']), event_id=row['event_id'], sequence=row['sequence'], recorded_at=row['recorded_at'])
         return details
 
     def get_cost_record(self, attempt_id):
@@ -182,7 +189,7 @@ class CostStore:
             self._attempt(db, attempt_id)
             return self._cost_details(db, {attempt_id}).get(attempt_id, dict(
                 value=CostValue(status='unpriced').model_dump(mode='json'), rule_snapshot=None,
-                evidence={}, event_id=None, sequence=0))
+                evidence={}, event_id=None, sequence=0, recorded_at=None))
 
     def add_price_rule(self, rule):
         rule = PriceRule.model_validate(rule)
@@ -203,6 +210,7 @@ class CostStore:
             return [PriceRule.model_validate_json(r[0]) for r in db.execute('SELECT body_json FROM price_versions ORDER BY id,version')]
 
     def stop_price_rule(self, id, version, ends_at):
+        ends_at = TypeAdapter(AwareDatetime).validate_python(ends_at)
         with self._connection(write=True) as db:
             rules = [PriceRule.model_validate_json(r[0]) for r in db.execute('SELECT body_json FROM price_versions')]
             old = next((r for r in rules if (r.id,r.version)==(id,version)), None)
