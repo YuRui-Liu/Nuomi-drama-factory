@@ -92,7 +92,7 @@ def test_invalid_cost_status(models):
         models.CostValue(status="free")
 
 
-@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "-0.1", "garbage", 0.1, True])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "-0.1", "garbage", 0.1, True, b"1.2"])
 def test_usage_rejects_unsafe_values(models, value):
     with pytest.raises(ValidationError):
         models.CostAttempt(**attempt_data(usage={"seconds": value}))

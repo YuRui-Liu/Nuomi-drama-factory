@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 
 from pydantic import (
-    AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints,
+    AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, StringConstraints,
     field_validator, model_validator,
 )
 
@@ -60,7 +60,7 @@ class CostAttempt(BaseModel):
     external_id: Identity | None = None
     execution_status: ExecutionStatus = "pending"
     submission_status: SubmissionStatus = "pending"
-    usage: dict[Identity, str] = Field(default_factory=dict)
+    usage: dict[Identity, StrictStr] = Field(default_factory=dict)
     usage_source: Identity | None = None
 
     @field_validator("usage")
