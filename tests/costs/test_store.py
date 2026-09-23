@@ -148,3 +148,25 @@ def test_migrates_legacy_revision_table_without_fabricating_time(tmp_path):
     store.create_attempt(facts())
     store.record_cost('a', 'new', CostValue(status='estimated', amount_micros=2))
     assert store.list_revisions('a')[0]['recorded_at'] is not None
+
+
+def test_attempt_attribution_cannot_change_after_charge(tmp_path):
+    store = CostStore(tmp_path / 'cost.db')
+    original = store.create_attempt({**facts(), 'workflow': 'flow', 'specifications': [('quality', 'high')]})
+    store.record_cost('a', 'charged', CostValue(status='confirmed', amount_micros=10))
+    revision = store.list_revisions('a')
+    for changes in ({'model': 'other'}, {'media_type': 'image'}, {'workflow': None}, {'specifications': []}):
+        with pytest.raises(ValueError):
+            store.update_attempt('a', changes)
+        assert store.get_attempt('a') == original
+        assert store.list_revisions('a') == revision
+        assert store.get_cost('a').amount_micros == 10
+    enriched = store.update_attempt('a', {'task_id': 'task', 'resource_id': 'resource'})
+    assert enriched.task_id == 'task'
+    assert store.update_attempt('a', {'task_id': 'task', 'resource_id': 'resource'}) == enriched
+    for field in ('task_id', 'resource_id'):
+        for value in (None, 'replacement'):
+            with pytest.raises(ValueError):
+                store.update_attempt('a', {field: value})
+            assert store.get_attempt('a') == enriched
+    assert store.list_revisions('a') == revision

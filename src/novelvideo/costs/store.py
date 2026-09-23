@@ -100,11 +100,13 @@ class CostStore:
             data = old.model_dump()
             data.update(changes)
             updated = CostAttempt.model_validate(data)
-            for name in ('attempt_id', 'project_id', 'provider', 'account_id', 'occurred_at'):
+            for name in ('attempt_id', 'project_id', 'provider', 'account_id', 'occurred_at',
+                         'model', 'media_type', 'workflow', 'specifications'):
                 if getattr(updated, name) != getattr(old, name):
                     raise ValueError(f'{name} is immutable')
-            if old.external_id is not None and updated.external_id != old.external_id:
-                raise ValueError('external_id cannot be replaced')
+            for name in ('external_id', 'task_id', 'resource_id'):
+                if getattr(old, name) is not None and getattr(updated, name) != getattr(old, name):
+                    raise ValueError(f'{name} cannot be replaced or removed')
             db.execute('UPDATE cost_attempts SET external_id=?,media_type=?,body_json=? WHERE attempt_id=?',
                        (updated.external_id, updated.media_type, _json(updated), attempt_id))
             return updated
