@@ -109,10 +109,10 @@ def backfill_project(store, project_id, runtime_dir, now, created_at=None):
     if not _identity(project_id):
         raise ValueError('A stable project ID is required')
     now = _DATE.validate_python(now)
-    start_at = now
+    project_created = None
     if created_at:
         try:
-            start_at = min(start_at, _DATE.validate_python(created_at))
+            project_created = _DATE.validate_python(created_at)
         except (ValueError, TypeError):
             pass
     root = Path(runtime_dir).resolve()
@@ -149,7 +149,6 @@ def backfill_project(store, project_id, runtime_dir, now, created_at=None):
                             outcome = 'identity_conflict'
                         if outcome in ('imported', 'existing'):
                             counts[outcome] += 1
-                            start_at = min(start_at, attempt.occurred_at)
                         else:
                             counts['skipped'] += 1
                             reasons[outcome] += 1
@@ -165,12 +164,18 @@ def backfill_project(store, project_id, runtime_dir, now, created_at=None):
             result[key] += count
     # Coverage is always partial; keep prior gaps and the earliest known start.
     with store.transaction():
+        attempts = store.list_attempts(project_id)
         for provider in ('runninghub', 'grsai', 'codex'):
             previous = store.get_coverage(project_id, provider)
-            provider_gaps = gaps if provider == 'runninghub' else {HISTORY_GAP}
+            provider_gaps = set(gaps) if provider == 'runninghub' else {HISTORY_GAP}
+            start_at = min([now] + [a.occurred_at for a in attempts if a.provider == provider])
+            if previous:
+                start_at = min(start_at, previous.start_at)
+            if project_created is not None and project_created < start_at:
+                provider_gaps.add('backfill:history_before_monitoring')
             store.set_coverage(Coverage(
                 project_id=project_id, provider=provider,
-                start_at=min(start_at, previous.start_at) if previous else start_at,
+                start_at=start_at,
                 complete=False, reason=previous.reason if previous and previous.reason else 'Historical coverage remains partial',
                 gaps=tuple(sorted(set(previous.gaps if previous else ()) | provider_gaps)),
             ))

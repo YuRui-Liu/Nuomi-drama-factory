@@ -123,6 +123,24 @@ def test_missing_sources_remain_partial_without_creating_source_files(tmp_path):
     assert any('missing_source' in gap for gap in coverage.gaps)
 
 
+def test_project_creation_does_not_claim_monitoring_started_before_evidence(tmp_path):
+    from novelvideo.costs.backfill import backfill_project
+    store = CostStore(tmp_path / 'ledger.db')
+    backfill_project(store, 'project-1', tmp_path, now=NOW, created_at='2020-01-01T00:00:00Z')
+    coverage = store.get_coverage('project-1', 'runninghub')
+    assert coverage.start_at == NOW
+    assert 'backfill:history_before_monitoring' in coverage.gaps
+
+
+def test_monitoring_start_uses_proven_record_not_project_creation(tmp_path):
+    from novelvideo.costs.backfill import backfill_project
+    source(tmp_path)
+    store = CostStore(tmp_path / 'ledger.db')
+    backfill_project(store, 'project-1', tmp_path, now=NOW, created_at='2020-01-01T00:00:00Z')
+    assert store.get_coverage('project-1', 'runninghub').start_at == datetime.fromisoformat(WHEN)
+    assert store.get_coverage('project-1', 'grsai').start_at == NOW
+
+
 def test_attempt_id_collision_does_not_reassign(tmp_path):
     source(tmp_path)
     store = CostStore(tmp_path / 'ledger.db')
