@@ -364,6 +364,14 @@ def build_text_task_runtime(snapshot: AgentTaskRouteSnapshot) -> StructuredTextR
 
 ## 未决风险
 
-1. **推理强度取值合法性未端到端验证。** `ReasoningEffortId` 在 dsh 中是 branded string，类型层无字面量联合，settings schema 为 `z.string()`，因此 `low` 能通过配置校验。但 provider 适配器是否接受 `low` 未经真实请求验证（本机缺 `DEEPSEEK_API_KEY`）。实现时应在有凭据的环境跑一次最小调用确认。
-2. **harness 运行时与 Nuomi 网关的凭据关系。** 当前设计让 harness 直接使用 `DEEPSEEK_API_KEY`，与 Nuomi 自身模型网关（`compat` 渠道配置）相互独立。若希望 harness 复用网关的 key 与 base URL，需要额外的配置映射，本设计不覆盖。
+1. ~~推理强度取值合法性未端到端验证。~~ **已于 2026-09-25 端到端验证通过。** 用真实凭据走 Nuomi 适配器完整路径（`load_global_routes` → preset 解析 → 写 `settings.yaml` → `dsh --profile headless` → 解析 stdout → Pydantic 校验）返回预期结构化结果，退出码 0。确认 `deepseek-official` 路由提供 `deepseek-v4-flash-vision-exp`，且 provider 接受 `reasoningEffort: low`。同时确认调用前后用户的 `~/.dsh/settings.yaml`（sha256 `c631a42d…`）逐字节不变，隔离保证成立。
+2. **harness 运行时与 Nuomi 网关的凭据关系。** 当前设计让 harness 直接使用 `DEEPSEEK_API_KEY`，与 Nuomi 自身模型网关（`compat` 渠道配置）相互独立。
+
+   **已观察到的实际后果（2026-09-25）**：若部署把额度放在兼容网关（NewAPI）并只配置 `model_api` 运行时，`deepseek_harness` 会**绕开网关**直连 `api.deepseek.com`，因缺凭据而失败。当时的错误消息把原因误导为「余额/模型权限」，现已修复为透出 dsh 自身的 `MISSING_CREDENTIAL` / `AUTH` 等错误行。
+
+   另需注意：为保证不覆盖用户的 `~/.dsh/settings.yaml`，`DSH_HOME` 被隔离，**凭据也随之被隔离**——用户交互式 dsh 中已存的 key 对 Nuomi 不可见，必须单独提供给 Nuomi（后端环境变量 `DEEPSEEK_API_KEY`，或 Nuomi 专属 `$DSH_HOME/.credentials.yaml`，后者权限必须为 `600`，且因文件被 watch 而无需重启）。
+
+   若希望 harness 复用网关的 key 与 base URL，需要额外的配置映射（可经 `dsh-llm-pi-ai` 的 `providers` 字典声明 `baseURL` + `apiKeyEnv`），本设计不覆盖。
 3. **`settings.yaml` 热重载时序。** 每次调用前重写该文档，`dsh-settings-file` 的 watcher 有去抖窗口。由于是进程启动时读取、且内容在并发下一致，预期无影响；若实测出现读取到旧值，可改为每次调用使用独立 settings 路径并通过 profile 补丁层覆盖。
+
+   **2026-09-25 端到端验证未发现问题**：写入后 dsh 读取到的是本次写入的内容，`model` / `reasoningEffort` 均生效。
