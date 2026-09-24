@@ -47,11 +47,13 @@ async def test_missing_source_fails_without_model():
 
 
 @pytest.mark.asyncio
-async def test_real_episode_offsets_hash_and_final_source_guard(tmp_path):
+@pytest.mark.parametrize('hash_format', ['legacy', 'episode_store'])
+async def test_real_episode_offsets_hash_and_final_source_guard(tmp_path, hash_format):
     m = source_module()
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.models import NovelCharacter
     from novelvideo.story_analysis import source_sha256
+    from novelvideo.episode_sources import content_sha256
     store = SQLiteStore('u/p', output_dir=str(tmp_path / 'out'), state_dir=str(tmp_path / 'state'))
     await store.initialize()
     try:
@@ -59,7 +61,7 @@ async def test_real_episode_offsets_hash_and_final_source_guard(tmp_path):
         text = '甲七十岁。'
         db = await store._ensure_db()
         await db.execute('INSERT INTO episode_sources(episode_number,title,raw_content,content_hash,source_filename,source_revision,imported_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
-            (1, '一', text, source_sha256(text), 'episode-one.txt', 1, 'now', 'now'))
+            (1, '一', text, content_sha256(text) if hash_format == 'episode_store' else source_sha256(text), 'episode-one.txt', 1, 'now', 'now'))
         await db.commit()
         docs, revision = await m.load_sources(store.project_dir, store)
         assert docs['episode:0001'].text == text
@@ -68,6 +70,8 @@ async def test_real_episode_offsets_hash_and_final_source_guard(tmp_path):
         m.assert_live_sources(ctx, store, docs, '甲', None)
         await db.execute('UPDATE episode_sources SET raw_content=? WHERE episode_number=1', ('甲二十岁。',))
         await db.commit()
+        with pytest.raises(ValueError, match='原文内容校验失败'):
+            await m.load_sources(store.project_dir, store)
         with pytest.raises(ValueError, match='source changed'):
             m.assert_live_sources(ctx, store, docs, '甲', None)
     finally:

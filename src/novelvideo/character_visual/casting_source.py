@@ -50,7 +50,9 @@ async def load_sources(project_dir, sqlite_store):
     for source in episodes:
         document_id = f'episode:{source.episode_number:04d}'
         digest = source_sha256(source.content)
-        if digest != source.content_hash:
+        # EpisodeSourceStore writes algorithm-prefixed digests; older imports
+        # stored the same SHA256 bytes as bare hex. Verify either exact format.
+        if source.content_hash not in (digest, f'sha256:{digest}'):
             raise ValueError('原文内容校验失败')
         documents[document_id] = SourceDocument(document_id, source.content, digest,
             str(source.source_revision), source.source_filename)
