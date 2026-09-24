@@ -42,13 +42,19 @@ def fact_applies(fact: CharacterNarrativeFact, identity_id: str | None) -> bool:
     return fact.identity_id is None or fact.identity_id == identity_id
 
 
+def _negated_at(text: str, start: int) -> bool:
+    """Recognize local negation only; not a general entailment classifier."""
+    return bool(re.search(r"(?:不(?:是|算|根据)?|并非|没有|非|not|never)\s*(?:一[只个位名]|an?|the)?\s*$",
+                          text[max(0, start - 16):start], flags=re.IGNORECASE))
+
+
 def evidence_supports(fact: CharacterNarrativeFact) -> bool:
     """Conservative lexical check; unverifiable paraphrases require review, never promotion."""
     if not fact.evidence.strip() or not fact.value.strip():
         return False
-    if re.search(r"(?:不|并非|不是|没有|不算|并不)\s*" + re.escape(fact.value), fact.evidence):
-        return False
-    return fact.value in fact.evidence or any(term in fact.evidence for term in _ALIASES.get(fact.value.casefold(), ()))
+    matches = [match for term in (fact.value, *_ALIASES.get(fact.value.casefold(), ()))
+               for match in re.finditer(re.escape(term), fact.evidence, flags=re.IGNORECASE)]
+    return bool(matches) and not any(_negated_at(fact.evidence, match.start()) for match in matches)
 
 
 def _age_interval(value: str) -> tuple[int, int] | None:
@@ -133,9 +139,15 @@ def validate_casting_decisions(profile: CharacterNarrativeProfile, decisions: li
                 same_field = decision.attribute == fact.field or {decision.attribute, fact.field} <= _AGE_FIELDS
                 if fact_applies(fact, identity_id) and evidence_supports(fact) and same_field and decision.value != fact.value:
                     issues.append(f"creative_overrides_fact:{decision.decision_id}:{fact.fact_id}")
-            if decision.attribute in {"face_shape", "facial_feature", "body_type", "skin_color", "scar", "disability"}:
+            if decision.attribute in {"face", "build", "appearance", "face_shape", "facial_feature", "facial_features", "body_type", "skin_color", "scar", "disability", "distinctive_feature"}:
                 if profile.occupation and profile.occupation in decision.reason:
                     issues.append(f"occupational_phenotype:{decision.decision_id}")
+                personality_terms = {"反派", "邪恶", "恶毒", "善良", "正派", "正义", "奸诈", "villain", "evil",
+                                     *profile.personality, profile.dramatic_function} - {""}
+                if any(not _negated_at(decision.reason, match.start())
+                       for term in personality_terms
+                       for match in re.finditer(re.escape(term), decision.reason, flags=re.IGNORECASE)):
+                    issues.append(f"personality_phenotype:{decision.decision_id}")
             continue
         for fact_id in decision.fact_ids:
             fact = facts.get(fact_id)

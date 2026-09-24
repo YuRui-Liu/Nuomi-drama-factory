@@ -100,3 +100,20 @@ def test_recast_revision_does_not_select_old_adopted_proposal():
     assert revision.proposal_ids == ["new"]
     assert revision.selected_proposal_id is None
     assert workspace.selected_proposal_id == "old"
+
+
+def test_alias_negation_does_not_support_species():
+    from novelvideo.character_visual.casting_brief import build_casting_dossier
+    for quote in ["甲不是猫", "甲不是一只猫", "甲 is not a cat"]:
+        dossier = build_casting_dossier(profile((quote, dict(field="species", value="cat"))), None, "s", "t")
+        assert not dossier.hard_constraints
+        assert "unverified_evidence:f0" in dossier.issues
+
+
+def test_morality_cannot_justify_creative_phenotype():
+    from novelvideo.character_visual.casting_brief import validate_casting_decisions
+    p = profile()
+    p.personality = ["反派"]
+    decision = CastingDecision(decision_id="d", attribute="face_shape", value="凶恶的尖嘴猴腮",
+        reason="因为是反派，所以长相凶恶", basis="creative_choice")
+    assert "personality_phenotype:d" in validate_casting_decisions(p, [decision], None)

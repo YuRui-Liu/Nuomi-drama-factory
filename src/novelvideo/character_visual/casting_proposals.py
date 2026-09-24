@@ -1,10 +1,31 @@
 """Grounded proposal validation shared by design requests and later selection."""
 from __future__ import annotations
 
-from .casting_brief import build_casting_dossier, validate_casting_decisions
+import re
+
+from .casting_brief import _age_interval, _negated_at, build_casting_dossier, evidence_supports, validate_casting_decisions
 from .casting_models import CastingDecision
 from .models import CharacterDesignProposal, CharacterNarrativeProfile
 from .proposals import _all_proposal_text, _structures_collide, assess_design_proposal
+
+
+def _rendered_text(proposal: CharacterDesignProposal) -> str:
+    """Only image instructions can demonstrate preservation, not titles/reasons."""
+    return "\n".join([proposal.face_shape or "", *proposal.facial_features,
+        proposal.hair_style or "", proposal.body_type or "", *proposal.distinctive_features,
+        *proposal.identity_anchors, proposal.asymmetry_detail, *proposal.outfit_states.values()])
+
+
+def _age_contradicts(value: str, rendered: str) -> bool:
+    expected = _age_interval(value)
+    if expected is None:
+        return False
+    pattern = r"\d+岁|[零一二三四五六七八九十两]+岁|青年|少年|老年|中年|儿童|\byouth\b|\belder\b|\bchild\b"
+    for match in re.finditer(pattern, rendered, flags=re.IGNORECASE):
+        age = _age_interval(match.group().casefold())
+        if age and not _negated_at(rendered, match.start()) and (age[1] < expected[0] or age[0] > expected[1]):
+            return True
+    return False
 
 
 def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: list[CharacterDesignProposal],
@@ -38,13 +59,17 @@ def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: li
         issues.extend(prefix + x for x in structural)
         decisions = proposal.casting_decisions
         issues.extend(prefix + x for x in validate_casting_decisions(profile, decisions, identity_id))
-        if profile.facts and not proposal.rationale.strip():
+        if not proposal.rationale.strip():
             issues.append(prefix + "casting_reason:required")
-        if profile.facts and not decisions:
+        if not decisions:
             issues.append(prefix + "casting_decisions:required")
-        if profile.facts and not any(d.basis == "creative_choice" for d in decisions):
+        constrained_values = {fact.value for fact in dossier.hard_constraints}
+        has_free_details = any(value.strip() and value.strip() not in constrained_values
+                               for value in _rendered_text(proposal).splitlines())
+        if has_free_details and not any(d.basis == "creative_choice" for d in decisions):
             issues.append(prefix + "creative_choices:required")
         text = _all_proposal_text(proposal)
+        rendered = _rendered_text(proposal)
         # A model cannot bypass history validation by putting a scar only in
         # visual prose and omitting it from its structured decisions.
         unchecked_text = text
@@ -58,8 +83,10 @@ def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: li
             if not any(d.basis == "evidence" and fact.fact_id in d.fact_ids and d.value == fact.value for d in decisions):
                 issues.append(prefix + "missing_constraint:" + fact.fact_id)
             # Decisions are not a license for contradictory rendered instructions.
-            if fact.value not in text:
+            if not evidence_supports(fact.model_copy(update={"evidence": rendered})):
                 issues.append(prefix + "constraint_not_visualized:" + fact.fact_id)
+            if fact.field in {"age_range", "age_group"} and _age_contradicts(fact.value, rendered):
+                issues.append(prefix + "age_contradiction:" + fact.fact_id)
         for other in proposals:
             if other.proposal_id != proposal.proposal_id and _structures_collide(proposal, other):
                 issues.append(prefix + "structure_collision:" + other.proposal_id)

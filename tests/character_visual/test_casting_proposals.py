@@ -67,7 +67,7 @@ def test_nonhuman_does_not_require_human_face_or_invented_asymmetry():
     proposals = []
     for index, features in enumerate([("杏核瞳", "矮壮躯干", "三角耳"), ("椭圆瞳", "修长躯干", "圆耳尖"), ("细长瞳", "中等躯干", "窄耳根")]):
         proposals.append(CharacterDesignProposal(proposal_id=str(index), title="猫的演绎", rationale="保留猫的四足结构",
-            facial_features=[features[0]], body_type=features[1], distinctive_features=[features[2]],
+            facial_features=[features[0]], body_type="猫的四足结构，" + features[1], distinctive_features=[features[2]],
             identity_anchors=list(features), recommended=index == 0,
             casting_decisions=[dict(decision_id=str(index), attribute="species", value="猫", reason="原文明示", basis="evidence", fact_ids=["f0"]),
                 dict(decision_id=f"creative-{index}", attribute="body_type", value=features[1], reason="原文未限定体态，提供不同剪影", basis="creative_choice")]))
@@ -98,6 +98,7 @@ async def test_extraction_builder_persists_source_and_style_without_reextract_on
             choices = proposals()
             for p in choices:
                 p["rationale"] = "漂亮的不同具体五官演绎"
+                p["facial_features"].append("漂亮的五官")
                 p["casting_decisions"] = [dict(decision_id=p["proposal_id"] + "-face", attribute="face", value="漂亮", reason="原文明示", basis="evidence", fact_ids=[fact["fact_id"]]),
                     dict(decision_id=p["proposal_id"] + "-creative", attribute="face_shape", value=p["face_shape"], reason="原文未限定骨相，提供不同具体演绎", basis="creative_choice")]
             return {"design_proposals": choices}
@@ -134,3 +135,46 @@ def test_undeclared_creative_choices_and_unreferenced_scars_are_rejected():
     assert any("creative_choices:required" in x for x in validate_casting_proposals(p, choices, None))
     choices[0].distinctive_features = ["左眼有伤疤"]
     assert any("invented_history" in x for x in validate_casting_proposals(p, choices, None))
+
+
+def test_age_in_rationale_does_not_preserve_age_in_rendered_details():
+    from novelvideo.character_visual.casting_proposals import validate_casting_proposals
+    from tests.test_character_build_stages import proposals
+    p = profile(("甲七十岁", dict(field="age_range", value="七十岁")))
+    choices = []
+    for payload in proposals():
+        payload["rationale"] = "保留七十岁原文设定"
+        payload["casting_decisions"] = [dict(decision_id="age", attribute="age_range", value="七十岁", reason="原文", basis="evidence", fact_ids=["f0"]),
+            dict(decision_id="face", attribute="face_shape", value=payload["face_shape"], reason="自由骨相演绎", basis="creative_choice")]
+        choices.append(CharacterDesignProposal.model_validate(payload))
+    assert any("constraint_not_visualized" in issue for issue in validate_casting_proposals(p, choices, None))
+    for choice in choices:
+        choice.facial_features.append("七十岁面容")
+    assert not validate_casting_proposals(p, choices, None)
+    choices[0].facial_features.append("十九岁少年面容，毫无皱纹")
+    assert any("age_contradiction" in issue for issue in validate_casting_proposals(p, choices, None))
+
+
+@pytest.mark.asyncio
+async def test_new_unsourced_response_requires_reason_and_decisions_but_legacy_reuse_is_allowed():
+    from novelvideo.character_design_stage import design_merged_characters
+    from novelvideo.structured_extraction import MergedCharacter
+    from tests.test_character_build_stages import proposals
+    legacy = proposals()
+    for p in legacy:
+        p.pop("rationale", None)
+        p.pop("casting_decisions", None)
+    class Agent:
+        def __init__(self): self.calls = 0
+        async def run(self, prompt):
+            self.calls += 1
+            return {"design_proposals": legacy}
+    agent = Agent()
+    fresh = MergedCharacter(name="甲")
+    await design_merged_characters([fresh], agent=agent)
+    assert not fresh.design_accepted
+    assert agent.calls == 2
+    existing = MergedCharacter(name="乙")
+    await design_merged_characters([existing], agent=agent, existing_designs={"乙": legacy})
+    assert existing.design_accepted
+    assert agent.calls == 2
