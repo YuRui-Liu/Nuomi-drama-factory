@@ -169,18 +169,24 @@ def validate_casting_decisions(profile: CharacterNarrativeProfile, decisions: li
 
 def build_casting_revision(workspace: CharacterVisualWorkspace, identity_id: str | None,
                            source_revision: str, style_revision: str) -> CastingRevision:
+    from .casting_compiler import snapshot_digest
+
     dossier = build_casting_dossier(workspace.profile, identity_id, source_revision, style_revision)
     blocking = [issue for issue in dossier.issues if issue.startswith(("conflicting:", "identity_required:"))]
     if blocking:
         raise ValueError("; ".join(blocking))
-    return CastingRevision(revision_id="casting-" + dossier.dossier_hash[:24], character_id=workspace.character_id,
+    proposal_hashes = {p.proposal_id: snapshot_digest(p.model_dump(mode="json")) for p in workspace.design_proposals}
+    selected = workspace.selected_proposal_id if workspace.selected_proposal_id in proposal_hashes else None
+    revision_hash = snapshot_digest({"dossier_hash": dossier.dossier_hash,
+        "proposal_hashes": proposal_hashes, "selected_proposal_id": selected})
+    return CastingRevision(revision_id="casting-" + revision_hash[:24], character_id=workspace.character_id,
                            identity_id=identity_id, source_revision=source_revision, style_revision=style_revision,
                            profile_hash=dossier.dossier_hash,
                            decisions=[CastingDecision(decision_id="fact-" + f.fact_id, attribute=f.field,
                                       value=f.value, reason=f.evidence, basis="evidence", fact_ids=[f.fact_id])
                                       for f in dossier.hard_constraints],
                            proposal_ids=[p.proposal_id for p in workspace.design_proposals],
-                           selected_proposal_id=workspace.selected_proposal_id if workspace.selected_proposal_id in {p.proposal_id for p in workspace.design_proposals} else None)
+                           proposal_hashes=proposal_hashes, selected_proposal_id=selected)
 
 
 def profile_from_merged(item: Any, source_revision: str, source_text: str | None = None) -> CharacterNarrativeProfile:

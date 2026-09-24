@@ -45,6 +45,8 @@ class CastingRevision(CastingContract):
     profile_hash: NonBlank
     decisions: list[CastingDecision] = Field(default_factory=list)
     proposal_ids: list[NonBlank] = Field(default_factory=list)
+    # Empty is allowed when decoding legacy drafts; compilation requires rebuild.
+    proposal_hashes: dict[NonBlank, NonBlank] = Field(default_factory=dict)
     selected_proposal_id: NonBlank | None = None
 
     @model_validator(mode="after")

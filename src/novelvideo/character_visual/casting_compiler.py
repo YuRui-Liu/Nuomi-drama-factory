@@ -39,6 +39,11 @@ def compile_casting_snapshot(revision: CastingRevision, proposal: CharacterDesig
     dossier = build_casting_dossier(profile, revision.identity_id, revision.source_revision, style)
     if dossier.dossier_hash != revision.profile_hash:
         raise ValueError("stale profile/source/style content")
+    bound_hash = revision.proposal_hashes.get(proposal.proposal_id)
+    if bound_hash is None:
+        raise ValueError("legacy proposal binding missing: rebuild casting revision")
+    if snapshot_digest(proposal.model_dump(mode="json")) != bound_hash:
+        raise ValueError("stale proposal content: rebuild casting revision")
     issues = validate_casting_proposal(profile, proposal, revision.identity_id,
         source_revision=revision.source_revision, style_revision=style)
     issues += validate_casting_decisions(profile, revision.decisions, revision.identity_id)
