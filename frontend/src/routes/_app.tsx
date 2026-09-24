@@ -109,21 +109,11 @@ function AppLayout() {
         navigate({ to: "/login" });
         return;
       }
-      let cancelled = false;
-      setValidated(false);
-      validateSession().then((ok) => {
-        if (cancelled) return;
-        if (!ok) {
-          validatedUsernameRef.current = null;
-          navigate({ to: "/login" });
-          return;
-        }
-        validatedUsernameRef.current = useAuthStore.getState().username;
-        setValidated(true);
-      });
-      return () => {
-        cancelled = true;
-      };
+      // CE runs without an authenticated session. Do not call /auth/me and
+      // redirect back to /login when the runtime config explicitly disables
+      // auth; that creates an endless redirect loop on a fresh browser.
+      setValidated(true);
+      return;
     }
     if (validatedUsernameRef.current === username) {
       setValidated(true);

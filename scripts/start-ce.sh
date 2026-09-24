@@ -81,6 +81,10 @@ export NOVELVIDEO_API_PORT="$api_port"
 export NOVELVIDEO_API_URL="http://127.0.0.1:${api_port}"
 export DRAMACLAW_API_URL="$NOVELVIDEO_API_URL"
 export SUPERTALE_API_URL="$NOVELVIDEO_API_URL"
+# Keep the browser pointed at the loopback API and make the CE fallback
+# explicit when the first runtime-config request is interrupted during boot.
+export VITE_API_URL="$NOVELVIDEO_API_URL"
+export VITE_EDITION=ce
 
 if [ "${NEWAPI_API_KEY:-}" = "your_newapi_token" ] || [ -z "${NEWAPI_API_KEY:-}" ]; then
   echo "Warning: NEWAPI_API_KEY is not configured. API can start, but AI generation will fail." >&2

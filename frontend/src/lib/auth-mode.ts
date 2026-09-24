@@ -16,6 +16,8 @@ export function isLocalAuthMode(): boolean {
 export async function ensureAuthenticatedForAppRoute(): Promise<boolean> {
   const auth = useAuthStore.getState();
   if (auth.username) return true;
-  if (authRequired()) return false;
+  // CE explicitly runs without authentication. Treat the route as public
+  // instead of probing /auth/me and redirecting to the login route forever.
+  if (!authRequired()) return true;
   return Boolean(await auth.getCurrentUser());
 }
