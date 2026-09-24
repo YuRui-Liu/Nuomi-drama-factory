@@ -129,6 +129,33 @@ def _apply_override(
     return route.model_copy(update=values)
 
 
+def _unclamped_global_task_route(
+    task_role: str, config: AgentTaskRoutingConfig
+) -> AgentTaskRoute:
+    """Default route for a role with the global override layered on top.
+
+    Deliberately *not* clamped: callers that still need to layer project/task
+    overrides must clamp only after the full precedence chain is resolved.
+    """
+
+    route = default_agent_task_route(task_role)
+    override = config.routes.get(task_role)
+    if override is not None:
+        route = _apply_override(route, override)
+    return route
+
+
+def resolve_global_task_route(
+    task_role: str,
+    config: AgentTaskRoutingConfig,
+) -> AgentTaskRoute:
+    """Resolve one role's global route, applying the runtime-level preset clamp."""
+
+    return clamp_task_route_to_runtime_preset(
+        _unclamped_global_task_route(task_role, config), config
+    )
+
+
 def resolve_agent_task_route(
     *,
     task_role: str,
@@ -176,10 +203,9 @@ def resolve_configured_agent_task_route(
     """Resolve persisted routes once, at enqueue time."""
 
     global_config = load_global_routes()
-    global_override = global_config.routes.get(task_role)
-    global_route = default_agent_task_route(task_role)
-    if global_override is not None:
-        global_route = _apply_override(global_route, global_override)
+    # Keep the global route unclamped here: project/task overrides are layered
+    # on top first, and only the fully resolved snapshot is clamped below.
+    global_route = _unclamped_global_task_route(task_role, global_config)
     project_override = load_project_routes(ctx).routes.get(task_role)
     parsed_task_override = (
         AgentTaskRouteOverride.model_validate(task_override)

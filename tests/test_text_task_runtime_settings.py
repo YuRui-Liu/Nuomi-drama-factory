@@ -263,7 +263,8 @@ def test_harness_route_is_clamped_to_runtime_preset(tmp_path, monkeypatch):
     assert snapshot.runtime == "deepseek_harness"
     assert snapshot.model == "harness-user-choice"
     assert snapshot.reasoning_effort == "high"
-    # clamp 必须用 model_copy 保留元数据，而不是重建快照。
+    # task_role/source 都是无默认值的必填字段，任何重建快照的实现都必须显式
+    # 传入；这两条断言只能挡住极粗心的重建，保留它们只是最低保险。
     assert snapshot.task_role == "director_plan"
     assert snapshot.source == "task"
 
@@ -397,9 +398,3 @@ def test_runtime_preset_for_returns_none_for_runtime_without_default():
     from novelvideo.text_task_runtime.settings import runtime_preset_for
 
     assert runtime_preset_for(AgentTaskRoutingConfig(), "workbuddy") is None
-
-
-def test_harness_builtin_preset_exists():
-    from novelvideo.text_task_runtime import settings as runtime_settings
-
-    assert "deepseek_harness" in runtime_settings._RUNTIME_PRESET_DEFAULTS

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from novelvideo import config as app_config
 from novelvideo.model_gateway_settings import (
@@ -40,9 +40,8 @@ from novelvideo.text_task_runtime.models import (
 )
 from novelvideo.text_task_runtime.models_catalog import get_runtime_model_catalog
 from novelvideo.text_task_runtime.settings import (
-    clamp_task_route_to_runtime_preset,
-    default_agent_task_route,
     load_global_routes,
+    resolve_global_task_route,
     runtime_preset_for,
     save_global_routes,
 )
@@ -112,6 +111,9 @@ TEXT_TASK_ROLE_LABELS = {
 
 class TaskRuntimeConfigBody(BaseModel):
     routes: dict[str, AgentTaskRoute]
+    # 整表替换语义（见 docs 设计）：字段缺席 == 显式清空（handler 里的
+    # ``body.runtime_presets or {}`` 把 None 归并成 {}）。前端每次必须提交
+    # 完整映射，否则未提交的 runtime preset 会在保存时被静默删除。
     runtime_presets: dict[TextTaskRuntimeName, RuntimePreset] | None = None
 
 
@@ -419,19 +421,6 @@ async def save_text_runtime_config(body: TextRuntimeConfigBody) -> dict[str, Any
     return {"ok": True, "data": text_runtime_status(saved), "runtime": runtime}
 
 
-def _effective_task_route(
-    role: str, configured: AgentTaskRoutingConfig
-) -> AgentTaskRoute:
-    override = configured.routes.get(role)
-    if override is not None:
-        route = default_agent_task_route(role).model_copy(
-            update=override.model_dump(exclude_none=True)
-        )
-    else:
-        route = default_agent_task_route(role)
-    return clamp_task_route_to_runtime_preset(route, configured)
-
-
 def _task_runtime_config_payload() -> dict[str, Any]:
     configured = load_global_routes()
     return {
@@ -439,13 +428,17 @@ def _task_runtime_config_payload() -> dict[str, Any]:
             {
                 "id": role,
                 "label": label,
-                "route": _effective_task_route(role, configured).model_dump(mode="json"),
+                "route": resolve_global_task_route(role, configured).model_dump(
+                    mode="json"
+                ),
             }
             for role, label in TEXT_TASK_ROLE_LABELS.items()
         ],
+        # 从 Literal 派生 runtime 名，避免与 TextTaskRuntimeName 构成两份真相：
+        # 漏掉一个 runtime 会让它的已存 preset 在前端整表回灌时被静默删除。
         "runtime_presets": {
             name: preset.model_dump(mode="json")
-            for name in ("codex", "model_api", "workbuddy", "deepseek_harness")
+            for name in get_args(TextTaskRuntimeName)
             if (preset := runtime_preset_for(configured, name)) is not None
         },
     }
@@ -453,7 +446,13 @@ def _task_runtime_config_payload() -> dict[str, Any]:
 
 @router.get("/task-runtime/config")
 async def get_task_runtime_config() -> dict[str, Any]:
-    return {"ok": True, "data": _task_runtime_config_payload()}
+    try:
+        return {"ok": True, "data": _task_runtime_config_payload()}
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="存储的任务路由配置无效，请重新保存任务路由。",
+        ) from exc
 
 
 @router.get("/task-runtime/models")
@@ -468,15 +467,21 @@ async def put_task_runtime_config(body: TaskRuntimeConfigBody) -> dict[str, Any]
     unknown = sorted(set(body.routes) - set(TEXT_TASK_ROLE_LABELS))
     if unknown:
         raise HTTPException(status_code=422, detail=f"unsupported task roles: {', '.join(unknown)}")
-    config = AgentTaskRoutingConfig(
-        routes={
-            role: route.model_dump(mode="json")
-            for role, route in body.routes.items()
-        },
-        runtime_presets=body.runtime_presets or {},
-    )
-    save_global_routes(config)
-    return {"ok": True, "data": _task_runtime_config_payload()}
+    try:
+        config = AgentTaskRoutingConfig(
+            routes={
+                role: route.model_dump(mode="json")
+                for role, route in body.routes.items()
+            },
+            runtime_presets=body.runtime_presets or {},
+        )
+        save_global_routes(config)
+        return {"ok": True, "data": _task_runtime_config_payload()}
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="存储的任务路由配置无效，请重新保存任务路由。",
+        ) from exc
 
 
 @router.post("/official/enable")
