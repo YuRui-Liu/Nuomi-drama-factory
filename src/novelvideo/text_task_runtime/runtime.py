@@ -147,7 +147,10 @@ class ModelApiStructuredRuntime:
         validation_context: dict[str, Any] | None = None,
         images: list[StructuredImage] | None = None,
     ) -> T:
-        from novelvideo.config import get_newapi_text_pydantic_model
+        from novelvideo.config import (
+            _normalize_openai_compat_reasoning_effort,
+            get_newapi_text_pydantic_model,
+        )
 
         agent_kwargs: dict[str, Any] = {
             "model": get_newapi_text_pydantic_model(
@@ -161,9 +164,13 @@ class ModelApiStructuredRuntime:
             "system_prompt": system_prompt,
         }
         if self.snapshot.reasoning_effort:
-            agent_kwargs["model_settings"] = {
-                "openai_reasoning_effort": self.snapshot.reasoning_effort
-            }
+            # "max" is a WorkBuddy-only level with no OpenAI-compatible
+            # equivalent; drop it rather than sending an invalid value.
+            effort = _normalize_openai_compat_reasoning_effort(
+                self.snapshot.reasoning_effort
+            )
+            if effort:
+                agent_kwargs["model_settings"] = {"openai_reasoning_effort": effort}
         if validation_context is not None:
             agent_kwargs["validation_context"] = validation_context
         agent = self._agent_factory(**agent_kwargs)
@@ -179,6 +186,9 @@ class ModelApiStructuredRuntime:
 
 
 def build_text_task_runtime(snapshot: AgentTaskRouteSnapshot) -> StructuredTextRuntime:
+    if snapshot.runtime == "workbuddy":
+        from .workbuddy import WorkBuddyStructuredRuntime
+        return WorkBuddyStructuredRuntime(snapshot)
     if snapshot.runtime == "codex":
         return CodexStructuredRuntime(snapshot)
     return ModelApiStructuredRuntime(snapshot)
