@@ -91,6 +91,7 @@ class CastingFinding(CastingContract):
     dimension: Literal["facts", "design", "distinctiveness"]
     verdict: Literal["conforms", "deviation", "unjudgeable"]
     description: NonBlank
+    visibility: Literal["visible", "not_visible", "uncertain"] = "uncertain"
     fact_ids: list[NonBlank] = Field(default_factory=list)
     decision_ids: list[NonBlank] = Field(default_factory=list)
     reference_candidate_ids: list[NonBlank] = Field(default_factory=list)
@@ -101,6 +102,19 @@ class CastingReviewReport(CastingContract):
     reviewer: NonBlank
     model: NonBlank
     version: NonBlank
+    runtime: str = ""
+    policy_version: str = "casting-review-v1"
+    reference_versions: list[dict[str, str]] = Field(default_factory=list)
+    comparison_scope: Literal["none", "supplied_references"] = "none"
+
+
+class CastingReviewAttempt(CastingContract):
+    attempt_id: NonBlank
+    task_id: NonBlank
+    status: Literal["running", "completed", "failed", "superseded"] = "running"
+    error: str | None = None
+    report: CastingReviewReport | None = None
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class CastingCandidate(CastingContract):
@@ -118,6 +132,8 @@ class CastingCandidate(CastingContract):
     review_status: Literal["not_started", "running", "completed", "failed"] = "not_started"
     report: CastingReviewReport | None = None
     error: NonBlank | None = None
+    review_attempt_id: NonBlank | None = None
+    review_attempts: list[CastingReviewAttempt] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_state(self) -> CastingCandidate:

@@ -12,7 +12,7 @@ from PIL import Image
 
 from novelvideo.production_workflow import production_workflow_project_lock
 from .casting_compiler import snapshot_digest
-from .casting_models import CastingCandidate
+from .casting_models import CastingCandidate, CastingReviewAttempt
 
 
 class CastingCandidateStore:
@@ -179,3 +179,50 @@ class CastingCandidateStore:
             data[candidate_id] = candidate.model_dump(mode="json")
             self._write(data)
             return self._decode(data[candidate_id])
+
+    def begin_review(self, candidate_id: str, *, task_id: str, attempt_id: str, provenance: dict | None = None) -> bool:
+        with production_workflow_project_lock(self.state_dir):
+            data = self._read()
+            candidate = self._decode(data[candidate_id])
+            for previous in candidate.review_attempts:
+                if previous.attempt_id == attempt_id:
+                    if previous.task_id != task_id:
+                        raise ValueError("review attempt task mismatch")
+                    return False
+            self.read_verified_asset(candidate_id)
+            for previous in candidate.review_attempts:
+                if previous.status == "running": previous.status = "superseded"
+            candidate.review_attempts.append(CastingReviewAttempt(attempt_id=attempt_id, task_id=task_id, provenance=provenance or {}))
+            candidate.review_attempt_id = attempt_id
+            candidate.review_status = "running"
+            candidate.report = None
+            candidate.error = None
+            data[candidate_id] = self._decode(candidate.model_dump(mode="json")).model_dump(mode="json")
+            self._write(data)
+            return True
+
+    def _finish_review(self, candidate_id, *, attempt_id, report=None, error=None):
+        with production_workflow_project_lock(self.state_dir):
+            data = self._read()
+            candidate = self._decode(data[candidate_id])
+            if candidate.review_attempt_id != attempt_id or candidate.review_status != "running":
+                return False
+            if report is not None:
+                self.read_verified_asset(candidate_id)
+            candidate.review_status = "completed" if report is not None else "failed"
+            candidate.report = report
+            candidate.error = error
+            attempt = next(a for a in candidate.review_attempts if a.attempt_id == attempt_id)
+            attempt.status = candidate.review_status
+            attempt.report = report
+            attempt.error = error
+            data[candidate_id] = self._decode(candidate.model_dump(mode="json")).model_dump(mode="json")
+            self._write(data)
+            return True
+
+    def complete_review(self, candidate_id, *, attempt_id, report):
+        return self._finish_review(candidate_id, attempt_id=attempt_id, report=report)
+
+    def fail_review(self, candidate_id, *, attempt_id, error):
+        safe = error if error in {"review_failed", "review_timeout", "review_cancelled"} else "review_failed"
+        return self._finish_review(candidate_id, attempt_id=attempt_id, error=safe)
