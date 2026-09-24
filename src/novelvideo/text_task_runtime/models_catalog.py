@@ -13,6 +13,8 @@ local:
   can extend via ``TEXT_TASK_DEFAULT_MODELS_CODEX`` (comma separated).
 * **model_api**: model IDs are arbitrary OpenAI-compatible names configured
   via the ``兼容网关`` panel. We return an empty list and keep the field free-form.
+* **deepseek_harness**: 模型由运行时级 preset 决定，内置默认仅作为下拉候选，
+  可用 ``TEXT_TASK_DEFAULT_MODELS_DEEPSEEK_HARNESS`` 覆盖。
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ _WORKBUDDY_DEFAULT_MODELS = (
     "default-model",
 )
 _CODEX_DEFAULT_MODELS = ("gpt-5.6-sol", "gpt-6-astra")
-_RUNTIMES = ("workbuddy", "codex", "model_api")
+_DEEPSEEK_HARNESS_DEFAULT_MODELS = ("deepseek-v4-flash-vision-exp",)
+_RUNTIMES = ("workbuddy", "codex", "model_api", "deepseek_harness")
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -108,6 +111,8 @@ def _default_models_for(runtime: str) -> list[str]:
         return list(_WORKBUDDY_DEFAULT_MODELS)
     if runtime == "codex":
         return list(_CODEX_DEFAULT_MODELS)
+    if runtime == "deepseek_harness":
+        return list(_DEEPSEEK_HARNESS_DEFAULT_MODELS)
     return []
 
 

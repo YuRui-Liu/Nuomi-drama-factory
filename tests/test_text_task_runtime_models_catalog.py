@@ -102,3 +102,11 @@ def test_model_api_runtime_does_not_consult_models_json(tmp_path):
     _write(tmp_path / ".codebuddy" / "models.json", {"availableModels": ["ignored"]})
     catalog = models_catalog.get_runtime_model_catalog()
     assert catalog["model_api"] == []
+
+
+def test_catalog_exposes_deepseek_harness_models():
+    from novelvideo.text_task_runtime.models_catalog import get_runtime_model_catalog
+
+    catalog = get_runtime_model_catalog()
+    assert "deepseek_harness" in catalog
+    assert "deepseek-v4-flash-vision-exp" in catalog["deepseek_harness"]
