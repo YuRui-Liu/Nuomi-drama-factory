@@ -178,3 +178,24 @@ async def test_new_unsourced_response_requires_reason_and_decisions_but_legacy_r
     await design_merged_characters([existing], agent=agent, existing_designs={"乙": legacy})
     assert existing.design_accepted
     assert agent.calls == 2
+
+
+def test_persistence_keeps_strict_issues_for_fresh_unsourced_proposals():
+    from novelvideo.structured_builders import _visual_workspace_for_merged_character
+    from novelvideo.structured_extraction import MergedCharacter
+    from novelvideo.character_visual.models import CharacterVisualWorkspace
+    from tests.test_character_build_stages import proposals
+    legacy = proposals()
+    for p in legacy:
+        p.pop("rationale", None)
+        p.pop("casting_decisions", None)
+    item = MergedCharacter(name="甲", design_proposals=legacy, design_accepted=False)
+    fresh = _visual_workspace_for_merged_character(item=item, source_text="甲来了", existing_workspace=None, existing_roster_proposals=[])
+    assert all(p.quality_issues for p in fresh.design_proposals)
+    assert all(any("casting_decisions:required" in issue for issue in p.quality_issues) for p in fresh.design_proposals)
+    assert fresh.visual_bible is None
+    prior = CharacterVisualWorkspace(character_id="甲", profile=profile(), selected_proposal_id="p0",
+        design_proposals=[CharacterDesignProposal.model_validate(p) for p in legacy])
+    retained = _visual_workspace_for_merged_character(item=item, source_text="甲来了", existing_workspace=prior, existing_roster_proposals=[])
+    assert retained.selected_proposal_id == "p0"
+    assert retained.design_proposals == prior.design_proposals
