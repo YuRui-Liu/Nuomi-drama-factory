@@ -88,6 +88,28 @@ async def test_failure_and_ownership_do_not_publish(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["deleted", "tampered", "symlink"])
+async def test_succeeded_replay_verifies_asset_before_reporting_success(tmp_path, fault):
+    from novelvideo.task_backend.runners.character_casting import generate_casting_candidate
+    store = store_at(tmp_path)
+    candidate = pending()
+    store.create_pending(candidate)
+    store.claim_generation("c1", task_id="task1")
+    source = store.output_path("c1")
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(source)
+    completed = store.complete_generation("c1", source)
+    asset = Path(completed.asset_path)
+    asset.unlink()
+    if fault == "tampered": Image.new("RGB", (8, 8), "red").save(asset)
+    if fault == "symlink": asset.symlink_to(source)
+    async def forbidden(**kwargs): raise AssertionError("must not regenerate")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        await generate_casting_candidate(ctx=context(tmp_path), candidate_id="c1", character_id=candidate.character_id,
+            identity_id=None, task_id="task1", resolution=SimpleNamespace(model="gpt-image-2", requested_model="gpt-image-2", resolution_source="request"), generate=forbidden)
+
+
+@pytest.mark.asyncio
 async def test_runner_uses_stored_model_and_rejects_legacy_publish(monkeypatch, tmp_path):
     from novelvideo.task_backend.runners import character_image
     from novelvideo.character_visual.models import CharacterVisualWorkspace

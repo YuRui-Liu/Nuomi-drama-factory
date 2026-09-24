@@ -201,3 +201,39 @@ def test_verified_asset_read_rejects_tampering_after_restart(tmp_path):
     Image.new("RGB", (8, 8), "blue").save(completed.asset_path)
     with pytest.raises(ValueError, match="digest"):
         store_at(tmp_path).read_verified_asset("c1")
+
+
+def test_interrupted_publication_leaves_complete_generated_output_recoverable(tmp_path, monkeypatch):
+    import os
+    store = store_at(tmp_path)
+    store.create_pending(pending())
+    store.claim_generation("c1", task_id="task1")
+    source = store.output_path("c1")
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(source)
+    original_sync = os.fsync
+    def interrupted(fd):
+        original_sync(fd)
+        raise OSError("interrupted before publication")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "fsync", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
+            store.complete_generation("c1", source)
+    assert not source.with_name("candidate.png").exists()
+    assert store_at(tmp_path).complete_generation("c1", source).generation_status == "succeeded"
+    assert store.read_verified_asset("c1") == source.read_bytes()
+
+
+def test_existing_immutable_output_cannot_be_replaced(tmp_path):
+    store = store_at(tmp_path)
+    store.create_pending(pending())
+    store.claim_generation("c1", task_id="task1")
+    source = store.output_path("c1")
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(source)
+    immutable = source.with_name("candidate.png")
+    Image.new("RGB", (8, 8), "blue").save(immutable)
+    before = immutable.read_bytes()
+    with pytest.raises(ValueError, match="immutable.*conflict"):
+        store.complete_generation("c1", source)
+    assert immutable.read_bytes() == before

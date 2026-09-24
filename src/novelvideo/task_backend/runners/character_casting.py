@@ -22,6 +22,7 @@ async def generate_casting_candidate(*, ctx, candidate_id: str, character_id: st
     if (candidate.character_id, candidate.identity_id, candidate.task_id) != (character_id, identity_id, task_id):
         raise ValueError("casting candidate ownership/task mismatch")
     if candidate.generation_status == "succeeded":
+        store.read_verified_asset(candidate_id)
         return candidate_result(candidate)
     if candidate.generation_status == "failed":
         raise RuntimeError("candidate failed; explicit retry requires a new candidate")

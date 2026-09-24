@@ -134,15 +134,21 @@ class CastingCandidateStore:
                 raise ValueError("candidate output must be a valid image") from exc
             destination = self.safe_path(self.output_path(candidate_id).with_name("candidate.png"))
             destination.parent.mkdir(parents=True, exist_ok=True)
-            # A crash after writing bytes can be safely recovered; never replace them.
+            # Publish only fully flushed bytes. A crash before the link leaves
+            # generated.png recoverable; after the link the immutable file is whole.
+            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             try:
-                with destination.open("xb") as handle:
+                with temporary.open("xb") as handle:
                     handle.write(image_bytes)
                     handle.flush()
                     os.fsync(handle.fileno())
-            except FileExistsError:
-                if destination.read_bytes() != image_bytes:
-                    raise ValueError("immutable candidate image conflict")
+                try:
+                    os.link(temporary, destination)
+                except FileExistsError:
+                    if destination.read_bytes() != image_bytes:
+                        raise ValueError("immutable candidate image conflict")
+            finally:
+                temporary.unlink(missing_ok=True)
             self._sync_directory(destination.parent)
             completed = candidate.model_copy(update={"asset_path": str(destination), "asset_sha256": hashlib.sha256(image_bytes).hexdigest(),
                                                       "generation_status": "succeeded", "error": None})
