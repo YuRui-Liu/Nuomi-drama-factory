@@ -240,13 +240,17 @@ def test_harness_route_is_clamped_to_runtime_preset(tmp_path, monkeypatch):
                 )
             },
             runtime_presets={
+                # 故意取一个与内置默认不同的值：只有「用户保存的 preset 优先」的
+                # 实现才会得到它，丢弃用户值或读错配置源都会改变结果。
                 "deepseek_harness": RuntimePreset(
-                    model="deepseek-v4-flash-vision-exp",
-                    reasoning_effort="low",
+                    model="harness-user-choice",
+                    reasoning_effort="high",
                 )
             },
         ),
     )
+    # preset 只存在于 global 配置；project 配置为空。若 clamp 误读 project
+    # 配置，就会拿不到 preset（或拿到错误的值）而暴露出来。
     monkeypatch.setattr(
         runtime_settings, "load_project_routes", lambda ctx: AgentTaskRoutingConfig()
     )
@@ -257,8 +261,53 @@ def test_harness_route_is_clamped_to_runtime_preset(tmp_path, monkeypatch):
         task_override=AgentTaskRouteOverride(model="task-level-attempt", reasoning_effort="xhigh"),
     )
     assert snapshot.runtime == "deepseek_harness"
-    assert snapshot.model == "deepseek-v4-flash-vision-exp"
-    assert snapshot.reasoning_effort == "low"
+    assert snapshot.model == "harness-user-choice"
+    assert snapshot.reasoning_effort == "high"
+    # clamp 必须用 model_copy 保留元数据，而不是重建快照。
+    assert snapshot.task_role == "director_plan"
+    assert snapshot.source == "task"
+
+
+def test_task_override_switching_into_harness_is_clamped(tmp_path, monkeypatch):
+    from novelvideo.text_task_runtime.models import (
+        AgentTaskRouteOverride,
+        AgentTaskRoutingConfig,
+        RuntimePreset,
+    )
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_global_routes",
+        lambda: AgentTaskRoutingConfig(
+            routes={
+                "director_plan": AgentTaskRouteOverride(
+                    runtime="codex", model="gpt-5.6-sol", reasoning_effort="low"
+                )
+            },
+            runtime_presets={
+                "deepseek_harness": RuntimePreset(
+                    model="harness-user-choice",
+                    reasoning_effort="high",
+                )
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_settings, "load_project_routes", lambda ctx: AgentTaskRoutingConfig()
+    )
+
+    # global 里该角色是 codex，是 task 级 override 把运行时切成 harness。
+    snapshot = runtime_settings.resolve_configured_agent_task_route(
+        ctx=SimpleNamespace(state_dir=tmp_path),
+        task_role="director_plan",
+        task_override=AgentTaskRouteOverride(runtime="deepseek_harness"),
+    )
+
+    assert snapshot.runtime == "deepseek_harness"
+    assert snapshot.model == "harness-user-choice"
+    assert snapshot.reasoning_effort == "high"
+    assert snapshot.source == "task"
 
 
 def test_harness_defaults_when_no_preset_saved(tmp_path, monkeypatch):
@@ -308,3 +357,49 @@ def test_non_harness_route_is_not_clamped(tmp_path, monkeypatch):
     )
     assert snapshot.model == "gpt-5.6-sol"
     assert snapshot.reasoning_effort == "medium"
+
+
+def test_runtime_preset_for_prefers_user_saved_value():
+    from novelvideo.text_task_runtime.models import (
+        AgentTaskRoutingConfig,
+        RuntimePreset,
+    )
+    from novelvideo.text_task_runtime.settings import runtime_preset_for
+
+    config = AgentTaskRoutingConfig(
+        runtime_presets={
+            "deepseek_harness": RuntimePreset(
+                model="harness-user-choice", reasoning_effort="high"
+            )
+        }
+    )
+
+    preset = runtime_preset_for(config, "deepseek_harness")
+
+    assert preset is not None
+    assert preset.model == "harness-user-choice"
+    assert preset.reasoning_effort == "high"
+
+
+def test_runtime_preset_for_falls_back_to_builtin_default():
+    from novelvideo.text_task_runtime.models import AgentTaskRoutingConfig
+    from novelvideo.text_task_runtime.settings import runtime_preset_for
+
+    preset = runtime_preset_for(AgentTaskRoutingConfig(), "deepseek_harness")
+
+    assert preset is not None
+    assert preset.model == "deepseek-v4-flash-vision-exp"
+    assert preset.reasoning_effort == "low"
+
+
+def test_runtime_preset_for_returns_none_for_runtime_without_default():
+    from novelvideo.text_task_runtime.models import AgentTaskRoutingConfig
+    from novelvideo.text_task_runtime.settings import runtime_preset_for
+
+    assert runtime_preset_for(AgentTaskRoutingConfig(), "workbuddy") is None
+
+
+def test_harness_builtin_preset_exists():
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    assert "deepseek_harness" in runtime_settings._RUNTIME_PRESET_DEFAULTS
