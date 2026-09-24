@@ -6,7 +6,7 @@ import json
 
 from .casting_brief import build_casting_dossier, build_casting_revision
 from .casting_compiler import compile_casting_snapshot, snapshot_digest
-from .casting_proposals import validate_casting_proposals, validate_casting_proposal
+from .casting_proposals import validate_casting_proposals, validate_casting_proposal, strip_nonvisual_evidence_decisions
 from .models import CharacterDesignProposal
 
 
@@ -120,6 +120,7 @@ async def design_and_publish(*, store, character_id, identity_id, expected_revis
         data = item.model_dump(mode='json')
         data['outfit_states'] = {v.state: v.description for v in item.outfit_states}
         proposals.append(CharacterDesignProposal.model_validate(data))
+    proposals = strip_nonvisual_evidence_decisions(design_profile, proposals)
     issues = validate_casting_proposals(design_profile, proposals, identity_id,
         limitation_reason=output.limitation_reason, source_revision=source_revision, style_revision=style)
     if issues:

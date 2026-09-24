@@ -13,6 +13,29 @@ HUMAN_SPECIES = {"人", "人类", "human", "homo sapiens"}
 UNKNOWN_SPECIES = {"", "unknown", "未知"}
 
 
+def strip_nonvisual_evidence_decisions(profile: CharacterNarrativeProfile,
+                                       proposals: list[CharacterDesignProposal]) -> list[CharacterDesignProposal]:
+    """Remove model-added evidence links to narrative/action facts.
+
+    A plot action may explain a design rationale, but it is not a portrait
+    constraint. Keeping such a decision makes the proposal look like it is
+    asserting an unsupported visual attribute and rejects every otherwise valid
+    proposal. Visual facts remain attached and are still validated strictly.
+    """
+    fields = {fact.fact_id: fact.field for fact in profile.facts}
+    visual_fields = {"age_range", "age_group", "gender", "body_type", "hair_style",
+        "face_shape", "facial_feature", "distinctive_feature", "scar", "disability",
+        "uniform", "clothing_state", "injury_state", "beauty", "appearance", "species",
+        "face", "build"}
+    cleaned = []
+    for proposal in proposals:
+        decisions = [d for d in proposal.casting_decisions
+                     if not (d.basis == "evidence" and d.fact_ids
+                             and all(fields.get(fid) not in visual_fields for fid in d.fact_ids))]
+        cleaned.append(proposal.model_copy(update={"casting_decisions": decisions}))
+    return cleaned
+
+
 def selected_casting_species(hard_constraints: list[CharacterNarrativeFact], proposal: CharacterDesignProposal) -> str:
     """Resolve anatomy only; creative species stays a creative decision, never a fact."""
     values = [f.value for f in hard_constraints if f.field == "species"]

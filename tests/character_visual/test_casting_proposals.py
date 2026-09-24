@@ -74,6 +74,21 @@ def test_nonhuman_does_not_require_human_face_or_invented_asymmetry():
     assert not validate_casting_proposals(p, proposals, None)
 
 
+def test_action_evidence_decision_is_removed_before_visual_validation():
+    from novelvideo.character_visual.casting_proposals import strip_nonvisual_evidence_decisions
+    from novelvideo.character_visual.casting_models import CastingDecision
+    from novelvideo.character_visual.models import CharacterNarrativeFact, SourceSpan
+    p = profile()
+    p.facts.append(CharacterNarrativeFact(fact_id="action", field="behavior", value="修补窗纸",
+        evidence="甲修补窗纸", source_span=SourceSpan(start_line=1, end_line=1), confidence=1))
+    proposal_item = proposal().model_copy(update={"casting_decisions": [
+        CastingDecision(decision_id="action", attribute="behavior", value="修补窗纸",
+                        reason="剧情动作", basis="evidence", fact_ids=["action"]),
+    ]})
+    cleaned = strip_nonvisual_evidence_decisions(p, [proposal_item])[0]
+    assert cleaned.casting_decisions == []
+
+
 @pytest.mark.asyncio
 async def test_extraction_builder_persists_source_and_style_without_reextract_on_style_change(tmp_path, monkeypatch):
     from pathlib import Path
