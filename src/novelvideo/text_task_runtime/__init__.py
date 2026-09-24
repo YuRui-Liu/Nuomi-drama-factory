@@ -5,6 +5,7 @@ from novelvideo.text_task_runtime.models import (
     AgentTaskRouteOverride,
     AgentTaskRouteSnapshot,
     AgentTaskRoutingConfig,
+    RuntimePreset,
 )
 from novelvideo.text_task_runtime.runtime import (
     CodexStructuredRuntime,
@@ -21,6 +22,7 @@ __all__ = [
     "AgentTaskRoutingConfig",
     "CodexStructuredRuntime",
     "ModelApiStructuredRuntime",
+    "RuntimePreset",
     "StructuredTextRuntime",
     "current_text_task_runtime",
     "text_task_runtime_scope",

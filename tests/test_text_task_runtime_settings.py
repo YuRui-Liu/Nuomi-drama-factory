@@ -57,6 +57,22 @@ def test_codex_model_rejects_windows_shell_metacharacters(model):
         AgentTaskRoute(runtime="codex", model=model)
 
 
+def test_model_name_with_internal_spaces_is_accepted():
+    route = AgentTaskRoute(runtime="workbuddy", model="Hy4 preview")
+    assert route.model == "Hy4 preview"
+
+
+def test_model_name_is_trimmed_on_assignment():
+    route = AgentTaskRoute(runtime="workbuddy", model="  Hy4 preview  ")
+    assert route.model == "Hy4 preview"
+
+
+@pytest.mark.parametrize("model", ["", "   "])
+def test_blank_model_names_are_rejected(model):
+    with pytest.raises(ValidationError, match="model"):
+        AgentTaskRoute(runtime="workbuddy", model=model)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -170,3 +186,34 @@ def test_episode_asset_planning_defaults_to_codex(monkeypatch, tmp_path):
     assert snapshot.model == "gpt-5.6-sol"
     assert snapshot.reasoning_effort == "low"
     assert snapshot.fallback == "stop"
+
+
+def test_runtime_presets_round_trip_and_reject_unsafe_model():
+    from novelvideo.text_task_runtime.models import (
+        AgentTaskRoutingConfig,
+        RuntimePreset,
+    )
+
+    config = AgentTaskRoutingConfig(
+        runtime_presets={
+            "deepseek_harness": RuntimePreset(
+                model="deepseek-v4-flash-vision-exp",
+                reasoning_effort="low",
+            )
+        }
+    )
+    reloaded = AgentTaskRoutingConfig.model_validate_json(config.model_dump_json())
+    assert reloaded.runtime_presets["deepseek_harness"].model == "deepseek-v4-flash-vision-exp"
+    assert reloaded.runtime_presets["deepseek_harness"].reasoning_effort == "low"
+
+    with pytest.raises(ValidationError):
+        RuntimePreset(model="  ")
+
+
+def test_routing_config_without_runtime_presets_still_loads():
+    from novelvideo.text_task_runtime.models import AgentTaskRoutingConfig
+
+    legacy = '{"routes": {"director_plan": {"runtime": "codex", "model": "gpt-5.6-sol"}}}'
+    config = AgentTaskRoutingConfig.model_validate_json(legacy)
+    assert config.runtime_presets == {}
+    assert config.routes["director_plan"].model == "gpt-5.6-sol"
