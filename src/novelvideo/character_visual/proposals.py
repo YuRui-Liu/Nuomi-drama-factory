@@ -192,6 +192,7 @@ def _all_proposal_text(proposal: CharacterDesignProposal) -> str:
 
 def assess_design_proposal(
     proposal: CharacterDesignProposal,
+    *, profile: CharacterNarrativeProfile | None = None,
 ) -> CharacterDesignProposal:
     """Return a copy annotated with deterministic, provider-free quality issues."""
 
@@ -225,11 +226,17 @@ def assess_design_proposal(
         issues.append("structure_coverage:min_3_of_4")
 
     proposal_text = _all_proposal_text(proposal)
-    if _contains_any(proposal_text, _GENERIC_BEAUTY_TERMS):
+    from .casting_brief import evidence_supports
+    sourced_beauty = profile is not None and any(
+        _contains_any(f.value, _GENERIC_BEAUTY_TERMS) and evidence_supports(f)
+        for f in profile.visual_constraints()
+    )
+    positive_text = re.sub(r"(?:不要|不得|避免|无|没有)(?:任何)?(?:" + "|".join(_GENERIC_BEAUTY_TERMS) + r")", "", proposal_text)
+    if _contains_any(positive_text, _GENERIC_BEAUTY_TERMS) and not sourced_beauty:
         issues.append("generic_beauty:forbidden")
     if _contains_any(
-        proposal_text, _CELEBRITY_REFERENCE_TERMS
-    ) or _CELEBRITY_COMPARISON_PATTERN.search(proposal_text):
+        positive_text, _CELEBRITY_REFERENCE_TERMS
+    ) or _CELEBRITY_COMPARISON_PATTERN.search(positive_text):
         issues.append("celebrity_reference:forbidden")
 
     return proposal.model_copy(update={"quality_issues": issues})
@@ -288,10 +295,11 @@ def validate_design_proposals(
     proposals: Sequence[CharacterDesignProposal],
     *,
     existing_proposals: Sequence[CharacterDesignProposal] = (),
+    profile: CharacterNarrativeProfile | None = None,
 ) -> list[CharacterDesignProposal]:
     """Validate one three-direction set and annotate structural collisions."""
 
-    reviewed = [assess_design_proposal(proposal) for proposal in proposals]
+    reviewed = [assess_design_proposal(proposal, profile=profile) for proposal in proposals]
     if len(reviewed) != 3:
         raise ProposalSetShapeError(
             "character design requires exactly three proposals"
@@ -342,6 +350,7 @@ def build_character_visual_workspace(
         reviewed = validate_design_proposals(
             proposals,
             existing_proposals=existing_roster_proposals,
+            profile=profile,
         )
     except ProposalQualityError as exc:
         if not preserve_rejected_proposals:
@@ -350,7 +359,7 @@ def build_character_visual_workspace(
     except ProposalSetShapeError:
         if not preserve_rejected_proposals:
             raise
-        reviewed = [assess_design_proposal(proposal) for proposal in proposals]
+        reviewed = [assess_design_proposal(proposal, profile=profile) for proposal in proposals]
 
     has_human_selection = bool(
         existing_workspace and existing_workspace.selected_proposal_id

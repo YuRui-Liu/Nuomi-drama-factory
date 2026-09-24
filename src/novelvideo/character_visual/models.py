@@ -25,6 +25,11 @@ class CharacterNarrativeFact(BaseModel):
     confidence: float = Field(ge=0, le=1)
     assertion: Literal["explicit", "inferred"] = "explicit"
     trust: Literal["trusted", "legacy_untrusted"] = "trusted"
+    source_document: str | None = None
+    source_revision: str | None = None
+    identity_id: str | None = None
+    source_start: int | None = Field(default=None, ge=0)
+    source_end: int | None = Field(default=None, ge=0)
 
 
 _VISIBLE_SCRIPT_FACT_FIELDS = frozenset(
@@ -41,6 +46,12 @@ _VISIBLE_SCRIPT_FACT_FIELDS = frozenset(
         "uniform",
         "clothing_state",
         "injury_state",
+        "beauty",
+        "appearance",
+        "species",
+        "age_group",
+        "face",
+        "build",
     }
 )
 
@@ -92,6 +103,7 @@ class CharacterDesignProposal(BaseModel):
     asymmetry_detail: str = ""
     quality_issues: list[str] = Field(default_factory=list)
     outfit_states: dict[str, str] = Field(default_factory=dict)
+    casting_decisions: list["CastingDecision"] = Field(default_factory=list)
 
 
 class CharacterVisualBible(BaseModel):
@@ -132,7 +144,9 @@ class LegacyVisualField(BaseModel):
 
 
 # Import after narrative fact definitions: casting snapshots reuse those facts.
-from .casting_models import CastingRevision
+from .casting_models import CastingDecision, CastingRevision  # noqa: E402
+
+CharacterDesignProposal.model_rebuild()
 
 
 class CharacterVisualWorkspace(BaseModel):
