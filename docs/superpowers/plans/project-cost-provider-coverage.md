@@ -110,3 +110,28 @@ explicit gap requiring reconciliation, never a fabricated zero. Polls resolve
 provider/account/external identity and check project ownership before writing.
 Status observations use `poll:` plus a hash of normalized safe facts, making
 repeated observations idempotent. No historical completeness is claimed.
+
+## Explicit historical import boundary
+
+`python -m novelvideo.costs.backfill --project <stable-registry-id>` resolves the
+existing project registry after bootstrap and requires its local/home node.
+It reads only that record's `runtime_dir/media_h3/tasks.db` and
+`runtime_dir/media_h3_ref/tasks.db`, using SQLite read-only connections and
+schema validation, never the migrating `TaskStore` constructor or a media scan.
+
+Only supported `video.*` capabilities with an explicit RunningHub workflow
+profile, stable task/attempt identities, account, remote task ID and timezone-aware
+submission timestamp qualify. Request `duration` is the only optional historical
+quantity (`second`); a proven submission supplies `call=1`. Historical output
+counts, arbitrary `cost_json`, prompts, diagnostics and provider payloads are not
+billing evidence and are not copied. Imported entries remain unpriced until an
+explicit repricing preview is applied. Audit evidence uses fixed local-source IDs.
+
+Attempt identity and provider/account/external identity both participate in
+transactional deduplication. Existing captures and prices stay unchanged, including
+on a rerun after a source lifecycle change. Cross-project collisions are reported
+without reassignment. Missing/unsupported/unreadable sources and rejected rows
+have counted reason codes, and one bad source does not block the other source.
+Existing coverage starts and gaps are preserved. All history remains partial:
+the two task databases cannot reconstruct legacy direct Grsai, TTS, upscale or
+Codex invocations and must never imply full project cost coverage.
