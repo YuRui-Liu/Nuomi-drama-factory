@@ -556,4 +556,27 @@ describe("story-grounded casting", () => {
     expect(screen.getByRole("button", { name: "重新选角" })).toBeEnabled();
     expect(screen.getByText("方案整理：已完成")).toBeInTheDocument();
   });
+  it.each([
+    {
+      code: "CASTING_RECAST_FAILED",
+      message: "重新选角未能完成：原文、角色或草案可能已变化，或提案未通过验证。当前形象未改变；请检查输入后主动重新选角。",
+    },
+    "重新选角未能完成：原文、角色或草案可能已变化，或提案未通过验证。当前形象未改变；请检查输入后主动重新选角。",
+  ])("shows a failed task without losing the current portrait or blocking explicit recast (%j)", async (error) => {
+    const message = typeof error === "string" ? error : error.message;
+    server.use(http.get(base, () => HttpResponse.json({
+      ok: true,
+      data: workspace({ tasks: [{ request_id: "failed-recast", operation: "recast", status: "failed", execution_status: "failed", error }] }),
+    })));
+    mount();
+    expect(await screen.findByText(`方案整理：失败 · ${message}`)).toBeInTheDocument();
+    expect(screen.getByAltText("当前定角")).toHaveAttribute("src", "/current.png");
+    expect(writes).toEqual([]);
+    const recast = screen.getByRole("button", { name: "重新选角" });
+    expect(recast).toBeEnabled();
+    await userEvent.click(recast);
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].url).toBe(`${base}/recast`);
+    expect(screen.getByAltText("当前定角")).toHaveAttribute("src", "/current.png");
+  });
 });

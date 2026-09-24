@@ -98,19 +98,34 @@ def attested_names(profile, documents):
 def verified_fact(fact, documents, names, source_revision, *, strict=False):
     doc = documents.get(fact.source_document or 'novel.txt')
     start, end = fact.source_start, fact.source_end
-    valid = (doc is not None and start is not None and end is not None and 0 <= start < end <= len(doc.text)
-             and doc.text[start:end] == fact.evidence and attributed_clause(fact, names)
-             and fact.source_revision in (None, source_revision, doc.content_hash) and evidence_supports(fact))
-    if valid:
+    reason = None
+    if doc is None:
+        reason = 'document'
+    elif start is None or end is None or not 0 <= start < end <= len(doc.text):
+        reason = 'offset_range'
+    elif doc.text[start:end] != fact.evidence:
+        reason = 'quote_mismatch'
+    elif fact.source_revision not in (None, source_revision, doc.content_hash):
+        reason = 'source_revision'
+    elif not evidence_supports(fact):
+        # Attribution itself uses evidence_supports; distinguish unsupported
+        # values first so the diagnostic identifies the failed prerequisite.
+        reason = 'value_support'
+    elif not attributed_clause(fact, names):
+        reason = 'attribution'
+    if reason is None:
         # Do not let a truncated quote hide a later attributive complement,
         # e.g. claiming "甲是七十岁" from "甲是七十岁的乙的儿子".
         left = max((doc.text.rfind(mark, 0, start) for mark in '。！？!?；;，,\n'), default=-1) + 1
         boundaries = [pos for mark in '。！？!?；;，,\n' if (pos := doc.text.find(mark, max(start, end - 1))) >= 0]
         right = min(boundaries) + 1 if boundaries else len(doc.text)
-        valid = attributed_clause(fact.model_copy(update={'evidence': doc.text[left:right]}), names)
-    if not valid:
+        if not attributed_clause(fact.model_copy(update={'evidence': doc.text[left:right]}), names):
+            reason = 'full_clause_attribution'
+    if reason is not None:
         if strict:
-            raise ValueError('source quote, offset, value or character attribution could not be verified')
+            field = fact.field if re.fullmatch(r'[a-z_]{1,40}', fact.field) else 'unrecognized'
+            raise ValueError('source quote, offset, value or character attribution could not be verified; '
+                             f'reason={reason}; field={field}; offsets={start}:{end}')
         return None
     return fact.model_copy(update={'source_document': doc.document_id, 'source_revision': source_revision,
         'source_span': SourceSpan(start_line=doc.text.count('\n', 0, start) + 1,

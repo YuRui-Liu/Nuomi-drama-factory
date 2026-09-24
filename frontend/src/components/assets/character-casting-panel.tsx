@@ -13,6 +13,7 @@ import type {
   CastingAction,
   CastingCandidate,
   CastingFact,
+  CastingTaskError,
   CastingWorkspace,
 } from "@/types/character-casting";
 
@@ -65,7 +66,12 @@ const attributeLabels: Record<string, string> = {
   appearance: "外观",
   outfit: "服装",
 };
-function friendly(value: string) {
+function friendly(error: string | CastingTaskError) {
+  const value = typeof error === "string"
+    ? error
+    : typeof error?.message === "string"
+      ? error.message
+      : "操作未完成，请刷新状态后重试。";
   if (
     value.includes("stale") ||
     value.includes("revision conflict") ||

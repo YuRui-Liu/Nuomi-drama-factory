@@ -138,6 +138,10 @@ export interface CastingCandidate {
     blocked_reason: string | null;
   };
 }
+export interface CastingTaskError {
+  code: string;
+  message: string;
+}
 export interface CastingSubmission {
   request_id: string;
   operation: "recast" | "generate" | "review";
@@ -150,7 +154,7 @@ export interface CastingSubmission {
   candidate_id: string | null;
   attempt_id: string | null;
   execution_status?: string | null;
-  error: string | null;
+  error: CastingTaskError | string | null;
   result?: unknown;
   reference_coverage?: unknown;
 }

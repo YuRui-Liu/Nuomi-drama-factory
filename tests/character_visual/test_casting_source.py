@@ -149,3 +149,30 @@ async def test_truncated_quote_cannot_hide_other_person_kinship():
     with pytest.raises(ValueError, match='attribution'):
         await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
             {'novel.txt': m.SourceDocument('novel.txt', source, 'hash')}, 'hash', runtime=SimpleNamespace(run_structured=extract))
+
+
+@pytest.mark.parametrize('changes,source,reason', [
+    ({'source_document': 'missing'}, '甲七十岁。', 'document'),
+    ({'source_end': 99}, '甲七十岁。', 'offset_range'),
+    ({'evidence': '甲八十岁。'}, '甲七十岁。', 'quote_mismatch'),
+    ({'value': '青年'}, '甲七十岁。', 'value_support'),
+    ({'source_revision': 'old'}, '甲七十岁。', 'source_revision'),
+    ({'evidence': '乙七十岁。'}, '乙七十岁。', 'attribution'),
+    ({'evidence': '甲是七十岁'}, '甲是七十岁的乙的儿子。', 'full_clause_attribution'),
+])
+def test_strict_verification_reports_precise_reason_without_source_text(changes, source, reason):
+    m = source_module()
+    from novelvideo.character_visual.models import CharacterNarrativeFact, SourceSpan
+    fact = CharacterNarrativeFact(fact_id='f', field='age_range', value='七十岁', evidence='甲七十岁。',
+        source_document='novel.txt', source_start=0, source_end=5, source_revision='hash',
+        source_span=SourceSpan(start_line=1, end_line=1), confidence=1).model_copy(update=changes)
+    docs = {'novel.txt': m.SourceDocument('novel.txt', source, 'hash')}
+    assert m.verified_fact(fact, docs, ['甲'], 'hash') is None
+    with pytest.raises(ValueError) as caught:
+        m.verified_fact(fact, docs, ['甲'], 'hash', strict=True)
+    message = str(caught.value)
+    assert f'reason={reason};' in message
+    assert 'field=age_range;' in message
+    assert f'offsets={fact.source_start}:{fact.source_end}' in message
+    assert fact.evidence not in message
+    assert fact.value not in message
