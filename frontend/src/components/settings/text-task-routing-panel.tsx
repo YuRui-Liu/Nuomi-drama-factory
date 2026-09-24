@@ -67,7 +67,9 @@ export function TextTaskRoutingPanel({ open }: { open: boolean }) {
     const current = routes[id];
     if (current?.runtime === runtime) return;
     const nextPresets = { ...presets };
-    if (current) {
+    // harness 行显示的就是 presets.deepseek_harness 本身，没有行私有值需要记忆；
+    // 若在这里用 routes[id] 的旧值覆写，会把用户在「统一配置」区的编辑静默回退。
+    if (current && current.runtime !== "deepseek_harness") {
       nextPresets[current.runtime] = {
         model: current.model,
         reasoning_effort: current.reasoning_effort,
