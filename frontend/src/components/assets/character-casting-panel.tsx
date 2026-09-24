@@ -82,6 +82,8 @@ function friendly(error: string | CastingTaskError) {
   if (value.includes("generation_not_succeeded")) return "候选尚未生成成功。";
   if (value.includes("missing:visual_evidence"))
     return "原文尚无可核验的外观事实，设计中的补充会标为自由选择。";
+  if (value.startsWith("excluded_narrative:"))
+    return "部分台词或叙事信息无法核实为人物事实，未用于选角依据；已核实的事实仍保留。";
   if (value.includes("identity_required"))
     return "部分事实属于独立身份阶段，请切换阶段查看。";
   if (value.includes("untrusted") || value.includes("unverified_evidence"))

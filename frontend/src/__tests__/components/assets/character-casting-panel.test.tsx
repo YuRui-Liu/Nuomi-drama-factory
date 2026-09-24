@@ -163,6 +163,16 @@ function mount() {
   };
 }
 describe("story-grounded casting", () => {
+  it("explains excluded narrative without disabling a verified draft", async () => {
+    const data = workspace();
+    server.use(http.get(base, () => HttpResponse.json({ ok: true, data: {
+      ...data, dossier: { ...data.dossier, issues: ["excluded_narrative:biography:attribution"] },
+    } })));
+    mount();
+    expect(await screen.findByText("部分台词或叙事信息无法核实为人物事实，未用于选角依据；已核实的事实仍保留。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成候选" })).toBeEnabled();
+    expect(writes).toEqual([]);
+  });
   it("uses an external identity entry and resets selection and acknowledgements", async () => {
     function Entry() {
       const [identityId, setIdentityId] = useState<string | null>(null);

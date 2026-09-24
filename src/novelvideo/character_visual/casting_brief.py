@@ -95,6 +95,7 @@ def build_casting_dossier(profile: CharacterNarrativeProfile, identity_id: str |
     dossier = CastingDossier(character_id=profile.character_id, identity_id=identity_id,
                             source_revision=source_revision, style_revision=style_revision,
                             narrative=profile.model_dump(exclude={"facts"}))
+    dossier.issues.extend(profile.source_warnings)
     by_field: dict[str, list[CharacterNarrativeFact]] = defaultdict(list)
     visual_ids = {f.fact_id for f in profile.visual_constraints()}
     for fact in profile.facts:

@@ -23,6 +23,43 @@ def test_extraction_schema_names_backend_fields_and_requires_literal_values():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['biography', 'behavior'])
+async def test_unverified_dialogue_is_excluded_without_discarding_verified_facts(field):
+    m = source_module()
+    quote = '步知遥：不用。我还记得那天。窗纸破了，我拿抄坏的纸补上。后来一刮风，那张纸就响。'
+    text = '步知遥十九岁。\n' + quote
+    async def extract(**kw):
+        return m.FactExtraction(facts=[
+            m.ExtractedFact(field='age_range', value='十九岁', evidence='步知遥十九岁。',
+                source_document='novel.txt', source_start=0, source_end=7),
+            m.ExtractedFact(field=field, value='我拿抄坏的纸补上', evidence=quote,
+                source_document='novel.txt', source_start=8, source_end=len(text)),
+        ])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='步知遥', name='步知遥'),
+        {'novel.txt': m.SourceDocument('novel.txt', text, 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert [(f.field, f.value) for f in result.facts] == [('age_range', '十九岁')]
+    assert result.biography == ''
+    assert result.source_warnings == [f'excluded_narrative:{field}:attribution']
+    from novelvideo.character_visual.casting_brief import build_casting_dossier
+    dossier = build_casting_dossier(result, None, 'hash', 'style')
+    assert result.source_warnings[0] in dossier.issues
+    assert not dossier.interpretations
+
+
+@pytest.mark.asyncio
+async def test_narrative_exclusion_never_accepts_fabricated_source():
+    m = source_module()
+    async def extract(**kw):
+        return m.FactExtraction(facts=[m.ExtractedFact(field='biography', value='老人',
+            evidence='甲是老人。', source_document='novel.txt', source_start=0, source_end=5)])
+    with pytest.raises(ValueError, match='quote_mismatch'):
+        await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+            {'novel.txt': m.SourceDocument('novel.txt', '甲看见乙。', 'hash')}, 'hash',
+            runtime=SimpleNamespace(run_structured=extract))
+
+
+@pytest.mark.asyncio
 async def test_legacy_profile_uses_only_exact_target_windows():
     m = source_module()
     docs = {'novel.txt': m.SourceDocument('novel.txt', '乙是青年。\n甲七十岁。', 'hash')}

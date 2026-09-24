@@ -56,7 +56,7 @@ def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: li
     if sum(p.recommended for p in proposals) != 1:
         issues.append("recommendation:exactly_one")
     dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
-    issues.extend(x for x in dossier.issues if not x.startswith("missing:"))
+    issues.extend(x for x in dossier.issues if not x.startswith(("missing:", "excluded_narrative:")))
     for proposal in proposals:
         prefix = proposal.proposal_id + ":"
         issues.extend(prefix + issue for issue in validate_casting_proposal(profile, proposal, identity_id,
@@ -75,7 +75,7 @@ def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: Char
                              style_revision: str = "unspecified") -> list[str]:
     """Validate one selected design; set diversity/recommendation checks stay separate."""
     dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
-    issues = [x for x in dossier.issues if not x.startswith("missing:")]
+    issues = [x for x in dossier.issues if not x.startswith(("missing:", "excluded_narrative:"))]
     applicable = profile.model_copy(update={"facts": dossier.hard_constraints + dossier.interpretations})
     species = selected_casting_species(dossier.hard_constraints, proposal)
     nonhuman = species not in HUMAN_SPECIES | UNKNOWN_SPECIES

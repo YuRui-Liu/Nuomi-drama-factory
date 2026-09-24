@@ -67,6 +67,7 @@ class CharacterNarrativeProfile(BaseModel):
     personality: list[str] = Field(default_factory=list)
     dramatic_function: str = ""
     facts: list[CharacterNarrativeFact] = Field(default_factory=list)
+    source_warnings: list[str] = Field(default_factory=list)
 
     def visual_constraints(self) -> list[CharacterNarrativeFact]:
         return [

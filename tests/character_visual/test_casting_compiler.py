@@ -45,6 +45,15 @@ def test_canonical_digest():
     assert snapshot_digest(a) == snapshot_digest(b) == hashlib.sha256(json.dumps(a, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def test_excluded_narrative_warning_does_not_block_or_become_visual_evidence():
+    data = inputs()
+    data[2].source_warnings = ['excluded_narrative:biography:attribution']
+    snapshot = compile_inputs(rebuild(data))
+    assert snapshot.hard_constraints == []
+    assert snapshot.source_fact_ids == []
+    assert 'excluded_narrative' not in snapshot.prompt
+
+
 def test_preserves_beauty_age_and_detaches_provenance():
     data = inputs(("甲很漂亮", dict(field="beauty", value="漂亮")), ("甲七十岁", dict(field="age_range", value="七十岁")))
     revision, selected, p = data
@@ -85,14 +94,19 @@ def test_proposal_changes_hash_and_live_source_style_changes_rejected():
 def test_rejects_invalid_selection_and_visual_constraints(fault):
     from novelvideo.character_visual.casting_models import CastingDecision
     data = inputs(("甲七十岁", dict(field="age_range", value="七十岁")))
-    if fault == "unselected": data[0].selected_proposal_id = None
-    if fault == "wrong_source": data[2].facts[0].source_revision = "old"
+    if fault == "unselected":
+        data[0].selected_proposal_id = None
+    if fault == "wrong_source":
+        data[2].facts[0].source_revision = "old"
     if fault == "wrong_stage":
         data[2].facts.append(data[2].facts[0].model_copy(update={"fact_id": "other", "identity_id": "other"}))
         data[1].casting_decisions.append(CastingDecision(decision_id="other", attribute="age_range", value="七十岁", reason="引用", basis="evidence", fact_ids=["other"]))
-    if fault == "scar": data[1].facial_features.append("左眼有伤疤")
-    if fault == "contradict_age": data[1].facial_features.append("十九岁少年面容")
-    with pytest.raises(ValueError): compile_inputs(data)
+    if fault == "scar":
+        data[1].facial_features.append("左眼有伤疤")
+    if fault == "contradict_age":
+        data[1].facial_features.append("十九岁少年面容")
+    with pytest.raises(ValueError):
+        compile_inputs(data)
 
 
 def test_nonhuman_preserves_natural_anatomy_without_human_bust():

@@ -43,6 +43,19 @@ class FactExtraction(BaseModel):
     facts: list[ExtractedFact] = Field(default_factory=list, max_length=50)
 
 
+class SourceFactVerificationError(ValueError):
+    def __init__(self, reason, fact):
+        self.reason = reason
+        field = fact.field if re.fullmatch(r'[a-z_]{1,40}', fact.field) else 'unrecognized'
+        super().__init__('source quote, offset, value or character attribution could not be verified; '
+                         f'reason={reason}; field={field}; offsets={fact.source_start}:{fact.source_end}')
+
+
+# These are optional narrative interpretations, never visual hard constraints.
+_NARRATIVE_CONTEXT_FIELDS = frozenset({'biography', 'behavior', 'personality',
+    'dramatic_function', 'work_habits', 'environment', 'relationship', 'occupation', 'social_identity'})
+
+
 async def load_sources(project_dir, sqlite_store):
     from novelvideo.episode_source_store import EpisodeSourceStore
     from novelvideo.novel_source import require_imported_novel
@@ -128,9 +141,7 @@ def verified_fact(fact, documents, names, source_revision, *, strict=False):
             reason = 'full_clause_attribution'
     if reason is not None:
         if strict:
-            field = fact.field if re.fullmatch(r'[a-z_]{1,40}', fact.field) else 'unrecognized'
-            raise ValueError('source quote, offset, value or character attribution could not be verified; '
-                             f'reason={reason}; field={field}; offsets={start}:{end}')
+            raise SourceFactVerificationError(reason, fact)
         return None
     return fact.model_copy(update={'source_document': doc.document_id, 'source_revision': source_revision,
         'source_span': SourceSpan(start_line=doc.text.count('\n', 0, start) + 1,
@@ -214,10 +225,12 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
     if not documents:
         raise ValueError('请先导入原文，再重新选角')
     names = attested_names(profile, documents)
+    warnings = list(profile.source_warnings)
     facts = [verified for f in [*profile.facts, *artifact_facts]
              if f.trust == 'trusted' and f.identity_id in (None, identity_id)
              and (verified := verified_fact(f, documents, names, source_revision))]
     if not facts:
+        warnings = []
         windows = []
         for doc in documents.values():
             for match in re.finditer('|'.join(map(re.escape, names)), doc.text):
@@ -245,11 +258,20 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
                 raise ValueError('fact outside supplied source windows')
             fact = CharacterNarrativeFact(**row.model_dump(), fact_id='source-' + snapshot_digest(row.model_dump())[:24],
                 source_revision=source_revision, confidence=1, source_span=SourceSpan(start_line=1, end_line=1))
-            facts.append(verified_fact(fact, documents, names, source_revision, strict=True))
+            try:
+                facts.append(verified_fact(fact, documents, names, source_revision, strict=True))
+            except SourceFactVerificationError as exc:
+                if fact.field not in _NARRATIVE_CONTEXT_FIELDS or exc.reason not in {
+                        'value_support', 'attribution', 'full_clause_attribution'}:
+                    raise
+                # Exact source bytes/offsets passed, but the claimed interpretation
+                # did not. Retain only a warning, never the value as a design fact.
+                warnings.append(f'excluded_narrative:{fact.field}:{exc.reason}')
     # Narrative summaries are not independently trusted; derive only verified fields.
     fields = {f.field: f.value for f in facts if f.identity_id is None}
     return CharacterNarrativeProfile(character_id=profile.character_id, name=profile.name, aliases=names[1:],
         biography=fields.get('biography', ''), occupation=fields.get('occupation', ''),
         social_identity=fields.get('social_identity', ''), personality=[fields['personality']] if 'personality' in fields else [],
         relationships=[f.value for f in facts if f.field == 'relationship'],
-        dramatic_function=fields.get('dramatic_function', ''), facts=list({f.fact_id: f for f in facts}.values()))
+        dramatic_function=fields.get('dramatic_function', ''), facts=list({f.fact_id: f for f in facts}.values()),
+        source_warnings=list(dict.fromkeys(warnings)))
