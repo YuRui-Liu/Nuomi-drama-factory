@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -217,3 +218,93 @@ def test_routing_config_without_runtime_presets_still_loads():
     config = AgentTaskRoutingConfig.model_validate_json(legacy)
     assert config.runtime_presets == {}
     assert config.routes["director_plan"].model == "gpt-5.6-sol"
+
+
+def test_harness_route_is_clamped_to_runtime_preset(tmp_path, monkeypatch):
+    from novelvideo.text_task_runtime.models import (
+        AgentTaskRouteOverride,
+        AgentTaskRoutingConfig,
+        RuntimePreset,
+    )
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_global_routes",
+        lambda: AgentTaskRoutingConfig(
+            routes={
+                "director_plan": AgentTaskRouteOverride(
+                    runtime="deepseek_harness",
+                    model="whatever-the-role-asked-for",
+                    reasoning_effort="high",
+                )
+            },
+            runtime_presets={
+                "deepseek_harness": RuntimePreset(
+                    model="deepseek-v4-flash-vision-exp",
+                    reasoning_effort="low",
+                )
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_settings, "load_project_routes", lambda ctx: AgentTaskRoutingConfig()
+    )
+
+    snapshot = runtime_settings.resolve_configured_agent_task_route(
+        ctx=SimpleNamespace(state_dir=tmp_path),
+        task_role="director_plan",
+        task_override=AgentTaskRouteOverride(model="task-level-attempt", reasoning_effort="xhigh"),
+    )
+    assert snapshot.runtime == "deepseek_harness"
+    assert snapshot.model == "deepseek-v4-flash-vision-exp"
+    assert snapshot.reasoning_effort == "low"
+
+
+def test_harness_defaults_when_no_preset_saved(tmp_path, monkeypatch):
+    from novelvideo.text_task_runtime.models import AgentTaskRouteOverride, AgentTaskRoutingConfig
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_global_routes",
+        lambda: AgentTaskRoutingConfig(
+            routes={"director_plan": AgentTaskRouteOverride(runtime="deepseek_harness")}
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_settings, "load_project_routes", lambda ctx: AgentTaskRoutingConfig()
+    )
+
+    snapshot = runtime_settings.resolve_configured_agent_task_route(
+        ctx=SimpleNamespace(state_dir=tmp_path),
+        task_role="director_plan",
+    )
+    assert snapshot.model == "deepseek-v4-flash-vision-exp"
+    assert snapshot.reasoning_effort == "low"
+
+
+def test_non_harness_route_is_not_clamped(tmp_path, monkeypatch):
+    from novelvideo.text_task_runtime.models import AgentTaskRouteOverride, AgentTaskRoutingConfig
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_global_routes",
+        lambda: AgentTaskRoutingConfig(
+            routes={
+                "director_plan": AgentTaskRouteOverride(
+                    runtime="codex", model="gpt-5.6-sol", reasoning_effort="medium"
+                )
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_settings, "load_project_routes", lambda ctx: AgentTaskRoutingConfig()
+    )
+
+    snapshot = runtime_settings.resolve_configured_agent_task_route(
+        ctx=SimpleNamespace(state_dir=tmp_path), task_role="director_plan"
+    )
+    assert snapshot.model == "gpt-5.6-sol"
+    assert snapshot.reasoning_effort == "medium"

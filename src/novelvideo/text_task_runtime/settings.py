@@ -12,6 +12,7 @@ from novelvideo.text_task_runtime.models import (
     AgentTaskRouteOverride,
     AgentTaskRouteSnapshot,
     AgentTaskRoutingConfig,
+    RuntimePreset,
 )
 
 TEXT_TASK_ROUTING_KEY = "text_task_routing_v1"
@@ -30,6 +31,44 @@ _ROLE_DEFAULTS = {
         fallback="stop",
     ),
 }
+
+
+_RUNTIME_PRESET_DEFAULTS: dict[str, RuntimePreset] = {
+    "deepseek_harness": RuntimePreset(
+        model="deepseek-v4-flash-vision-exp",
+        reasoning_effort="low",
+    ),
+}
+
+
+def runtime_preset_for(
+    config: AgentTaskRoutingConfig, runtime: str
+) -> RuntimePreset | None:
+    """用户保存的 preset 优先，回落内置默认，两者皆无返回 None。"""
+
+    saved = config.runtime_presets.get(runtime)
+    if saved is not None:
+        return saved
+    return _RUNTIME_PRESET_DEFAULTS.get(runtime)
+
+
+def _clamp_harness_route(
+    snapshot: AgentTaskRouteSnapshot,
+    config: AgentTaskRoutingConfig,
+) -> AgentTaskRouteSnapshot:
+    """deepseek_harness 的模型与推理强度由运行时级 preset 唯一决定。"""
+
+    if snapshot.runtime != "deepseek_harness":
+        return snapshot
+    preset = runtime_preset_for(config, "deepseek_harness")
+    if preset is None:
+        return snapshot
+    return snapshot.model_copy(
+        update={
+            "model": preset.model,
+            "reasoning_effort": preset.reasoning_effort,
+        }
+    )
 
 
 def default_agent_task_route(task_role: str) -> AgentTaskRoute:
@@ -123,7 +162,8 @@ def resolve_configured_agent_task_route(
 ) -> AgentTaskRouteSnapshot:
     """Resolve persisted routes once, at enqueue time."""
 
-    global_override = load_global_routes().routes.get(task_role)
+    global_config = load_global_routes()
+    global_override = global_config.routes.get(task_role)
     global_route = default_agent_task_route(task_role)
     if global_override is not None:
         global_route = _apply_override(global_route, global_override)
@@ -133,9 +173,10 @@ def resolve_configured_agent_task_route(
         if task_override is not None
         else None
     )
-    return resolve_agent_task_route(
+    snapshot = resolve_agent_task_route(
         task_role=task_role,
         global_route=global_route,
         project_override=project_override,
         task_override=parsed_task_override,
     )
+    return _clamp_harness_route(snapshot, global_config)
