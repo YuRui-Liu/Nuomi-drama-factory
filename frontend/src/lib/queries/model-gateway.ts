@@ -27,8 +27,19 @@ export interface SaveTextRuntimeInput {
   clearApiKey?: boolean;
 }
 
-export type TaskRuntimeName = "codex" | "model_api";
-export type TaskReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type TaskRuntimeName = "codex" | "model_api" | "workbuddy" | "deepseek_harness";
+export type TaskReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** 推理强度选项；"max" 仅 WorkBuddy CLI 支持，model_api 会在服务端忽略。 */
+export const TASK_REASONING_EFFORTS: TaskReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
 export interface AgentTaskRoute {
   runtime: TaskRuntimeName;
@@ -39,6 +50,12 @@ export interface AgentTaskRoute {
   fallback: "stop";
 }
 
+/** 单个运行时的记忆：模型 + 推理强度。 */
+export interface RuntimePreset {
+  model: string;
+  reasoning_effort: TaskReasoningEffort | null;
+}
+
 export interface TaskRuntimeRole {
   id: string;
   label: string;
@@ -47,7 +64,11 @@ export interface TaskRuntimeRole {
 
 export interface TaskRuntimeConfig {
   roles: TaskRuntimeRole[];
+  runtime_presets: Partial<Record<TaskRuntimeName, RuntimePreset>>;
 }
+
+/** 按运行时返回的候选模型下拉清单，供「模型」字段的可编辑下拉使用。 */
+export type TaskRuntimeModels = Record<TaskRuntimeName, string[]>;
 
 /** 通用的「端点预览」：服务端只回 key 预览，绝不回完整 key。 */
 export interface GatewayEndpointPreview {
@@ -329,12 +350,28 @@ export function useTaskRuntimeConfig(enabled = true) {
   });
 }
 
+export function useTaskRuntimeModels(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.taskRuntimeModels(),
+    queryFn: ({ signal }) =>
+      api
+        .get("api/v1/model-gateway/task-runtime/models", { signal })
+        .json<OkResponse<TaskRuntimeModels>>(),
+    enabled,
+  });
+}
+
+export interface SaveTaskRuntimeInputPayload {
+  routes: Record<string, AgentTaskRoute>;
+  runtime_presets: Record<string, RuntimePreset>;
+}
+
 export function useSaveTaskRuntimeConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (routes: Record<string, AgentTaskRoute>) =>
+    mutationFn: (input: SaveTaskRuntimeInputPayload) =>
       api
-        .put("api/v1/model-gateway/task-runtime/config", { json: { routes } })
+        .put("api/v1/model-gateway/task-runtime/config", { json: input })
         .json<OkResponse<TaskRuntimeConfig> | ErrorResponse>(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.taskRuntime() });
