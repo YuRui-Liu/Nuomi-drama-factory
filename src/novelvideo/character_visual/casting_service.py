@@ -144,5 +144,5 @@ async def design_and_publish(*, store, character_id, identity_id, expected_revis
 
 
 async def adopt_candidate(*args, **kwargs):
-    # Task 7 supplies the recoverable publication transaction. Fail closed until then.
-    raise ValueError('casting adoption service unavailable; current portrait was not changed')
+    from .casting_adoption import adopt_candidate as publish
+    return await publish(*args, **kwargs)

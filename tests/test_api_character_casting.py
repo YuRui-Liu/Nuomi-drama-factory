@@ -115,7 +115,9 @@ async def test_adoption_boundary_uses_server_actor_and_fail_closed(setup_casting
     body = {'idempotency_key': 'k', 'expected_revision': e.revision.revision_id}
     generated = (await request(e, 'POST', '/candidates', json=body)).json()['data']['candidate_id']
     body.update(candidate_id=generated)
-    assert (await request(e, 'POST', f'/candidates/{generated}/adopt', json=body)).status_code == 503
+    # The real service is available, but queued (unrendered) candidates cannot
+    # cross the explicit publication boundary.
+    assert (await request(e, 'POST', f'/candidates/{generated}/adopt', json=body)).status_code == 409
     calls = []
     async def adopt(**kwargs):
         calls.append(kwargs)

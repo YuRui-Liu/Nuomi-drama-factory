@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
+import portalocker
+
 from .models import CharacterVisualBible, CharacterVisualWorkspace
 from .casting_models import CastingRevision
 from novelvideo.production_workflow import production_workflow_project_lock
@@ -28,50 +30,19 @@ class CharacterVisualWorkspaceStore:
         self.lock_path = self.path.with_name(f"{self.path.name}.lock")
 
     @contextmanager
-    def _exclusive_write_lock(self) -> Iterator[None]:
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        token = uuid4().hex
-        deadline = time.monotonic() + self.lock_timeout_seconds
-
-        while True:
-            try:
-                descriptor = os.open(
-                    self.lock_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                )
-            except FileExistsError:
-                try:
-                    lock_age = time.time() - self.lock_path.stat().st_mtime
-                except FileNotFoundError:
-                    continue
-                if lock_age >= self.stale_lock_seconds:
-                    try:
-                        self.lock_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    continue
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"timed out waiting for character visual store lock: "
-                        f"{self.lock_path}"
-                    )
-                time.sleep(0.025)
-                continue
-
-            try:
-                os.write(descriptor, token.encode("ascii"))
-            finally:
-                os.close(descriptor)
-            break
-
-        try:
+    def _recovered_project_lock(self):
+        from .casting_recovery import recover_casting_adoptions
+        with production_workflow_project_lock(self.state_dir):
+            recover_casting_adoptions(self.project_dir, self.state_dir)
             yield
-        finally:
-            try:
-                if self.lock_path.read_text(encoding="ascii") == token:
-                    self.lock_path.unlink(missing_ok=True)
-            except FileNotFoundError:
-                pass
+
+    @contextmanager
+    def _exclusive_write_lock(self) -> Iterator[None]:
+        # Kernel locks release on process death. A create-exclusive marker left
+        # by a killed writer must not prevent immediate journal recovery/retry.
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(self.lock_path, mode='a+b', timeout=self.lock_timeout_seconds):
+            yield
 
     def _read_all(self) -> dict[str, dict]:
         if not self.path.exists():
@@ -102,13 +73,33 @@ class CharacterVisualWorkspaceStore:
             temp.unlink(missing_ok=True)
 
     def get(self, character_id: str) -> CharacterVisualWorkspace | None:
-        raw = self._read_all().get(character_id)
-        return CharacterVisualWorkspace.model_validate(raw) if isinstance(raw, dict) else None
+        with self._recovered_project_lock():
+            raw = self._read_all().get(character_id)
+            return CharacterVisualWorkspace.model_validate(raw) if isinstance(raw, dict) else None
+
+    def _assert_bible_unchanged(self, previous, incoming):
+        """A stale editor cannot separate a casting portrait from its bible."""
+        if not isinstance(previous, dict):
+            return
+        from .casting_recovery import assert_legacy_portrait_mutation_allowed
+        changed = []
+        if previous.get('visual_bible') != incoming.get('visual_bible'):
+            changed.append(None)
+        before = previous.get('identity_visual_bibles', {})
+        after = incoming.get('identity_visual_bibles', {})
+        changed.extend(identity for identity in before.keys() | after.keys() if before.get(identity) != after.get(identity))
+        for identity in changed:
+            try:
+                assert_legacy_portrait_mutation_allowed(self.project_dir, self.state_dir, incoming['character_id'], identity)
+            except ValueError as exc:
+                raise ValueError('CHARACTER_CASTING_REQUIRED: casting bible must change with explicit portrait adoption') from exc
 
     def save(self, workspace: CharacterVisualWorkspace) -> CharacterVisualWorkspace:
-        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+        with self._recovered_project_lock(), self._exclusive_write_lock():
             payload = self._read_all()
-            payload[workspace.character_id] = workspace.model_dump(mode="json")
+            incoming = workspace.model_dump(mode="json")
+            self._assert_bible_unchanged(payload.get(workspace.character_id), incoming)
+            payload[workspace.character_id] = incoming
             self._write_all(payload)
         return workspace
 
@@ -122,7 +113,7 @@ class CharacterVisualWorkspaceStore:
         if not items:
             return []
 
-        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+        with self._recovered_project_lock(), self._exclusive_write_lock():
             payload = self._read_all()
             for workspace in items:
                 existing_raw = payload.get(workspace.character_id)
@@ -152,7 +143,7 @@ class CharacterVisualWorkspaceStore:
     def mutate(self, character_id: str, *, identity_id: str | None,
                expected_revision: str | None, change) -> CharacterVisualWorkspace:
         """Read, compare, mutate and validate in one synchronous transaction."""
-        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+        with self._recovered_project_lock(), self._exclusive_write_lock():
             payload = self._read_all()
             workspace = CharacterVisualWorkspace.model_validate(payload[character_id])
             current = (workspace.casting_revision if identity_id is None
@@ -163,7 +154,9 @@ class CharacterVisualWorkspaceStore:
             workspace = CharacterVisualWorkspace.model_validate(workspace.model_dump(mode="json"))
             if workspace.character_id != character_id:
                 raise ValueError("workspace ownership mismatch")
-            payload[character_id] = workspace.model_dump(mode="json")
+            incoming = workspace.model_dump(mode="json")
+            self._assert_bible_unchanged(payload.get(character_id), incoming)
+            payload[character_id] = incoming
             self._write_all(payload)
             return workspace
 
@@ -173,7 +166,7 @@ class CharacterVisualWorkspaceStore:
         """Check and replace one stage within the same locked read/write transaction."""
         if (revision.character_id, revision.identity_id) != (character_id, identity_id):
             raise ValueError("casting revision ownership mismatch")
-        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+        with self._recovered_project_lock(), self._exclusive_write_lock():
             payload = self._read_all()
             workspace = CharacterVisualWorkspace.model_validate(payload[character_id])
             current = (workspace.casting_revision if identity_id is None

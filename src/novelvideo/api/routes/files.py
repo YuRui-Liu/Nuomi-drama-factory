@@ -38,6 +38,11 @@ def _resolve_project_file(resolved: ProjectResolution, file_path: str) -> Path:
     if not requested.is_relative_to(project_dir.resolve()):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    from novelvideo.character_visual.casting_recovery import resolve_casting_media_path
+
+    requested = resolve_casting_media_path(project_dir, resolved.state_dir, requested)
+    if not requested.resolve().is_relative_to(project_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not requested.exists() or not requested.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 

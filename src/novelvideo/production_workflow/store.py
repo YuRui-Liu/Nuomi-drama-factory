@@ -215,6 +215,7 @@ class ProductionWorkflowStore:
         soft_issues: list[str] | None = None,
         technical_error: str | None = None,
         origin: AssetOrigin = AssetOrigin.GENERATED,
+        auto_provisional: bool = True,
     ) -> tuple[AssetSlot, AssetVersion, AdoptionEvent]:
         if self.read_only_reason:
             raise RuntimeError(self.read_only_reason)
@@ -243,6 +244,7 @@ class ProductionWorkflowStore:
             version,
             actor=actor,
             at=at,
+            auto_provisional=auto_provisional,
         )
         self._slots[slot_id] = updated_slot
         self._versions[version_id] = updated_version
@@ -340,6 +342,39 @@ class ProductionWorkflowStore:
         self._events.append(event)
         self._save()
         return updated_slot, updated_versions, event
+
+    def adopt_casting_version(self, *, slot_id: str, version_id: str, actor: str, at: datetime):
+        """Explicit casting decision retaining the actual (possibly failed) QC.
+
+        Only the recoverable casting service creates this complete audit record;
+        generic adoption continues to enforce its existing QC policy.
+        """
+        if self.read_only_reason:
+            raise RuntimeError(self.read_only_reason)
+        slot, versions = self.get_slot(slot_id)
+        selected = versions[version_id]
+        audit = (selected.generation_metadata or {}).get('casting_adoption') or {}
+        if (slot.asset_kind != 'character_portrait' or selected.technical_error
+                or audit.get('actor') != actor or not actor
+                or not audit.get('candidate_id') or not audit.get('snapshot')
+                or not audit.get('command_hash')):
+            raise ValueError('explicit casting adoption audit required')
+        if not selected.qc_passed and (not str(audit.get('override_reason') or '').strip()
+                or not set(selected.soft_issues).issubset(set(audit.get('acknowledged_findings', [])))):
+            raise ValueError('casting findings require explicit acknowledgement and reason')
+        previous = slot.current_version_id
+        if previous and previous != version_id and previous in versions:
+            versions[previous] = versions[previous].model_copy(update={'adoption_status': AdoptionStatus.SUPERSEDED})
+        versions[version_id] = selected.model_copy(update={'adoption_status': AdoptionStatus.ADOPTED})
+        slot = slot.model_copy(update={'current_version_id': version_id})
+        event = AdoptionEvent(slot_id=slot_id, version_id=version_id, from_status=selected.adoption_status,
+            to_status=AdoptionStatus.ADOPTED, actor=actor, at=at,
+            reason=audit.get('override_reason') or 'explicit casting candidate adopted', source_attempt_id=selected.source_attempt_id)
+        self._slots[slot_id] = slot
+        self._versions.update(versions)
+        self._events.append(event)
+        self._save()
+        return slot, versions, event
 
     def delete_version(
         self,

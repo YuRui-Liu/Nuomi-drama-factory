@@ -92,6 +92,9 @@ def _available_character_identity_ids(
     state_dir = Path(ctx.state_dir)
     available: set[str] = set()
     with production_workflow_project_lock(state_dir):
+        from novelvideo.character_visual.casting_recovery import recover_casting_adoptions
+
+        recover_casting_adoptions(root, state_dir)
         workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
         for character in characters:
             try:
@@ -199,6 +202,9 @@ def _available_character_portraits(
     state_dir = Path(ctx.state_dir)
     available: set[str] = set()
     with production_workflow_project_lock(state_dir):
+        from novelvideo.character_visual.casting_recovery import recover_casting_adoptions
+
+        recover_casting_adoptions(root, state_dir)
         workflow = ProductionWorkflowStore(state_dir / "production_workflow.json")
         for character in characters:
             try:

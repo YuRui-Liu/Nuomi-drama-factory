@@ -45,8 +45,24 @@ class AdoptVersionRequest(BaseModel):
     confirm_qc_unavailable: bool = False
 
 
+def _assert_casting_slot_mutation_allowed(resolved, slot_id: str) -> None:
+    from novelvideo.character_visual.casting_recovery import assert_legacy_portrait_mutation_allowed
+
+    parts = slot_id.split(":")
+    if len(parts) == 3 and parts[0] == "character" and parts[2] == "portrait":
+        assert_legacy_portrait_mutation_allowed(resolved.project_dir, resolved.state_dir, parts[1])
+    elif len(parts) == 5 and parts[0] == "character" and parts[2] == "identity" and parts[4] == "portrait":
+        assert_legacy_portrait_mutation_allowed(resolved.project_dir, resolved.state_dir, parts[1], parts[3])
+
+
 def _store(resolved) -> ProductionWorkflowStore:
     return ProductionWorkflowStore(Path(resolved.state_dir) / "production_workflow.json")
+
+
+def _assert_casting_path_mutation_allowed(resolved, path: Path) -> None:
+    from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+    assert_casting_path_mutation_allowed(resolved.project_dir, resolved.state_dir, path)
 
 
 def _safe_project_asset(project_dir: Path, asset_path: str) -> str:
@@ -221,12 +237,13 @@ async def materialize_legacy_asset(
     with production_workflow_project_lock(resolved.state_dir):
         store = _store(resolved)
         try:
+            _assert_casting_slot_mutation_allowed(resolved, slot_id)
             slot, current = store.materialize_legacy_current(
                 slot_id=slot_id,
                 asset_kind=body.asset_kind,
                 asset_path=safe_path,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "ok": True,
@@ -246,6 +263,7 @@ async def register_production_asset_candidate(
     with production_workflow_project_lock(resolved.state_dir):
         store = _store(resolved)
         try:
+            _assert_casting_slot_mutation_allowed(resolved, slot_id)
             slot, version, event = store.register_candidate_version(
                 slot_id=slot_id,
                 asset_kind=body.asset_kind,
@@ -304,12 +322,14 @@ async def adopt_production_asset_version(
             selected_before = versions_before.get(version_id)
             if selected_before is None:
                 raise ValueError("asset version not found")
+            _assert_casting_slot_mutation_allowed(resolved, slot_id)
             metadata = selected_before.generation_metadata or {}
             canonical_path = metadata.get("canonical_path")
             if isinstance(canonical_path, str) and canonical_path.strip():
                 safe_source = _safe_project_asset(resolved.project_dir, selected_before.asset_path)
                 source = resolved.project_dir / safe_source
                 target = _safe_project_target(resolved.project_dir, canonical_path)
+                _assert_casting_path_mutation_allowed(resolved, target)
                 if slot_id.startswith("scene:"):
                     expected_relative = _scene_slot_canonical_relative_path(slot_id, metadata)
                     expected_target = ((resolved.project_dir / expected_relative).resolve() if expected_relative is not None else None)
@@ -389,10 +409,12 @@ async def delete_production_asset_version(
             deleted_before = versions_before.get(version_id)
             if deleted_before is None:
                 raise KeyError(version_id)
+            _assert_casting_slot_mutation_allowed(resolved, slot_id)
             deleted_relative = _safe_project_asset(
                 resolved.project_dir, deleted_before.asset_path
             )
             deleted_path = resolved.project_dir / deleted_relative
+            _assert_casting_path_mutation_allowed(resolved, deleted_path)
             capture(deleted_path)
 
             was_current = slot_before.current_version_id == version_id
@@ -405,6 +427,7 @@ async def delete_production_asset_version(
                 canonical_path = _safe_project_target(
                     resolved.project_dir, canonical_relative
                 )
+                _assert_casting_path_mutation_allowed(resolved, canonical_path)
                 capture(canonical_path)
 
             slot, versions, deleted, fallback = store.delete_version(

@@ -209,8 +209,12 @@ def resolve_references(ctx, sqlite_store, candidate, selections, documents=None,
 
 
 def candidate_view(ctx, candidate, workspace, identity_id, source_revision, style):
+    from novelvideo.character_visual.casting_adoption import adoption_requirements
     data = candidate.model_dump(mode='json', exclude={'asset_path', 'submission_token'})
     data['stale'] = is_stale(candidate, workspace, identity_id, source_revision, style)
+    data['adoption_requirements'] = adoption_requirements(candidate)
+    if data['stale']:
+        data['adoption_requirements']['blocked_reason'] = 'stale_candidate'
     data['url'] = None
     if candidate.asset_path and candidate.generation_status == 'succeeded':
         store = candidate_store(ctx)
@@ -230,35 +234,39 @@ def conflict(exc):
 @router.get(BASE)
 async def get_casting(project: str, name: str, identity_id: str | None = None, user: dict = Depends(get_api_user)):
     async with scope(project, name, user, identity_id) as (ctx, sql, character):
-        workspace = workspace_or_empty(ctx, name)
-        draft = stage_workspace(workspace, identity_id)
-        revision = draft.casting_revision
-        style = resolved_style(ctx)
         source_revision, prerequisite = '', None
         try:
             _, source_revision = await load_sources(ctx.output_dir, sql)
         except ValueError as exc:
             prerequisite = str(exc)
-        current = current_version(ctx, name, identity_id)
-        if current:
-            current.pop('_path', None)
-        journal = SubmissionJournal(ctx)
-        dossier = build_casting_dossier(draft.profile, identity_id, source_revision or 'missing', style)
-        draft_stale = bool(revision and (revision.source_revision != source_revision
-            or revision.style_revision != style or revision.profile_hash != dossier.dossier_hash))
-        return {'ok': True, 'data': {'character_id': name, 'identity_id': identity_id,
-            'can_edit': ctx.effective_role in ('editor', 'owner', 'admin'),
-            'identities': [{'identity_id': i.identity_id, 'name': getattr(i, 'name', '')} for i in character.identities],
-            'dossier': dossier.model_dump(mode='json'), 'draft_stale': draft_stale,
-            'current_source_revision': source_revision, 'current_style_revision': style,
-            'revision': revision.model_dump(mode='json') if revision else None,
-            'proposals': [p.model_dump(mode='json') for p in draft.design_proposals],
-            'selected_proposal_id': draft.selected_proposal_id, 'current': current,
-            'legacy_current': legacy_current(ctx, character, identity_id) if current is None else None,
-            'current_visual_bible': draft.visual_bible.model_dump(mode='json') if draft.visual_bible else None,
-            'limitation_reason': workspace.casting_limitation_reasons.get(identity_id or 'base', ''),
-            'prerequisite_error': prerequisite,
-            'tasks': [submission_view(row, ctx, get_task_manager()) for row in journal.list(name, identity_id)]}}
+        # Source loading may await. Capture bible + workflow current together only
+        # after it completes, under the same project lock used by adoption.
+        from novelvideo.production_workflow import production_workflow_project_lock
+        with production_workflow_project_lock(ctx.state_dir):
+            workspace = workspace_or_empty(ctx, name)
+            draft = stage_workspace(workspace, identity_id)
+            revision = draft.casting_revision
+            style = resolved_style(ctx)
+            current = current_version(ctx, name, identity_id)
+            if current:
+                current.pop('_path', None)
+            journal = SubmissionJournal(ctx)
+            dossier = build_casting_dossier(draft.profile, identity_id, source_revision or 'missing', style)
+            draft_stale = bool(revision and (revision.source_revision != source_revision
+                or revision.style_revision != style or revision.profile_hash != dossier.dossier_hash))
+            return {'ok': True, 'data': {'character_id': name, 'identity_id': identity_id,
+                'can_edit': ctx.effective_role in ('editor', 'owner', 'admin'),
+                'identities': [{'identity_id': i.identity_id, 'name': getattr(i, 'identity_name', '')} for i in character.identities],
+                'dossier': dossier.model_dump(mode='json'), 'draft_stale': draft_stale,
+                'current_source_revision': source_revision, 'current_style_revision': style,
+                'revision': revision.model_dump(mode='json') if revision else None,
+                'proposals': [p.model_dump(mode='json') for p in draft.design_proposals],
+                'selected_proposal_id': draft.selected_proposal_id, 'current': current,
+                'legacy_current': legacy_current(ctx, character, identity_id) if current is None else None,
+                'current_visual_bible': draft.visual_bible.model_dump(mode='json') if draft.visual_bible else None,
+                'limitation_reason': workspace.casting_limitation_reasons.get(identity_id or 'base', ''),
+                'prerequisite_error': prerequisite,
+                'tasks': [submission_view(row, ctx, get_task_manager()) for row in journal.list(name, identity_id)]}}
 
 
 @router.patch(BASE)
@@ -404,7 +412,7 @@ async def adopt(project: str, name: str, candidate_id: str, body: CastingAdoptio
             raise HTTPException(422, 'candidate ID must match route')
         try:
             result = await adopt_candidate(ctx=ctx, character_id=name, identity_id=identity_id,
-                command=body, actor=ctx.requester_user_id)
+                command=body, actor=ctx.requester_user_id, sqlite_store=sql)
         except ValueError as exc:
             raise HTTPException(503 if 'service unavailable' in str(exc) else 409, str(exc)) from exc
         return {'ok': True, 'data': result}

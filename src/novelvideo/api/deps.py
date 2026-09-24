@@ -149,8 +149,10 @@ async def resolve_project_scope(
         required_role=required_role,
     )
     require_project_home_node(ctx, operation="resolve project files")
+    from novelvideo.character_visual.casting_recovery import recover_casting_adoptions
     from novelvideo.episode_source_versions import register_existing_source_database
 
+    recover_casting_adoptions(ctx.output_dir, ctx.state_dir)
     await register_existing_source_database(ctx.output_dir, ctx.state_dir)
     return ProjectResolution(
         ctx=ctx,

@@ -345,6 +345,8 @@ def commit_character_portrait_current(
     slot_id = character_portrait_slot_id(safe_name)
 
     with production_workflow_project_lock(state_dir):
+        from novelvideo.character_visual.casting_recovery import assert_legacy_portrait_mutation_allowed
+        assert_legacy_portrait_mutation_allowed(project_dir, state_dir, safe_name)
         workflow = ProductionWorkflowStore(workflow_path)
         try:
             existing_slot, _versions = workflow.get_slot(slot_id)

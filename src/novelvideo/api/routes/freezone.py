@@ -11221,7 +11221,6 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
     target = slot_target_path(project_dir, body.target)
     if body.target.kind == "scene_3gs_custom_scene":
         target = target.with_suffix(source_path.suffix.lower())
-    target.parent.mkdir(parents=True, exist_ok=True)
     same_file = False
     try:
         same_file = source_path.resolve() == target.resolve()
@@ -11234,15 +11233,38 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
         and source_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
         and target.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
     )
-    backup = None if same_file else backup_slot_if_exists(target)
-    if same_file:
-        image_adaptation = {"adapted": False, "same_file": True}
-    elif should_match_existing_size:
-        image_adaptation = _copy_image_matching_existing_target(source_path, target)
-    else:
-        image_adaptation = {"adapted": False}
-        shutil.copy2(source_path, target)
-    sync_slot_after_write(project_dir, body.target, target)
+    from novelvideo.production_workflow import production_workflow_project_lock
+    from novelvideo.character_visual.casting_recovery import (
+        assert_legacy_portrait_mutation_allowed, update_identity_portrait_reference,
+        assert_casting_path_mutation_allowed,
+    )
+
+    with production_workflow_project_lock(ctx.state_dir):
+        try:
+            assert_casting_path_mutation_allowed(project_dir, ctx.state_dir, target)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        if body.target.kind == "identity_portrait":
+            try:
+                assert_legacy_portrait_mutation_allowed(
+                    project_dir, ctx.state_dir, body.target.character, body.target.identity_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        backup = None if same_file else backup_slot_if_exists(target)
+        if same_file:
+            image_adaptation = {"adapted": False, "same_file": True}
+        elif should_match_existing_size:
+            image_adaptation = _copy_image_matching_existing_target(source_path, target)
+        else:
+            image_adaptation = {"adapted": False}
+            shutil.copy2(source_path, target)
+        sync_slot_after_write(project_dir, body.target, target)
+        if body.target.kind == "identity_portrait":
+            update_identity_portrait_reference(
+                project_dir, ctx.state_dir, body.target.character, body.target.identity_id, str(target),
+            )
     if body.target.kind == "selected_background":
         await _persist_freezone_selected_background_scene_ref(
             ctx=ctx,
@@ -11260,7 +11282,7 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
             source_url=body.source_url,
         )
 
-    if body.target.kind in {"identity", "identity_costume", "identity_portrait"}:
+    if body.target.kind in {"identity", "identity_costume"}:
         # F5 收尾逻辑：尽量提示 cognee_store 刷新 identity 记录。
         # 磁盘文件才是真正的数据源，这里只是 best-effort 同步。
         try:
@@ -11278,18 +11300,6 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
                     logger.info(
                         "cognee_store.update_character_identity not available; "
                         "skipping costume metadata sync (file is updated)"
-                    )
-            if body.target.kind == "identity_portrait":
-                try:
-                    await store.update_character_identity(
-                        character,
-                        identity_id,
-                        portrait_image=str(target),
-                    )
-                except AttributeError:
-                    logger.info(
-                        "cognee_store.update_character_identity not available; "
-                        "skipping identity portrait metadata sync (file is updated)"
                     )
             try:
                 await store.touch_identity(character, identity_id)  # type: ignore[attr-defined]
