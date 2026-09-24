@@ -52,23 +52,36 @@ def runtime_preset_for(
     return _RUNTIME_PRESET_DEFAULTS.get(runtime)
 
 
+def clamp_task_route_to_runtime_preset(
+    route: AgentTaskRoute,
+    config: AgentTaskRoutingConfig,
+) -> AgentTaskRoute:
+    """Apply the runtime-level preset clamp to a plain route.
+
+    Only deepseek_harness routes are affected: their model and reasoning
+    effort are uniquely determined by the runtime-level preset.
+    """
+
+    if route.runtime != "deepseek_harness":
+        return route
+    preset = runtime_preset_for(config, "deepseek_harness")
+    if preset is None:
+        return route
+    return route.model_copy(
+        update={
+            "model": preset.model,
+            "reasoning_effort": preset.reasoning_effort,
+        }
+    )
+
+
 def _clamp_harness_route(
     snapshot: AgentTaskRouteSnapshot,
     config: AgentTaskRoutingConfig,
 ) -> AgentTaskRouteSnapshot:
     """deepseek_harness 的模型与推理强度由运行时级 preset 唯一决定。"""
 
-    if snapshot.runtime != "deepseek_harness":
-        return snapshot
-    preset = runtime_preset_for(config, "deepseek_harness")
-    if preset is None:
-        return snapshot
-    return snapshot.model_copy(
-        update={
-            "model": preset.model,
-            "reasoning_effort": preset.reasoning_effort,
-        }
-    )
+    return clamp_task_route_to_runtime_preset(snapshot, config)
 
 
 def default_agent_task_route(task_role: str) -> AgentTaskRoute:

@@ -36,9 +36,11 @@ from novelvideo.text_task_runtime.models import (
     AgentTaskRoute,
     AgentTaskRoutingConfig,
     RuntimePreset,
+    TextTaskRuntimeName,
 )
 from novelvideo.text_task_runtime.models_catalog import get_runtime_model_catalog
 from novelvideo.text_task_runtime.settings import (
+    clamp_task_route_to_runtime_preset,
     default_agent_task_route,
     load_global_routes,
     runtime_preset_for,
@@ -110,7 +112,7 @@ TEXT_TASK_ROLE_LABELS = {
 
 class TaskRuntimeConfigBody(BaseModel):
     routes: dict[str, AgentTaskRoute]
-    runtime_presets: dict[str, RuntimePreset] | None = None
+    runtime_presets: dict[TextTaskRuntimeName, RuntimePreset] | None = None
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -421,21 +423,13 @@ def _effective_task_route(
     role: str, configured: AgentTaskRoutingConfig
 ) -> AgentTaskRoute:
     override = configured.routes.get(role)
-    route = (
-        default_agent_task_route(role).model_copy(
+    if override is not None:
+        route = default_agent_task_route(role).model_copy(
             update=override.model_dump(exclude_none=True)
         )
-        if override is not None
-        else default_agent_task_route(role)
-    )
-    if route.runtime != "deepseek_harness":
-        return route
-    preset = runtime_preset_for(configured, route.runtime)
-    if preset is None:
-        return route
-    return route.model_copy(
-        update={"model": preset.model, "reasoning_effort": preset.reasoning_effort}
-    )
+    else:
+        route = default_agent_task_route(role)
+    return clamp_task_route_to_runtime_preset(route, configured)
 
 
 def _task_runtime_config_payload() -> dict[str, Any]:

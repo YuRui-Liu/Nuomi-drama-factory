@@ -75,6 +75,37 @@ def test_task_runtime_config_round_trips_runtime_presets(client) -> None:
     assert harness_role["route"]["model"] == "deepseek-v4-flash-vision-exp"
 
 
+def test_task_runtime_config_rejects_unknown_runtime_preset_key(client) -> None:
+    saved_first = client.put(
+        CONFIG_PATH,
+        json={
+            "routes": {},
+            "runtime_presets": {
+                "codex": {"model": "gpt-5.6-sol", "reasoning_effort": "low"}
+            },
+        },
+    )
+    assert saved_first.status_code == 200
+
+    rejected = client.put(
+        CONFIG_PATH,
+        json={
+            "routes": {},
+            "runtime_presets": {
+                "bogus_runtime": {"model": "gpt-5.6-sol", "reasoning_effort": "low"}
+            },
+        },
+    )
+
+    # 未知 runtime 名必须由 API 层拒绝（422），而不是落到 Pydantic 内部成为 500。
+    assert rejected.status_code == 422
+
+    saved = load_global_routes()
+    assert "bogus_runtime" not in saved.runtime_presets
+    # 422 请求不落盘：先前保存的 codex preset 原样保留。
+    assert saved.runtime_presets["codex"].model == "gpt-5.6-sol"
+
+
 def test_task_runtime_config_returns_builtin_preset_before_any_save(client) -> None:
     fetched = client.get(CONFIG_PATH)
 
