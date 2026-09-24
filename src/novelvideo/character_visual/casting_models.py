@@ -113,6 +113,7 @@ class CastingCandidate(CastingContract):
     requested_model: NonBlank | None = None
     generation_metadata: dict[Literal["provider", "requested_model", "resolved_model", "resolution_source"], str] = Field(default_factory=dict)
     asset_path: NonBlank | None = None
+    asset_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")] | None = None
     generation_status: Literal["queued", "running", "succeeded", "failed"] = "queued"
     review_status: Literal["not_started", "running", "completed", "failed"] = "not_started"
     report: CastingReviewReport | None = None

@@ -35,7 +35,7 @@ def test_claim_and_image_completion_are_immutable_and_restart_safe(tmp_path):
     store.create_pending(pending())
     assert store.claim_generation("c1", task_id="task1") is True
     assert store.claim_generation("c1", task_id="task1") is False
-    source = tmp_path / "output" / "source.png"
+    source = store.output_path("c1")
     source.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (8, 8), "red").save(source)
     done = store.complete_generation("c1", source)
@@ -61,7 +61,8 @@ def test_rejects_unsafe_and_nonimage_outputs(tmp_path, kind):
         source = root / "link.png"
         source.symlink_to(outside)
     elif kind == "invalid":
-        source = root / "invalid.png"
+        source = store.output_path("c1")
+        source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text("not an image")
     elif kind == "traversal":
         source = root / ".." / "outside.png"
@@ -146,3 +147,57 @@ def test_concurrent_claims_have_one_winner(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: store_at(tmp_path).claim_generation("c1", task_id="task1"), range(2)))
     assert sorted(results) == [False, True]
+
+
+@pytest.mark.parametrize("kind", ["current", "other_candidate", "arbitrary"])
+def test_rejects_project_local_output_not_owned_by_candidate(tmp_path, kind):
+    store = store_at(tmp_path)
+    store.create_pending(pending())
+    store.claim_generation("c1", task_id="task1")
+    source = {
+        "current": tmp_path / "output" / "assets" / "characters" / "甲" / "portrait.png",
+        "other_candidate": store.output_path("c2"),
+        "arbitrary": tmp_path / "output" / "source.png",
+    }[kind]
+    source.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8)).save(source)
+    with pytest.raises(ValueError, match="candidate.*directory"):
+        store.complete_generation("c1", source)
+    assert store.get("c1").generation_status == "running"
+
+
+def test_claim_and_completion_fsync_metadata_and_directory(tmp_path, monkeypatch):
+    import os
+    import stat
+    store = store_at(tmp_path)
+    store.create_pending(pending())
+    syncs = []
+    original = os.fsync
+    def sync(fd):
+        syncs.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        original(fd)
+    monkeypatch.setattr(os, "fsync", sync)
+    store.claim_generation("c1", task_id="task1")
+    assert syncs == ["file", "directory"]
+    syncs.clear()
+    source = store.output_path("c1")
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(source)
+    store.complete_generation("c1", source)
+    assert syncs == ["file", "directory", "file", "directory"]
+
+
+def test_verified_asset_read_rejects_tampering_after_restart(tmp_path):
+    import hashlib
+    store = store_at(tmp_path)
+    store.create_pending(pending())
+    store.claim_generation("c1", task_id="task1")
+    source = store.output_path("c1")
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(source)
+    completed = store.complete_generation("c1", source)
+    assert completed.asset_sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert store_at(tmp_path).read_verified_asset("c1") == source.read_bytes()
+    Image.new("RGB", (8, 8), "blue").save(completed.asset_path)
+    with pytest.raises(ValueError, match="digest"):
+        store_at(tmp_path).read_verified_asset("c1")

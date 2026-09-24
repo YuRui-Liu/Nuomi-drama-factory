@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,10 +34,22 @@ class CastingCandidateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
         try:
-            temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            self._sync_directory(self.path.parent)
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _sync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _decode(self, raw: dict) -> CastingCandidate:
         candidate = CastingCandidate.model_validate(raw)
@@ -58,7 +71,7 @@ class CastingCandidateStore:
     def create_pending(self, candidate: CastingCandidate) -> CastingCandidate:
         raw = candidate.model_dump(mode="json")
         candidate = self._decode(raw)
-        if candidate.generation_status != "queued" or candidate.asset_path or candidate.review_status != "not_started" or candidate.error or candidate.generation_metadata:
+        if candidate.generation_status != "queued" or candidate.asset_path or candidate.asset_sha256 or candidate.review_status != "not_started" or candidate.error or candidate.generation_metadata:
             raise ValueError("new candidate must be pending")
         with production_workflow_project_lock(self.state_dir):
             data = self._read()
@@ -105,11 +118,14 @@ class CastingCandidateStore:
         with production_workflow_project_lock(self.state_dir):
             data = self._read()
             candidate = self._decode(data[candidate_id])
+            source = self.safe_path(asset_path)
+            if not source.is_relative_to(self.output_path(candidate_id).parent):
+                raise ValueError("candidate output must be within its own candidate directory")
             if candidate.generation_status == "succeeded":
+                self.read_verified_asset(candidate_id)
                 return candidate
             if candidate.generation_status != "running":
                 raise ValueError("only running candidates can complete")
-            source = self.safe_path(asset_path)
             try:
                 image_bytes = source.read_bytes()
                 with Image.open(io.BytesIO(image_bytes)) as image:
@@ -127,10 +143,25 @@ class CastingCandidateStore:
             except FileExistsError:
                 if destination.read_bytes() != image_bytes:
                     raise ValueError("immutable candidate image conflict")
-            completed = candidate.model_copy(update={"asset_path": str(destination), "generation_status": "succeeded", "error": None})
+            self._sync_directory(destination.parent)
+            completed = candidate.model_copy(update={"asset_path": str(destination), "asset_sha256": hashlib.sha256(image_bytes).hexdigest(),
+                                                      "generation_status": "succeeded", "error": None})
             data[candidate_id] = completed.model_dump(mode="json")
             self._write(data)
             return self._decode(data[candidate_id])
+
+    def read_verified_asset(self, candidate_id: str) -> bytes:
+        """Read only the immutable owned asset, bound to its persisted byte digest."""
+        candidate = self.get(candidate_id)
+        if candidate is None or candidate.generation_status != "succeeded" or not candidate.asset_path or not candidate.asset_sha256:
+            raise ValueError("candidate has no completed verified asset")
+        path = self.safe_path(candidate.asset_path)
+        if path != self.output_path(candidate_id).with_name("candidate.png"):
+            raise ValueError("candidate asset path mismatch")
+        image_bytes = path.read_bytes()
+        if hashlib.sha256(image_bytes).hexdigest() != candidate.asset_sha256:
+            raise ValueError("candidate asset digest mismatch")
+        return image_bytes
 
     def fail_generation(self, candidate_id: str, error: str) -> CastingCandidate:
         with production_workflow_project_lock(self.state_dir):
