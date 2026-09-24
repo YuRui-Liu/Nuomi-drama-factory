@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from novelvideo import config as app_config
 from novelvideo.model_gateway_settings import (
@@ -448,7 +448,9 @@ def _task_runtime_config_payload() -> dict[str, Any]:
 async def get_task_runtime_config() -> dict[str, Any]:
     try:
         return {"ok": True, "data": _task_runtime_config_payload()}
-    except ValidationError as exc:
+    # 存储的配置既可能是「合法 JSON 但字段不合法」(ValidationError)，也可能是
+    # 非法 JSON (json.JSONDecodeError)；两者唯一的共同基类是 ValueError。
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail="存储的任务路由配置无效，请重新保存任务路由。",
@@ -477,7 +479,8 @@ async def put_task_runtime_config(body: TaskRuntimeConfigBody) -> dict[str, Any]
         )
         save_global_routes(config)
         return {"ok": True, "data": _task_runtime_config_payload()}
-    except ValidationError as exc:
+    # 同 GET：读回路径同样可能撞上历史遗留的非法 JSON。
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail="存储的任务路由配置无效，请重新保存任务路由。",

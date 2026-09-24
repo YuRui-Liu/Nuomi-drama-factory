@@ -187,6 +187,30 @@ def test_task_runtime_config_get_reports_422_for_unknown_runtime_key(client) -> 
     assert get_model_gateway_settings()[TEXT_TASK_ROUTING_KEY] == polluted
 
 
+def test_task_runtime_config_get_reports_422_for_unparseable_stored_json(client) -> None:
+    """KV 里是非法 JSON 时也必须走错误边界（422），而不是未捕获的 500。
+
+    `json.JSONDecodeError` 不是 `pydantic.ValidationError` 的子类，二者只是
+    共同继承 `ValueError`，所以只捕获 ValidationError 会漏掉这一条路径。
+    """
+
+    polluted = "{not json"
+    save_model_gateway_setting(TEXT_TASK_ROUTING_KEY, polluted)
+
+    # 先证明脏数据确实进了真实 sqlite KV，且解析本身就会抛 JSONDecodeError。
+    assert get_model_gateway_settings()[TEXT_TASK_ROUTING_KEY] == polluted
+    with pytest.raises(json.JSONDecodeError):
+        load_global_routes()
+
+    fetched = client.get(CONFIG_PATH)
+
+    assert fetched.status_code == 422
+    assert fetched.json()["detail"] == "存储的任务路由配置无效，请重新保存任务路由。"
+
+    # 不自动修复、不静默丢弃：脏数据仍然原样躺在 KV 里。
+    assert get_model_gateway_settings()[TEXT_TASK_ROUTING_KEY] == polluted
+
+
 def test_task_runtime_config_replay_keeps_custom_codex_model_and_harness_preset(
     client,
 ) -> None:
