@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -77,6 +77,10 @@ class CastingSnapshot(CastingContract):
     hard_constraints: list[CharacterNarrativeFact] = Field(default_factory=list)
     design_decisions: list[CastingDecision] = Field(default_factory=list)
     style: NonBlank
+    proposal_snapshot: dict[str, Any] = Field(default_factory=dict)
+    source_fact_ids: list[NonBlank] = Field(default_factory=list)
+    interpretations: list[CastingDecision] = Field(default_factory=list)
+    creative_choices: list[CastingDecision] = Field(default_factory=list)
     snapshot_hash: NonBlank
 
 

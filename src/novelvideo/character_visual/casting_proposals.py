@@ -45,52 +45,69 @@ def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: li
         issues.append("recommendation:exactly_one")
     dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
     issues.extend(x for x in dossier.issues if not x.startswith("missing:"))
-    applicable = profile.model_copy(update={"facts": dossier.hard_constraints + dossier.interpretations})
-    nonhuman = any(f.field == "species" and f.value not in {"人", "人类", "human"} for f in dossier.hard_constraints)
     for proposal in proposals:
         prefix = proposal.proposal_id + ":"
-        assessed = assess_design_proposal(proposal, profile=applicable)
-        structural = assessed.quality_issues
-        if nonhuman:
-            # Human face vocabulary is not an anatomical requirement for animals.
-            structural = [x for x in structural if not x.startswith(("face_structure:", "individual_structure:", "structure_coverage:"))]
-            if not proposal.facial_features or not proposal.body_type:
-                structural.append("species_anatomy:details_required")
-        issues.extend(prefix + x for x in structural)
-        decisions = proposal.casting_decisions
-        issues.extend(prefix + x for x in validate_casting_decisions(profile, decisions, identity_id))
-        if not proposal.rationale.strip():
-            issues.append(prefix + "casting_reason:required")
-        if not decisions:
-            issues.append(prefix + "casting_decisions:required")
-        constrained_values = {fact.value for fact in dossier.hard_constraints}
-        has_free_details = any(value.strip() and value.strip() not in constrained_values
-                               for value in _rendered_text(proposal).splitlines())
-        if has_free_details and not any(d.basis == "creative_choice" for d in decisions):
-            issues.append(prefix + "creative_choices:required")
-        text = _all_proposal_text(proposal)
-        rendered = _rendered_text(proposal)
-        # A model cannot bypass history validation by putting a scar only in
-        # visual prose and omitting it from its structured decisions.
-        unchecked_text = text
-        for fact in dossier.hard_constraints:
-            if fact.field in {"scar", "disability", "injury_state", "distinctive_feature"}:
-                unchecked_text = unchecked_text.replace(fact.value, "")
-        issues.extend(prefix + issue for issue in validate_casting_decisions(profile, [CastingDecision(
-            decision_id="visual-text", attribute="visual_details", value=unchecked_text or "无补充",
-            reason="检查未声明的视觉设定", basis="creative_choice")], identity_id))
-        for fact in dossier.hard_constraints:
-            if not any(d.basis == "evidence" and fact.fact_id in d.fact_ids and d.value == fact.value for d in decisions):
-                issues.append(prefix + "missing_constraint:" + fact.fact_id)
-            # Decisions are not a license for contradictory rendered instructions.
-            if not evidence_supports(fact.model_copy(update={"evidence": rendered})):
-                issues.append(prefix + "constraint_not_visualized:" + fact.fact_id)
-            if fact.field in {"age_range", "age_group"} and _age_contradicts(fact.value, rendered):
-                issues.append(prefix + "age_contradiction:" + fact.fact_id)
+        issues.extend(prefix + issue for issue in validate_casting_proposal(profile, proposal, identity_id,
+            source_revision=source_revision, style_revision=style_revision))
         for other in proposals:
             if other.proposal_id != proposal.proposal_id and _structures_collide(proposal, other):
                 issues.append(prefix + "structure_collision:" + other.proposal_id)
         for other in existing_proposals or []:
             if _structures_collide(proposal, other):
                 issues.append(prefix + "roster_collision:" + other.proposal_id)
+    return list(dict.fromkeys(issues))
+
+
+def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: CharacterDesignProposal,
+                             identity_id: str | None, *, source_revision: str = "unspecified",
+                             style_revision: str = "unspecified") -> list[str]:
+    """Validate one selected design; set diversity/recommendation checks stay separate."""
+    dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
+    issues = [x for x in dossier.issues if not x.startswith("missing:")]
+    applicable = profile.model_copy(update={"facts": dossier.hard_constraints + dossier.interpretations})
+    nonhuman = any(f.field == "species" and f.value not in {"人", "人类", "human"} for f in dossier.hard_constraints)
+    assessed = assess_design_proposal(proposal, profile=applicable)
+    structural = assessed.quality_issues
+    if nonhuman:
+        # Human face vocabulary is not an anatomical requirement for animals.
+        structural = [x for x in structural if not x.startswith(("face_structure:", "individual_structure:", "structure_coverage:"))]
+        if not proposal.facial_features or not proposal.body_type:
+            structural.append("species_anatomy:details_required")
+    issues.extend(x for x in structural)
+    decisions = proposal.casting_decisions
+    if len({d.decision_id for d in decisions}) != len(decisions):
+        issues.append("decision_ids:unique_required")
+    issues.extend(x for x in validate_casting_decisions(profile, decisions, identity_id))
+    if not proposal.rationale.strip():
+        issues.append("casting_reason:required")
+    if not decisions:
+        issues.append("casting_decisions:required")
+    constrained_values = {fact.value for fact in dossier.hard_constraints}
+    has_free_details = any(value.strip() and value.strip() not in constrained_values
+                           for value in _rendered_text(proposal).splitlines())
+    if has_free_details and not any(d.basis == "creative_choice" for d in decisions):
+        issues.append("creative_choices:required")
+    text = _all_proposal_text(proposal)
+    rendered = _rendered_text(proposal)
+    # A model cannot bypass history validation by putting a scar only in
+    # visual prose and omitting it from its structured decisions.
+    unchecked_text = text
+    for fact in dossier.hard_constraints:
+        if fact.field in {"face_shape", "hair_style", "body_type"}:
+            visual_value = getattr(proposal, fact.field) or ""
+            if not evidence_supports(fact.model_copy(update={"evidence": visual_value})):
+                issues.append("visual_field_contradiction:" + fact.fact_id)
+        if fact.field in {"scar", "disability", "injury_state", "distinctive_feature"}:
+            unchecked_text = unchecked_text.replace(fact.value, "")
+    issues.extend(issue for issue in validate_casting_decisions(profile, [CastingDecision(
+        decision_id="visual-text", attribute="visual_details", value=unchecked_text or "无补充",
+        reason="检查未声明的视觉设定", basis="creative_choice")], identity_id))
+    for fact in dossier.hard_constraints:
+        if not any(d.basis == "evidence" and fact.fact_id in d.fact_ids and d.value == fact.value for d in decisions):
+            issues.append("missing_constraint:" + fact.fact_id)
+        # Decisions are not a license for contradictory rendered instructions.
+        if not evidence_supports(fact.model_copy(update={"evidence": rendered})):
+            issues.append("constraint_not_visualized:" + fact.fact_id)
+        if fact.field in {"age_range", "age_group"} and _age_contradicts(fact.value, rendered):
+            issues.append("age_contradiction:" + fact.fact_id)
     return list(dict.fromkeys(issues))
