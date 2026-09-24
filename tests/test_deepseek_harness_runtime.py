@@ -208,6 +208,35 @@ async def test_schema_is_appended_only_for_structured_output(monkeypatch, dsh):
 
 
 @pytest.mark.asyncio
+async def test_text_output_keeps_a_deliberate_code_fence(monkeypatch, dsh):
+    """纯文本答案本身可能就是有意的 markdown 代码块，不能被剥离围栏。"""
+
+    proc = stub_process(b"```\nplain answer\n```")
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    result = await runtime().run_structured(prompt="task", output_type=str)
+
+    assert result == "```\nplain answer\n```"
+    assert "```" in result
+
+
+@pytest.mark.asyncio
+async def test_structured_output_still_unwraps_a_code_fence(monkeypatch, dsh):
+    """结构化分支仍必须剥离围栏，否则 JSON 解析会失败。"""
+
+    proc = stub_process(b'```json\n{"value": "ok"}\n```')
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    result = await runtime().run_structured(prompt="task", output_type=Answer)
+
+    assert result.value == "ok"
+
+
+@pytest.mark.asyncio
 async def test_images_are_never_silently_discarded(monkeypatch, isolated_harness_home):
     spawn = AsyncMock()
     monkeypatch.setattr(deepseek_harness.asyncio, "create_subprocess_exec", spawn)
@@ -374,6 +403,20 @@ def test_harness_home_default_ignores_ambient_dsh_home(monkeypatch, tmp_path):
 
     assert deepseek_harness.harness_home() == Path(config.STATE_DIR) / "dsh"
     assert deepseek_harness.harness_home() != Path(os.environ["DSH_HOME"])
+
+
+def test_harness_home_expands_tilde_from_env(monkeypatch):
+    """docker env-file / compose 不会像 shell 一样展开 ``~``，必须由我们展开。"""
+
+    monkeypatch.setenv("NOVELVIDEO_DSH_HOME", "~/nuomi-dsh-test")
+
+    home = deepseek_harness.harness_home()
+
+    assert home.is_absolute()
+    assert home == Path.home() / "nuomi-dsh-test"
+    assert str(home).startswith(str(Path.home()))
+    assert "~" not in str(home)
+    assert home != Path.home() / ".dsh"
 
 
 def test_build_text_task_runtime_selects_harness():

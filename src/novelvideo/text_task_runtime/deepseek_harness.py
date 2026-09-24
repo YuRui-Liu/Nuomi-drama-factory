@@ -58,14 +58,23 @@ def harness_home() -> Path:
 
     explicit = str(os.getenv("NOVELVIDEO_DSH_HOME") or "").strip()
     if explicit:
-        return Path(explicit)
+        # docker env-file / compose ``environment:`` 不会像 shell 那样展开 ``~``，
+        # 不展开就会在当前进程 cwd 下创建名为 ``~`` 的目录。
+        return Path(explicit).expanduser()
     from novelvideo import config
 
     return Path(config.STATE_DIR) / "dsh"
 
 
 def _settings_scalar(value: str) -> str:
-    """Render one YAML scalar, quoting only when a plain scalar would be unsafe."""
+    """Render one YAML scalar, quoting only when a plain scalar would be unsafe.
+
+    防御性处理：本函数的输入已被上游约束 —— ``model`` 只有通过
+    ``validate_text_task_model_name``（首字符字母数字，其余仅限字母数字、
+    ``._:/-`` 与空格）才可能到达，``reasoning_effort`` 取自 ``Literal``。
+    因此 ``#``、换行、空串、首尾空白等会破坏 YAML 文档的值在调用路径上不可达。
+    这里的引号分支只为防止未来出现未经校验的新调用方。
+    """
 
     if value != value.strip() or re.search(r":\s", value):
         return json.dumps(value, ensure_ascii=False)
@@ -113,9 +122,10 @@ def _resolve_default_model(snapshot: object) -> tuple[str, str | None]:
     入队时的 clamp 只保证「同一批快照」的统一。若任务 A 在 preset=X 时入队、
     用户把 preset 改成 Y 后任务 B 才入队，两者快照不同；此时若按
     ``snapshot.model`` 写 settings.yaml，并发运行的两个调用会互相覆盖同一个
-    文件，重新引入模型串用。改为调用时取当前 preset，则并发调用写入的内容
-    恒等，竞争消失。``except ValueError`` 用于容纳存储异常时回落到快照值
-    （快照本身已在入队时被 clamp）。
+    文件，重新引入模型串用。改为调用时取当前 preset，则消除的是「入队时点差异」
+    导致的竞争（preset 恰好在两次 ``load_global_routes()`` 之间变更的极小窗口
+    除外）。``except ValueError`` 用于容纳存储异常时回落到快照值（快照本身已在
+    入队时被 clamp）。
     """
 
     try:
@@ -203,10 +213,12 @@ class DeepSeekHarnessStructuredRuntime:
             )
         try:
             text = stdout.decode("utf-8").strip()
+            if output_type is str:
+                # 纯文本是模型的最终答案，可能本身就是一个有意的 markdown 围栏，
+                # 不能在这里剥离（workbuddy.py 同样只在结构化分支剥离）。
+                return text
             if text.startswith("```") and text.endswith("```") and "\n" in text:
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-            if output_type is str:
-                return text
             return output_type.model_validate_json(text, context=validation_context)
         except (ValueError, TypeError):
             raise KnowledgeRuntimeError(
