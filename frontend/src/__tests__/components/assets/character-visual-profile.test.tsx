@@ -58,6 +58,11 @@ const proposals = [
 ];
 
 describe("CharacterVisualProfile", () => {
+  it("makes the legacy workflow read only when casting owns selection", () => {
+    render(<CharacterVisualProfile biography="" facts={[]} visualProposal="" proposals={proposals} selectedProposalId="proposal-a" visualBibleStatus="draft" onSelectProposal={vi.fn()} onConfirmVisualBible={vi.fn()} visualIdentity={{}} outfitsAndStates={[]} readOnly />);
+    expect(screen.getByRole("button", { name: /冷峻纪实/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "确认 VisualBible" })).not.toBeInTheDocument();
+  });
   it("separates narrative facts, proposal, identity and outfits without leaking legacy prompt text", () => {
     render(
       <CharacterVisualProfile

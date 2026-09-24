@@ -47,6 +47,7 @@ export interface CharacterVisualProfileProps {
   outfitsAndStates: string[];
   promptSnapshot?: string;
   className?: string;
+  readOnly?: boolean;
 }
 
 const identityLabels: Record<"face" | "hair" | "body", string> = {
@@ -85,6 +86,7 @@ export function CharacterVisualProfile({
   outfitsAndStates,
   promptSnapshot,
   className,
+  readOnly = false,
 }: CharacterVisualProfileProps) {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const trustedFacts = facts.filter((fact) => fact.trust === "trusted");
@@ -157,6 +159,7 @@ export function CharacterVisualProfile({
                   type="button"
                   aria-pressed={selected}
                   disabled={
+                    readOnly ||
                     isSelectingProposal ||
                     visualBibleStatus === "confirmed" ||
                     proposalSetInvalid ||
@@ -217,7 +220,7 @@ export function CharacterVisualProfile({
           <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
             VisualBible 已确认
           </div>
-        ) : !selectedProposalId && recommendedProposal && onSelectProposal ? (
+        ) : !readOnly && !selectedProposalId && recommendedProposal && onSelectProposal ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
             <span className="text-xs text-amber-700 dark:text-amber-300">
               已生成视觉提案，请先选择一套，再确认 VisualBible。
@@ -232,7 +235,7 @@ export function CharacterVisualProfile({
               选择推荐提案
             </Button>
           </div>
-        ) : visualBibleStatus === "draft" && onConfirmVisualBible ? (
+        ) : !readOnly && visualBibleStatus === "draft" && onConfirmVisualBible ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
             <span className="text-xs text-amber-700 dark:text-amber-300">
               {proposalSetInvalid
