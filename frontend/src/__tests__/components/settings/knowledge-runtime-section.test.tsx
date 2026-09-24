@@ -62,10 +62,15 @@ vi.mock("@/lib/queries/model-gateway", () => {
       },
     };
   return {
+  TASK_REASONING_EFFORTS: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   useTaskRuntimeConfig: () => ({
     data,
     isLoading: false,
     isError: false,
+  }),
+  useTaskRuntimeModels: () => ({
+    data: { data: { codex: [], workbuddy: [], model_api: [], deepseek_harness: [] } },
+    isLoading: false,
   }),
   useSaveTaskRuntimeConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
