@@ -164,3 +164,55 @@ def test_sourced_kinship_and_reference_scope(tmp_path):
     rows = findings()
     rows[2].update(verdict="conforms", visibility="visible", reference_candidate_ids=["workflow:v1"], description="亲缘相似有原文依据，身份区别仍可识别")
     assert validate_review_report(dict(findings=rows, reviewer="server", model="m", version="1"), candidate.snapshot, [ref])
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_real_runner_context_publishes_with_cancel_checkpoint(tmp_path, monkeypatch, stopped):
+    from novelvideo.task_backend.runners import character_casting_review as runner
+    from novelvideo.task_backend import cancel
+    from novelvideo.task_state import project_task_run_context
+    store = ready(tmp_path)
+    calls = []
+    inferred = False
+    async def not_cancelled(**kwargs):
+        calls.append(kwargs)
+        return stopped and inferred
+    class Runtime:
+        snapshot = SimpleNamespace(task_role="identity_sheet_qc", runtime="model_api", model="configured")
+        async def run_structured(self, **kwargs):
+            nonlocal inferred
+            inferred = True
+            return {"findings": findings()}
+    monkeypatch.setattr(cancel, "is_cancel_requested", not_cancelled)
+    monkeypatch.setattr(runner, "current_text_task_runtime", lambda: Runtime())
+    ctx = SimpleNamespace(output_dir=store.project_dir, state_dir=store.state_dir, project_id="project")
+    envelope = dict(project_id="project", __run_task_id="review-task", payload=dict(
+        candidate_id="c1", character_id=store.get("c1").character_id, attempt_id="attempt-real", references=[]))
+    with project_task_run_context("review-task"):
+        if stopped:
+            with pytest.raises(cancel.TaskCancelled): runner.run_character_casting_review(envelope, ctx)
+        else:
+            result = runner.run_character_casting_review(envelope, ctx)
+            assert result["review_status"] == "completed"
+    if stopped:
+        assert store.get("c1").error == "review_cancelled"
+        assert store.get("c1").report is None
+    assert calls and all(call["task_id"] == "review-task" for call in calls)
+
+
+@pytest.mark.parametrize("exception_name,error", [("TaskCancelled", "review_cancelled"),
+    ("TaskTimedOut", "review_timeout"), ("TaskLeaseLost", "review_cancelled")])
+def test_publication_stop_propagates_without_report(tmp_path, exception_name, error):
+    from novelvideo.character_visual.casting_review import review_candidate
+    from novelvideo.task_backend import cancel
+    store = ready(tmp_path)
+    exception_type = getattr(cancel, exception_name)
+    class Runtime:
+        snapshot = SimpleNamespace(task_role="identity_sheet_qc", runtime="model_api", model="configured")
+        async def run_structured(self, **kwargs): return {"findings": findings()}
+    def stop(): raise exception_type()
+    with pytest.raises(exception_type):
+        asyncio.run(review_candidate(store=store, candidate_id="c1", task_id="review-task", attempt_id="a",
+            references=[], runtime=Runtime(), before_commit=stop))
+    assert store.get("c1").report is None
+    assert store.get("c1").error == error

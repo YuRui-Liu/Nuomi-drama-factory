@@ -15,6 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.production_workflow import production_workflow_project_lock
+from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, TaskLeaseLost
 from novelvideo.text_task_runtime.runtime import StructuredImage
 from .casting_models import CastingFinding, CastingReviewReport, CastingSnapshot, NonBlank
 from .models import CharacterNarrativeFact
@@ -74,7 +75,9 @@ def validate_review_report(report, snapshot: CastingSnapshot, references=()):
 
 
 def failed_review(error):
-    return "review_cancelled" if isinstance(error, asyncio.CancelledError) else "review_timeout" if isinstance(error, TimeoutError) else "review_failed"
+    if isinstance(error, (asyncio.CancelledError, TaskCancelled, TaskLeaseLost)):
+        return "review_cancelled"
+    return "review_timeout" if isinstance(error, (TimeoutError, TaskTimedOut)) else "review_failed"
 
 
 def read_reference(store, reference):
@@ -99,7 +102,7 @@ def structured_image(data):
     return StructuredImage(data=data, media_type=media)
 
 
-async def review_candidate(*, store, candidate_id, task_id, attempt_id, references, runtime, before_publish=None):
+async def review_candidate(*, store, candidate_id, task_id, attempt_id, references, runtime, before_publish=None, before_commit=None):
     """Claim/freeze under lock, release for inference, then CAS publication.
 
     Same attempt is never inferred twice. Explicit retries need a new task and
@@ -147,12 +150,15 @@ DATA:\n''' + json.dumps(review_input, ensure_ascii=False)
             reference_versions=[dict(candidate_id=r.candidate_id, version=r.version, asset_sha256=r.asset_sha256) for r in references],
             comparison_scope="supplied_references" if references else "none")
         validate_review_report(report, candidate.snapshot, references)
+        # Remote cancellation may await; never invoke it while holding the
+        # thread-reentrant project lock. The local checkpoint below is sync.
+        if before_publish: await before_publish()
         with production_workflow_project_lock(store.state_dir):
-            if before_publish: before_publish()
+            if before_commit: before_commit()
             for reference in references: read_reference(store, reference)
             store.complete_review(candidate_id, attempt_id=attempt_id, report=report)
     except BaseException as exc:
         if not claimed: raise
         store.fail_review(candidate_id, attempt_id=attempt_id, error=failed_review(exc))
-        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)): raise
+        if isinstance(exc, (asyncio.CancelledError, TaskCancelled, TaskTimedOut, TaskLeaseLost, KeyboardInterrupt, SystemExit)): raise
     return store.get(candidate_id)
