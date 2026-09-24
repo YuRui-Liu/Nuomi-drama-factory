@@ -116,6 +116,52 @@ def test_task_runtime_config_rejects_unknown_runtime_preset_key(client) -> None:
     assert saved.runtime_presets["codex"].model == "gpt-5.6-sol"
 
 
+def test_task_runtime_config_rejects_unknown_task_role_ids(client) -> None:
+    """未知角色 id 必须由 API 层拒绝（422），而不是静默落盘成孤儿路由。
+
+    这是设计文档 API 契约明文要求的既有校验：roles 表由服务端拥有，
+    未知 key 意味着客户端与后端脱节，必须显式报错。
+    """
+
+    valid_role = {
+        "runtime": "codex",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "high",
+        "skill_id": None,
+        "skill_version": None,
+        "fallback": "stop",
+    }
+
+    # 先证明同样的合法角色单独提交是 200：422 的唯一诱因是多出的未知角色。
+    accepted = client.put(CONFIG_PATH, json={"routes": {"director_plan": valid_role}})
+    assert accepted.status_code == 200
+
+    rejected = client.put(
+        CONFIG_PATH,
+        json={
+            "routes": {
+                "director_plan": valid_role,
+                "bogus_role": {
+                    "runtime": "codex",
+                    "model": "gpt-5.6-sol",
+                    "fallback": "stop",
+                },
+            }
+        },
+    )
+
+    assert rejected.status_code == 422
+    detail = rejected.json()["detail"]
+    assert "unsupported task roles" in detail
+    assert "bogus_role" in detail
+
+    # 422 请求不落盘：合法角色仍是上一次成功保存的值，未知角色没有被持久化。
+    saved = load_global_routes()
+    assert "bogus_role" not in saved.routes
+    assert saved.routes["director_plan"].runtime == "codex"
+    assert saved.routes["director_plan"].model == "gpt-5.6-sol"
+
+
 def test_task_runtime_config_returns_builtin_preset_before_any_save(client) -> None:
     fetched = client.get(CONFIG_PATH)
 

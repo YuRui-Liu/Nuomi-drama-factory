@@ -211,6 +211,22 @@ def test_runtime_presets_round_trip_and_reject_unsafe_model():
         RuntimePreset(model="  ")
 
 
+def test_runtime_preset_is_frozen_and_forbids_extra_fields():
+    from novelvideo.text_task_runtime.models import RuntimePreset
+
+    preset = RuntimePreset(
+        model="deepseek-v4-flash-vision-exp", reasoning_effort="low"
+    )
+
+    # frozen：preset 是配置快照，解析过程中不允许被就地改写。
+    with pytest.raises(ValidationError):
+        preset.model = "other-model"
+
+    # extra="forbid"：多写的字段是隐藏的配置错误，不能被静默忽略。
+    with pytest.raises(ValidationError):
+        RuntimePreset(model="other-model", unexpected="x")
+
+
 def test_routing_config_without_runtime_presets_still_loads():
     from novelvideo.text_task_runtime.models import AgentTaskRoutingConfig
 
@@ -309,6 +325,60 @@ def test_task_override_switching_into_harness_is_clamped(tmp_path, monkeypatch):
     assert snapshot.model == "harness-user-choice"
     assert snapshot.reasoning_effort == "high"
     assert snapshot.source == "task"
+
+
+def test_project_override_switching_into_harness_is_clamped(tmp_path, monkeypatch):
+    from novelvideo.text_task_runtime.models import (
+        AgentTaskRouteOverride,
+        AgentTaskRoutingConfig,
+        RuntimePreset,
+    )
+    from novelvideo.text_task_runtime import settings as runtime_settings
+
+    # global 里该角色是 codex；preset 只在 global 的 runtime_presets 里。
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_global_routes",
+        lambda: AgentTaskRoutingConfig(
+            routes={
+                "director_plan": AgentTaskRouteOverride(
+                    runtime="codex", model="gpt-5.6-sol", reasoning_effort="low"
+                )
+            },
+            runtime_presets={
+                # 与内置默认不同的值：只有「最终快照仍被 preset 覆盖」的实现才会得到它。
+                "deepseek_harness": RuntimePreset(
+                    model="harness-user-choice",
+                    reasoning_effort="high",
+                )
+            },
+        ),
+    )
+    # 是 project 级 override 把 runtime 切成 harness，并试图写入自定义 model/effort。
+    monkeypatch.setattr(
+        runtime_settings,
+        "load_project_routes",
+        lambda ctx: AgentTaskRoutingConfig(
+            routes={
+                "director_plan": AgentTaskRouteOverride(
+                    runtime="deepseek_harness",
+                    model="project-level-attempt",
+                    reasoning_effort="xhigh",
+                )
+            }
+        ),
+    )
+
+    snapshot = runtime_settings.resolve_configured_agent_task_route(
+        ctx=SimpleNamespace(state_dir=tmp_path),
+        task_role="director_plan",
+    )
+
+    # 项目级 override 无法逃逸 preset：clamp 施加在最终快照上。
+    assert snapshot.runtime == "deepseek_harness"
+    assert snapshot.model == "harness-user-choice"
+    assert snapshot.reasoning_effort == "high"
+    assert snapshot.source == "project"
 
 
 def test_harness_defaults_when_no_preset_saved(tmp_path, monkeypatch):
