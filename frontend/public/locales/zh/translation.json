@@ -1,5 +1,7 @@
 {
   "costs": {
+    "excludedSubmission": "该调用未确认提交，当前不计入按量费用。",
+    "excludedAudit": "以下历史金额仅供审计，不代表当前计费金额。",
     "facts": {
       "submission": {
         "pending": "待提交确认",

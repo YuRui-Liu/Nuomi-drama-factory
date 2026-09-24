@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import ky from 'ky';
@@ -13,6 +13,22 @@ vi.mock('@/lib/api', () => ({ api: ky.create({ baseUrl: 'http://localhost:3000/'
 beforeAll(async () => { await i18next.use(initReactI18next).init({ lng: 'zh', resources: {}, interpolation: { escapeValue: false } }); });
 
 afterEach(cleanup);
+it.each(['pending', 'failed', 'unknown'])('excludes %s submission money from current detail while retaining audit history', async submission => {
+  setup();
+  const attempt = { attempt_id: 'excluded', project_id: 'one', provider: 'runninghub', account_id: 'main', model: 'test-model', media_type: 'image', occurred_at: '2026-09-24T02:00:00Z', task_id: null, resource_id: null, external_id: null, execution_status: 'unknown', submission_status: submission, usage: { call: '1' }, usage_source: 'request', workflow: null, specifications: [] };
+  const value = { status: 'estimated', amount_micros: 9990000, reason: null };
+  server.use(
+    http.get('*/api/v1/projects/:project/costs/entries', () => HttpResponse.json({ ok: true, data: { entries: [{ ...attempt, value, cost_status: 'estimated', amount_cents: null }], next_cursor: null } })),
+    http.get('*/api/v1/projects/:project/costs/entries/excluded', () => HttpResponse.json({ ok: true, data: { attempt, value, current_cost: { value, amount_cents: null }, revisions: [{ value, applied: true, sequence: 1 }] } })),
+  );
+  fireEvent.click(await screen.findByRole('button', { name: '查看' }));
+  const current = (await screen.findByText('当前费用依据')).closest('section')!;
+  expect(within(current).queryByText('¥9.99')).not.toBeInTheDocument();
+  expect(current).toHaveTextContent('该调用未确认提交，当前不计入按量费用');
+  const history = screen.getByText('费用修订历史').closest('section')!;
+  expect(within(history).getByText('¥9.99')).toBeInTheDocument();
+  expect(history).toHaveTextContent('以下历史金额仅供审计，不代表当前计费金额');
+});
 const bucket = { total_cents: 1234, confirmed_cents: 1000, estimated_cents: 234, priced_count: 2, unpriced_count: 1, pending_count: 0, subscription_count: 0, attempt_count: 3 };
 function snapshot(project = 'one', unknown = false) {
   const b = unknown ? { ...bucket, priced_count: 0, total_cents: 0, confirmed_cents: 0, estimated_cents: 0 } : bucket;

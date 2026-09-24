@@ -1,5 +1,7 @@
 {
   "costs": {
+    "excludedSubmission": "This call has no confirmed submission and is excluded from current usage charges.",
+    "excludedAudit": "Historical amounts below are audit records, not the current billable amount.",
     "facts": {
       "submission": {
         "pending": "Awaiting submission",
