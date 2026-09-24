@@ -110,6 +110,8 @@ class CastingCandidate(CastingContract):
     identity_id: NonBlank | None = None
     snapshot: CastingSnapshot
     task_id: NonBlank
+    requested_model: NonBlank | None = None
+    generation_metadata: dict[Literal["provider", "requested_model", "resolved_model", "resolution_source"], str] = Field(default_factory=dict)
     asset_path: NonBlank | None = None
     generation_status: Literal["queued", "running", "succeeded", "failed"] = "queued"
     review_status: Literal["not_started", "running", "completed", "failed"] = "not_started"

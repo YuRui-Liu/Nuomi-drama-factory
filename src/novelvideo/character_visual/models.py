@@ -159,6 +159,7 @@ class CharacterVisualWorkspace(BaseModel):
     visual_bible: CharacterVisualBible | None = None
     legacy_fields: list[LegacyVisualField] = Field(default_factory=list)
     casting_revision: CastingRevision | None = None
+    identity_casting_revisions: dict[str, CastingRevision] = Field(default_factory=dict)
 
 
 def classify_legacy_visual_field(

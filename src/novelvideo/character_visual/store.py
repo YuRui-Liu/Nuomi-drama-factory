@@ -10,6 +10,8 @@ from typing import Iterator
 from uuid import uuid4
 
 from .models import CharacterVisualBible, CharacterVisualWorkspace
+from .casting_models import CastingRevision
+from novelvideo.production_workflow import production_workflow_project_lock
 
 
 class CharacterVisualWorkspaceStore:
@@ -19,8 +21,9 @@ class CharacterVisualWorkspaceStore:
     lock_timeout_seconds = 10.0
     stale_lock_seconds = 60.0
 
-    def __init__(self, project_dir: str | Path):
+    def __init__(self, project_dir: str | Path, *, state_dir: str | Path | None = None):
         self.project_dir = Path(project_dir)
+        self.state_dir = Path(state_dir) if state_dir is not None else self.project_dir / "state"
         self.path = self.project_dir / "state" / self.filename
         self.lock_path = self.path.with_name(f"{self.path.name}.lock")
 
@@ -103,7 +106,7 @@ class CharacterVisualWorkspaceStore:
         return CharacterVisualWorkspace.model_validate(raw) if isinstance(raw, dict) else None
 
     def save(self, workspace: CharacterVisualWorkspace) -> CharacterVisualWorkspace:
-        with self._exclusive_write_lock():
+        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
             payload = self._read_all()
             payload[workspace.character_id] = workspace.model_dump(mode="json")
             self._write_all(payload)
@@ -119,7 +122,7 @@ class CharacterVisualWorkspaceStore:
         if not items:
             return []
 
-        with self._exclusive_write_lock():
+        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
             payload = self._read_all()
             for workspace in items:
                 existing_raw = payload.get(workspace.character_id)
@@ -129,11 +132,34 @@ class CharacterVisualWorkspaceStore:
                         update={
                             "selected_proposal_id": existing.selected_proposal_id,
                             "visual_bible": existing.visual_bible,
+                            "casting_revision": existing.casting_revision,
+                            "identity_casting_revisions": existing.identity_casting_revisions,
                         }
                     )
                 payload[workspace.character_id] = workspace.model_dump(mode="json")
             self._write_all(payload)
         return items
+
+    def mutate_casting_revision(self, character_id: str, *, identity_id: str | None,
+                                expected_revision: str | None,
+                                revision: CastingRevision) -> CharacterVisualWorkspace:
+        """Check and replace one stage within the same locked read/write transaction."""
+        if (revision.character_id, revision.identity_id) != (character_id, identity_id):
+            raise ValueError("casting revision ownership mismatch")
+        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+            payload = self._read_all()
+            workspace = CharacterVisualWorkspace.model_validate(payload[character_id])
+            current = (workspace.casting_revision if identity_id is None
+                       else workspace.identity_casting_revisions.get(identity_id))
+            if (current.revision_id if current else None) != expected_revision:
+                raise ValueError("casting revision conflict")
+            if identity_id is None:
+                workspace.casting_revision = revision.model_copy(deep=True)
+            else:
+                workspace.identity_casting_revisions[identity_id] = revision.model_copy(deep=True)
+            payload[character_id] = workspace.model_dump(mode="json")
+            self._write_all(payload)
+            return workspace
 
     def get_confirmed_bible(self, character_id: str) -> CharacterVisualBible | None:
         workspace = self.get(character_id)
