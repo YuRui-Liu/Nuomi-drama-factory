@@ -73,6 +73,13 @@ def test_snapshot_uses_narrative_fact_contract_and_is_frozen():
         value.prompt = "changed"
 
 
+@pytest.mark.parametrize("status", ["failed", "not_started", "running"])
+def test_noncompleted_review_cannot_retain_pass_looking_report(status):
+    report = dict(reviewer="vision", model="model1", version="v1", findings=[dict(finding_id="f1", dimension="facts", verdict="conforms", description="Matches evidence")])
+    with pytest.raises(ValidationError, match="only completed review"):
+        contracts().CastingCandidate(**candidate(review_status=status, report=report, error="review timed out" if status == "failed" else None))
+
+
 def test_adoption_command_has_no_client_actor_authority():
     model = contracts().CastingAdoption
     command = model(candidate_id="cnd1", expected_revision="r1", idempotency_key="key1", acknowledged_findings=["f1"])

@@ -116,6 +116,8 @@ class CastingCandidate(CastingContract):
             raise ValueError("candidate and snapshot ownership must agree")
         if self.review_status == "completed" and self.report is None:
             raise ValueError("completed review requires report")
+        if self.review_status != "completed" and self.report is not None:
+            raise ValueError("only completed review may contain a report")
         if self.review_status == "failed" and self.error is None:
             raise ValueError("failed review requires error")
         return self
