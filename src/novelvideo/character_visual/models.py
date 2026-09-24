@@ -131,6 +131,10 @@ class LegacyVisualField(BaseModel):
     allowed_for_generation: Literal[False] = False
 
 
+# Import after narrative fact definitions: casting snapshots reuse those facts.
+from .casting_models import CastingRevision
+
+
 class CharacterVisualWorkspace(BaseModel):
     """Editable character-visual state before prompt compilation."""
 
@@ -140,6 +144,7 @@ class CharacterVisualWorkspace(BaseModel):
     selected_proposal_id: str | None = None
     visual_bible: CharacterVisualBible | None = None
     legacy_fields: list[LegacyVisualField] = Field(default_factory=list)
+    casting_revision: CastingRevision | None = None
 
 
 def classify_legacy_visual_field(
