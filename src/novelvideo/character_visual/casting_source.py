@@ -5,6 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,8 +26,12 @@ class SourceDocument:
 
 class ExtractedFact(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    field: str
-    value: str
+    field: Literal['age_range', 'age_group', 'gender', 'body_type', 'hair_style',
+        'face_shape', 'facial_feature', 'distinctive_feature', 'scar', 'disability',
+        'uniform', 'clothing_state', 'injury_state', 'beauty', 'appearance', 'species',
+        'face', 'build', 'occupation', 'social_identity', 'relationship', 'personality',
+        'work_habits', 'environment', 'behavior', 'biography', 'dramatic_function']
+    value: str = Field(min_length=1, description='必须逐字截取 evidence 中直接描述该角色的连续词语，不概括、不改写、不推断。')
     evidence: str
     source_document: str
     source_start: int = Field(ge=0)
@@ -230,7 +235,7 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
         if runtime is None:
             raise ValueError('请先配置 knowledge_extraction 文本任务运行时')
         output = await runtime.run_structured(output_type=FactExtraction,
-            system_prompt='仅提取指定角色在原文直接陈述的事实，不设计形象，不推断年龄、职业或性格。每条 evidence 必须是逐字原文且含角色名或已核验别名，offset 是文档绝对字符位置。不得引用其他人物。不要从身份阶段名称推断事实。无证据返回空列表。',
+            system_prompt='仅提取指定角色在原文直接陈述的事实，不设计形象，不推断年龄、职业或性格。field 必须使用 schema 中的英文枚举。value 必须逐字截取 evidence 中直接描述该角色的连续词语，不得总结、改写、补全或把动作概括成性格/职业。每条 evidence 必须是逐字原文且含角色名或已核验别名，offset 是文档绝对字符位置。只选角色本人的直接陈述，例如“甲是老人”的 value 是“老人”；“甲看见老人”不能证明甲是老人。不得引用其他人物。不要从身份阶段名称推断事实。无满足条件的证据返回空列表，不必凑数。',
             prompt=json.dumps(dict(character=profile.name, attested_aliases=names[1:], identity_id=identity_id, windows=windows), ensure_ascii=False))
         output = FactExtraction.model_validate(output.model_dump() if isinstance(output, BaseModel) else output)
         for i, row in enumerate(output.facts):

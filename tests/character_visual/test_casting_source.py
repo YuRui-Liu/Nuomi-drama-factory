@@ -10,6 +10,18 @@ def source_module():
     return casting_source
 
 
+def test_extraction_schema_names_backend_fields_and_requires_literal_values():
+    m = source_module()
+    from pydantic import ValidationError
+    schema = m.ExtractedFact.model_json_schema()['properties']
+    assert 'species' in schema['field']['enum']
+    assert 'clothing_state' in schema['field']['enum']
+    assert '逐字' in schema['value']['description']
+    with pytest.raises(ValidationError):
+        m.ExtractedFact(field='外貌', value='漂亮', evidence='甲很漂亮。',
+            source_document='novel.txt', source_start=0, source_end=5)
+
+
 @pytest.mark.asyncio
 async def test_legacy_profile_uses_only_exact_target_windows():
     m = source_module()
