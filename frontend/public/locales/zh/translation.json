@@ -1,5 +1,14 @@
 {
   "costs": {
+    "trendTitle": "支出趋势",
+    "trendDaily": "每日支出",
+    "trendCumulative": "累计支出",
+    "trendComplete": "完整",
+    "trendIncomplete": "不完整 · 已知金额小计",
+    "trendSubscription": "订阅覆盖，暂无按量费用曲线",
+    "trendUnpriced": "费用待核算，暂无可绘制金额",
+    "trendEmpty": "暂无费用记录",
+    "trendHint": "项目全周期 · 人民币 CNY · 未知金额处断开；不完整日期仅展示已知金额。可聚焦或点选日期查看明细。",
     "excludedSubmission": "该调用未确认提交，当前不计入按量费用。",
     "excludedAudit": "以下历史金额仅供审计，不代表当前计费金额。",
     "facts": {

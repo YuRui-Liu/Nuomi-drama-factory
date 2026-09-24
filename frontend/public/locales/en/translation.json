@@ -1,5 +1,14 @@
 {
   "costs": {
+    "trendTitle": "Spending trend",
+    "trendDaily": "Daily spending",
+    "trendCumulative": "Cumulative spending",
+    "trendComplete": "Complete",
+    "trendIncomplete": "Incomplete · known subtotal",
+    "trendSubscription": "Covered by subscription; no usage-cost curve",
+    "trendUnpriced": "Costs await pricing; no amounts to plot",
+    "trendEmpty": "No cost records yet",
+    "trendHint": "Project lifetime · CNY · Lines break at unknown amounts; incomplete dates show known amounts only. Focus or select a date to see details.",
     "excludedSubmission": "This call has no confirmed submission and is excluded from current usage charges.",
     "excludedAudit": "Historical amounts below are audit records, not the current billable amount.",
     "facts": {
