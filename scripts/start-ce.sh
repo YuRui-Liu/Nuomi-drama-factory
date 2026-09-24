@@ -68,6 +68,14 @@ export ST_CONTROL_PLANE_DSN=
 export ST_REDIS_URL=
 export ST_CELERY_BROKER_URL=
 export ST_CELERY_RESULT_BACKEND=
+# The script binds on all interfaces for compatibility with local containers,
+# but its browser-facing origin is loopback.  FileAuthPort uses the public host
+# (rather than the bind address) to decide whether a local token is required.
+# Without this distinction, every unauthenticated CE /auth/me probe returns 401.
+export NOVELVIDEO_PUBLIC_HOST="${NOVELVIDEO_PUBLIC_HOST:-127.0.0.1}"
+# CE is normally served over plain HTTP in local development; allow the
+# HttpOnly cookie to work there if a caller explicitly uses the login route.
+export ST_COOKIE_SECURE="${ST_COOKIE_SECURE:-0}"
 export NOVELVIDEO_API_HOST="$api_host"
 export NOVELVIDEO_API_PORT="$api_port"
 export NOVELVIDEO_API_URL="http://127.0.0.1:${api_port}"
