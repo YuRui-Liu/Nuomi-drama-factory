@@ -1,5 +1,41 @@
 {
   "costs": {
+    "facts": {
+      "submission": {
+        "pending": "Awaiting submission",
+        "submitted": "Submitted",
+        "failed": "Submission failed",
+        "unknown": "Submission unknown"
+      },
+      "execution": {
+        "pending": "Awaiting execution",
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "unknown": "Execution unknown"
+      },
+      "source": {
+        "request": "Request parameters",
+        "provider": "Provider receipt",
+        "response": "Response",
+        "measured": "Measured usage",
+        "local": "Local record",
+        "estimate": "Estimated usage",
+        "estimated": "Estimated usage",
+        "billing": "Billing record",
+        "manual": "Manual entry"
+      },
+      "unit": {
+        "item": "Items",
+        "second": "Seconds",
+        "call": "Calls",
+        "character": "Characters",
+        "input_tokens": "Input tokens",
+        "output_tokens": "Output tokens",
+        "credit": "Credits"
+      }
+    },
     "title": "Project costs",
     "knownTotal": "Known usage cost",
     "totalHint": "Confirmed + estimated · excludes shared subscriptions",

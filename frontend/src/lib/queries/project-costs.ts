@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { p } from '@/lib/api-path';
 import type { CostEntriesResponse, CostEntryDetail, CostFilters, ProjectCostSnapshot } from '@/types/project-costs';
@@ -12,13 +12,41 @@ async function read<T>(path: string, signal: AbortSignal, searchParams?: URLSear
   return result.data;
 }
 export function useProjectCostSnapshot(project: string) {
+  const client = useQueryClient();
+  const previousSnapshot = useRef(0);
+  const manuallyRefreshing = useRef(false);
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => {
     const update = () => setVisible(document.visibilityState !== 'hidden');
     document.addEventListener('visibilitychange', update);
     return () => document.removeEventListener('visibilitychange', update);
   }, []);
-  return useQuery({ queryKey: ['project-costs', project, 'snapshot'], queryFn: ({ signal }) => read<ProjectCostSnapshot>(p`api/v1/projects/${project}/costs/snapshot`, signal), enabled: Boolean(project) && visible, refetchInterval: 15000, refetchIntervalInBackground: false });
+  const query = useQuery({ queryKey: ['project-costs', project, 'snapshot'], queryFn: ({ signal }) => read<ProjectCostSnapshot>(p`api/v1/projects/${project}/costs/snapshot`, signal), enabled: Boolean(project) && visible, refetchInterval: 15000, refetchIntervalInBackground: false });
+  useEffect(() => {
+    const previous = previousSnapshot.current;
+    previousSnapshot.current = query.dataUpdatedAt;
+    if (!visible || manuallyRefreshing.current || !previous || previous === query.dataUpdatedAt) return;
+    // Snapshot polling is the only timer. Its successful updates refresh the
+    // mounted ledger/detail without recursively invalidating the snapshot.
+    void client.invalidateQueries({
+      queryKey: ['project-costs', project],
+      predicate: cached => cached.queryKey[2] === 'entries' || cached.queryKey[2] === 'entry',
+    }, { cancelRefetch: false });
+  }, [client, project, query.dataUpdatedAt, visible]);
+  const refresh = async () => {
+    manuallyRefreshing.current = true;
+    try {
+      await refreshProjectCosts(client, project);
+    } finally {
+      previousSnapshot.current = client.getQueryState(['project-costs', project, 'snapshot'])?.dataUpdatedAt ?? 0;
+      manuallyRefreshing.current = false;
+    }
+  };
+  return { ...query, refresh };
+}
+/** Also reusable after cost-setting mutations; inactive project data is marked stale. */
+export function refreshProjectCosts(client: QueryClient, project: string) {
+  return client.invalidateQueries({ queryKey: ['project-costs', project] }, { cancelRefetch: false });
 }
 export function useProjectCostEntries(project: string, filters: CostFilters, cursor: string | null) {
   return useQuery({ queryKey: ['project-costs', project, 'entries', filters, cursor], queryFn: ({ signal }) => {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import ky from 'ky';
@@ -78,4 +78,30 @@ it('resets pagination when filters change and renders audited detail', async () 
   expect(await screen.findByText('匹配价格规则：image-price / v1')).toBeInTheDocument();
   expect(screen.getByText('external-one')).toBeInTheDocument();
   expect(screen.getByText('费用修订历史')).toBeInTheDocument();
+});
+it('refreshes the ledger and open detail with snapshot refreshes', async () => {
+  const { client } = setup();
+  let revision = 1;
+  const attempt = () => ({ attempt_id: 'live', project_id: 'one', provider: 'runninghub', account_id: 'main', model: `model-${revision}`, media_type: 'image', occurred_at: '2026-09-24T02:00:00Z', task_id: null, resource_id: null, external_id: `external-${revision}`, execution_status: 'succeeded', submission_status: 'submitted', usage: { call: '1' }, usage_source: 'request', workflow: null, specifications: [] });
+  const value = () => ({ status: 'confirmed', amount_micros: revision * 1000000, reason: null });
+  server.use(
+    http.get('*/api/v1/projects/:project/costs/snapshot', () => HttpResponse.json({ ok: true, data: { ...snapshot(), summary: { ...snapshot().summary, total_cents: revision * 100 } } })),
+    http.get('*/api/v1/projects/:project/costs/entries', () => HttpResponse.json({ ok: true, data: { entries: [{ ...attempt(), value: value(), amount_cents: revision * 100, cost_status: 'confirmed' }], next_cursor: null } })),
+    http.get('*/api/v1/projects/:project/costs/entries/live', () => HttpResponse.json({ ok: true, data: { attempt: attempt(), value: value(), current_cost: { value: value(), amount_cents: revision * 100 }, revisions: [] } })),
+  );
+  await screen.findByText('model-1');
+  revision = 2;
+  fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+  expect(await screen.findByText('model-2')).toBeInTheDocument();
+  expect(screen.getByTestId('cost-total')).toHaveTextContent('2.00');
+  fireEvent.click(screen.getByRole('button', { name: '查看' }));
+  expect(await screen.findByText('external-2')).toBeInTheDocument();
+  expect(screen.getByText('已提交')).toBeInTheDocument();
+  expect(screen.getByText('执行成功')).toBeInTheDocument();
+  expect(screen.getAllByText('请求参数').length).toBeGreaterThan(0);
+  revision = 3;
+  // The same snapshot query is refetched by the 15-second foreground timer.
+  await act(async () => { await client.refetchQueries({ queryKey: ['project-costs', 'one', 'snapshot'] }); });
+  expect(await screen.findByText('external-3')).toBeInTheDocument();
+  expect(screen.getAllByText('model-3')).toHaveLength(2);
 });
