@@ -5,8 +5,20 @@ import re
 
 from .casting_brief import _age_interval, _negated_at, build_casting_dossier, evidence_supports, validate_casting_decisions
 from .casting_models import CastingDecision
-from .models import CharacterDesignProposal, CharacterNarrativeProfile
+from .models import CharacterDesignProposal, CharacterNarrativeFact, CharacterNarrativeProfile
 from .proposals import _all_proposal_text, _structures_collide, assess_design_proposal
+
+
+HUMAN_SPECIES = {"人", "人类", "human", "homo sapiens"}
+UNKNOWN_SPECIES = {"", "unknown", "未知"}
+
+
+def selected_casting_species(hard_constraints: list[CharacterNarrativeFact], proposal: CharacterDesignProposal) -> str:
+    """Resolve anatomy only; creative species stays a creative decision, never a fact."""
+    values = [f.value for f in hard_constraints if f.field == "species"]
+    if not values:
+        values = [d.value for d in proposal.casting_decisions if d.attribute == "species"]
+    return values[0].casefold().strip() if len(set(values)) == 1 else ""
 
 
 def _rendered_text(proposal: CharacterDesignProposal) -> str:
@@ -65,7 +77,8 @@ def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: Char
     dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
     issues = [x for x in dossier.issues if not x.startswith("missing:")]
     applicable = profile.model_copy(update={"facts": dossier.hard_constraints + dossier.interpretations})
-    nonhuman = any(f.field == "species" and f.value not in {"人", "人类", "human"} for f in dossier.hard_constraints)
+    species = selected_casting_species(dossier.hard_constraints, proposal)
+    nonhuman = species not in HUMAN_SPECIES | UNKNOWN_SPECIES
     assessed = assess_design_proposal(proposal, profile=applicable)
     structural = assessed.quality_issues
     if nonhuman:

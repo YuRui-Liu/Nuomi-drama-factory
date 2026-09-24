@@ -151,3 +151,33 @@ def test_legacy_revision_requires_explicit_rebuild_before_compile():
     with pytest.raises(ValueError, match="rebuild"):
         compile_inputs((decoded, data[1], data[2]))
     assert compile_inputs(rebuild((decoded, data[1], data[2])))
+
+
+def test_creative_cat_without_source_species_has_no_human_anatomy():
+    from novelvideo.character_visual.casting_models import CastingDecision
+    data = inputs()
+    selected = data[1]
+    selected.face_shape = None
+    selected.facial_features = ["杏核瞳", "三角耳"]
+    selected.body_type = "猫的四足结构"
+    selected.hair_style = None
+    selected.asymmetry_detail = ""
+    selected.distinctive_features = ["浅色耳尖"]
+    selected.identity_anchors = ["杏核瞳", "三角耳", "浅色耳尖"]
+    selected.casting_decisions = [CastingDecision(decision_id="species", attribute="species", value="猫",
+        reason="原文未指定，选定猫的演绎", basis="creative_choice")]
+    snapshot = compile_inputs(rebuild(data))
+    assert "species: 猫" in snapshot.prompt
+    assert not snapshot.hard_constraints
+    assert snapshot.creative_choices[0].attribute == "species"
+    assert all(term not in snapshot.prompt for term in ["领口", "颈部", "动物身份"])
+
+
+@pytest.mark.parametrize("species", [None, "机械生命体"])
+def test_unknown_and_mechanical_species_use_neutral_anatomy(species):
+    data = inputs(*([("甲是机械生命体", dict(field="species", value=species))] if species else []))
+    if species:
+        data[1].body_type = "机械生命体构造"
+    snapshot = compile_inputs(rebuild(data))
+    assert "完整头部" in snapshot.prompt
+    assert all(term not in snapshot.prompt for term in ["领口", "颈部", "动物身份"])

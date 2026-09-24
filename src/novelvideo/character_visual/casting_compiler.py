@@ -7,7 +7,7 @@ from typing import Any
 
 from .casting_brief import build_casting_dossier, validate_casting_decisions
 from .casting_models import CastingRevision, CastingSnapshot
-from .casting_proposals import validate_casting_proposal
+from .casting_proposals import HUMAN_SPECIES, selected_casting_species, validate_casting_proposal
 from .models import CharacterDesignProposal, CharacterNarrativeProfile
 
 
@@ -53,10 +53,9 @@ def compile_casting_snapshot(revision: CastingRevision, proposal: CharacterDesig
     decisions = [f"{d.attribute}: {d.value}" for d in proposal.casting_decisions if d.attribute in _PORTRAIT_FIELDS]
     details = [proposal.face_shape, *proposal.facial_features, proposal.hair_style,
         *proposal.distinctive_features, proposal.asymmetry_detail]
-    nonhuman = any(f.field == "species" and f.value.casefold() not in {"人", "人类", "human"}
-                   for f in dossier.hard_constraints)
-    framing = ("动物身份肖像，保持物种自然解剖，完整头部与自然颈部，不拟人化。" if nonhuman else
-               "身份肖像，完整头部和颈部，仅保留少量领口，不展示身体或完整服装。")
+    species = selected_casting_species(dossier.hard_constraints, proposal)
+    framing = ("身份肖像，完整头部和颈部，不展示身体或完整服装。" if species in HUMAN_SPECIES else
+               "身份肖像，完整头部与自然轮廓，遵循选定形态的自然解剖或构造，不添加未设定的人体结构。")
     prompt = "\n".join([framing, "原文明示约束（最高优先级）：", *constraints,
         "选定设计：", *decisions, *[x for x in details if x],
         "参考风格（不得覆盖原文或选定结构）：" + style,
