@@ -32,6 +32,46 @@ from novelvideo.text_task_runtime.settings import load_global_routes, runtime_pr
 DSH_PROVIDER = "deepseek-official"
 DSH_RUNTIME = "deepseek_harness"
 
+# dsh 的结构化错误行：``dsh: MISSING_CREDENTIAL: no API key for ...``。
+# 只认大写错误码，因为 stderr 同时承载推理流（``dsh: reasoning: ...``）等自由文本。
+_DSH_ERROR_LINE = re.compile(r"^dsh:\s+([A-Z][A-Z0-9_]*):\s*(.+)$", re.MULTILINE)
+
+# 单条错误消息进入异常前的上限：dsh 偶尔会吐一整行很长的上下文。
+_DSH_ERROR_MESSAGE_LIMIT = 300
+
+
+def _dsh_error_from_stderr(stderr: bytes | str | None) -> tuple[str, str] | None:
+    """提取 dsh 自己报出的最后一条结构化错误，返回 ``(code, message)``。
+
+    stderr 上不只跑错误：dsh 把模型的**推理流**也流式写在那里
+    （``dsh: reasoning:`` 标题下），推理流可能很长，也可能引用用户的小说内容。
+    因此这里只接受 ``dsh: <大写错误码>: <message>`` 形态的行，其余字节一律丢弃，
+    异常消息里永远不会出现原始 stdout/stderr 或推理流。
+
+    取**最后**一条：一个进程可能先后报多个错误，最后一条才是退出原因。
+    消息经空白折叠与长度截断，避免多行内容撑爆日志。
+    """
+
+    if not stderr:
+        return None
+    text = (
+        stderr.decode("utf-8", errors="replace")
+        if isinstance(stderr, (bytes, bytearray))
+        else stderr
+    )
+    matches = _DSH_ERROR_LINE.finditer(text)
+    last: tuple[str, str] | None = None
+    for match in matches:
+        last = (match.group(1), match.group(2))
+    if last is None:
+        return None
+    code, raw_message = last
+    # 折叠内部连续空白/换行，去掉首尾空白：多行错误会被压成单行。
+    message = " ".join(raw_message.split())
+    if len(message) > _DSH_ERROR_MESSAGE_LIMIT:
+        message = message[: _DSH_ERROR_MESSAGE_LIMIT - 1].rstrip() + "…"
+    return code, message
+
 
 def dsh_command() -> str:
     """定位 dsh 可执行文件。优先 DSH_BIN，其次 PATH。"""
@@ -200,15 +240,26 @@ class DeepSeekHarnessStructuredRuntime:
             try:
                 # headless 把任务放在 argv 里，stdin 只被关闭（communicate 无输入）
                 # 以避免继承到交互式终端的输入。
-                stdout, _stderr = await asyncio.wait_for(
+                stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
             except BaseException:
                 await terminate_process_tree(process)
                 raise
         if process.returncode != 0:
+            # 失败时唯一的诊断证据就在 stderr 上；丢掉它会让用户被含糊的提示
+            # 引向「余额」之类的错误方向。这里只带出 dsh 自己的结构化错误行，
+            # 绝不放原始输出或推理流。
+            extracted = _dsh_error_from_stderr(stderr)
+            if extracted is None:
+                detail = "（未能从 dsh 输出中解析出具体原因）"
+            else:
+                code, message = extracted
+                detail = f"（dsh 报错 {code}: {message}）"
             raise KnowledgeRuntimeError(
-                "DeepSeek Harness 执行失败，请检查其登录状态、模型权限及余额。",
+                f"DeepSeek Harness 执行失败，退出码 {process.returncode}{detail}。"
+                "请确认后端进程可访问凭据：设置 DEEPSEEK_API_KEY，"
+                "或将其写入 Nuomi 专属 $DSH_HOME 的 .credentials.yaml。",
                 code="DSH_EXEC_FAILED",
             )
         try:

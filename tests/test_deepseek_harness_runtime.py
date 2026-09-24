@@ -278,6 +278,150 @@ async def test_failure_does_not_expose_process_output(monkeypatch, dsh):
 
 
 @pytest.mark.asyncio
+async def test_failure_surfaces_dshs_own_structured_error(monkeypatch, dsh):
+    """dsh 的结构化错误行是失败时唯一的诊断证据，必须出现在异常消息里。"""
+
+    proc = stub_process(
+        returncode=1,
+        stderr=(
+            b"dsh: reasoning: thinking...\n"
+            b'dsh: MISSING_CREDENTIAL: no API key for provider route '
+            b'"deepseek-official"\n'
+        ),
+    )
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    message = str(error.value)
+    assert error.value.code == "DSH_EXEC_FAILED"
+    assert "MISSING_CREDENTIAL" in message
+    assert "no API key" in message
+    assert "退出码 1" in message
+    # 只是「余额」这种含糊指引的时代结束了：必须给出可操作方向。
+    assert "DEEPSEEK_API_KEY" in message
+    assert "DSH_HOME" in message
+    # 推理流本体仍然不许进入消息。
+    assert "thinking" not in message
+
+
+@pytest.mark.asyncio
+async def test_failure_never_leaks_the_reasoning_trace(monkeypatch, dsh):
+    """关键安全测试：stderr 上的推理流（可能含用户小说内容）绝不能进异常消息。"""
+
+    canary = "REASONING-LEAK-CANARY"
+    proc = stub_process(
+        returncode=1,
+        stderr=(
+            f"dsh: reasoning: {canary} the user's novel text follows\n".encode()
+            + (f"dsh: reasoning: {canary} more private content\n".encode() * 20)
+        ),
+    )
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    message = str(error.value)
+    assert error.value.code == "DSH_EXEC_FAILED"
+    assert canary not in message
+    assert "novel text" not in message
+    # 没有合法错误行时必须诚实地说「没解析出来」，而不是编一个原因。
+    assert "未能从 dsh 输出中解析出具体原因" in message
+
+
+@pytest.mark.asyncio
+async def test_oversized_dsh_error_is_truncated(monkeypatch, dsh):
+    """超长错误行不能撑爆日志：消息长度必须有界且带省略号。"""
+
+    proc = stub_process(
+        returncode=1, stderr=b"dsh: SOME_CODE: " + b"x" * 1000 + b"\n"
+    )
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    message = str(error.value)
+    assert "SOME_CODE" in message
+    assert "…" in message
+    assert len(message) < 1000
+    assert "x" * 400 not in message
+
+
+@pytest.mark.asyncio
+async def test_multiline_dsh_error_is_collapsed(monkeypatch, dsh):
+    """多行/含制表符的错误消息必须被折叠，异常消息保持单行。"""
+
+    proc = stub_process(returncode=1, stderr=b"dsh: SOME_CODE: line1\nline2\n")
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+    message = str(error.value)
+    assert "line1" in message
+    assert "\n" not in message
+
+    # 行内连续空白同样被折叠为单个空格。
+    proc.communicate.return_value = (
+        b"",
+        b"dsh: SOME_CODE:   spaced\t\tout   message \n",
+    )
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+    assert "SOME_CODE: spaced out message）" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_only_the_last_dsh_error_line_is_reported(monkeypatch, dsh):
+    """dsh 可能先后报多个错误，退出原因以最后一条为准。"""
+
+    proc = stub_process(
+        returncode=1,
+        stderr=(
+            b"dsh: FIRST_CODE: first problem\n"
+            b"dsh: SECOND_CODE: second problem\n"
+        ),
+    )
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    message = str(error.value)
+    assert "SECOND_CODE" in message
+    assert "second problem" in message
+    assert "FIRST_CODE" not in message
+    assert "first problem" not in message
+
+
+def test_dsh_error_extraction_ignores_non_error_output():
+    """直接单测提取函数：非法 UTF-8、无错误行、空 stderr 都退化为 None。"""
+
+    assert deepseek_harness._dsh_error_from_stderr(None) is None
+    assert deepseek_harness._dsh_error_from_stderr(b"") is None
+    assert deepseek_harness._dsh_error_from_stderr(b"plain failure text") is None
+    assert deepseek_harness._dsh_error_from_stderr(b"dsh: reasoning: hmm") is None
+    # 小写错误码不是 dsh 的错误格式。
+    assert deepseek_harness._dsh_error_from_stderr(b"dsh: missing_credential: x") is None
+    # 非法 UTF-8 用 replace 解码，不能抛异常。
+    assert deepseek_harness._dsh_error_from_stderr(b"dsh: A_B: \xff\xfe") == (
+        "A_B",
+        "��",
+    )
+
+
+@pytest.mark.asyncio
 async def test_start_failure_is_reported_without_output(monkeypatch, dsh):
     monkeypatch.setattr(
         deepseek_harness.asyncio,
