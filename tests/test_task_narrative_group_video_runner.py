@@ -12,6 +12,30 @@ def test_storyboard_conflict_never_becomes_observational():
     assert not runner._continuity_failure_is_observational("observe", error)
 
 
+def test_reference_generation_rejects_missing_typed_plan_before_transport():
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    with pytest.raises(ValueError, match="typed director plan.*shot-03-01"):
+        runner._ensure_reference_plan_evidence(
+            ("shot-03-01", "shot-03-02"),
+            {"shot-03-01": {}, "shot-03-02": {"director_plan": {"mode": "ref2va"}}},
+        )
+
+
+def test_group_video_mode_accepts_every_selector_mode():
+    """Regression: "ref2va" — the mode the H3-Ref workflow exists for — used to
+    be rejected by an inline allowlist that only knew auto/i2va/fl2va, so asking
+    for reference-conditioned video failed the task before any provider call."""
+    from novelvideo.task_backend.runners.narrative_group_video import group_video_mode
+
+    for mode in ("auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"):
+        assert group_video_mode(mode) == mode
+    assert group_video_mode(None) == "auto"
+    assert group_video_mode("  REF2VA  ") == "ref2va"
+    with pytest.raises(ValueError):
+        group_video_mode("bogus")
+
+
 def test_storyboard_optimizer_receives_frozen_images_and_saves_decision(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import narrative_group_video as runner
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
@@ -1170,6 +1194,11 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
         narrative_group_video,
         "_reference_wire_from_evidence",
         lambda *_args, **_kwargs: reference_wire,
+    )
+    # This test isolates snapshot reuse and supplies the reference wire itself;
+    # typed-plan completeness is covered by the dedicated guard test above.
+    monkeypatch.setattr(
+        narrative_group_video, "_ensure_reference_plan_evidence", lambda *_args: None
     )
     monkeypatch.setattr(narrative_group_video, "record_stage_result", lambda *_a, **_k: None)
     monkeypatch.setattr(

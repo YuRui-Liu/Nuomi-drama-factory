@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, replace
@@ -15,6 +16,7 @@ from novelvideo.media_capabilities.audio.stem_separator import (
     DemucsStemSeparator,
     StemSeparationUnavailable,
 )
+
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     authoritative_h3_style_prefix,
@@ -110,6 +112,8 @@ from novelvideo.task_backend.cancel import (
 )
 from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
+_LOG = logging.getLogger(__name__)
+
 
 ContinuityPolicy = Literal["legacy", "observe", "guard", "enforce"]
 
@@ -147,6 +151,23 @@ def _continuity_failure_is_observational(
             and not isinstance(exc, ContinuityContractUnavailable)
         )
     )
+
+
+def _describe_optimizer_failure(exc: Exception) -> str:
+    """Compact diagnostic for a swallowed prompt-optimizer failure.
+
+    The type name alone cannot separate a lock wait from a text runtime that
+    returned unusable output, so carry the runtime error code and message.
+    """
+
+    detail = " ".join(str(exc).split())
+    code = str(getattr(exc, "code", "") or "").strip()
+    parts = [type(exc).__name__]
+    if code:
+        parts.append(code)
+    if detail:
+        parts.append(detail[:200])
+    return ":".join(parts)
 
 
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
@@ -1063,7 +1084,12 @@ def _reference_wire_from_evidence(
 ) -> H3ReferenceWire:
     plan_payload = evidence.get("director_plan")
     if not isinstance(plan_payload, Mapping):
-        raise ValueError("H3 reference execution requires a typed director plan")
+        # The reference workflow compiles its six-section wire from the typed plan,
+        # so this is an input-completeness failure, not a transport failure.
+        raise ValueError(
+            "H3 reference execution requires a typed director plan: "
+            "the episode prompt optimizer produced no plan for this segment"
+        )
     plan = H3DirectorPlan.model_validate(plan_payload)
     wire = project_director_plan_to_wire(plan)
     if not isinstance(wire, H3ReferenceWire):
@@ -1071,6 +1097,30 @@ def _reference_wire_from_evidence(
     if compile_h3_wire(wire) != segment.prompt:
         raise ValueError("H3 reference segment prompt does not match its compiled wire")
     return wire
+
+
+def _ensure_reference_plan_evidence(
+    segment_ids: tuple[str, ...],
+    evidence_by_segment: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Reject an incomplete reference plan before any provider call.
+
+    Reference transport is compiled from the typed director plan.  A
+    continuity/optimizer fallback may still leave the raw segment prompt
+    usable for frame-only generation, but it can never produce a valid
+    reference wire.
+    """
+    missing = tuple(
+        segment_id
+        for segment_id in segment_ids
+        if not isinstance(evidence_by_segment.get(segment_id, {}).get("director_plan"), Mapping)
+    )
+    if missing:
+        raise ValueError(
+            "H3 reference execution requires a typed director plan: "
+            "the episode prompt optimizer produced no plan for segment(s) "
+            + ", ".join(missing)
+        )
 
 
 def _entries_with_evidence(
@@ -1707,6 +1757,25 @@ def _director_world_snapshot(
     return snapshot, True
 
 
+_GROUP_VIDEO_MODES = frozenset({"auto", "t2va", "i2va", "fl2va", "l2va", "ref2va"})
+
+
+def group_video_mode(requested: object) -> str:
+    """Validate the requested group video mode.
+
+    Accepts every mode ``select_h3_mode`` understands. The enqueue route already
+    rejects modes the workflow does not support, and the previous inline
+    allowlist (auto/i2va/fl2va) silently rejected "ref2va" — the one mode the
+    H3-Ref workflow exists for.
+    """
+    value = str(requested or "auto").strip().lower()
+    if value not in _GROUP_VIDEO_MODES:
+        raise ValueError(
+            "MiniMax H3 group mode must be auto, t2va, i2va, fl2va, l2va, or ref2va"
+        )
+    return value
+
+
 def _shot_beat_numbers(
     segments: list[H3DirectorSegment], beats: list[Mapping[str, Any]]
 ) -> dict[str, int]:
@@ -1764,9 +1833,7 @@ def _prepare_continuity(
     predicted_this_run: dict[str, ShotContinuityContract] = {}
     batch: list[tuple[ShotContinuityContract, int]] = []
     prepared: dict[str, PreparedContinuity] = {}
-    requested = str(payload.get("mode") or "auto").strip().lower()
-    if requested not in {"auto", "i2va", "fl2va"}:
-        raise ValueError("MiniMax H3 group mode must be auto, i2va, or fl2va")
+    requested = group_video_mode(payload.get("mode"))
 
     for segment in segments:
         contracts = []
@@ -2409,18 +2476,38 @@ async def _execute_inner(
                 )
             else:
                 legacy_evidence: dict[str, dict[str, Any]] = {}
-                legacy_segments = raw_segments if policy == "enforce" else await _optimize_missing_prompts(
-                    raw_segments, segment_beats, ctx=ctx,
-                    project_dir=project_dir, episode=episode,
-                    evidence_by_segment=legacy_evidence,
-                    episode_beats=source_beats,
-                    global_references=global_references,
-                    resolved_modes=resolved_modes,
-                    requested_mode=requested_mode,
-                    workflow_id=workflow.id,
-                    frozen_frames=frozen_frames,
-                    **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
-                )
+                if policy == "enforce":
+                    legacy_segments = raw_segments
+                else:
+                    try:
+                        legacy_segments = await _optimize_missing_prompts(
+                            raw_segments, segment_beats, ctx=ctx,
+                            project_dir=project_dir, episode=episode,
+                            evidence_by_segment=legacy_evidence,
+                            episode_beats=source_beats,
+                            global_references=global_references,
+                            resolved_modes=resolved_modes,
+                            requested_mode=requested_mode,
+                            workflow_id=workflow.id,
+                            frozen_frames=frozen_frames,
+                            **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
+                        )
+                    except Exception as optimizer_exc:
+                        # The prompt optimizer is a quality pass over deterministic
+                        # plan prompts, and the enforce path already renders from
+                        # `raw_segments`. When its runtime is unavailable, honour the
+                        # configured policy and render from the plan prompts instead
+                        # of failing the whole group before the provider is called.
+                        if not _continuity_failure_is_observational(
+                            policy, optimizer_exc
+                        ):
+                            raise
+                        _LOG.warning(
+                            "prompt optimizer unavailable (%s); using plan prompts",
+                            _describe_optimizer_failure(optimizer_exc),
+                        )
+                        legacy_evidence.clear()
+                        legacy_segments = raw_segments
                 try:
                     if continuity_by_segment is None:
                         raise LookupError("continuity preparation unavailable")
@@ -2451,9 +2538,16 @@ async def _execute_inner(
                             ) from shadow_exc
                         raise
                     continuity_segments = raw_segments
+                    # Reason codes stay bounded identifiers; the full runtime
+                    # message only goes to the log.
                     diagnostic = (
                         "continuity_observe_failed:"
                         f"{type(shadow_exc).__name__}"
+                    )
+                    _LOG.warning(
+                        "continuity shadow pass failed under policy=%s: %s",
+                        policy,
+                        _describe_optimizer_failure(shadow_exc),
                     )
                     for segment_id, prepared in (
                         continuity_by_segment or {}
@@ -2594,6 +2688,11 @@ async def _execute_inner(
         _assert_stage_revision(
             project_dir, episode, group_id, revision, plan_revision
         )
+        if global_references:
+            _ensure_reference_plan_evidence(
+                tuple(segment.segment_id for segment in segments),
+                evidence_by_segment,
+            )
         timeline = build_h3_timeline_data(segments, strict_first_frame=True)
         if h3_input_snapshot_required and frozen_frames is None:
             raise ValueError("queued H3 frame snapshot is required")
@@ -2618,15 +2717,34 @@ async def _execute_inner(
             )
         save_h3_director_manifest(manifest_path, manifest)
         if payload.get("cinematography_review_required"):
-            reference_reviews = await _review_cinematography(
-                "reference", ctx=ctx, project_dir=project_dir, episode=episode,
-                segments=segments, frozen_frames=frozen_frames, shots_by_id=review_shots,
-            )
+            review_failure = ""
+            try:
+                reference_reviews = await _review_cinematography(
+                    "reference", ctx=ctx, project_dir=project_dir, episode=episode,
+                    segments=segments, frozen_frames=frozen_frames, shots_by_id=review_shots,
+                )
+            except Exception as review_exc:
+                reference_reviews = []
+                review_failure = f"{type(review_exc).__name__}: {review_exc}"
             manifest = manifest.model_copy(update={"cinematography_reviews": tuple(reference_reviews)})
-            if not reference_reviews or any(item["status"] != "passed" for item in reference_reviews):
-                manifest = manifest.model_copy(update={"status": "quality_rejected"})
-                save_h3_director_manifest(manifest_path, manifest)
-                raise H3ContinuityQualityError("reference_visual_review_failed_or_unavailable: no video submitted")
+            rejected = [item for item in reference_reviews if item.get("status") != "passed"]
+            if not reference_reviews or rejected:
+                if policy in {"guard", "enforce"}:
+                    manifest = manifest.model_copy(update={"status": "quality_rejected"})
+                    save_h3_director_manifest(manifest_path, manifest)
+                    raise H3ContinuityQualityError("reference_visual_review_failed_or_unavailable: no video submitted")
+                # The reference review is a quality signal, not an input-completeness
+                # check, and its runtime is an external agent that can legitimately be
+                # unavailable. Under the non-blocking policies record it and let the
+                # pack reach the provider instead of failing every group.
+                _LOG.warning(
+                    "reference visual review unavailable under policy=%s: %s",
+                    policy,
+                    review_failure
+                    or "; ".join(
+                        str(item.get("reason") or item.get("status")) for item in rejected
+                    ),
+                )
             save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
             project_dir, episode, group_id, "video",
