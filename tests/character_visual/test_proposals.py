@@ -268,3 +268,72 @@ def test_workspace_builder_uses_reviewed_proposals_when_no_human_selection_exist
     assert sum(item.recommended for item in workspace.design_proposals) == 1
     assert workspace.selected_proposal_id is None
     assert all(not item.quality_issues for item in workspace.design_proposals)
+
+
+# 以下两条取自生产事故（角色「假鹿蜀」）中模型真实返回的两套提案。
+# 旧实现用 `交集 / min(两侧标签数)` 度量重叠，只要一侧标签集是另一侧的子集就恒为 1.0，
+# 于是三套明显不同的设计被判结构碰撞，任务永远无法通过。
+_COLLISION_RICHER = {
+    "face_shape": "长楔形窄脸，额头到鼻梁近乎平直的直线轮廓，鼻端窄而方正，下颌线收得较窄。",
+    "facial_features": [
+        "耳郭长而直立、耳根肌发达，可单侧转动。",
+        "眼位于头侧偏上，眼球黑褐、眼裂细长。",
+        "鼻镜窄，鼻孔为斜向逗号形，鼻唇沟较深。",
+        "唇薄而灵活，嘴线在两侧略微上提。",
+        "额顶两耳之间有旋涡状短毛旋。",
+    ],
+    "hair_style": "短而直立的鬃毛自枕部沿颈脊成一条硬毛脊延至肩峰。",
+    "distinctive_features": ["尾毛下半段浸赭红染料，形成伪装的红色尾。"],
+    "asymmetry_detail": (
+        "右耳常态外旋约15°，左耳更贴中线且耳尖比右耳高约一指；"
+        "左侧鼻孔开口略大于右侧；左眼位置比右眼低约半指。"
+    ),
+}
+_COLLISION_LEANER = {
+    "face_shape": "方阔头型，眉弓至鼻梁为轻微弓形（略隆起）轮廓，鼻端宽厚，下颌厚重方正。",
+    "facial_features": [
+        "耳短而厚、耳尖圆钝，内耳毛浓密，耳位偏外。",
+        "眼小、眼裂短、上眼睑厚而略垂。",
+        "鼻孔大而横向，呈宽椭圆。",
+        "唇厚，上唇略覆下唇，鼻唇部有一块黑色无毛斑。",
+    ],
+    "hair_style": "鬃毛短而厚、整体倒向左侧成檐状；额前一大片浓密额毛下垂至眉线。",
+    "distinctive_features": ["尾根到尾中段被赭红染料浸染，尾尖留原色。"],
+    "asymmetry_detail": (
+        "右耳比左耳外展约20°且略低；右侧鼻翼比左侧厚、右鼻孔更宽；"
+        "额毛分缝偏左，导致左侧额部露出更多皮肤。"
+    ),
+}
+
+
+def test_structure_collision_does_not_treat_tag_subsets_as_identical():
+    """一侧的语义标签是另一侧真子集时，不得判为结构碰撞。"""
+
+    proposals_module = _proposals_module()
+    richer = _proposal("jls-p1", recommended=True, **_COLLISION_RICHER)
+    leaner = _proposal("jls-p2", **_COLLISION_LEANER)
+
+    richer_face = proposals_module._structure_signature(richer)[0]
+    leaner_face = proposals_module._structure_signature(leaner)[0]
+
+    # 前提：脸型标签确实呈真子集关系（这正是旧度量误判成 1.0 的场景）。
+    assert set(leaner_face.split("|")) < set(richer_face.split("|"))
+    # 其余维度并非完全相同。
+    assert proposals_module._structure_signature(richer)[2] != (
+        proposals_module._structure_signature(leaner)[2]
+    )
+
+    assert proposals_module._structures_collide(richer, leaner) is False
+
+
+def test_structure_collision_still_detects_identical_directions():
+    """修复不得放过真正的重复：完全一致的方向仍须判碰撞。"""
+
+    proposals_module = _proposals_module()
+    left = _proposal("same-a", recommended=True)
+    right = _proposal("same-b")
+
+    assert proposals_module._structure_signature(left) == (
+        proposals_module._structure_signature(right)
+    )
+    assert proposals_module._structures_collide(left, right) is True

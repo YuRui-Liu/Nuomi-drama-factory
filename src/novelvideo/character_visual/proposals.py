@@ -272,11 +272,10 @@ def _structures_collide(
     for left_value, right_value in pairs:
         left_tokens = {token for token in left_value.split("|") if token}
         right_tokens = {token for token in right_value.split("|") if token}
-        if not left_tokens or not right_tokens:
+        union = left_tokens | right_tokens
+        if not union:
             continue
-        overlap = len(left_tokens & right_tokens) / min(
-            len(left_tokens), len(right_tokens)
-        )
+        overlap = len(left_tokens & right_tokens) / len(union)
         if overlap >= 0.75:
             shared += 1
     return shared >= 3
