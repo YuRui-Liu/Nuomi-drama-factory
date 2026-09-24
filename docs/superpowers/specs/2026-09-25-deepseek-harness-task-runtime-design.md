@@ -264,7 +264,7 @@ cwd  = 临时目录（tempfile.TemporaryDirectory，前缀 nuomi-dsh-）
 | 进程无法启动 | `KnowledgeRuntimeError(code="DSH_START_FAILED")` |
 | 退出码非 0 | `KnowledgeRuntimeError(code="DSH_EXEC_FAILED")`，不透出子进程 stderr 原文 |
 | stdout 非合法 JSON 或不符 Schema | `KnowledgeRuntimeError(code="DSH_OUTPUT_INVALID")` |
-| 超时 | 终止进程树后抛 `KnowledgeRuntimeError(code="DSH_TIMEOUT")` |
+| 超时 | 终止进程树后重新抛出底层超时异常（与 `workbuddy.py` 的既有行为一致，不包装成自定义错误码） |
 | 任务取消 | 调用 `terminate_process_tree` 清理子进程后继续抛出取消 |
 
 超时值必须为正数，校验方式与 `workbuddy.py` 一致。
