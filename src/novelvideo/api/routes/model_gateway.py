@@ -32,10 +32,16 @@ from novelvideo.text_runtime_settings import (
     save_text_runtime_settings,
     text_runtime_status,
 )
-from novelvideo.text_task_runtime.models import AgentTaskRoute, AgentTaskRoutingConfig
+from novelvideo.text_task_runtime.models import (
+    AgentTaskRoute,
+    AgentTaskRoutingConfig,
+    RuntimePreset,
+)
+from novelvideo.text_task_runtime.models_catalog import get_runtime_model_catalog
 from novelvideo.text_task_runtime.settings import (
     default_agent_task_route,
     load_global_routes,
+    runtime_preset_for,
     save_global_routes,
 )
 from novelvideo.newapi_provisioner import (
@@ -104,6 +110,7 @@ TEXT_TASK_ROLE_LABELS = {
 
 class TaskRuntimeConfigBody(BaseModel):
     routes: dict[str, AgentTaskRoute]
+    runtime_presets: dict[str, RuntimePreset] | None = None
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -410,6 +417,27 @@ async def save_text_runtime_config(body: TextRuntimeConfigBody) -> dict[str, Any
     return {"ok": True, "data": text_runtime_status(saved), "runtime": runtime}
 
 
+def _effective_task_route(
+    role: str, configured: AgentTaskRoutingConfig
+) -> AgentTaskRoute:
+    override = configured.routes.get(role)
+    route = (
+        default_agent_task_route(role).model_copy(
+            update=override.model_dump(exclude_none=True)
+        )
+        if override is not None
+        else default_agent_task_route(role)
+    )
+    if route.runtime != "deepseek_harness":
+        return route
+    preset = runtime_preset_for(configured, route.runtime)
+    if preset is None:
+        return route
+    return route.model_copy(
+        update={"model": preset.model, "reasoning_effort": preset.reasoning_effort}
+    )
+
+
 def _task_runtime_config_payload() -> dict[str, Any]:
     configured = load_global_routes()
     return {
@@ -417,22 +445,28 @@ def _task_runtime_config_payload() -> dict[str, Any]:
             {
                 "id": role,
                 "label": label,
-                "route": (
-                    default_agent_task_route(role).model_copy(
-                        update=configured.routes.get(role).model_dump(exclude_none=True)
-                    )
-                    if configured.routes.get(role) is not None
-                    else default_agent_task_route(role)
-                ).model_dump(mode="json"),
+                "route": _effective_task_route(role, configured).model_dump(mode="json"),
             }
             for role, label in TEXT_TASK_ROLE_LABELS.items()
-        ]
+        ],
+        "runtime_presets": {
+            name: preset.model_dump(mode="json")
+            for name in ("codex", "model_api", "workbuddy", "deepseek_harness")
+            if (preset := runtime_preset_for(configured, name)) is not None
+        },
     }
 
 
 @router.get("/task-runtime/config")
 async def get_task_runtime_config() -> dict[str, Any]:
     return {"ok": True, "data": _task_runtime_config_payload()}
+
+
+@router.get("/task-runtime/models")
+async def get_task_runtime_models() -> dict[str, Any]:
+    """Return per-runtime suggested model IDs for the routing drop-down."""
+
+    return {"ok": True, "data": get_runtime_model_catalog()}
 
 
 @router.put("/task-runtime/config")
@@ -444,7 +478,8 @@ async def put_task_runtime_config(body: TaskRuntimeConfigBody) -> dict[str, Any]
         routes={
             role: route.model_dump(mode="json")
             for role, route in body.routes.items()
-        }
+        },
+        runtime_presets=body.runtime_presets or {},
     )
     save_global_routes(config)
     return {"ok": True, "data": _task_runtime_config_payload()}
