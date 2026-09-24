@@ -77,7 +77,7 @@ class CastingCandidateStore:
             data = self._read()
             if candidate.candidate_id in data:
                 existing = self._decode(data[candidate.candidate_id])
-                immutable = {"candidate_id", "project_id", "character_id", "identity_id", "snapshot", "task_id", "requested_model"}
+                immutable = {"candidate_id", "project_id", "character_id", "identity_id", "snapshot", "task_id", "requested_model", "submission_token"}
                 if existing.model_dump(include=immutable) != candidate.model_dump(include=immutable):
                     raise ValueError("candidate id already bound to different input")
                 return existing
@@ -98,6 +98,22 @@ class CastingCandidateStore:
             data[candidate_id] = self._decode(updated).model_dump(mode="json")
             self._write(data)
             return True
+
+    def bind_generation_task(self, candidate_id: str, *, submission_token: str, task_id: str) -> CastingCandidate:
+        """Only the executing runner binds a persisted submission to its real task."""
+        with production_workflow_project_lock(self.state_dir):
+            data = self._read()
+            candidate = self._decode(data[candidate_id])
+            if not submission_token or candidate.submission_token != submission_token:
+                raise ValueError("candidate submission token mismatch")
+            if candidate.task_id == task_id:
+                return candidate
+            if candidate.task_id != 'submission:' + submission_token or candidate.generation_status != 'queued':
+                raise ValueError("candidate task already bound")
+            candidate.task_id = task_id
+            data[candidate_id] = candidate.model_dump(mode="json")
+            self._write(data)
+            return candidate
 
     def safe_path(self, path: str | Path) -> Path:
         path = Path(path)

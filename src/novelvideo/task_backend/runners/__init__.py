@@ -10,6 +10,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     character_image,
     character_qc,
     character_casting_review,
+    character_casting_proposals,
     director_plan,
     episode_assets,
     episode_import,

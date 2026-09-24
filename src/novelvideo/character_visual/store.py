@@ -128,17 +128,44 @@ class CharacterVisualWorkspaceStore:
                 existing_raw = payload.get(workspace.character_id)
                 if isinstance(existing_raw, dict):
                     existing = CharacterVisualWorkspace.model_validate(existing_raw)
+                    preserve_draft = (bool(existing.casting_limitation_reasons)
+                        or bool(existing.selected_proposal_id) or existing.visual_bible is not None
+                        or workspace.casting_revision is None)
                     workspace = workspace.model_copy(
                         update={
+                            **({"profile": existing.profile, "design_proposals": existing.design_proposals}
+                               if preserve_draft and existing.casting_revision is not None else {}),
                             "selected_proposal_id": existing.selected_proposal_id,
                             "visual_bible": existing.visual_bible,
-                            "casting_revision": existing.casting_revision,
+                            "casting_revision": existing.casting_revision if preserve_draft else workspace.casting_revision,
                             "identity_casting_revisions": existing.identity_casting_revisions,
+                            "identity_design_proposals": existing.identity_design_proposals,
+                            "identity_selected_proposal_ids": existing.identity_selected_proposal_ids,
+                            "identity_visual_bibles": existing.identity_visual_bibles,
+                            "casting_limitation_reasons": existing.casting_limitation_reasons,
                         }
                     )
                 payload[workspace.character_id] = workspace.model_dump(mode="json")
             self._write_all(payload)
         return items
+
+    def mutate(self, character_id: str, *, identity_id: str | None,
+               expected_revision: str | None, change) -> CharacterVisualWorkspace:
+        """Read, compare, mutate and validate in one synchronous transaction."""
+        with production_workflow_project_lock(self.state_dir), self._exclusive_write_lock():
+            payload = self._read_all()
+            workspace = CharacterVisualWorkspace.model_validate(payload[character_id])
+            current = (workspace.casting_revision if identity_id is None
+                       else workspace.identity_casting_revisions.get(identity_id))
+            if (current.revision_id if current else None) != expected_revision:
+                raise ValueError("casting revision conflict")
+            change(workspace)
+            workspace = CharacterVisualWorkspace.model_validate(workspace.model_dump(mode="json"))
+            if workspace.character_id != character_id:
+                raise ValueError("workspace ownership mismatch")
+            payload[character_id] = workspace.model_dump(mode="json")
+            self._write_all(payload)
+            return workspace
 
     def mutate_casting_revision(self, character_id: str, *, identity_id: str | None,
                                 expected_revision: str | None,

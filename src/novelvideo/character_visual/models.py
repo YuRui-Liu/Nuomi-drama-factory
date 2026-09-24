@@ -160,6 +160,10 @@ class CharacterVisualWorkspace(BaseModel):
     legacy_fields: list[LegacyVisualField] = Field(default_factory=list)
     casting_revision: CastingRevision | None = None
     identity_casting_revisions: dict[str, CastingRevision] = Field(default_factory=dict)
+    identity_design_proposals: dict[str, list[CharacterDesignProposal]] = Field(default_factory=dict)
+    identity_selected_proposal_ids: dict[str, str | None] = Field(default_factory=dict)
+    identity_visual_bibles: dict[str, CharacterVisualBible] = Field(default_factory=dict)
+    casting_limitation_reasons: dict[str, str] = Field(default_factory=dict)
 
 
 def classify_legacy_visual_field(

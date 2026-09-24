@@ -14,11 +14,16 @@ def candidate_result(candidate):
 
 
 async def generate_casting_candidate(*, ctx, candidate_id: str, character_id: str,
-                                     identity_id: str | None, task_id: str, resolution, generate):
+                                     identity_id: str | None, task_id: str, resolution, generate,
+                                     submission_token: str | None = None, before_publish=None):
     store = CastingCandidateStore(ctx.output_dir, state_dir=ctx.state_dir, project_id=ctx.project_id)
     candidate = store.get(candidate_id)
     if candidate is None:
         raise ValueError("casting candidate not found")
+    if (candidate.character_id, candidate.identity_id) != (character_id, identity_id):
+        raise ValueError("casting candidate ownership mismatch")
+    if submission_token:
+        candidate = store.bind_generation_task(candidate_id, submission_token=submission_token, task_id=task_id)
     if (candidate.character_id, candidate.identity_id, candidate.task_id) != (character_id, identity_id, task_id):
         raise ValueError("casting candidate ownership/task mismatch")
     if candidate.generation_status == "succeeded":
@@ -43,6 +48,8 @@ async def generate_casting_candidate(*, ctx, candidate_id: str, character_id: st
                 "image", attempt_id=task_id, usage={"item": "1"}, specifications=(("aspect_ratio", "1:1"),)):
             generated = await generate(model=resolution.model, prompt=candidate.snapshot.prompt,
                                        output_path=output, aspect_ratio="1:1")
+        if before_publish:
+            await before_publish()
         return candidate_result(store.complete_generation(candidate_id, generated))
     except BaseException:
         # Provider exceptions may contain credentials; persist only a safe summary.

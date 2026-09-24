@@ -140,7 +140,11 @@ async def test_runner_uses_stored_model_and_rejects_legacy_publish(monkeypatch, 
     monkeypatch.setattr("novelvideo.media_capabilities.runtime.configuration.load_grsai_runtime_configuration", lambda *a: SimpleNamespace(model="nano-banana-pro"))
     monkeypatch.setattr("novelvideo.project_config.load_project_config_file", lambda *a: {"character_image_selection": "nano-banana-pro"})
     envelope = {"task_id": "task1", "task_type": "character_portrait", "payload": {"mode": "casting_candidate", "candidate_id": "c1", "character_name": candidate.character_id}}
-    result = await character_image._run_character_image(envelope, context(tmp_path))
+    from novelvideo.task_state import project_task_run_context
+    with pytest.raises(ValueError, match="authoritative task context"):
+        await character_image._run_character_image(envelope, context(tmp_path))
+    with project_task_run_context("task1"):
+        result = await character_image._run_character_image(envelope, context(tmp_path))
     assert result["candidate_id"] == "c1"
     assert calls[0]["model"] == "gpt-image-2"
     assert calls[0]["prompt"] == candidate.snapshot.prompt

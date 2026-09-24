@@ -45,6 +45,7 @@ from novelvideo.api.routes import (  # noqa: E402
     asset_imports,
     auth,
     characters,
+    character_casting,
     chat,
     config,
     content,
@@ -76,6 +77,7 @@ from novelvideo.api.routes import (  # noqa: E402
 )
 
 api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(character_casting.router, tags=['characters'])
 
 OPENAPI_TAGS = [
     {"name": "freezone-bootstrap", "description": "Freezone 启动、初始化与 provider 能力发现。"},
