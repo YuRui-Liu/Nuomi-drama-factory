@@ -18,6 +18,7 @@ describe("project navigation routes", () => {
       "nav.freezone",
       "nav.styles",
       "nav.tasks",
+      "nav.costs",
       "nav.aiAssistant",
     ]);
     expect(PROJECT_NAV_ITEMS.map((item) => item.to)).toEqual([
@@ -27,6 +28,7 @@ describe("project navigation routes", () => {
       "/projects/$project/freezone",
       "/projects/$project/styles",
       "/projects/$project/tasks",
+      "/projects/$project/costs",
       "/projects/$project/assistant",
     ]);
     expect(projectSectionFromPath("/projects/demo/ingest")).toBe("ingest");

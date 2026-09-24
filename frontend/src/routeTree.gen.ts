@@ -24,6 +24,9 @@ import { Route as AppProjectsProjectTasksRouteImport } from './routes/_app/proje
 const AppProjectsProjectCharactersLazyRouteImport = createFileRoute(
   '/_app/projects/$project/characters',
 )()
+const AppProjectsProjectCostsLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/costs',
+)()
 const AppProjectsProjectFreezoneLazyRouteImport = createFileRoute(
   '/_app/projects/$project/freezone',
 )()
@@ -87,6 +90,14 @@ const AppProjectsProjectCharactersLazyRoute =
     import('./routes/_app/projects.$project/characters.lazy').then(
       (d) => d.Route,
     ),
+  )
+const AppProjectsProjectCostsLazyRoute =
+  AppProjectsProjectCostsLazyRouteImport.update({
+    id: '/projects/$project/costs',
+    path: '/projects/$project/costs',
+    getParentRoute: () => AppRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/costs.lazy').then((d) => d.Route),
   )
 const AppProjectsProjectEpisodesRoute =
   AppProjectsProjectEpisodesRouteImport.update({
@@ -222,6 +233,7 @@ export interface FileRoutesByFullPath {
   '/projects/$project/styles': typeof AppProjectsProjectStylesRoute
   '/projects/$project/tasks': typeof AppProjectsProjectTasksRoute
   '/projects/$project/characters': typeof AppProjectsProjectCharactersLazyRoute
+  '/projects/$project/costs': typeof AppProjectsProjectCostsLazyRoute
   '/projects/$project/freezone': typeof AppProjectsProjectFreezoneLazyRoute
   '/projects/$project/production': typeof AppProjectsProjectProductionLazyRoute
   '/projects/$project/episodes/$episode/audio': typeof AppProjectsProjectEpisodesEpisodeAudioLazyRoute
@@ -243,6 +255,7 @@ export interface FileRoutesByTo {
   '/projects/$project/styles': typeof AppProjectsProjectStylesRoute
   '/projects/$project/tasks': typeof AppProjectsProjectTasksRoute
   '/projects/$project/characters': typeof AppProjectsProjectCharactersLazyRoute
+  '/projects/$project/costs': typeof AppProjectsProjectCostsLazyRoute
   '/projects/$project/freezone': typeof AppProjectsProjectFreezoneLazyRoute
   '/projects/$project/production': typeof AppProjectsProjectProductionLazyRoute
   '/projects/$project/episodes/$episode/audio': typeof AppProjectsProjectEpisodesEpisodeAudioLazyRoute
@@ -266,6 +279,7 @@ export interface FileRoutesById {
   '/_app/projects/$project/styles': typeof AppProjectsProjectStylesRoute
   '/_app/projects/$project/tasks': typeof AppProjectsProjectTasksRoute
   '/_app/projects/$project/characters': typeof AppProjectsProjectCharactersLazyRoute
+  '/_app/projects/$project/costs': typeof AppProjectsProjectCostsLazyRoute
   '/_app/projects/$project/freezone': typeof AppProjectsProjectFreezoneLazyRoute
   '/_app/projects/$project/production': typeof AppProjectsProjectProductionLazyRoute
   '/_app/projects/$project/episodes/$episode/audio': typeof AppProjectsProjectEpisodesEpisodeAudioLazyRoute
@@ -289,6 +303,7 @@ export interface FileRouteTypes {
     | '/projects/$project/styles'
     | '/projects/$project/tasks'
     | '/projects/$project/characters'
+    | '/projects/$project/costs'
     | '/projects/$project/freezone'
     | '/projects/$project/production'
     | '/projects/$project/episodes/$episode/audio'
@@ -310,6 +325,7 @@ export interface FileRouteTypes {
     | '/projects/$project/styles'
     | '/projects/$project/tasks'
     | '/projects/$project/characters'
+    | '/projects/$project/costs'
     | '/projects/$project/freezone'
     | '/projects/$project/production'
     | '/projects/$project/episodes/$episode/audio'
@@ -332,6 +348,7 @@ export interface FileRouteTypes {
     | '/_app/projects/$project/styles'
     | '/_app/projects/$project/tasks'
     | '/_app/projects/$project/characters'
+    | '/_app/projects/$project/costs'
     | '/_app/projects/$project/freezone'
     | '/_app/projects/$project/production'
     | '/_app/projects/$project/episodes/$episode/audio'
@@ -392,6 +409,13 @@ declare module '@tanstack/react-router' {
       path: '/projects/$project/characters'
       fullPath: '/projects/$project/characters'
       preLoaderRoute: typeof AppProjectsProjectCharactersLazyRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/costs': {
+      id: '/_app/projects/$project/costs'
+      path: '/projects/$project/costs'
+      fullPath: '/projects/$project/costs'
+      preLoaderRoute: typeof AppProjectsProjectCostsLazyRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/projects/$project/episodes': {
@@ -539,6 +563,7 @@ interface AppRouteChildren {
   AppProjectsProjectStylesRoute: typeof AppProjectsProjectStylesRoute
   AppProjectsProjectTasksRoute: typeof AppProjectsProjectTasksRoute
   AppProjectsProjectCharactersLazyRoute: typeof AppProjectsProjectCharactersLazyRoute
+  AppProjectsProjectCostsLazyRoute: typeof AppProjectsProjectCostsLazyRoute
   AppProjectsProjectFreezoneLazyRoute: typeof AppProjectsProjectFreezoneLazyRoute
   AppProjectsProjectProductionLazyRoute: typeof AppProjectsProjectProductionLazyRoute
 }
@@ -551,6 +576,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppProjectsProjectStylesRoute: AppProjectsProjectStylesRoute,
   AppProjectsProjectTasksRoute: AppProjectsProjectTasksRoute,
   AppProjectsProjectCharactersLazyRoute: AppProjectsProjectCharactersLazyRoute,
+  AppProjectsProjectCostsLazyRoute: AppProjectsProjectCostsLazyRoute,
   AppProjectsProjectFreezoneLazyRoute: AppProjectsProjectFreezoneLazyRoute,
   AppProjectsProjectProductionLazyRoute: AppProjectsProjectProductionLazyRoute,
 }

@@ -8,6 +8,7 @@ export const PROJECT_SECTION_ROUTES = {
   episodes: "/projects/$project/episodes",
   styles: "/projects/$project/styles",
   tasks: "/projects/$project/tasks",
+  costs: "/projects/$project/costs",
   assistant: "/projects/$project/assistant",
 } as const;
 
@@ -20,6 +21,7 @@ export const PROJECT_NAV_ITEMS = [
   { labelKey: "nav.freezone", to: PROJECT_SECTION_ROUTES.freezone },
   { labelKey: "nav.styles", to: PROJECT_SECTION_ROUTES.styles },
   { labelKey: "nav.tasks", to: PROJECT_SECTION_ROUTES.tasks },
+  { labelKey: "nav.costs", to: PROJECT_SECTION_ROUTES.costs },
   { labelKey: "nav.aiAssistant", to: PROJECT_SECTION_ROUTES.assistant },
 ] as const;
 

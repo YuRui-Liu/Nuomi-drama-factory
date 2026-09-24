@@ -22,6 +22,7 @@ const REMEMBERED_SECTIONS = new Set<ProjectSection>([
   "episodes",
   "assistant",
   "styles",
+  "costs",
 ]);
 
 export type XiajiSection = Exclude<
