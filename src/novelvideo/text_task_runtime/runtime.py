@@ -189,6 +189,9 @@ def build_text_task_runtime(snapshot: AgentTaskRouteSnapshot) -> StructuredTextR
     if snapshot.runtime == "workbuddy":
         from .workbuddy import WorkBuddyStructuredRuntime
         return WorkBuddyStructuredRuntime(snapshot)
+    if snapshot.runtime == "deepseek_harness":
+        from .deepseek_harness import DeepSeekHarnessStructuredRuntime
+        return DeepSeekHarnessStructuredRuntime(snapshot)
     if snapshot.runtime == "codex":
         return CodexStructuredRuntime(snapshot)
     return ModelApiStructuredRuntime(snapshot)

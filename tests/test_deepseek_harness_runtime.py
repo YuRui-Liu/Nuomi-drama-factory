@@ -16,6 +16,7 @@ from novelvideo.text_task_runtime.models import (
     AgentTaskRoutingConfig,
     RuntimePreset,
 )
+from novelvideo.text_task_runtime.runtime import build_text_task_runtime
 from novelvideo.text_task_runtime.settings import runtime_preset_for
 
 
@@ -373,3 +374,40 @@ def test_harness_home_default_ignores_ambient_dsh_home(monkeypatch, tmp_path):
 
     assert deepseek_harness.harness_home() == Path(config.STATE_DIR) / "dsh"
     assert deepseek_harness.harness_home() != Path(os.environ["DSH_HOME"])
+
+
+def test_build_text_task_runtime_selects_harness():
+    built = build_text_task_runtime(
+        AgentTaskRouteSnapshot(
+            runtime="deepseek_harness",
+            model="deepseek-v4-flash-vision-exp",
+            task_role="director_plan",
+            source="global",
+        )
+    )
+    assert type(built).__name__ == "DeepSeekHarnessStructuredRuntime"
+
+
+def test_build_text_task_runtime_keeps_existing_branches():
+    """新增分支不得打乱既有分发。"""
+
+    codex = build_text_task_runtime(
+        AgentTaskRouteSnapshot(
+            runtime="codex", model="gpt-5.6-sol", task_role="director_plan", source="global"
+        )
+    )
+    assert type(codex).__name__ == "CodexStructuredRuntime"
+
+    workbuddy = build_text_task_runtime(
+        AgentTaskRouteSnapshot(
+            runtime="workbuddy", model="default-model", task_role="director_plan", source="global"
+        )
+    )
+    assert type(workbuddy).__name__ == "WorkBuddyStructuredRuntime"
+
+    model_api = build_text_task_runtime(
+        AgentTaskRouteSnapshot(
+            runtime="model_api", model="deepseek-v4-flash", task_role="director_plan", source="global"
+        )
+    )
+    assert type(model_api).__name__ == "ModelApiStructuredRuntime"
