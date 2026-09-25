@@ -44,4 +44,90 @@ describe("GroupBeatInspector", () => {
     );
     expect(screen.getAllByAltText("Beat 1 渲染格位")).toHaveLength(2);
   });
+
+  // Shot-plan projects store a shot id in `beat_id`, which the legacy numeric Beat
+  // repair page cannot address. The inspector must offer a group-level action
+  // instead of a button that can only produce a dead-end warning.
+  it("offers a whole-group render regeneration when beat_id is a shot id", () => {
+    const regenerate = vi.fn();
+    render(
+      <GroupBeatInspector
+        group={{
+          ...group,
+          beat_ids: ["shot-01-01"],
+          cell_to_beat: [{ cell: 0, beat_id: "shot-01-01" }],
+          stages: {
+            ...group.stages,
+            render: {
+              status: "completed",
+              revision: 2,
+              cell_assets: [{ cell: 0, beat_id: "shot-01-01", url: "/static/demo/render/cell-1.png" }],
+            },
+          },
+        }}
+        onRegenerateStage={regenerate}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "单 Beat 修复" })).toBeNull();
+    const button = screen.getByRole("button", { name: "重新生成该组（实图）" });
+    expect(screen.queryByRole("button", { name: "重新生成该组（草图）" })).toBeNull();
+    fireEvent.click(button);
+    expect(regenerate).toHaveBeenCalledWith("render");
+  });
+
+  it("points the whole-group regeneration at the sketch stage when only sketch assets exist", () => {
+    const regenerate = vi.fn();
+    render(
+      <GroupBeatInspector
+        group={{
+          ...group,
+          beat_ids: ["shot-01-01"],
+          cell_to_beat: [{ cell: 0, beat_id: "shot-01-01" }],
+          stages: {
+            ...group.stages,
+            render: { status: "pending", revision: 0 },
+            sketch: {
+              status: "completed",
+              revision: 1,
+              cell_assets: [{ cell: 0, beat_id: "shot-01-01", url: "/static/demo/sketch/cell-1.png" }],
+            },
+          },
+        }}
+        onRegenerateStage={regenerate}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "单 Beat 修复" })).toBeNull();
+    const button = screen.getByRole("button", { name: "重新生成该组（草图）" });
+    expect(screen.queryByRole("button", { name: "重新生成该组（实图）" })).toBeNull();
+    fireEvent.click(button);
+    expect(regenerate).toHaveBeenCalledWith("sketch");
+  });
+
+  it("renders no action button when neither a beat repair nor a regeneration is available", () => {
+    render(
+      <GroupBeatInspector
+        group={{
+          ...group,
+          beat_ids: ["shot-01-01"],
+          cell_to_beat: [{ cell: 0, beat_id: "shot-01-01" }],
+          stages: {
+            ...group.stages,
+            render: {
+              status: "completed",
+              revision: 2,
+              cell_assets: [{ cell: 0, beat_id: "shot-01-01", url: "/static/demo/render/cell-1.png" }],
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "单 Beat 修复" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "重新生成该组（实图）" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "重新生成该组（草图）" })).toBeNull();
+    // Only the lightbox trigger remains; no per-cell action is rendered.
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
 });

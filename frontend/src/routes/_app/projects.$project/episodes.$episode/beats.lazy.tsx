@@ -557,11 +557,16 @@ function BeatsTabContent() {
           <NarrativeGroupWorkbench
             project={project}
             episode={epNum}
-            onRepairBeat={(beatId) => {
-              const beatNumber = Number.parseInt(beatId, 10);
-              if (Number.isFinite(beatNumber)) selectSingle(beatNumber);
-              setWorkbenchMode("repair");
-            }}
+            onRepairBeat={
+              beats.length > 0
+                ? (beatId) => {
+                    const beatNumber = Number.parseInt(beatId, 10);
+                    if (!Number.isFinite(beatNumber)) return;
+                    selectSingle(beatNumber);
+                    setWorkbenchMode("repair");
+                  }
+                : undefined
+            }
           />
         </div>
       </div>

@@ -5,7 +5,7 @@ import { GroupBeatInspector } from "./group-beat-inspector";
 import { GroupRevisionHistory } from "./group-revision-history";
 import { GroupStoryboardSources } from "./group-storyboard-sources";
 
-export function GroupPipeline({ project, episode, group, onAction, onRepairBeat }: { project?: string; episode?: number; group: NarrativeGroup; onAction: (stage: NarrativeGridStage, action: "generate" | "split" | "regenerate") => void; onRepairBeat: (beatId: string) => void }) {
+export function GroupPipeline({ project, episode, group, onAction, onRepairBeat, onRegenerateStage }: { project?: string; episode?: number; group: NarrativeGroup; onAction: (stage: NarrativeGridStage, action: "generate" | "split" | "regenerate") => void; onRepairBeat?: (beatId: string) => void; onRegenerateStage?: (stage: "sketch" | "render") => void }) {
   return <div className="space-y-4">
     <div><GroupGridStage title="渲染多宫格" stage="render" state={group.stages.render} onAction={onAction} />{project && episode ? <GroupRevisionHistory project={project} episode={episode} groupId={group.id} stage="render" /> : null}</div>
     {project && episode && group.stages.render.selected_storyboard_id
@@ -17,6 +17,6 @@ export function GroupPipeline({ project, episode, group, onAction, onRepairBeat 
       {project && episode ? <GroupRevisionHistory project={project} episode={episode} groupId={group.id} stage="sketch" /> : null}
       <div className="mt-2 text-xs text-muted-foreground"><span>草图自动切分</span> · {group.stages.sketch.status === "completed" ? "已完成" : "未生成，可直接制作实图"}</div>
     </details>
-    <GroupBeatInspector group={group} onRepairBeat={onRepairBeat} />
+    <GroupBeatInspector group={group} onRepairBeat={onRepairBeat} onRegenerateStage={onRegenerateStage} />
   </div>;
 }
