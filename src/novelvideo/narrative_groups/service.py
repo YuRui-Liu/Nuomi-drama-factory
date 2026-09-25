@@ -689,16 +689,35 @@ def record_video_segment_result(
         return found
 
 
+def _apply_image_prompt_overrides(
+    beats: list[dict[str, Any]],
+    overrides: Mapping[str, str] | None,
+) -> list[dict[str, Any]]:
+    """只用出图路径传入 overrides；视频调用点不传，行为保持不变。"""
+
+    if not overrides:
+        return beats
+    applied: list[dict[str, Any]] = []
+    for beat in beats:
+        override = str(overrides.get(str(beat.get("id") or "")) or "").strip()
+        applied.append({**beat, "visual_description": override} if override else beat)
+    return applied
+
+
 def generation_beats_for_group(
     project_dir: str | Path,
     episode: int,
     group_id: str,
     legacy_beats: Iterable[Mapping[str, Any]],
+    *,
+    image_prompt_overrides: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return ordered visual inputs matching the effective group's cells."""
     active = DirectorPlanStore(Path(project_dir)).load_active(episode)
     if active is None:
-        return [dict(beat) for beat in legacy_beats]
+        return _apply_image_prompt_overrides(
+            [dict(beat) for beat in legacy_beats], image_prompt_overrides
+        )
     group = next((item for item in active.groups if item.id == group_id), None)
     if group is None:
         raise KeyError(group_id)
@@ -785,7 +804,7 @@ def generation_beats_for_group(
             "detected_props": props,
             "scene_ref": {"scene_id": scene_id} if scene_id else {},
         })
-    return beats
+    return _apply_image_prompt_overrides(beats, image_prompt_overrides)
 
 
 def rebuild_groups(project_dir: str | Path, episode: int, beats: Iterable[Any]) -> list[NarrativeGroup]:

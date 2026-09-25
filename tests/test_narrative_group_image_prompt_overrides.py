@@ -15,6 +15,8 @@ from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.narrative_groups import service
 from novelvideo.narrative_groups.models import GridLayout, NarrativeGroup, VideoPlan
 from novelvideo.narrative_groups.service import (
+    _apply_image_prompt_overrides,
+    generation_beats_for_group,
     load_groups,
     save_groups,
     sidecar_path,
@@ -235,3 +237,71 @@ def test_clearing_an_unknown_shot_is_a_no_op_for_existing_overrides(tmp_path):
     # 落盘 JSON 里只能有保留项，不得凭空出现一个空串键。
     payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
     assert payload["groups"][0]["image_prompt_overrides"] == {"shot-01-01": "保留"}
+
+
+def test_not_passing_overrides_leaves_beats_byte_identical():
+    """视频路径的安全边界：不传覆盖时输出必须与改动前逐字节一致。"""
+
+    beats = [{"id": "shot-01-01", "visual_description": "原描述", "action": "起身"}]
+
+    assert _apply_image_prompt_overrides([dict(b) for b in beats], None) == beats
+
+
+def test_passing_overrides_replaces_only_the_description():
+    beats = [
+        {"id": "shot-01-01", "visual_description": "原描述", "action": "起身"},
+        {"id": "shot-01-02", "visual_description": "另一格", "action": "递物"},
+    ]
+
+    applied = _apply_image_prompt_overrides(beats, {"shot-01-01": "改成铜甲"})
+
+    assert applied[0]["visual_description"] == "改成铜甲"
+    assert applied[0]["action"] == "起身"            # 其他字段不动
+    assert applied[1] == beats[1]                    # 未命中的格位逐字不变
+    assert beats[0]["visual_description"] == "原描述"  # 不改动入参
+
+
+def test_generation_beats_legacy_branch_applies_overrides_only_when_passed(tmp_path: Path) -> None:
+    """端到端（旧节拍制分支）：不传 == 传空 dict；传覆盖只改命中的 shot。"""
+
+    project = tmp_path / "proj"
+    legacy = [
+        {"id": "shot-01-01", "visual_description": "原描述", "action": "起身"},
+        {"id": "shot-01-02", "visual_description": "另一格", "action": "递物"},
+    ]
+
+    untouched = generation_beats_for_group(project, 1, "ng-01", legacy)
+    empty = generation_beats_for_group(project, 1, "ng-01", legacy, image_prompt_overrides={})
+
+    assert untouched == empty == legacy
+
+    applied = generation_beats_for_group(
+        project, 1, "ng-01", legacy, image_prompt_overrides={"shot-01-01": "覆盖文本"}
+    )
+
+    assert applied[0]["visual_description"] == "覆盖文本"
+    assert applied[0]["action"] == "起身"
+    assert applied[1] == empty[1]
+
+
+def test_generation_beats_director_branch_applies_overrides_to_the_matching_shot(
+    tmp_path: Path,
+) -> None:
+    """端到端（镜头制分支）：不传 == 传空 dict；传覆盖只改命中的 shot。"""
+
+    _activate(tmp_path, (_plan_group("director-a", 1, ("span-1",), ("shot-1", "shot-2")),))
+
+    plain = generation_beats_for_group(tmp_path, 1, "director-a", [])
+    empty = generation_beats_for_group(tmp_path, 1, "director-a", [], image_prompt_overrides={})
+
+    assert plain == empty
+    assert [beat["id"] for beat in plain] == ["shot-1", "shot-2"]
+
+    applied = generation_beats_for_group(
+        tmp_path, 1, "director-a", [], image_prompt_overrides={"shot-1": "覆盖文本"}
+    )
+
+    assert applied[0]["id"] == "shot-1"
+    assert applied[0]["visual_description"] == "覆盖文本"
+    assert applied[1] == plain[1]
+    assert applied[1]["visual_description"] == plain[1]["visual_description"]

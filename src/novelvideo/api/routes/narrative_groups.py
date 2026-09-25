@@ -1770,6 +1770,7 @@ async def _enqueue_group_action(
             episode,
             group_id,
             selected_beats,
+            image_prompt_overrides=source_group.image_prompt_overrides,
         )
     except KeyError as exc:
         raise HTTPException(
