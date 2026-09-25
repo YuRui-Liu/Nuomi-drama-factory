@@ -327,7 +327,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         ordinal=int(data["ordinal"]),
         beat_ids=tuple(str(value) for value in data["beat_ids"]),
         layout=GridLayout(**layout),
-        cell_to_beat=tuple(CellMapping(**item) for item in data.get("cell_to_beat") or ()),
+        cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
         video_plan=video_plan,
         video_settings=video_settings,
         video_reference_settings=video_reference_settings,
