@@ -177,6 +177,8 @@ def update_image_prompt_override(
     """设置或清除单个格位的出图提示词覆盖；返回更新后的 group。"""
 
     cleaned = str(prompt or "").strip()
+    if len(cleaned) > _IMAGE_PROMPT_OVERRIDE_LIMIT:
+        raise ValueError("image prompt override is too long")
     with _sidecar_guard(project_dir, episode):
         groups = load_groups(project_dir, episode)
         target = next((item for item in groups if item.id == group_id), None)
@@ -185,8 +187,6 @@ def update_image_prompt_override(
         valid_ids = {mapping.beat_id for mapping in target.cell_to_beat} | set(target.beat_ids)
         if shot_id not in valid_ids:
             raise ValueError(f"shot_id is not part of group {group_id}: {shot_id}")
-        if len(cleaned) > _IMAGE_PROMPT_OVERRIDE_LIMIT:
-            raise ValueError("image prompt override is too long")
         overrides = dict(target.image_prompt_overrides)
         if cleaned:
             overrides[shot_id] = cleaned
@@ -202,6 +202,8 @@ def update_image_prompt_override(
 ```
 
 `_IMAGE_PROMPT_OVERRIDE_LIMIT = 4000`。API 路由只做参数校验与状态码映射，其余交给该函数。
+
+**校验顺序：纯输入约束优先 fail fast。** 长度校验紧跟 `strip`，早于 `_sidecar_guard` 与 `load_groups`：长度是否合法只取决于入参，不依赖任何落盘状态，因此应在做 I/O（加载 sidecar、拿锁）之前就拒绝。若把它挪到组/镜头校验之后，一个明显非法的超长请求也会先付一次磁盘读取与加锁的代价。一个有意为之的可观察后果是：「未知组 + 超长提示词」抛出 `ValueError` 而非 `KeyError`——输入本身先不合法，错误优先级由该顺序决定。
 
 ## 提示词注入
 
