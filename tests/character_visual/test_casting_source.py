@@ -309,6 +309,21 @@ async def test_unverifiable_visual_fact_is_excluded_without_failing_the_recast()
 
 
 @pytest.mark.asyncio
+async def test_claim_outside_supplied_windows_is_accepted_when_the_quote_is_verbatim():
+    m = source_module()
+    text = '甲七十岁。' + '乙' * 700
+    async def extract(**kw):
+        return m.FactExtraction(facts=[m.ExtractedFact(field='age_range', value='七十岁',
+            evidence='甲七十岁。', source_document='novel.txt', source_start=650, source_end=655)])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', text, 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert [(f.field, f.value) for f in result.facts] == [('age_range', '七十岁')]
+    assert (result.facts[0].source_start, result.facts[0].source_end) == (0, 5)
+    assert result.source_warnings == []
+
+
+@pytest.mark.asyncio
 async def test_claim_outside_supplied_windows_is_dropped_with_a_precise_warning():
     m = source_module()
     async def extract(**kw):
