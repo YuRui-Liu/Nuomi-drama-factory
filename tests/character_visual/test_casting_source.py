@@ -201,8 +201,10 @@ async def test_truncated_quote_cannot_hide_other_person_kinship():
 
 
 @pytest.mark.parametrize('changes,source,reason', [
-    ({'source_document': 'missing'}, '甲七十岁。', 'document'),
-    ({'source_end': 99}, '甲七十岁。', 'offset_range'),
+    # A repairable claim can no longer be used to observe these reasons: the
+    # evidence must be genuinely absent from every source document.
+    ({'source_document': 'missing', 'evidence': '甲九十岁。'}, '甲七十岁。', 'document'),
+    ({'source_end': 99, 'evidence': '甲九十岁。'}, '甲七十岁。', 'offset_range'),
     ({'evidence': '甲八十岁。'}, '甲七十岁。', 'quote_mismatch'),
     ({'value': '青年'}, '甲七十岁。', 'value_support'),
     ({'source_revision': 'old'}, '甲七十岁。', 'source_revision'),
@@ -225,3 +227,46 @@ def test_strict_verification_reports_precise_reason_without_source_text(changes,
     assert f'offsets={fact.source_start}:{fact.source_end}' in message
     assert fact.evidence not in message
     assert fact.value not in message
+
+
+def _fact(**changes):
+    from novelvideo.character_visual.models import CharacterNarrativeFact, SourceSpan
+    fields = dict(fact_id='f', field='age_range', value='七十岁', evidence='甲七十岁。',
+        source_document='novel.txt', source_start=0, source_end=5, source_revision='hash', confidence=1,
+        source_span=SourceSpan(start_line=1, end_line=1))
+    fields.update(changes)
+    return CharacterNarrativeFact(**fields)
+
+
+def test_drifted_offsets_are_repaired_from_verbatim_source():
+    m = source_module()
+    docs = {'novel.txt': m.SourceDocument('novel.txt', '乙是青年。\n甲七十岁。', 'hash')}
+    verified = m.verified_fact(_fact(source_start=1, source_end=6), docs, ['甲'], 'hash', strict=True)
+    assert (verified.source_start, verified.source_end) == (6, 11)
+    assert verified.evidence == '甲七十岁。'
+
+
+def test_nearest_verbatim_occurrence_is_chosen():
+    m = source_module()
+    text = '甲七十岁。\n乙是青年。\n甲七十岁。'
+    docs = {'novel.txt': m.SourceDocument('novel.txt', text, 'hash')}
+    verified = m.verified_fact(_fact(source_start=11, source_end=16), docs, ['甲'], 'hash', strict=True)
+    assert (verified.source_start, verified.source_end) == (12, 17)
+
+
+def test_quote_found_in_another_document_is_relocated_there():
+    m = source_module()
+    docs = {'episode:0001': m.SourceDocument('episode:0001', '甲七十岁。', 'h1'),
+            'novel.txt': m.SourceDocument('novel.txt', '乙是青年。', 'h2')}
+    verified = m.verified_fact(_fact(source_revision='h2'), docs, ['甲'], 'h2', strict=True)
+    assert verified.source_document == 'episode:0001'
+    assert (verified.source_start, verified.source_end) == (0, 5)
+
+
+def test_relocation_never_accepts_text_absent_from_sources():
+    m = source_module()
+    docs = {'novel.txt': m.SourceDocument('novel.txt', '甲看见乙。', 'hash')}
+    fact = _fact(evidence='甲是老人。', source_start=0, source_end=5)
+    assert m.verified_fact(fact, docs, ['甲'], 'hash') is None
+    with pytest.raises(ValueError, match='reason=quote_mismatch'):
+        m.verified_fact(fact, docs, ['甲'], 'hash', strict=True)

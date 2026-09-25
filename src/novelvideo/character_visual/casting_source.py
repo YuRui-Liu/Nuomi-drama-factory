@@ -55,6 +55,11 @@ class SourceFactVerificationError(ValueError):
 _NARRATIVE_CONTEXT_FIELDS = frozenset({'biography', 'behavior', 'personality',
     'dramatic_function', 'work_habits', 'environment', 'relationship', 'occupation', 'social_identity'})
 
+# Failures about where a quote lives, not about what it claims: a verbatim
+# re-location in the project sources settles them without weakening the
+# value and attribution gates.
+_POSITION_REASONS = frozenset({'document', 'offset_range', 'quote_mismatch'})
+
 
 async def load_sources(project_dir, sqlite_store):
     from novelvideo.episode_source_store import EpisodeSourceStore
@@ -113,6 +118,22 @@ def attested_names(profile, documents):
     return names
 
 
+def _relocate_quote(evidence, documents, claimed_doc, claimed_start):
+    """Find a verbatim quote in project sources; model offsets are never trusted."""
+    if not evidence:
+        return None
+    others = sorted((doc for doc in documents.values() if doc is not claimed_doc),
+                    key=lambda doc: doc.document_id)
+    for doc in ([claimed_doc] if claimed_doc is not None else []) + others:
+        positions = [match.start() for match in re.finditer(re.escape(evidence), doc.text)]
+        if not positions:
+            continue
+        anchor = claimed_start if doc is claimed_doc and isinstance(claimed_start, int) else 0
+        start = min(positions, key=lambda position: (abs(position - anchor), position))
+        return doc, start, start + len(evidence)
+    return None
+
+
 def verified_fact(fact, documents, names, source_revision, *, strict=False):
     doc = documents.get(fact.source_document or 'novel.txt')
     start, end = fact.source_start, fact.source_end
@@ -123,13 +144,23 @@ def verified_fact(fact, documents, names, source_revision, *, strict=False):
         reason = 'offset_range'
     elif doc.text[start:end] != fact.evidence:
         reason = 'quote_mismatch'
-    elif fact.source_revision not in (None, source_revision, doc.content_hash):
+    if reason in _POSITION_REASONS:
+        # Model-reported offsets are unreliable; a verbatim hit in the project
+        # sources replaces the claim instead of failing the fact. The gates below
+        # then run on the real source bytes.
+        relocated = _relocate_quote(fact.evidence, documents, doc, start)
+        if relocated is not None:
+            doc, start, end = relocated
+            fact = fact.model_copy(update={'source_document': doc.document_id, 'source_start': start,
+                'source_end': end, 'evidence': doc.text[start:end]})
+            reason = None
+    if reason is None and fact.source_revision not in (None, source_revision, doc.content_hash):
         reason = 'source_revision'
-    elif not evidence_supports(fact):
+    if reason is None and not evidence_supports(fact):
         # Attribution itself uses evidence_supports; distinguish unsupported
         # values first so the diagnostic identifies the failed prerequisite.
         reason = 'value_support'
-    elif not attributed_clause(fact, names):
+    if reason is None and not attributed_clause(fact, names):
         reason = 'attribution'
     if reason is None:
         # Do not let a truncated quote hide a later attributive complement,
