@@ -185,9 +185,15 @@ def test_sets_and_clears_an_override(tmp_path):
 
     update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "  改成铜甲  ")
     assert load_groups(project, 1)[0].image_prompt_overrides == {"shot-01-01": "改成铜甲"}
+    payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
+    assert payload["groups"][0]["image_prompt_overrides"] == {"shot-01-01": "改成铜甲"}
 
     update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "   ")
     assert load_groups(project, 1)[0].image_prompt_overrides == {}
+    # 清除必须让键真的从落盘 JSON 里消失；断言不能只经 load_groups 读回，
+    # 因为读取时会过滤空白值，`pop` 与「写入空串」在那种视角下无法区分。
+    payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
+    assert payload["groups"][0]["image_prompt_overrides"] == {}
 
 
 def test_rejects_unknown_group_and_unknown_shot(tmp_path):
@@ -207,6 +213,15 @@ def test_rejects_overlong_prompt(tmp_path):
         update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "字" * 4001)
 
 
+def test_accepts_a_prompt_at_exactly_the_limit(tmp_path):
+    project = _saved_group(tmp_path)
+
+    update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "字" * 4000)
+
+    payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
+    assert len(payload["groups"][0]["image_prompt_overrides"]["shot-01-01"]) == 4000
+
+
 def test_clearing_an_unknown_shot_is_a_no_op_for_existing_overrides(tmp_path):
     """清除一个不存在的键不应影响其他覆盖，也不应报错。"""
 
@@ -217,3 +232,6 @@ def test_clearing_an_unknown_shot_is_a_no_op_for_existing_overrides(tmp_path):
     update_image_prompt_override(project, 1, "ng-01", "shot-01-02", "")
 
     assert load_groups(project, 1)[0].image_prompt_overrides == {"shot-01-01": "保留"}
+    # 落盘 JSON 里只能有保留项，不得凭空出现一个空串键。
+    payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
+    assert payload["groups"][0]["image_prompt_overrides"] == {"shot-01-01": "保留"}
