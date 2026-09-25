@@ -327,7 +327,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         ordinal=int(data["ordinal"]),
         beat_ids=tuple(str(value) for value in data["beat_ids"]),
         layout=GridLayout(**layout),
-        cell_to_beat=tuple(CellMapping(**item) for item in data["cell_to_beat"]),
+        cell_to_beat=tuple(CellMapping(**item) for item in data.get("cell_to_beat") or ()),
         video_plan=video_plan,
         video_settings=video_settings,
         video_reference_settings=video_reference_settings,
@@ -348,6 +348,11 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         ),
         effective_style_snapshot=dict(data.get("effective_style_snapshot") or {}),
         storyboard_contract_version=int(data.get("storyboard_contract_version") or 0),
+        image_prompt_overrides={
+            str(key): str(value)
+            for key, value in (data.get("image_prompt_overrides") or {}).items()
+            if str(value).strip()
+        },
     )
 
 
@@ -474,6 +479,9 @@ def _materialize_active_groups(
                     previous.video_reference_settings
                     if previous
                     else VideoReferenceSettings()
+                ),
+                image_prompt_overrides=(
+                    dict(previous.image_prompt_overrides) if previous else {}
                 ),
                 source_span_ids=group.source_span_ids,
                 shot_ids=shot_ids,

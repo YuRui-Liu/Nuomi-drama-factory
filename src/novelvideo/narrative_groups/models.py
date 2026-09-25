@@ -265,6 +265,7 @@ class NarrativeGroup:
     video_segments: tuple[dict[str, Any], ...] = ()
     effective_style_snapshot: dict[str, Any] = field(default_factory=dict)
     storyboard_contract_version: int = 0
+    image_prompt_overrides: dict[str, str] = field(default_factory=dict)
 
     @property
     def production_beat_ids(self) -> tuple[str, ...]:
