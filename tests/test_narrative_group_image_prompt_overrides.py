@@ -3,6 +3,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from novelvideo.director_plan.models import (
     DirectorPlanRevision,
     NarrativeGroupPlan,
@@ -12,7 +14,12 @@ from novelvideo.director_plan.models import (
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.narrative_groups import service
 from novelvideo.narrative_groups.models import GridLayout, NarrativeGroup, VideoPlan
-from novelvideo.narrative_groups.service import load_groups, save_groups, sidecar_path
+from novelvideo.narrative_groups.service import (
+    load_groups,
+    save_groups,
+    sidecar_path,
+    update_image_prompt_override,
+)
 
 
 def _group(group_id: str = "ng-01", **overrides) -> NarrativeGroup:
@@ -165,3 +172,48 @@ def test_overrides_survive_the_legacy_ensure_path(tmp_path: Path) -> None:
     assert group.image_prompt_overrides == {"shot-01-01": "改成铜甲"}
     payload = json.loads(sidecar_path(project, 1).read_text(encoding="utf-8"))
     assert payload["groups"][0]["image_prompt_overrides"] == {"shot-01-01": "改成铜甲"}
+
+
+def _saved_group(tmp_path):
+    project = tmp_path / "proj"
+    save_groups(project, 1, [_group()])
+    return project
+
+
+def test_sets_and_clears_an_override(tmp_path):
+    project = _saved_group(tmp_path)
+
+    update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "  改成铜甲  ")
+    assert load_groups(project, 1)[0].image_prompt_overrides == {"shot-01-01": "改成铜甲"}
+
+    update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "   ")
+    assert load_groups(project, 1)[0].image_prompt_overrides == {}
+
+
+def test_rejects_unknown_group_and_unknown_shot(tmp_path):
+    project = _saved_group(tmp_path)
+
+    with pytest.raises(KeyError):
+        update_image_prompt_override(project, 1, "ng-99", "shot-01-01", "x")
+
+    with pytest.raises(ValueError):
+        update_image_prompt_override(project, 1, "ng-01", "shot-99-99", "x")
+
+
+def test_rejects_overlong_prompt(tmp_path):
+    project = _saved_group(tmp_path)
+
+    with pytest.raises(ValueError):
+        update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "字" * 4001)
+
+
+def test_clearing_an_unknown_shot_is_a_no_op_for_existing_overrides(tmp_path):
+    """清除一个不存在的键不应影响其他覆盖，也不应报错。"""
+
+    project = _saved_group(tmp_path)
+    update_image_prompt_override(project, 1, "ng-01", "shot-01-01", "保留")
+
+    # shot-01-02 属于该组（beat_ids 里有），但本来就没有覆盖
+    update_image_prompt_override(project, 1, "ng-01", "shot-01-02", "")
+
+    assert load_groups(project, 1)[0].image_prompt_overrides == {"shot-01-01": "保留"}

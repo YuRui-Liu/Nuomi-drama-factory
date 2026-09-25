@@ -880,6 +880,43 @@ def update_video_settings(
         return updated_group
 
 
+_IMAGE_PROMPT_OVERRIDE_LIMIT = 4000
+
+
+def update_image_prompt_override(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    shot_id: str,
+    prompt: str,
+) -> NarrativeGroup:
+    """设置或清除单个格位的出图提示词覆盖；返回更新后的 group。"""
+
+    cleaned = str(prompt or "").strip()
+    if len(cleaned) > _IMAGE_PROMPT_OVERRIDE_LIMIT:
+        raise ValueError("image prompt override is too long")
+    with _sidecar_guard(project_dir, episode):
+        groups = load_groups(project_dir, episode)
+        target = next((item for item in groups if item.id == group_id), None)
+        if target is None:
+            raise KeyError(group_id)
+        valid_ids = {mapping.beat_id for mapping in target.cell_to_beat} | set(target.beat_ids)
+        if shot_id not in valid_ids:
+            raise ValueError(f"shot_id is not part of group {group_id}: {shot_id}")
+        overrides = dict(target.image_prompt_overrides)
+        if cleaned:
+            overrides[shot_id] = cleaned
+        else:
+            overrides.pop(shot_id, None)
+        updated = replace(target, image_prompt_overrides=overrides)
+        save_groups(
+            project_dir,
+            episode,
+            [updated if item.id == group_id else item for item in groups],
+        )
+    return updated
+
+
 async def update_video_reference_settings(
     *,
     store: object,
