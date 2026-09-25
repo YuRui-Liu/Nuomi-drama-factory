@@ -282,22 +282,24 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
             system_prompt='仅提取指定角色在原文直接陈述的事实，不设计形象，不推断年龄、职业或性格。field 必须使用 schema 中的英文枚举。value 必须逐字截取 evidence 中直接描述该角色的连续词语，不得总结、改写、补全或把动作概括成性格/职业。每条 evidence 必须是逐字原文且含角色名或已核验别名，offset 是文档绝对字符位置。只选角色本人的直接陈述，例如“甲是老人”的 value 是“老人”；“甲看见老人”不能证明甲是老人。不得引用其他人物。不要从身份阶段名称推断事实。无满足条件的证据返回空列表，不必凑数。',
             prompt=json.dumps(dict(character=profile.name, attested_aliases=names[1:], identity_id=identity_id, windows=windows), ensure_ascii=False))
         output = FactExtraction.model_validate(output.model_dump() if isinstance(output, BaseModel) else output)
-        for i, row in enumerate(output.facts):
-            if row.identity_id not in (None, identity_id):
-                raise ValueError('wrong identity in extracted source facts')
-            if not any(w['source_document'] == row.source_document and w['start'] <= row.source_start < row.source_end <= w['end'] for w in windows):
-                raise ValueError('fact outside supplied source windows')
+        for row in output.facts:
             fact = CharacterNarrativeFact(**row.model_dump(), fact_id='source-' + snapshot_digest(row.model_dump())[:24],
                 source_revision=source_revision, confidence=1, source_span=SourceSpan(start_line=1, end_line=1))
-            try:
-                facts.append(verified_fact(fact, documents, names, source_revision, strict=True))
-            except SourceFactVerificationError as exc:
-                if fact.field not in _NARRATIVE_CONTEXT_FIELDS or exc.reason not in {
-                        'value_support', 'attribution', 'full_clause_attribution'}:
-                    raise
-                # Exact source bytes/offsets passed, but the claimed interpretation
-                # did not. Retain only a warning, never the value as a design fact.
-                warnings.append(f'excluded_narrative:{fact.field}:{exc.reason}')
+            outside_window = not any(w['source_document'] == row.source_document
+                and w['start'] <= row.source_start < row.source_end <= w['end'] for w in windows)
+            reason = 'wrong_identity' if row.identity_id not in (None, identity_id) else None
+            if reason is None:
+                try:
+                    facts.append(verified_fact(fact, documents, names, source_revision, strict=True))
+                    continue
+                except SourceFactVerificationError as exc:
+                    reason = exc.reason
+                    if outside_window and reason in _POSITION_REASONS:
+                        reason += '/outside_window'
+            # A single unverifiable fact only removes that fact: the recast
+            # continues with the verified remainder and reports what was dropped.
+            warnings.append(('excluded_narrative:' if fact.field in _NARRATIVE_CONTEXT_FIELDS
+                else 'excluded_source:') + f'{fact.field}:{reason}')
     # Narrative summaries are not independently trusted; derive only verified fields.
     fields = {f.field: f.value for f in facts if f.identity_id is None}
     return CharacterNarrativeProfile(character_id=profile.character_id, name=profile.name, aliases=names[1:],

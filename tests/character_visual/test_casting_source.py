@@ -53,10 +53,11 @@ async def test_narrative_exclusion_never_accepts_fabricated_source():
     async def extract(**kw):
         return m.FactExtraction(facts=[m.ExtractedFact(field='biography', value='老人',
             evidence='甲是老人。', source_document='novel.txt', source_start=0, source_end=5)])
-    with pytest.raises(ValueError, match='quote_mismatch'):
-        await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
-            {'novel.txt': m.SourceDocument('novel.txt', '甲看见乙。', 'hash')}, 'hash',
-            runtime=SimpleNamespace(run_structured=extract))
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲看见乙。', 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_narrative:biography:quote_mismatch']
 
 
 @pytest.mark.asyncio
@@ -83,9 +84,10 @@ async def test_invalid_quote_or_attribution_is_rejected():
     async def extract(**kw):
         return m.FactExtraction(facts=[m.ExtractedFact(field='age_range', value='青年',
             evidence='乙是青年。', source_document='novel.txt', source_start=0, source_end=5)])
-    with pytest.raises(ValueError, match='attribution'):
-        await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'), docs, 'hash',
-            runtime=SimpleNamespace(run_structured=extract))
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'), docs, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:age_range:attribution']
 
 
 @pytest.mark.asyncio
@@ -166,13 +168,14 @@ async def test_fact_value_must_be_attributed_to_target_clause(quote, accepted):
     async def extract(**kwargs):
         return m.FactExtraction(facts=[m.ExtractedFact(field='age_range', value='七十岁', evidence=quote,
             source_document='novel.txt', source_start=0, source_end=len(quote))])
-    call = m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
-        {'novel.txt': m.SourceDocument('novel.txt', quote, 'hash')}, 'hash', runtime=SimpleNamespace(run_structured=extract))
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', quote, 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
     if accepted:
-        assert (await call).facts[0].value == '七十岁'
+        assert result.facts[0].value == '七十岁'
     else:
-        with pytest.raises(ValueError, match='attribution'):
-            await call
+        assert result.facts == []
+        assert result.source_warnings == ['excluded_source:age_range:attribution']
 
 
 @pytest.mark.asyncio
@@ -182,22 +185,25 @@ async def test_normalized_age_alias_rejects_other_person_kinship_complement():
     async def extract(**kwargs):
         return m.FactExtraction(facts=[m.ExtractedFact(field='age_group', value='elder', evidence=quote,
             source_document='novel.txt', source_start=0, source_end=len(quote))])
-    with pytest.raises(ValueError, match='attribution'):
-        await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
-            {'novel.txt': m.SourceDocument('novel.txt', quote, 'hash')}, 'hash', runtime=SimpleNamespace(run_structured=extract))
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', quote, 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:age_group:attribution']
 
 
 @pytest.mark.asyncio
 async def test_truncated_quote_cannot_hide_other_person_kinship():
     m = source_module()
-    source = '甲是七十岁的乙的儿子。'
     quote = '甲是七十岁'
     async def extract(**kwargs):
         return m.FactExtraction(facts=[m.ExtractedFact(field='age_range', value='七十岁', evidence=quote,
             source_document='novel.txt', source_start=0, source_end=len(quote))])
-    with pytest.raises(ValueError, match='attribution'):
-        await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
-            {'novel.txt': m.SourceDocument('novel.txt', source, 'hash')}, 'hash', runtime=SimpleNamespace(run_structured=extract))
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲是七十岁的乙的儿子。', 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:age_range:full_clause_attribution']
 
 
 @pytest.mark.parametrize('changes,source,reason', [
@@ -270,3 +276,60 @@ def test_relocation_never_accepts_text_absent_from_sources():
     assert m.verified_fact(fact, docs, ['甲'], 'hash') is None
     with pytest.raises(ValueError, match='reason=quote_mismatch'):
         m.verified_fact(fact, docs, ['甲'], 'hash', strict=True)
+
+
+@pytest.mark.asyncio
+async def test_unverifiable_soft_fact_is_excluded_without_failing_the_recast():
+    m = source_module()
+    async def extract(**kw):
+        return m.FactExtraction(facts=[
+            m.ExtractedFact(field='age_range', value='七十岁', evidence='甲七十岁。',
+                source_document='novel.txt', source_start=0, source_end=5),
+            m.ExtractedFact(field='behavior', value='爱笑', evidence='甲最爱笑了。',
+                source_document='novel.txt', source_start=0, source_end=5),
+        ])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲七十岁。', 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert [(f.field, f.value) for f in result.facts] == [('age_range', '七十岁')]
+    assert result.source_warnings == ['excluded_narrative:behavior:quote_mismatch']
+
+
+@pytest.mark.asyncio
+async def test_unverifiable_visual_fact_is_excluded_without_failing_the_recast():
+    m = source_module()
+    async def extract(**kw):
+        return m.FactExtraction(facts=[m.ExtractedFact(field='hair_style', value='齐肩黑发',
+            evidence='甲留着齐肩黑发。', source_document='novel.txt', source_start=0, source_end=5)])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲七十岁。', 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:hair_style:quote_mismatch']
+
+
+@pytest.mark.asyncio
+async def test_claim_outside_supplied_windows_is_dropped_with_a_precise_warning():
+    m = source_module()
+    async def extract(**kw):
+        return m.FactExtraction(facts=[m.ExtractedFact(field='hair_style', value='齐肩黑发',
+            evidence='甲留着齐肩黑发。', source_document='novel.txt', source_start=0, source_end=7)])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲七十岁。', 'hash')}, 'hash',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:hair_style:offset_range/outside_window']
+
+
+@pytest.mark.asyncio
+async def test_fact_for_another_identity_is_dropped_without_failing_the_recast():
+    m = source_module()
+    async def extract(**kw):
+        return m.FactExtraction(facts=[m.ExtractedFact(field='hair_style', value='齐肩黑发',
+            evidence='甲留着齐肩黑发。', source_document='novel.txt', source_start=0, source_end=5,
+            identity_id='other')])
+    result = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        {'novel.txt': m.SourceDocument('novel.txt', '甲七十岁。', 'hash')}, 'hash', identity_id='young',
+        runtime=SimpleNamespace(run_structured=extract))
+    assert result.facts == []
+    assert result.source_warnings == ['excluded_source:hair_style:wrong_identity']
