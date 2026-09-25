@@ -161,7 +161,7 @@ if (value.startsWith("excluded_source:"))
 4. 找不到的 evidence：软字段 → 不抛错，警告 `excluded_narrative:behavior:quote_mismatch`；硬字段 → 不抛错，警告 `excluded_source:hair_style:quote_mismatch`；同一批次里已核验的事实保留。
 5. `wrong_identity` 与 `outside_window` 只排除该条。
 6. 现有 `pytest.raises(match='attribution')` 用例改为断言"丢弃 + 警告"，并保留"被排除的伪造事实绝不进入 profile"这一不变量。
-7. 保留 `test_strict_verification_reports_precise_reason_without_source_text`：`strict=True` 仍要给出精确 reason，且真实不存在的引用仍报 `quote_mismatch`。
+7. 保留 `test_strict_verification_reports_precise_reason_without_source_text`：`strict=True` 仍要给出精确 reason，且真实不存在的引用仍报 `quote_mismatch`。其中 `document` 与 `offset_range` 两个参数用例必须把 evidence 换成原文中不存在的文本，否则会被新的重定位逻辑合法救回，无法再验证 reason 上报。
 8. 保留 `test_missing_source_fails_without_model`。
 
 `tests/character_visual/test_casting_recast_quality.py`：
