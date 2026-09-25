@@ -84,6 +84,8 @@ function friendly(error: string | CastingTaskError) {
     return "原文尚无可核验的外观事实，设计中的补充会标为自由选择。";
   if (value.startsWith("excluded_narrative:"))
     return "部分台词或叙事信息无法核实为人物事实，未用于选角依据；已核实的事实仍保留。";
+  if (value.startsWith("excluded_source:"))
+    return "部分外观描述未能在原文中逐字核实，已排除出选角依据；其余已核实事实仍保留。";
   if (value.includes("identity_required"))
     return "部分事实属于独立身份阶段，请切换阶段查看。";
   if (value.includes("untrusted") || value.includes("unverified_evidence"))

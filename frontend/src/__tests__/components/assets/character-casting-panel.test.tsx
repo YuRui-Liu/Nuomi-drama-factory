@@ -173,6 +173,16 @@ describe("story-grounded casting", () => {
     expect(screen.getByRole("button", { name: "生成候选" })).toBeEnabled();
     expect(writes).toEqual([]);
   });
+  it("explains excluded appearance evidence without disabling a verified draft", async () => {
+    const data = workspace();
+    server.use(http.get(base, () => HttpResponse.json({ ok: true, data: {
+      ...data, dossier: { ...data.dossier, issues: ["excluded_source:hair_style:quote_mismatch"] },
+    } })));
+    mount();
+    expect(await screen.findByText("部分外观描述未能在原文中逐字核实，已排除出选角依据；其余已核实事实仍保留。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成候选" })).toBeEnabled();
+    expect(writes).toEqual([]);
+  });
   it("uses an external identity entry and resets selection and acknowledgements", async () => {
     function Entry() {
       const [identityId, setIdentityId] = useState<string | null>(null);
