@@ -2,9 +2,13 @@ import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from novelvideo.api.routes import narrative_groups
 from novelvideo.director_plan.models import (
     DirectorPlanRevision,
     NarrativeGroupPlan,
@@ -13,7 +17,12 @@ from novelvideo.director_plan.models import (
 )
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.narrative_groups import service
-from novelvideo.narrative_groups.models import GridLayout, NarrativeGroup, VideoPlan
+from novelvideo.narrative_groups.models import (
+    CellMapping,
+    GridLayout,
+    NarrativeGroup,
+    VideoPlan,
+)
 from novelvideo.narrative_groups.service import (
     _apply_image_prompt_overrides,
     generation_beats_for_group,
@@ -305,3 +314,203 @@ def test_generation_beats_director_branch_applies_overrides_to_the_matching_shot
     assert applied[0]["visual_description"] == "覆盖文本"
     assert applied[1] == plain[1]
     assert applied[1]["visual_description"] == plain[1]["visual_description"]
+
+
+# --- 任务 4：GET/PUT image-prompts 端点 -------------------------------------
+#
+# client / 鉴权 / 项目解析的写法照搬 tests/test_api_narrative_groups.py 的
+# ``make_client``：依赖覆盖 get_api_user，monkeypatch resolve_project_scope 与
+# make_sqlite_store_for_context，router 统一挂在 /api/v1 前缀下。
+
+_IMAGE_PROMPTS_SUFFIX = "narrative-groups/{group_id}/image-prompts"
+
+
+class _ApiBeatStore:
+    def __init__(self, beats):
+        self._beats = beats
+
+    async def get_beats_as_dicts(self, episode):
+        return [dict(beat) for beat in self._beats]
+
+
+def _api_beats() -> list[dict]:
+    return [
+        {"id": "shot-01-01", "visual_description": "拼装结果一"},
+        {"id": "shot-01-02", "visual_description": "拼装结果二"},
+    ]
+
+
+def _api_group(**overrides) -> NarrativeGroup:
+    base = dict(
+        id="ng-01",
+        ordinal=1,
+        beat_ids=("shot-01-01", "shot-01-02"),
+        layout=GridLayout(rows=1, columns=2, capacity=2),
+        cell_to_beat=(
+            CellMapping(cell=0, beat_id="shot-01-01"),
+            CellMapping(cell=1, beat_id="shot-01-02"),
+        ),
+    )
+    base.update(overrides)
+    return NarrativeGroup(**base)
+
+
+def _make_api_client(monkeypatch, tmp_path: Path, beats) -> TestClient:
+    ctx = SimpleNamespace(
+        project_id="demo", output_dir=str(tmp_path), state_dir=str(tmp_path)
+    )
+    resolved = SimpleNamespace(
+        ctx=ctx, project_dir=tmp_path, output_dir=str(tmp_path)
+    )
+
+    async def resolve(*args, **kwargs):
+        return resolved
+
+    async def store(*args, **kwargs):
+        return _ApiBeatStore(beats)
+
+    monkeypatch.setattr(narrative_groups, "resolve_project_scope", resolve)
+    monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
+
+    app = FastAPI()
+    app.include_router(narrative_groups.router, prefix="/api/v1")
+    app.dependency_overrides[narrative_groups.get_api_user] = lambda: {
+        "id": "user-1",
+        "username": "tester",
+    }
+    return TestClient(app)
+
+
+def _image_prompts_url(group_id: str = "ng-01", episode: int = 1) -> str:
+    return (
+        f"/api/v1/projects/demo/episodes/{episode}/"
+        + _IMAGE_PROMPTS_SUFFIX.format(group_id=group_id)
+    )
+
+
+def test_get_image_prompts_returns_each_cell_synthesized_and_override(
+    monkeypatch, tmp_path
+):
+    save_groups(tmp_path, 1, [_api_group(image_prompt_overrides={"shot-01-01": "改成铜甲"})])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+
+    response = client.get(_image_prompts_url())
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    cells = response.json()["data"]["cells"]
+    # 顺序跟随 cell_to_beat，而不是节拍在 store 里的顺序。
+    assert [cell["cell"] for cell in cells] == [0, 1]
+    assert [cell["shot_id"] for cell in cells] == ["shot-01-01", "shot-01-02"]
+    # 有覆盖：override 是覆盖文本，synthesized 仍是「不含覆盖的拼装结果」。
+    assert cells[0]["override"] == "改成铜甲"
+    assert cells[0]["synthesized"] == "拼装结果一"
+    # 无覆盖：override 是空串，而不是缺键。
+    assert cells[1]["override"] == ""
+    assert cells[1]["synthesized"] == "拼装结果二"
+
+
+def test_get_image_prompts_without_overrides_reports_empty_strings(
+    monkeypatch, tmp_path
+):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+
+    cells = client.get(_image_prompts_url()).json()["data"]["cells"]
+
+    assert [cell["override"] for cell in cells] == ["", ""]
+
+
+def test_get_image_prompts_follows_cell_to_beat_order(monkeypatch, tmp_path):
+    save_groups(
+        tmp_path,
+        1,
+        [
+            _api_group(
+                cell_to_beat=(
+                    CellMapping(cell=1, beat_id="shot-01-02"),
+                    CellMapping(cell=0, beat_id="shot-01-01"),
+                )
+            )
+        ],
+    )
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+
+    cells = client.get(_image_prompts_url()).json()["data"]["cells"]
+
+    assert [cell["cell"] for cell in cells] == [1, 0]
+    assert [cell["shot_id"] for cell in cells] == ["shot-01-02", "shot-01-01"]
+    assert [cell["synthesized"] for cell in cells] == ["拼装结果二", "拼装结果一"]
+
+
+def test_put_image_prompt_round_trips_and_clears(monkeypatch, tmp_path):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+    url = _image_prompts_url()
+
+    written = client.put(url, json={"shot_id": "shot-01-01", "prompt": "  改成铜甲  "})
+
+    assert written.status_code == 200
+    assert written.json() == {
+        "ok": True,
+        "data": {"image_prompt_overrides": {"shot-01-01": "改成铜甲"}},
+    }
+    cells = client.get(url).json()["data"]["cells"]
+    assert cells[0]["override"] == "改成铜甲"
+    assert cells[0]["synthesized"] == "拼装结果一"
+
+    cleared = client.put(url, json={"shot_id": "shot-01-01", "prompt": "   "})
+
+    assert cleared.status_code == 200
+    assert cleared.json()["data"]["image_prompt_overrides"] == {}
+    after = client.get(url).json()["data"]["cells"]
+    assert after[0]["override"] == ""
+    assert after[1]["override"] == ""
+
+
+def test_unknown_group_id_returns_404(monkeypatch, tmp_path):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+    url = _image_prompts_url("ng-99")
+
+    assert client.get(url).status_code == 404
+    assert client.put(url, json={"shot_id": "shot-01-01", "prompt": "x"}).status_code == 404
+
+
+def test_shot_outside_the_group_returns_422(monkeypatch, tmp_path):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+
+    response = client.put(
+        _image_prompts_url(), json={"shot_id": "shot-99-99", "prompt": "x"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_prompt_over_the_limit_returns_422(monkeypatch, tmp_path):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+
+    response = client.put(
+        _image_prompts_url(), json={"shot_id": "shot-01-01", "prompt": "字" * 4001}
+    )
+
+    assert response.status_code == 422
+    # 被拒绝的写入不得留下任何覆盖。
+    assert client.get(_image_prompts_url()).json()["data"]["cells"][0]["override"] == ""
+
+
+def test_image_prompt_body_rejects_unknown_and_missing_fields(monkeypatch, tmp_path):
+    save_groups(tmp_path, 1, [_api_group()])
+    client = _make_api_client(monkeypatch, tmp_path, _api_beats())
+    url = _image_prompts_url()
+
+    assert (
+        client.put(
+            url, json={"shot_id": "shot-01-01", "prompt": "x", "extra": 1}
+        ).status_code
+        == 422
+    )
+    assert client.put(url, json={"shot_id": "shot-01-01"}).status_code == 422
+    assert client.put(url, json={"prompt": "x"}).status_code == 422

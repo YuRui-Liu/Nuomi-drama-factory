@@ -85,6 +85,7 @@ from novelvideo.narrative_groups.service import (
     restore_video_reservation,
     stage_history,
     select_storyboard_source,
+    update_image_prompt_override,
     update_video_manifest_dialogue_source,
     update_video_plan,
     update_video_reference_settings,
@@ -406,6 +407,14 @@ class NarrativeGroupStyleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     style_id: str | None = Field(default=None, min_length=1)
     action: Literal["restyle", "redirect"] = "restyle"
+
+
+class NarrativeGroupImagePromptRequest(BaseModel):
+    """One cell's image prompt override; a blank prompt clears the override."""
+
+    model_config = ConfigDict(extra="forbid")
+    shot_id: str = Field(min_length=1)
+    prompt: str
 
 
 @router.put("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/storyboard-contract")
@@ -1283,6 +1292,79 @@ async def list_narrative_groups(
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     return {"ok": True, "data": _serialize(project, resolved.project_dir, groups)}
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/image-prompts"
+)
+async def get_group_image_prompts(
+    project: str,
+    episode: int,
+    group_id: str,
+    user: dict = Depends(get_api_user),
+):
+    resolved, groups, beats = await _resolve_groups(project, episode, user)
+    try:
+        group, _ = _group_beats(groups, beats, group_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Narrative group '{group_id}' not found"
+        ) from exc
+    # ``synthesized`` must stay the assembled prompt, so the override mapping is
+    # deliberately not passed in here.
+    synthesized = generation_beats_for_group(
+        resolved.project_dir, episode, group_id, beats
+    )
+    synthesized_by_shot = {
+        str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number") or ""): str(
+            beat.get("visual_description") or ""
+        )
+        for beat in synthesized
+    }
+    overrides = group.image_prompt_overrides
+    return {
+        "ok": True,
+        "data": {
+            "cells": [
+                {
+                    "cell": mapping.cell,
+                    "shot_id": mapping.beat_id,
+                    "synthesized": synthesized_by_shot.get(mapping.beat_id, ""),
+                    "override": overrides.get(mapping.beat_id, ""),
+                }
+                for mapping in group.cell_to_beat
+            ]
+        },
+    }
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/image-prompts"
+)
+async def put_group_image_prompts(
+    project: str,
+    episode: int,
+    group_id: str,
+    body: NarrativeGroupImagePromptRequest,
+    user: dict = Depends(get_api_user),
+):
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    try:
+        group = update_image_prompt_override(
+            resolved.project_dir, episode, group_id, body.shot_id, body.prompt
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Narrative group '{group_id}' not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "data": {"image_prompt_overrides": group.image_prompt_overrides},
+    }
 
 
 @router.get(
