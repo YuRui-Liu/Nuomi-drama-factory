@@ -214,3 +214,43 @@ def test_persistence_keeps_strict_issues_for_fresh_unsourced_proposals():
     retained = _visual_workspace_for_merged_character(item=item, source_text="甲来了", existing_workspace=prior, existing_roster_proposals=[])
     assert retained.selected_proposal_id == "p0"
     assert retained.design_proposals == prior.design_proposals
+
+
+@pytest.mark.asyncio
+async def test_excluded_source_warning_does_not_waste_a_design_revision(tmp_path):
+    """A display-only source warning must not be treated as a fixable rejection.
+
+    `source_warnings` reach `validate_casting_proposals` through the dossier, so
+    an unexempted `excluded_source:` code burned a second design call and then
+    still failed the recast.
+    """
+    from novelvideo.character_design_stage import CharacterDesignOutput
+    from novelvideo.character_visual import casting_service
+    from novelvideo.character_visual.models import CharacterNarrativeProfile, CharacterVisualWorkspace
+    from novelvideo.character_visual.store import CharacterVisualWorkspaceStore
+    from tests.test_character_build_stages import proposals as valid_proposals
+
+    character = CharacterNarrativeProfile(character_id="甲", name="甲",
+        source_warnings=["excluded_source:hair_style:quote_mismatch"])
+    store = CharacterVisualWorkspaceStore(tmp_path)
+    store.save(CharacterVisualWorkspace(character_id="甲", profile=character))
+    prompts: list[str] = []
+
+    async def design(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return CharacterDesignOutput(design_proposals=valid_proposals())
+
+    await casting_service.design_and_publish(
+        store=store,
+        character_id="甲",
+        identity_id=None,
+        expected_revision=None,
+        grounded_profile=character,
+        source_revision="source1",
+        style="水墨",
+        runtime=type("R", (), {"run_structured": staticmethod(design), "snapshot": type("S", (), {"task_role": "knowledge_extraction"})()})(),
+        assert_live=lambda: None,
+    )
+
+    assert len(prompts) == 1, "a display-only source warning must not trigger a revision"
+    assert len(store.get("甲").design_proposals) == 3
