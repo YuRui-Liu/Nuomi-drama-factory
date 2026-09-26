@@ -51,9 +51,11 @@ import {
   type CanvasNode,
   type CanvasNodeData,
   type CanvasNodeType,
+  type VideoDirectorNodeData,
   DEFAULT_NODE_WIDTH,
   isStoryboardGroupNode,
 } from '@/features/canvas/domain/canvasNodes';
+import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
 import {
   CANVAS_ASSET_DRAG_MIME,
   readAssetDragPayload,
@@ -3231,7 +3233,9 @@ export function Canvas({
       const sizeMap = new Map<string, { width: number; height: number }>();
       const pastedForMigration: Array<{ id: string; data: CanvasNodeData }> = [];
       for (const sourceNode of sourceNodes) {
-        const data = cloneNodeData(sourceNode.data);
+        const data = sourceNode.type === CANVAS_NODE_TYPES.videoDirector
+          ? cloneVideoDirectorData(sourceNode.data as VideoDirectorNodeData)
+          : cloneNodeData(sourceNode.data);
         if ('isGenerating' in (data as Record<string, unknown>)) {
           (data as { isGenerating?: boolean }).isGenerating = false;
         }

@@ -41,6 +41,7 @@ export const CANVAS_ADD_NODE_TYPES: readonly CanvasNodeType[] = [
   CANVAS_NODE_TYPES.beatContext,
   CANVAS_NODE_TYPES.imageGen,
   CANVAS_NODE_TYPES.video,
+  CANVAS_NODE_TYPES.videoDirector,
   CANVAS_NODE_TYPES.videoCompose,
   CANVAS_NODE_TYPES.audio,
   CANVAS_NODE_TYPES.script,

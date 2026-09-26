@@ -22,6 +22,7 @@ import {
   type ThreeDWorldNodeData,
   type UploadImageNodeData,
   type VideoComposeNodeData,
+  type VideoDirectorNodeData,
   type VideoNodeData,
   type VideoStoryNodeData,
 } from './canvasNodes';
@@ -33,6 +34,7 @@ import {
   DEFAULT_VIDEO_MODEL_ID,
 } from '../ui/ProviderModelPicker';
 import { readLastVideoModel } from './lastVideoModel';
+import { createDirectorDraft } from './videoDirectorDraft';
 
 export type MenuIconKey = 'upload' | 'sparkles' | 'layout' | 'text' | 'video' | 'audio' | 'script' | 'pano360' | 'threeDWorld' | 'videoCompose';
 
@@ -496,6 +498,26 @@ const videoComposeNodeDefinition: CanvasNodeDefinition<VideoComposeNodeData> = {
   }),
 };
 
+const videoDirectorNodeDefinition: CanvasNodeDefinition<VideoDirectorNodeData> = {
+  type: CANVAS_NODE_TYPES.videoDirector,
+  menuLabelKey: 'node.menu.videoDirector',
+  menuIcon: 'video',
+  visibleInMenu: true,
+  capabilities: { toolbar: true, promptInput: false },
+  connectivity: {
+    sourceHandle: true,
+    targetHandle: true,
+    connectMenu: { fromSource: true, fromTarget: false },
+  },
+  createDefaultData: () => ({
+    displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.videoDirector],
+    draft: createDirectorDraft(),
+    activeAttemptId: null,
+    videoUrl: null,
+    resultRevision: null,
+  }),
+};
+
 // 写死的脚本生成模型 id（脚本生成接口暂未提供 list）。和 ScriptNode 内的
 // SCRIPT_MODELS 保持同步，仅供 createDefaultData 选默认。
 const DEFAULT_SCRIPT_MODEL_ID = 'gvlm-3.1';
@@ -630,6 +652,7 @@ export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition>
   [CANVAS_NODE_TYPES.audio]: audioNodeDefinition,
   [CANVAS_NODE_TYPES.videoStory]: videoStoryNodeDefinition,
   [CANVAS_NODE_TYPES.videoCompose]: videoComposeNodeDefinition,
+  [CANVAS_NODE_TYPES.videoDirector]: videoDirectorNodeDefinition,
   [CANVAS_NODE_TYPES.script]: scriptNodeDefinition,
   [CANVAS_NODE_TYPES.pano360Viewer]: pano360ViewerNodeDefinition,
   [CANVAS_NODE_TYPES.threeDWorld]: threeDWorldNodeDefinition,
@@ -704,7 +727,7 @@ export function getDownstreamSpawnTypes(
   const base = getConnectMenuNodeTypes('source');
   if (!originType) return base;
 
-  if (originType === CANVAS_NODE_TYPES.video) {
+  if (originType === CANVAS_NODE_TYPES.video || originType === CANVAS_NODE_TYPES.videoDirector) {
     const allowed = new Set<CanvasNodeType>([
       CANVAS_NODE_TYPES.textAnnotation,
       CANVAS_NODE_TYPES.video,
@@ -744,6 +767,7 @@ export function getDownstreamSpawnTypes(
       CANVAS_NODE_TYPES.textAnnotation,
       CANVAS_NODE_TYPES.imageGen,
       CANVAS_NODE_TYPES.video,
+      CANVAS_NODE_TYPES.videoDirector,
       CANVAS_NODE_TYPES.script,
       CANVAS_NODE_TYPES.pano360Viewer,
       CANVAS_NODE_TYPES.threeDWorld,

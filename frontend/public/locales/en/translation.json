@@ -3476,7 +3476,11 @@
       "placeholderAudio": "Audio",
       "placeholderScript": "Script",
       "betaTag": "Beta",
-      "videoCompose": "Video Compose"
+      "videoCompose": "Video Compose",
+      "videoDirector": "Video Director"
+    },
+    "videoDirector": {
+      "node": { "empty": "No video yet", "segments": "{{count}} segments", "duration": "{{seconds}} s", "edit": "Edit" }
     },
     "imageNode": {
       "title": "Image Node",

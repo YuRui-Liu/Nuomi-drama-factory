@@ -59,6 +59,7 @@ const GENERATIVE_HISTORY_NODE_TYPES = new Set<string>([
   CANVAS_NODE_TYPES.storyboardSplit,
   CANVAS_NODE_TYPES.storyboardGen,
   CANVAS_NODE_TYPES.video,
+  CANVAS_NODE_TYPES.videoDirector,
   CANVAS_NODE_TYPES.videoStory,
   CANVAS_NODE_TYPES.videoCompose,
   CANVAS_NODE_TYPES.audio,

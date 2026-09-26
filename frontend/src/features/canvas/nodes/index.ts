@@ -17,6 +17,7 @@ import { TextAnnotationNode } from './TextAnnotationNode';
 import { ThreeDWorldNode } from './ThreeDWorldNode';
 import { UploadNode } from './UploadNode';
 import { VideoComposeNode } from './VideoComposeNode';
+import { VideoDirectorNode } from './VideoDirectorNode';
 import { VideoNode } from './VideoNode';
 import { VideoStoryNode } from './VideoStoryNode';
 
@@ -36,8 +37,9 @@ export const nodeTypes: NodeTypes = {
   threeDWorldNode: ThreeDWorldNode,
   uploadNode: UploadNode,
   videoComposeNode: VideoComposeNode,
+  videoDirectorNode: VideoDirectorNode,
   videoNode: VideoNode,
   videoStoryNode: VideoStoryNode,
 };
 
-export { AudioNode, BeatContextNode, GroupNode, ImageEditNode, ImageGenNode, ImageNode, Pano360ViewerNode, ScriptNode, SkillNode, StoryboardGenNode, StoryboardNode, TextAnnotationNode, ThreeDWorldNode, UploadNode, VideoComposeNode, VideoNode, VideoStoryNode };
+export { AudioNode, BeatContextNode, GroupNode, ImageEditNode, ImageGenNode, ImageNode, Pano360ViewerNode, ScriptNode, SkillNode, StoryboardGenNode, StoryboardNode, TextAnnotationNode, ThreeDWorldNode, UploadNode, VideoComposeNode, VideoDirectorNode, VideoNode, VideoStoryNode };

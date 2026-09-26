@@ -16,6 +16,7 @@ import {
   CANVAS_NODE_TYPES,
   isAudioNode,
   isVideoNode,
+  isVideoDirectorNode,
   type CanvasNodeData,
   type VideoComposeNodeData,
 } from "@/features/canvas/domain/canvasNodes";
@@ -57,7 +58,7 @@ export const VideoComposeNode = memo(
         [...upstreamNodes]
           .filter(
             (node) =>
-              (isVideoNode(node) && node.data.videoUrl) ||
+              ((isVideoNode(node) || isVideoDirectorNode(node)) && node.data.videoUrl) ||
               (isAudioNode(node) && node.data.audioUrl),
           )
           .sort((a, b) => (a.position?.y ?? 0) - (b.position?.y ?? 0))
@@ -67,7 +68,7 @@ export const VideoComposeNode = memo(
     const videoCount = useMemo(
       () =>
         upstreamNodes.filter(
-          (node) => isVideoNode(node) && Boolean(node.data.videoUrl),
+          (node) => (isVideoNode(node) || isVideoDirectorNode(node)) && Boolean(node.data.videoUrl),
         ).length,
       [upstreamNodes],
     );

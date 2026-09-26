@@ -47,6 +47,7 @@ import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData"
 import {
   isAudioNode,
   isVideoNode,
+  isVideoDirectorNode,
 } from "@/features/canvas/domain/canvasNodes";
 import {
   submitFreezoneVideoCompose,
@@ -199,9 +200,10 @@ function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
   for (const nodeId of seedNodeIds) {
     const node = byId.get(nodeId);
     if (!node) continue;
-    if (isVideoNode(node) && node.data.videoUrl) {
-      const durationMs =
-        typeof node.data.durationMs === "number" ? node.data.durationMs : null;
+    if ((isVideoNode(node) || isVideoDirectorNode(node)) && node.data.videoUrl) {
+      const durationMs = isVideoDirectorNode(node)
+        ? Math.round(node.data.draft.segments.reduce((total, segment) => total + segment.durationSeconds, 0) * 1000)
+        : typeof node.data.durationMs === "number" ? node.data.durationMs : null;
       const len = durationMs ?? FALLBACK_CLIP_MS;
       videoClips.push({
         id: makeClipId(),
@@ -2770,4 +2772,3 @@ function TrackRow({
     </div>
   );
 }
-

@@ -52,6 +52,7 @@ export function getStoryboardCellPreview(node: CanvasNode): StoryboardCellPrevie
   // Type-specific kinds first (so video keeps its play badge, etc.).
   switch (node.type) {
     case CANVAS_NODE_TYPES.video:
+    case CANVAS_NODE_TYPES.videoDirector:
     case CANVAS_NODE_TYPES.videoStory:
     case CANVAS_NODE_TYPES.videoCompose:
       return {

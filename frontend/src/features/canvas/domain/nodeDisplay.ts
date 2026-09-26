@@ -18,6 +18,7 @@ export const DEFAULT_NODE_DISPLAY_NAME: Record<CanvasNodeType, string> = {
   [CANVAS_NODE_TYPES.storyboardSplit]: '分格抽取结果',
   [CANVAS_NODE_TYPES.storyboardGen]: '多版本宫格',
   [CANVAS_NODE_TYPES.video]: '视频',
+  [CANVAS_NODE_TYPES.videoDirector]: '视频导演',
   [CANVAS_NODE_TYPES.audio]: '音频',
   [CANVAS_NODE_TYPES.videoStory]: '视频故事',
   [CANVAS_NODE_TYPES.videoCompose]: '视频合成',

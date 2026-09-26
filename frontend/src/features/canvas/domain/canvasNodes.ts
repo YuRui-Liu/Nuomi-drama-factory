@@ -18,6 +18,7 @@ export const CANVAS_NODE_TYPES = {
   storyboardSplit: 'storyboardNode',
   storyboardGen: 'storyboardGenNode',
   video: 'videoNode',
+  videoDirector: 'videoDirectorNode',
   audio: 'audioNode',
   videoStory: 'videoStoryNode',
   videoCompose: 'videoComposeNode',
@@ -189,6 +190,76 @@ export interface VideoComposeNodeData extends NodeDisplayData {
    */
   draftTimeline?: unknown;
   [key: string]: unknown;
+}
+
+export interface DirectorImage {
+  imageId: string;
+  url: string;
+  assetId?: string | null;
+  characterId?: string | null;
+  variantId?: string | null;
+  variantLabel?: string | null;
+  assetKind?: string | null;
+  sha256?: string | null;
+}
+
+export interface DirectorSegment {
+  id: string;
+  prompt: string;
+  durationSeconds: number;
+  firstFrame: DirectorImage | null;
+  lastFrame: DirectorImage | null;
+}
+
+export interface DirectorDraft {
+  schemaVersion: 1;
+  revision: number;
+  modelId: string;
+  aspectRatio: string;
+  resolution: string;
+  references: DirectorImage[];
+  segments: DirectorSegment[];
+}
+
+export interface OptimizedDirectorSegment {
+  segmentId: string;
+  mode: string;
+  requestedDurationSeconds: number;
+  durationSeconds: number;
+  frames: number;
+  wire: Record<string, unknown>;
+  prompt: string;
+}
+
+export interface OptimizedDirector {
+  revision: number;
+  route: 'h3' | 'h3_ref';
+  profileId: string;
+  profileVersion: number;
+  optimizedAt: string;
+  segments: OptimizedDirectorSegment[];
+}
+
+export interface DirectorAttempt {
+  id: string;
+  revision: number;
+  snapshot: DirectorDraft;
+  stage: string;
+  optimizedSegments: OptimizedDirectorSegment[];
+  providerTaskId: string | null;
+  resultUrl: string | null;
+  error: string | null;
+  failedStage: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface VideoDirectorNodeData extends NodeDisplayData {
+  draft: DirectorDraft;
+  activeAttemptId: string | null;
+  videoUrl: string | null;
+  resultRevision: number | null;
+  previewImageUrl?: string | null;
 }
 
 export type ExportImageNodeResultKind =
@@ -672,6 +743,7 @@ export type CanvasNodeData =
   | AudioNodeData
   | VideoStoryNodeData
   | VideoComposeNodeData
+  | VideoDirectorNodeData
   | ScriptNodeData
   | Pano360ViewerNodeData
   | ThreeDWorldNodeData
@@ -783,6 +855,12 @@ export function isVideoNode(
   node: CanvasNode | null | undefined
 ): node is Node<VideoNodeData, typeof CANVAS_NODE_TYPES.video> {
   return node?.type === CANVAS_NODE_TYPES.video;
+}
+
+export function isVideoDirectorNode(
+  node: CanvasNode | null | undefined
+): node is Node<VideoDirectorNodeData, typeof CANVAS_NODE_TYPES.videoDirector> {
+  return node?.type === CANVAS_NODE_TYPES.videoDirector;
 }
 
 export function isAudioNode(

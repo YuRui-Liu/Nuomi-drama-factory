@@ -3476,7 +3476,11 @@
       "placeholderAudio": "音频",
       "placeholderScript": "脚本",
       "betaTag": "Beta",
-      "videoCompose": "视频合成"
+      "videoCompose": "视频合成",
+      "videoDirector": "视频导演"
+    },
+    "videoDirector": {
+      "node": { "empty": "尚无视频", "segments": "{{count}} 段", "duration": "{{seconds}} 秒", "edit": "编辑" }
     },
     "imageNode": {
       "title": "图片节点",

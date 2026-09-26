@@ -24,6 +24,7 @@ import {
   type CanvasNode,
   type CanvasNodeData,
   type CanvasNodeType,
+  type VideoDirectorNodeData,
   type ExportImageNodeResultKind,
   type NodeToolType,
   type StoryboardExportOptions,
@@ -47,6 +48,7 @@ import {
   isUpstreamConnectionAllowed,
 } from '@/features/canvas/domain/nodeRegistry';
 import { EXPORT_RESULT_DISPLAY_NAME } from '@/features/canvas/domain/nodeDisplay';
+import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
 import {
   type ViewportBookmark,
   type ViewportBookmarks,
@@ -837,6 +839,7 @@ function collectNodeIdsWithDescendants(nodes: CanvasNode[], seedIds: string[]): 
 // 会按 320×200 低估大节点（如视频节点 580×380），算出的组边界包不住成员。
 const FALLBACK_NODE_SIZES: Partial<Record<string, { width: number; height: number }>> = {
   [CANVAS_NODE_TYPES.video]: { width: 580, height: 380 },
+  [CANVAS_NODE_TYPES.videoDirector]: { width: 320, height: 250 },
   [CANVAS_NODE_TYPES.textAnnotation]: { width: 440, height: 320 },
   [CANVAS_NODE_TYPES.audio]: { width: 480, height: 210 },
   [CANVAS_NODE_TYPES.upload]: { width: 320, height: 350 },
@@ -1604,9 +1607,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       x: source.position.x,
       y: source.position.y + (sourceHeight + 24) * index,
     };
+    const duplicateData = source.type === CANVAS_NODE_TYPES.videoDirector
+      ? cloneVideoDirectorData({ ...source.data, ...dataOverrides } as VideoDirectorNodeData)
+      : { ...source.data, ...dataOverrides };
     const newNode = canvasNodeFactory.createNode(source.type, position, {
-      ...(source.data as Partial<CanvasNodeData>),
-      ...dataOverrides,
+      ...(duplicateData as Partial<CanvasNodeData>),
     });
 
     // Mirror the source's upstream connections so the clone resolves the same
@@ -1669,8 +1674,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         nameOverrides.label = `${sourceData.label} - 副本`;
       }
 
+      const duplicateData = source.type === CANVAS_NODE_TYPES.videoDirector
+        ? cloneVideoDirectorData(source.data as VideoDirectorNodeData)
+        : source.data;
       const newNode = canvasNodeFactory.createNode(source.type, position, {
-        ...(source.data as Partial<CanvasNodeData>),
+        ...(duplicateData as Partial<CanvasNodeData>),
         ...(nameOverrides as Partial<CanvasNodeData>),
       });
       // Keep the clone inside the same group (if any) so its position stays

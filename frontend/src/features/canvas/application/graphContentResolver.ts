@@ -10,6 +10,7 @@ import {
   isTextAnnotationNode,
   isUploadNode,
   isVideoNode,
+  isVideoDirectorNode,
   type CanvasEdge,
   type CanvasNode,
   type CanvasNodeType,
@@ -93,7 +94,7 @@ export function extractUpstreamContent(node: CanvasNode): UpstreamContent {
         nonEmpty(node.data.imageUrl) ?? nonEmpty(node.data.previewImageUrl ?? undefined),
     };
   }
-  if (isVideoNode(node)) {
+  if (isVideoNode(node) || isVideoDirectorNode(node)) {
     // 同图片节点：视频节点的 prompt 是它自己的生成指令，下游引用视频节点
     // 只拿视频本身（videoUrl），不把上游 prompt 带进下游。
     return {

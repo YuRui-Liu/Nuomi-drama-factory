@@ -148,6 +148,7 @@ export function extractCanvasAssets(nodes: CanvasNode[]): CanvasAssetBuckets {
         break;
       }
       case CANVAS_NODE_TYPES.video:
+      case CANVAS_NODE_TYPES.videoDirector:
       case CANVAS_NODE_TYPES.videoStory: {
         push('video', firstStr(data.videoUrl, data.sourceVideoUrl), {
           nodeId: node.id,

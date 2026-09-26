@@ -9,6 +9,25 @@ import {
 } from "@/features/canvas/domain/nodeRegistry";
 
 describe("canvas node registry", () => {
+  it("registers a persistent video director with an editable empty draft", () => {
+    const type = "videoDirectorNode" as typeof CANVAS_NODE_TYPES.video;
+    const definition = canvasNodeDefinitions[type];
+    expect(getMenuNodeDefinitions().map((item) => item.type)).toContain(type);
+    expect(definition.createDefaultData()).toMatchObject({
+      activeAttemptId: null,
+      videoUrl: null,
+      resultRevision: null,
+      draft: {
+        schemaVersion: 1,
+        revision: 0,
+        modelId: "minimax-h3",
+        aspectRatio: "9:16",
+        resolution: "720p",
+        references: [],
+        segments: [{ prompt: "", durationSeconds: 5 }],
+      },
+    });
+  });
   it("creates standalone shot context nodes from the menu with local schema data", () => {
     const definition = canvasNodeDefinitions[CANVAS_NODE_TYPES.beatContext];
     const data = definition.createDefaultData() as Record<string, unknown>;
