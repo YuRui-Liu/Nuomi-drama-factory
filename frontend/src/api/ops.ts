@@ -2384,12 +2384,23 @@ export type FreezoneAssetLibrarySource =
   | "scene"
   | "prop";
 
+export interface FreezoneCharacterLibraryImage {
+  image_id: string;
+  character_id: string;
+  kind: "base" | "variant";
+  asset_kind: "portrait" | "identity" | "identity_costume" | "identity_portrait";
+  variant_id: string | null;
+  variant_label: string | null;
+  url: string;
+}
+
 export interface FreezoneVideoCharacterLibraryItem {
   id?: string;
   name: string;
   media?: FreezoneAssetLibraryMedia;
   source?: FreezoneAssetLibrarySource;
   image_urls?: string[];
+  images?: FreezoneCharacterLibraryImage[];
   video_url?: string | null;
   audio_url?: string | null;
   cover_url?: string | null;

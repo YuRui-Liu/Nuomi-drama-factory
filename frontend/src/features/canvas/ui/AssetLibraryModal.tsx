@@ -22,9 +22,11 @@ import {
   uploadFreezoneVideo,
   type FreezoneAssetLibraryMedia,
   type FreezoneAssetLibrarySource,
+  type FreezoneCharacterLibraryImage,
 } from '@/api/ops';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { Button } from '@/components/ui/button';
+import { CharacterImagePicker } from './CharacterImagePicker';
 
 const ASSET_LIBRARY_MODAL_CLASS =
   'relative flex h-[min(720px,82vh)] w-[min(1120px,92vw)] flex-col overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#15161b]/96 shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-md';
@@ -54,12 +56,19 @@ interface LibraryItem {
   /** 该条目在其 media 类型下的主展示 / 引用地址。 */
   url: string;
   raw: Record<string, unknown>;
+  images?: FreezoneCharacterLibraryImage[];
 }
 
 export interface AssetLibrarySelection {
   media: AssetLibraryMedia;
   url: string;
   name: string;
+  assetId?: string;
+  imageId?: string;
+  characterId?: string;
+  variantId?: string | null;
+  variantLabel?: string | null;
+  assetKind?: FreezoneCharacterLibraryImage['asset_kind'];
 }
 
 export interface AssetLibraryModalProps {
@@ -69,6 +78,8 @@ export interface AssetLibraryModalProps {
   onSuccess?: () => void;
   onConfirm?: (selections: AssetLibrarySelection[]) => void;
   maxSelectable?: number;
+  initialSelections?: AssetLibrarySelection[];
+  selectionMode?: 'single' | 'multiple';
   /** 允许的媒体类型 Tab;缺省三类都开。生图/图片编辑节点只传 ['image']。 */
   allowedMedia?: AssetLibraryMedia[];
 }
@@ -185,7 +196,11 @@ function normalizeLibraryList(payload: unknown): LibraryItem[] {
         sourceRaw === 'prop'
           ? sourceRaw
           : 'upload';
-      return { id, name, media, source, url: itemUrl(media, it), raw: it };
+      const images = source === 'character' && Array.isArray(it.images)
+        ? it.images.filter((image): image is FreezoneCharacterLibraryImage =>
+            Boolean(image && typeof image === 'object' && typeof image.image_id === 'string'))
+        : undefined;
+      return { id, name, media, source, url: itemUrl(media, it), raw: it, images };
     })
     .filter((it) => Boolean(it.url));
 }
@@ -197,6 +212,8 @@ export function AssetLibraryModal({
   onSuccess,
   onConfirm,
   maxSelectable = 9,
+  initialSelections,
+  selectionMode = 'multiple',
   allowedMedia,
 }: AssetLibraryModalProps) {
   const tabs = useMemo(
@@ -221,6 +238,7 @@ export function AssetLibraryModal({
   pendingRef.current = pendingUploads;
   const [isDragging, setIsDragging] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null);
   const [activeTabKey, setActiveTabKey] = useState<AssetTabKey>(
     tabs[0]?.key ?? 'image',
   );
@@ -229,6 +247,22 @@ export function AssetLibraryModal({
     [tabs, activeTabKey],
   );
   const activeMedia = activeTab?.media ?? 'image';
+  const activeCharacter = activeCharacterId == null
+    ? null
+    : library.find((entry) => entry.id === activeCharacterId && entry.source === 'character') ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const keys = (initialSelections ?? []).map((selection) =>
+      selection.imageId
+        ? `image:child:${selection.imageId}`
+        : `${selection.media}:asset:${selection.assetId ?? `url:${selection.url}`}`,
+    );
+    setSelectedKeys([...new Set(keys)]);
+    setActiveCharacterId(null);
+  // A new open session receives the current initial selections; edits while open stay local.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // allowedMedia 变了(不同节点复用同一弹窗)时，把当前 Tab 收敛回允许集合。
   useEffect(() => {
@@ -305,6 +339,7 @@ export function AssetLibraryModal({
       setIsDragging(false);
       setIsSyncing(false);
       setSelectedKeys([]);
+      setActiveCharacterId(null);
     }, 240);
     return () => window.clearTimeout(timer);
   }, [open]);
@@ -457,9 +492,11 @@ export function AssetLibraryModal({
 
   const selectionKey = useCallback(
     (entry: LibraryItem) =>
-      `${entry.media}:${entry.id ?? `url:${entry.url}`}`,
+      `${entry.media}:asset:${entry.id ?? `url:${entry.url}`}`,
     [],
   );
+
+  const imageSelectionKey = (imageId: string) => `image:child:${imageId}`;
 
   const toggleSelect = useCallback(
     (key: string) => {
@@ -471,11 +508,12 @@ export function AssetLibraryModal({
         const sameMediaCount = prev.filter((k) =>
           k.startsWith(`${media}:`),
         ).length;
+        if (selectionMode === 'single') return [key];
         if (sameMediaCount >= maxSelectable) return prev;
         return [...prev, key];
       });
     },
-    [maxSelectable],
+    [maxSelectable, selectionMode],
   );
 
   const handleConfirm = useCallback(() => {
@@ -485,11 +523,32 @@ export function AssetLibraryModal({
     }
     if (onConfirm) {
       const byKey = new Map(library.map((entry) => [selectionKey(entry), entry]));
+      const byImageId = new Map<string, { entry: LibraryItem; image: FreezoneCharacterLibraryImage }>();
+      for (const entry of library) {
+        for (const image of entry.images ?? []) {
+          if (image.image_id && image.url?.trim() && !byImageId.has(image.image_id)) {
+            byImageId.set(image.image_id, { entry, image });
+          }
+        }
+      }
       const selections: AssetLibrarySelection[] = [];
       for (const key of selectedKeys) {
+        if (key.startsWith('image:child:')) {
+          const match = byImageId.get(key.slice('image:child:'.length));
+          if (match) {
+            const { entry, image } = match;
+            selections.push({
+              media: 'image', url: image.url, name: entry.name,
+              assetId: entry.id ?? undefined, imageId: image.image_id,
+              characterId: image.character_id, variantId: image.variant_id,
+              variantLabel: image.variant_label, assetKind: image.asset_kind,
+            });
+          }
+          continue;
+        }
         const entry = byKey.get(key);
         if (entry && entry.url) {
-          selections.push({ media: entry.media, url: entry.url, name: entry.name });
+          selections.push({ media: entry.media, url: entry.url, name: entry.name, assetId: entry.id ?? undefined });
         }
       }
       onConfirm(selections);
@@ -576,7 +635,7 @@ export function AssetLibraryModal({
               已录入 <span className="text-text-dark">{totalCount}</span> 个
             </span>
             <span className="h-3 w-px bg-white/10" />
-            <span>
+            <span role="status" aria-label={`已选 ${activeSelectedCount}/${maxSelectable}`}>
               已选{' '}
               <span
                 className={
@@ -605,7 +664,18 @@ export function AssetLibraryModal({
               加载失败：{libraryError}
             </div>
           )}
-          <div
+          {activeCharacter ? (
+            <CharacterImagePicker
+              characterName={activeCharacter.name}
+              images={activeCharacter.images ?? []}
+              selectedImageIds={new Set(selectedKeys.filter((key) => key.startsWith('image:child:')).map((key) => key.slice('image:child:'.length)))}
+              selectedCount={activeSelectedCount}
+              maxSelectable={maxSelectable}
+              selectionMode={selectionMode}
+              onToggle={(image) => toggleSelect(imageSelectionKey(image.image_id))}
+              onBack={() => setActiveCharacterId(null)}
+            />
+          ) : <div
             className="grid gap-3.5"
             style={{
               gridTemplateColumns: 'repeat(auto-fill, minmax(176px, 176px))',
@@ -701,10 +771,11 @@ export function AssetLibraryModal({
             {/* Existing items */}
             {visibleItems.map((entry, idx) => {
               const isDeleting = deletingId != null && entry.id === deletingId;
+              const hasChildImages = entry.source === 'character' && Array.isArray(entry.images);
               const key = selectionKey(entry);
               const selected = isSelected(key);
               const disabledSelect =
-                !selected && activeSelectedCount >= maxSelectable;
+                !selected && selectionMode === 'multiple' && activeSelectedCount >= maxSelectable;
               return (
                 <div
                   key={entry.id ?? `idx-${idx}`}
@@ -712,11 +783,7 @@ export function AssetLibraryModal({
                     selected
                       ? 'border-accent/70 ring-1 ring-accent/45'
                       : ASSET_LIBRARY_CARD_HOVER_CLASS
-                  } cursor-pointer`}
-                  onClick={() => {
-                    if (disabledSelect) return;
-                    toggleSelect(key);
-                  }}
+                  }`}
                 >
                   {entry.media === 'image' ? (
                     <img
@@ -745,8 +812,18 @@ export function AssetLibraryModal({
                     </div>
                   )}
 
-                  {/* Checkbox top-left */}
                   <button
+                    type="button"
+                    className="absolute inset-0 cursor-pointer"
+                    aria-label={hasChildImages ? `查看${entry.name}的图片` : `选择${entry.name}`}
+                    onClick={() => {
+                      if (hasChildImages) setActiveCharacterId(entry.id);
+                      else if (!disabledSelect) toggleSelect(key);
+                    }}
+                  />
+
+                  {/* Checkbox top-left */}
+                  {!hasChildImages && <button
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
@@ -768,7 +845,7 @@ export function AssetLibraryModal({
                     } ${disabledSelect ? 'cursor-not-allowed opacity-40' : ''}`}
                   >
                     <Check className="h-3 w-3" strokeWidth={3} />
-                  </button>
+                  </button>}
 
                   {/* Source badge top-right */}
                   {entry.source !== 'upload' && (
@@ -803,7 +880,7 @@ export function AssetLibraryModal({
                 </div>
               );
             })}
-          </div>
+          </div>}
 
           {!isLoadingLibrary &&
             visibleItems.length === 0 &&
