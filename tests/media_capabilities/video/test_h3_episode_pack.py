@@ -303,6 +303,52 @@ def test_episode_optimizer_factory_uses_prompted_output_without_tool_choice(
     assert "Inspect every labeled storyboard image" in captured["system_prompt"]
 
 
+def _scoped_input(segment_ids: tuple[str, ...], *, revision="rev-1") -> H3EpisodeInput:
+    return H3EpisodeInput(
+        episode=1,
+        director_revision_id=revision,
+        style_hash="style-hash",
+        style_video={"camera_language": "restrained handheld realism"},
+        segments=tuple(_entry(segment_id, "镜头动作") for segment_id in segment_ids),
+    )
+
+
+def test_pack_lock_scope_only_serializes_callers_sharing_segments():
+    """Concurrent groups must not queue behind each other's planner call.
+
+    Every group in an episode calls this optimizer with its own segments, while
+    the lock used to be keyed on (episode, revision) alone. A slow neighbor then
+    burned the wait budget and its group failed before the provider was called.
+    """
+
+    first = episode_pack._segment_scope_id(_scoped_input(("seg-1", "seg-2")))
+    reordered = episode_pack._segment_scope_id(_scoped_input(("seg-2", "seg-1")))
+    neighbor = episode_pack._segment_scope_id(_scoped_input(("seg-9",)))
+
+    assert first == reordered
+    assert first != neighbor
+
+
+def test_pack_lock_timeout_is_configurable_and_defaults_above_one_planner_call(
+    monkeypatch,
+):
+    monkeypatch.delenv("DRAMACLAW_H3_PACK_LOCK_TIMEOUT_SECONDS", raising=False)
+
+    default = episode_pack._pack_lock_timeout_seconds()
+
+    assert default == episode_pack._DEFAULT_PACK_LOCK_TIMEOUT_SECONDS
+    # The text runtime gives one planner call 600s; waiting less than that turns
+    # ordinary queueing into the spurious AlreadyLocked failures.
+    assert default > 600
+
+    monkeypatch.setenv("DRAMACLAW_H3_PACK_LOCK_TIMEOUT_SECONDS", "42")
+    assert episode_pack._pack_lock_timeout_seconds() == 42
+    monkeypatch.setenv("DRAMACLAW_H3_PACK_LOCK_TIMEOUT_SECONDS", "not-a-number")
+    assert episode_pack._pack_lock_timeout_seconds() == default
+    monkeypatch.setenv("DRAMACLAW_H3_PACK_LOCK_TIMEOUT_SECONDS", "0")
+    assert episode_pack._pack_lock_timeout_seconds() == default
+
+
 def test_episode_task_distinguishes_internal_and_business_shot_ids():
     task = episode_pack._episode_task(_input())
 
@@ -320,6 +366,41 @@ def test_episode_task_distinguishes_internal_and_business_shot_ids():
     assert "ACTION" in task and "PHYSICS" in task
     assert "active character or visible held prop" in task
     assert "structured dialogue line" in task
+
+
+def test_episode_task_gives_each_segment_its_authoritative_frame_count():
+    """生产事故：让模型自己算帧数。
+
+    质量门禁按 ``round(duration_seconds * fps)`` 校验 ``plan.total_frames``
+    （h3_prompt_quality.py:708），单段路径也一直把这个数字直接写进提示词；
+    pack 路径却没给，模型只能自己推。
+    """
+
+    task = episode_pack._episode_task(_input())
+
+    assert '"total_frames": 120' in task
+
+
+def test_dialogue_frame_contract_is_stated_to_the_model():
+    """生产事故：源台词以“——”结尾，模型标记 truncated=true 却让
+    end_frame≠total_frames → 整个 episode 包作废、无缓存、整包重烧。
+
+    H3DirectorPlan 校验的帧级规则（truncated 只能出现在最后一镜的最后一条
+    cue 且 end_frame==total_frames；continuation 必须成对且同 speaker_id）
+    必须出现在模型看得到的提示词里。
+    """
+
+    from novelvideo.media_capabilities.video import h3_prompt_profile
+
+    task = episode_pack._episode_task(_input())
+    system_prompt = h3_prompt_profile.H3_DIRECTOR_SYSTEM_PROMPT
+
+    for text in (task, system_prompt):
+        assert "truncated=true" in text
+        assert "continuation=true" in text
+    assert "never infer truncation from trailing punctuation" in system_prompt
+    assert "end_frame exactly equal to total_frames" in system_prompt
+    assert "must share the same speaker_id" in system_prompt
 
 
 def test_episode_reference_fact_description_is_only_untrusted_data():

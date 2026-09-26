@@ -1725,3 +1725,34 @@ def test_frame_anchor_trims_and_lowercases_sha256():
     anchor = _frame_anchor(f"  {_FIRST_SHA}  ")
 
     assert anchor.sha256 == _FIRST_SHA.lower()
+
+
+def test_complete_line_ending_with_a_dash_is_valid_without_truncated():
+    """生产事故回归：台词“师父，这个要怎么——”是完整台词。
+
+    校验器只在 truncated=True 时才要求 end_frame==total_frames，因此
+    ``truncated=False`` 才是这条台词的合法表达；提示词也据此明确禁止从结尾
+    标点推断截断。这条护栏防止有人反向“修”校验器去强制 truncated。
+    """
+
+    shot = _shot(start_frame=0, end_frame=192)
+    cue = H3DialogueCue(
+        start_frame=0,
+        end_frame=180,
+        speaker="步知遥",
+        speaker_id="S1",
+        text="师父，这个要怎么——",
+        language="zh",
+    )
+    plan = H3DirectorPlan(
+        mode=H3Mode.I2VA,
+        total_frames=192,
+        visual_style="cinematic realism",
+        continuity_locks=("identity",),
+        shots=(shot.model_copy(update={"dialogue": (cue,)}),),
+        soundscape="rain",
+        music="none",
+    )
+
+    assert plan.shots[0].dialogue[0].truncated is False
+    assert plan.shots[0].dialogue[0].end_frame != plan.total_frames

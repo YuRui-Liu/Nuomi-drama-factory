@@ -16,7 +16,7 @@ import portalocker
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import Agent, PromptedOutput
 
-from .h3_director_plan import H3DirectorPlan
+from .h3_director_plan import H3DirectorPlan, H3_FPS
 from .h3_prompt_compiler import H3_PROMPT_COMPILER_VERSION
 from .h3_prompt_optimizer import (
     H3PromptContext,
@@ -513,7 +513,16 @@ def _episode_task(value: H3EpisodeInput) -> str:
         "moving_entities must exactly match PHYSICS moving_entities. Every moving "
         "entity must be an active character or visible held prop and must be named "
         "explicitly in PHYSICS. Preserve each structured dialogue line as one "
-        "ordered AUDIO cue; never place source dialogue in ACTION.\n"
+        "ordered AUDIO cue; never place source dialogue in ACTION. Every segment "
+        "payload carries its own total_frames; copy that exact value into the "
+        "matching director_plan.total_frames, cover it contiguously with shots "
+        "from frame 0, and keep every dialogue cue inside its own shot's frame "
+        "range. Set truncated=true only when the supplied structured source "
+        "dialogue explicitly continues past the segment, never because a line "
+        "ends with trailing punctuation such as an em dash, and then only in the "
+        "final shot as its last cue with end_frame exactly equal to "
+        "total_frames. Set continuation=true only on a paired last cue and first "
+        "cue of adjacent shots, and both cues must share the same speaker_id.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         + "\n"
         + _untrusted_reference_data_block(reference_facts)
@@ -530,6 +539,10 @@ def _prompt_segment(
         "group_id": entry.group_id,
         "shot_ids": entry.shot_ids,
         "duration_seconds": entry.duration_seconds,
+        # The quality gate checks plan.total_frames against
+        # round(duration_seconds * fps); hand the model the same number the gate
+        # will demand instead of making it re-derive it per segment.
+        "total_frames": round(entry.duration_seconds * H3_FPS),
         "mode": entry.mode.value,
         "summary": entry.summary,
         "previous_summary": previous,
