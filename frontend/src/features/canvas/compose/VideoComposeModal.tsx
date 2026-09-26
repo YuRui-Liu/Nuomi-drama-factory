@@ -188,7 +188,7 @@ function probeMediaDuration(
 }
 
 /** Seed an initial timeline from the selected video/audio canvas nodes. */
-function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
+export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
   const nodes = useCanvasStore.getState().nodes;
   const byId = new Map(nodes.map((node) => [node.id, node] as const));
   const videoClips: ComposeClip[] = [];
@@ -202,7 +202,8 @@ function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
     if (!node) continue;
     if ((isVideoNode(node) || isVideoDirectorNode(node)) && node.data.videoUrl) {
       const durationMs = isVideoDirectorNode(node)
-        ? Math.round(node.data.draft.segments.reduce((total, segment) => total + segment.durationSeconds, 0) * 1000)
+        ? (typeof node.data.durationMs === "number" && Number.isFinite(node.data.durationMs) && node.data.durationMs > 0
+          ? node.data.durationMs : null)
         : typeof node.data.durationMs === "number" ? node.data.durationMs : null;
       const len = durationMs ?? FALLBACK_CLIP_MS;
       videoClips.push({

@@ -76,6 +76,7 @@ export function cloneVideoDirectorData(data: VideoDirectorNodeData): VideoDirect
     activeAttemptId: null,
     videoUrl: null,
     resultRevision: null,
+    durationMs: null,
     previewImageUrl: null,
   };
 }

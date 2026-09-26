@@ -259,6 +259,8 @@ export interface VideoDirectorNodeData extends NodeDisplayData {
   activeAttemptId: string | null;
   videoUrl: string | null;
   resultRevision: number | null;
+  /** Measured duration of videoUrl, when persisted; never inferred from the editable draft. */
+  durationMs?: number | null;
   previewImageUrl?: string | null;
 }
 
