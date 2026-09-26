@@ -791,7 +791,10 @@ export function AssetLibraryModal({
                     selected
                       ? 'border-accent/70 ring-1 ring-accent/45'
                       : ASSET_LIBRARY_CARD_HOVER_CLASS
-                  }`}
+                  } ${hasChildImages ? '' : 'cursor-pointer'}`}
+                  onClick={() => {
+                    if (!hasChildImages && !disabledSelect) toggleSelect(key);
+                  }}
                 >
                   {entry.media === 'image' ? (
                     <img
@@ -804,9 +807,11 @@ export function AssetLibraryModal({
                     <video
                       src={resolveImageDisplayUrl(entry.url)}
                       className="h-full w-full object-cover"
+                      controls
                       muted
                       playsInline
                       preload="metadata"
+                      onClick={(event) => event.stopPropagation()}
                     />
                   ) : (
                     <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-white/[0.03] text-text-muted/70">
@@ -820,15 +825,12 @@ export function AssetLibraryModal({
                     </div>
                   )}
 
-                  <button
+                  {hasChildImages && <button
                     type="button"
                     className="absolute inset-0 cursor-pointer"
-                    aria-label={hasChildImages ? `查看${entry.name}的图片` : `选择${entry.name}`}
-                    onClick={() => {
-                      if (hasChildImages) setActiveCharacterId(entry.id);
-                      else if (!disabledSelect) toggleSelect(key);
-                    }}
-                  />
+                    aria-label={`查看${entry.name}的图片`}
+                    onClick={() => setActiveCharacterId(entry.id)}
+                  />}
 
                   {/* Checkbox top-left */}
                   {!hasChildImages && <button
@@ -839,6 +841,7 @@ export function AssetLibraryModal({
                       toggleSelect(key);
                     }}
                     disabled={disabledSelect}
+                    aria-label={`选择${entry.name}`}
                     title={
                       disabledSelect
                         ? `最多可选 ${maxSelectable} 个`

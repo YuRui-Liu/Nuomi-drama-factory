@@ -143,4 +143,32 @@ describe('AssetLibraryModal character images', () => {
     await openCharacter('ChildOnly');
     expect(screen.getByRole('checkbox', { name: 'ChildOnly 基础图 基础肖像' })).toBeInTheDocument();
   });
+
+  it('leaves audio and video playback controls above the selection hit target', async () => {
+    vi.mocked(syncFreezoneAssetLibraryFromMainline).mockResolvedValue([
+      { id: 'music', name: 'Music', media: 'audio', source: 'upload', audio_url: '/music.mp3' },
+      { id: 'clip', name: 'Clip', media: 'video', source: 'upload', video_url: '/clip.mp4' },
+    ]);
+    show();
+    fireEvent.click(screen.getByRole('button', { name: '音频' }));
+    const audio = await waitFor(() => {
+      const element = document.querySelector('audio');
+      expect(element).not.toBeNull();
+      return element as HTMLAudioElement;
+    });
+    expect(audio).toHaveAttribute('controls');
+    expect(screen.getByRole('button', { name: '选择Music' })).not.toHaveClass('inset-0');
+    fireEvent.click(audio);
+    expect(screen.getByRole('status', { name: '已选 0/9' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '选择Music' }));
+    expect(screen.getByRole('status', { name: '已选 1/9' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '视频' }));
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute('controls');
+    expect(screen.getByRole('button', { name: '选择Clip' })).not.toHaveClass('inset-0');
+    fireEvent.click(video!);
+    expect(screen.getByRole('status', { name: '已选 0/9' })).toBeInTheDocument();
+  });
 });
