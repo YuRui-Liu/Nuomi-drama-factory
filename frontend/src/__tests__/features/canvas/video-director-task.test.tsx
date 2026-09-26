@@ -6,6 +6,7 @@ import { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirecto
 import { useCanvasStore } from '@/stores/canvasStore';
 import * as api from '@/api/videoDirector';
 import { ApiError } from '@/api/client';
+import { readDirectorJournal } from '@/features/canvas/director/directorSubmissionJournal';
 
 vi.mock('@/api/videoDirector', () => ({
   getDirectorCapabilities: vi.fn(), listDirectorAttempts: vi.fn(), getDirectorAttempt: vi.fn(),
@@ -47,6 +48,64 @@ beforeEach(() => {
 });
 
 describe('video director task lifecycle', () => {
+  it('ignores an old history response after switching projects with the same node ID', async () => {
+    let resolveOldList!: (value: DirectorAttempt[]) => void;
+    vi.mocked(api.listDirectorAttempts).mockImplementationOnce(() => new Promise((resolve) => { resolveOldList = resolve; }));
+    const old = renderHook(useTask);
+    expect(api.listDirectorAttempts).toHaveBeenCalledWith('demo', 'canvas', 'director');
+    old.unmount();
+    window.history.replaceState({}, '', '/projects/other/freezone?canvas=other-canvas');
+    setNode({ pendingSubmission: { requestId: 'new-request', frozenDraftSnapshot: structuredClone(draft) } });
+    await act(async () => resolveOldList([]));
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    expect(nodeData().pendingSubmission?.requestId).toBe('new-request');
+  });
+
+  it('ignores a retry response after the old node unmounts', async () => {
+    setNode({ activeAttemptId: 'parent' });
+    const failed = { ...attempt('parent'), stage: 'failed', failedStage: 'optimizing' };
+    vi.mocked(api.listDirectorAttempts).mockResolvedValue([failed]);
+    vi.mocked(api.getDirectorAttempt).mockResolvedValue(failed);
+    let resolveRetry!: (value: DirectorAttempt) => void;
+    vi.mocked(api.retryDirectorAttempt).mockImplementation(() => new Promise((resolve) => { resolveRetry = resolve; }));
+    const old = renderHook(useTask);
+    await waitFor(() => expect(old.result.current.attempts).toHaveLength(1));
+    act(() => { void old.result.current.retry('parent'); });
+    old.unmount();
+    setNode({ activeAttemptId: 'parent' });
+    await act(async () => resolveRetry({ ...attempt('child'), parentAttemptId: 'parent' }));
+    expect(nodeData().activeAttemptId).toBe('parent');
+    expect(readDirectorJournal('demo', 'canvas', 'director')?.attemptId).not.toBe('child');
+  });
+
+  it('does not show a rejected old request on a newer pending draft', async () => {
+    let rejectOld!: (reason: Error) => void;
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((_, reject) => { rejectOld = reject; }));
+    const { result } = renderHook(useTask);
+    act(() => result.current.generate(draft));
+    act(() => useCanvasStore.getState().updateNodeData('director', { pendingSubmission: {
+      requestId: 'newer-request', frozenDraftSnapshot: structuredClone(draft),
+    } }));
+    await act(async () => rejectOld(new ApiError('old error', 422,
+      { detail: { field: 'segments[0].prompt', message: 'old error' } })));
+    expect(result.current.fieldErrors).toEqual({});
+    expect(result.current.error).toBe('');
+    expect(nodeData().pendingSubmission?.requestId).toBe('newer-request');
+  });
+
+  it('does not attach an old 422 field error to an edited current draft', async () => {
+    let rejectOld!: (reason: Error) => void;
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((_, reject) => { rejectOld = reject; }));
+    const { result } = renderHook(useTask);
+    act(() => result.current.generate(draft));
+    act(() => useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, revision: 2 } }));
+    await act(async () => rejectOld(new ApiError('old error', 422,
+      { detail: { field: 'segments[0].prompt', message: 'old error' } })));
+    expect(result.current.fieldErrors).toEqual({});
+    expect(result.current.error).toBe('');
+    expect(nodeData().pendingSubmission).toBeNull();
+  });
   it('persists the frozen request before POST and accepted ID before clearing pending', async () => {
     const events: string[] = [];
     const storageOwner = Object.prototype.hasOwnProperty.call(localStorage, 'setItem') ? localStorage : Object.getPrototypeOf(localStorage) as Storage;

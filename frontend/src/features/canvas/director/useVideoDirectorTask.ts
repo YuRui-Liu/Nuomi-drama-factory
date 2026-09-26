@@ -79,7 +79,8 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   }, [project, canvasId, nodeId, applies]);
 
   const submitPending = useCallback(async (pending: NonNullable<VideoDirectorNodeData['pendingSubmission']>) => {
-    if (!project || submitting.current) return;
+    if (!project || submitting.current || !mounted.current || !sameLocation(project, canvasId) ||
+      currentData(nodeId)?.pendingSubmission?.requestId !== pending.requestId) return;
     submitting.current = true;
     setError('');
     setFieldErrors({});
@@ -102,13 +103,16 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
         applies(attempt);
       }
     } catch (cause) {
+      const current = currentData(nodeId);
+      if (!mounted.current || !sameLocation(project, canvasId) || current?.pendingSubmission?.requestId !== pending.requestId) return;
+      const sameDraft = current.draft.revision === pending.frozenDraftSnapshot.revision;
       const detail = (cause as { body?: { detail?: { field?: string; message?: string } } })?.body?.detail;
-      if (detail?.field && detail.message && mounted.current) setFieldErrors({ [detail.field]: detail.message });
-      if (mounted.current && sameLocation(project, canvasId) && (cause as { status?: number })?.status === 422 && currentData(nodeId)?.pendingSubmission?.requestId === pending.requestId) {
+      if (sameDraft && detail?.field && detail.message) setFieldErrors({ [detail.field]: detail.message });
+      if ((cause as { status?: number })?.status === 422) {
         try { clearDirectorJournal(project, canvasId, nodeId); } catch { /* keep the visible field error */ }
         updateNodeData(nodeId, { pendingSubmission: null });
       }
-      if (mounted.current) setError(cause instanceof Error ? cause.message : '提交失败，可使用同一请求重试');
+      if (sameDraft) setError(cause instanceof Error ? cause.message : '提交失败，可使用同一请求重试');
     } finally {
       submitting.current = false;
     }
@@ -137,21 +141,25 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   }, [nodeId, submitPending]);
 
   const retry = useCallback(async (attemptId: string) => {
-    if (!project || submitting.current) return;
+    if (!project || submitting.current || !mounted.current || !sameLocation(project, canvasId) || !currentData(nodeId)) return;
     submitting.current = true;
     setError('');
     const previousActive = currentData(nodeId)?.activeAttemptId;
     try {
       const attempt = await retryDirectorAttempt(project, attemptId);
       const current = currentData(nodeId);
-      if (!sameLocation(project, canvasId) || !current || current.pendingSubmission || current.activeAttemptId !== previousActive) return;
+      if (!mounted.current || !sameLocation(project, canvasId) || !current || current.pendingSubmission ||
+        current.activeAttemptId !== previousActive || attempt.projectId !== project ||
+        attempt.canvasId !== canvasId || attempt.nodeId !== nodeId) return;
       writeDirectorJournal({ version: 1, phase: 'accepted', projectId: project, canvasId, nodeId,
         requestId: attempt.requestId, frozenDraftSnapshot: attempt.snapshot, attemptId: attempt.id });
       updateNodeData(nodeId, { activeAttemptId: attempt.id });
       applies(attempt);
       await refresh();
     } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : '重试失败');
+      if (mounted.current && sameLocation(project, canvasId) && currentData(nodeId)?.activeAttemptId === previousActive) {
+        setError(cause instanceof Error ? cause.message : '重试失败');
+      }
     } finally { submitting.current = false; }
   }, [project, canvasId, nodeId, applies, refresh, updateNodeData]);
 
@@ -173,11 +181,12 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
       return () => { mounted.current = false; };
     }
     void getDirectorCapabilities(project).then((value) => { if (mounted.current && sameLocation(project, canvasId)) setCapabilities(value); })
-      .catch((cause) => { if (mounted.current) setError(cause instanceof Error ? cause.message : '能力加载失败'); });
+      .catch((cause) => { if (mounted.current && sameLocation(project, canvasId)) setError(cause instanceof Error ? cause.message : '能力加载失败'); });
     void refresh().then(() => {
+      if (!mounted.current || !sameLocation(project, canvasId) || !currentData(nodeId)) return;
       const pending = currentData(nodeId)?.pendingSubmission;
       if (pending) recoverPending();
-    }).catch((cause) => { if (mounted.current) setError(cause instanceof Error ? cause.message : '历史加载失败'); });
+    }).catch((cause) => { if (mounted.current && sameLocation(project, canvasId)) setError(cause instanceof Error ? cause.message : '历史加载失败'); });
     return () => {
       mounted.current = false;
       if (sameLocation(project, canvasId) && !currentData(nodeId)) {
