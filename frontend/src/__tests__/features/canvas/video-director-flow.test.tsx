@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import i18next from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -72,6 +72,8 @@ describe('Director real component flow', () => {
     let postedDraft: Record<string, any> | undefined;
     let storedAttempt: Record<string, any> | undefined;
     let resumeCount = 0;
+    let finishResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => { finishResume = resolve; });
     const response = (data: unknown) => HttpResponse.json({ ok: true, data });
     server.use(
       http.get('*/api/v1/projects/demo/freezone/video/character-library', () => response(library)),
@@ -91,8 +93,9 @@ describe('Director real component flow', () => {
         return response({ attempt: storedAttempt });
       }),
       http.get(`${endpoint}/attempts/attempt-1`, () => response({ attempt: storedAttempt })),
-      http.post(`${endpoint}/attempts/attempt-1/resume`, () => {
+      http.post(`${endpoint}/attempts/attempt-1/resume`, async () => {
         resumeCount += 1;
+        await resumeGate;
         storedAttempt = { ...storedAttempt, stage: 'completed', provider_task_id: 'fake-task',
           result_url: '/static/projects/demo/video.mp4', workflow_id: '2096502793044582401',
           workflow_profile_id: 'h3-ref', workflow_profile_version: 1,
@@ -135,6 +138,11 @@ describe('Director real component flow', () => {
       'Opening original', 'Closing original',
     ]);
     await waitFor(() => expect(resumeCount).toBe(1));
+    await waitFor(() => expect(screen.getAllByText('优化中').length).toBeGreaterThan(0));
+    expect(screen.getByRole('button', { name: '生成视频' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /批准|审核|确认优化/ })).not.toBeInTheDocument();
+    expect(nodeData().videoUrl).toBeNull();
+    await act(async () => { finishResume(); });
     await waitFor(() => expect(nodeData().videoUrl).toBe('/static/projects/demo/video.mp4'));
     expect(nodeData().draft.segments.map((segment) => segment.prompt)).toEqual([
       'Opening original', 'Closing original',
