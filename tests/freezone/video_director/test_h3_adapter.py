@@ -109,3 +109,18 @@ def test_mismatched_optimized_revision_is_rejected():
     result = optimized(draft, (base_wire("i2va", aligned.duration_seconds),), "h3")
     with pytest.raises(ValueError, match="revision"):
         compile_director_payload(draft.model_copy(update={"revision": 2}), result, {"f": {"imageFile": "up"}})
+
+
+@pytest.mark.parametrize("change", [
+    {"profile_id": "other-director"},
+    {"profile_version": 14},
+])
+def test_stale_optimized_profile_is_rejected_before_compilation(change):
+    draft = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p", segments=(
+        DirectorSegment(id="a", prompt="x", duration_seconds=5, first_frame=image("f")),))
+    from novelvideo.freezone.video_director.capabilities import validate_generation
+    aligned = validate_generation(draft).timeline[0]
+    result = optimized(draft, (base_wire("i2va", aligned.duration_seconds),), "h3")
+    stale = result.model_copy(update=change)
+    with pytest.raises(ValueError, match="profile"):
+        compile_director_payload(draft, stale, {"f": {"imageFile": "up"}})

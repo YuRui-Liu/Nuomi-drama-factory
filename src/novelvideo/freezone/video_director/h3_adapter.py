@@ -9,6 +9,9 @@ from typing import Mapping
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3_REFERENCE_TASK_TYPE, H3_REFERENCE_TIMELINE_MODE,
 )
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_PROMPT_PROFILE_ID, H3_PROMPT_PROFILE_VERSION,
+)
 from novelvideo.media_capabilities.video.h3_timeline import (
     H3CompiledTimeline, H3DirectorSegment, H3TimelineEntry,
 )
@@ -45,6 +48,9 @@ def compile_director_payload(
 ) -> DirectorPayload:
     """Compile one immutable attempt; reject stale or partial optimizations."""
     validation = validate_generation(draft, reference_limit=reference_limit)
+    if (optimized.profile_id != H3_PROMPT_PROFILE_ID or
+        optimized.profile_version != H3_PROMPT_PROFILE_VERSION):
+        raise ValueError("optimized H3 profile does not match current writing rules")
     if optimized.revision != draft.revision:
         raise ValueError("optimized revision does not match draft revision")
     if optimized.route != validation.route:
