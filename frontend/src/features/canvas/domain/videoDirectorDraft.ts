@@ -74,6 +74,7 @@ export function cloneVideoDirectorData(data: VideoDirectorNodeData): VideoDirect
     draft: { ...data.draft, references: data.draft.references.map((image) => ({ ...image })),
       segments: data.draft.segments.map(cloneSegment) },
     activeAttemptId: null,
+    pendingSubmission: null,
     videoUrl: null,
     resultRevision: null,
     durationMs: null,

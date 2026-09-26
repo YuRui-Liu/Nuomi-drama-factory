@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useEffect } from 'react';
+import { lazy, memo, Suspense, useEffect, useState } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Clapperboard } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,10 @@ import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canv
 import { CANVAS_NODE_INPUT_SURFACE_CLASS, canvasNodeFrameClass } from '@/features/canvas/ui/nodeFrameStyles';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { resolveMediaUrl } from '@/lib/media-url';
+import { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirectorTask';
+import { validateDirectorDraft } from '@/features/canvas/director/directorValidation';
+
+const VideoDirectorPanel = lazy(() => import('@/features/canvas/director/VideoDirectorPanel').then((module) => ({ default: module.VideoDirectorPanel })));
 
 export const VIDEO_DIRECTOR_NODE_SIZE = { width: 320, height: 250 } as const;
 
@@ -21,6 +25,8 @@ type VideoDirectorNodeProps = NodeProps & {
 };
 
 export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, selected, onOpenEditor }: VideoDirectorNodeProps) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const task = useVideoDirectorTask(id, data);
   const { t } = useTranslation();
   const updateNodeInternals = useUpdateNodeInternals();
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
@@ -28,6 +34,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const segments = data.draft?.segments ?? [];
   const durationSeconds = segments.reduce((total, segment) => total + segment.durationSeconds, 0);
   const videoUrl = resolveMediaUrl(data.videoUrl);
+  const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
 
   useEffect(() => updateNodeInternals(id), [id, updateNodeInternals]);
 
@@ -45,13 +52,22 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
         </div>
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
           <span>{t('videoDirector.node.segments', { count: segments.length })}</span>
-          <span>{t('videoDirector.node.duration', { seconds: durationSeconds.toFixed(1) })}</span>
-          {onOpenEditor && <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
+          <span>{data.durationMs ? `${(data.durationMs / 1000).toFixed(1)} 秒` : t('videoDirector.node.duration', { seconds: durationSeconds.toFixed(1) })}</span>
+          <span>{active?.stage ?? ''}</span>
+          <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
             event.stopPropagation();
-            onOpenEditor(id);
-          }}>{t('videoDirector.node.edit')}</button>}
+            if (onOpenEditor) onOpenEditor(id);
+            else setEditorOpen(true);
+          }}>{t('videoDirector.node.edit')}</button>
+          <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
+            event.stopPropagation();
+            if (task.capabilities && !Object.keys(validateDirectorDraft(data.draft, task.capabilities)).length && !data.pendingSubmission) task.generate(data.draft);
+            else setEditorOpen(true);
+          }}>{t('videoDirector.node.generate', { defaultValue: '生成' })}</button>
         </div>
       </div>
+      {editorOpen && <Suspense fallback={null}><VideoDirectorPanel nodeId={id} data={data} task={task}
+        onDraftChange={(draft) => updateNodeData(id, { draft })} onClose={() => setEditorOpen(false)} /></Suspense>}
     </div>
   );
 });

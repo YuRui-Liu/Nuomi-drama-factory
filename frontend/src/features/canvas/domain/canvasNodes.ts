@@ -242,10 +242,22 @@ export interface OptimizedDirector {
 
 export interface DirectorAttempt {
   id: string;
+  projectId: string;
+  canvasId: string;
+  nodeId: string;
+  requestId: string;
+  parentAttemptId: string | null;
   revision: number;
   snapshot: DirectorDraft;
   stage: string;
-  optimizedSegments: OptimizedDirectorSegment[];
+  optimized: OptimizedDirector | null;
+  rulesHash: string | null;
+  referenceLimit: number | null;
+  workflowId: string | null;
+  workflowProfileId: string | null;
+  workflowProfileVersion: number | null;
+  actualParameters: Record<string, unknown> | null;
+  taskId: string | null;
   providerTaskId: string | null;
   resultUrl: string | null;
   error: string | null;
@@ -256,6 +268,7 @@ export interface DirectorAttempt {
 
 export interface VideoDirectorNodeData extends NodeDisplayData {
   draft: DirectorDraft;
+  pendingSubmission?: { requestId: string; frozenDraftSnapshot: DirectorDraft } | null;
   activeAttemptId: string | null;
   videoUrl: string | null;
   resultRevision: number | null;
