@@ -13,6 +13,7 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import { resolveMediaUrl } from '@/lib/media-url';
 import { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirectorTask';
 import { validateDirectorDraft } from '@/features/canvas/director/directorValidation';
+import { directorStageLabel } from '@/features/canvas/director/directorStatus';
 
 const VideoDirectorPanel = lazy(() => import('@/features/canvas/director/VideoDirectorPanel').then((module) => ({ default: module.VideoDirectorPanel })));
 
@@ -53,7 +54,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
           <span>{t('videoDirector.node.segments', { count: segments.length })}</span>
           <span>{data.durationMs ? `${(data.durationMs / 1000).toFixed(1)} 秒` : t('videoDirector.node.duration', { seconds: durationSeconds.toFixed(1) })}</span>
-          <span>{active?.stage ?? ''}</span>
+          <span>{directorStageLabel(active?.stage, t)}</span>
           <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
             event.stopPropagation();
             if (onOpenEditor) onOpenEditor(id);

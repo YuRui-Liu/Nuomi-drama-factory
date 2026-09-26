@@ -63,4 +63,15 @@ describe('video director panel', () => {
     render(<VideoDirectorPanel nodeId="n3" data={data} task={controller} onDraftChange={onDraftChange} onClose={vi.fn()} />);
     expect(screen.getByRole('textbox')).toHaveValue('Persistent shot');
   });
+
+  it('Escape closes the image picker first and keeps the editor mounted', () => {
+    const onClose = vi.fn();
+    render(<VideoDirectorPanel nodeId="n4" data={makeData()} task={task()} onDraftChange={vi.fn()} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: '选择参考图' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

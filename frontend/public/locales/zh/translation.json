@@ -3481,6 +3481,7 @@
     },
     "videoDirector": {
       "node": { "empty": "尚无视频", "segments": "{{count}} 段", "duration": "{{seconds}} 秒", "edit": "编辑", "generate": "生成" },
+      "status": { "created": "已创建", "optimizing": "优化中", "preparing": "准备中", "submitting": "提交中", "queued": "排队中", "generating": "生成中", "completed": "已完成", "failed": "失败", "submission_unknown": "提交状态未知", "unknown": "状态未知" },
       "editor": { "title": "视频导演", "closeTitle": "关闭视频导演", "close": "关闭", "model": "模型", "unavailable": "（不可用）", "aspectRatio": "画幅", "resolution": "分辨率", "references": "全局参考图", "selectReferences": "选择参考图", "removeReference": "移除参考图", "addSegment": "添加分段", "generate": "生成视频", "recover": "恢复待提交请求", "submitting": "提交中", "segment": "分段", "moveUp": "上移", "moveDown": "下移", "copy": "复制", "delete": "删除", "prompt": "提示词", "duration": "时长（秒）", "aligned": "H3 对齐", "frames": "帧", "seconds": "秒", "firstFrame": "首帧", "lastFrame": "尾帧", "firstPreview": "首帧预览", "lastPreview": "尾帧预览", "selectImage": "选择图片", "remove": "移除", "history": "生成历史", "refreshHistory": "刷新历史", "emptyHistory": "暂无生成记录", "current": "当前", "revision": "修订", "originalPrompt": "原始提示词", "optimizedPrompt": "优化提示词", "route": "路线", "profile": "配置", "workflow": "工作流", "viewResult": "查看结果", "retryDownload": "重试下载", "retryGeneration": "重试生成", "submissionUnknown": "提交状态未知，请人工核对任务，避免重复计费。" }
     },
     "imageNode": {

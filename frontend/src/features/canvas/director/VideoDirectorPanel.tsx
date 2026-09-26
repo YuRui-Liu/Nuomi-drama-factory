@@ -10,6 +10,7 @@ import { validateDirectorDraft, type DirectorErrors } from './directorValidation
 import { DirectorSegmentEditor } from './DirectorSegmentEditor';
 import { DirectorHistory } from './DirectorHistory';
 import { readUrl } from '@/lib/url-params';
+import { directorStageLabel } from './directorStatus';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
 type PickTarget = { kind: 'references' } | { kind: 'frame'; segmentId: string; field: 'firstFrame' | 'lastFrame' };
@@ -58,7 +59,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   };
 
   return <>
-    <OperationPanelShell expanded onCollapse={onClose} inlineClassName="" inlineStyle={{}} modalStyle={{ width: 'min(1000px, 95vw)', height: 'min(850px, 92vh)' }}>
+    <OperationPanelShell expanded onCollapse={() => pickTarget ? setPickTarget(null) : onClose()} inlineClassName="" inlineStyle={{}} modalStyle={{ width: 'min(1000px, 95vw)', height: 'min(850px, 92vh)' }}>
       <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
         <h2 className="text-base font-semibold">{tr('title', '视频导演')} · {nodeId}</h2>
         <button type="button" onClick={onClose} aria-label={tr('closeTitle', '关闭视频导演')}>{tr('close', '关闭')}</button>
@@ -105,7 +106,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       <div className="flex items-center gap-3 border-t border-white/10 px-5 py-3 text-sm">
         <button type="button" className="rounded bg-cyan-600 px-4 py-2 text-white disabled:opacity-50" disabled={!capabilities || generating} onClick={generate}>{tr('generate', '生成视频')}</button>
         {pending && <button type="button" onClick={task.recoverPending}>{tr('recover', '恢复待提交请求')}</button>}
-        <span className="text-text-muted">{active?.stage ?? (pending ? tr('submitting', '提交中') : '')}</span>
+        <span className="text-text-muted">{active ? directorStageLabel(active.stage, t) : pending ? tr('submitting', '提交中') : ''}</span>
       </div>
     </OperationPanelShell>
     {pickTarget && <AssetLibraryModal open project={project} onClose={() => setPickTarget(null)} allowedMedia={['image']}

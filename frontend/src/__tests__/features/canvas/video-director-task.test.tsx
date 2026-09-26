@@ -32,7 +32,9 @@ function useTask() {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
+  localStorage.clear();
   window.history.replaceState({}, '', '/projects/demo/freezone?canvas=canvas');
   setNode();
   vi.mocked(api.getDirectorCapabilities).mockResolvedValue({ models: [], referenceLimit: 5, effectiveReferenceLimit: 5,
@@ -45,6 +47,99 @@ beforeEach(() => {
 });
 
 describe('video director task lifecycle', () => {
+  it('persists the frozen request before POST and accepted ID before clearing pending', async () => {
+    const events: string[] = [];
+    const storageOwner = Object.prototype.hasOwnProperty.call(localStorage, 'setItem') ? localStorage : Object.getPrototypeOf(localStorage) as Storage;
+    const setItem = localStorage.setItem.bind(localStorage);
+    vi.spyOn(storageOwner, 'setItem').mockImplementation((key, value) => {
+      if (key.includes('director-submission')) {
+        const phase = JSON.parse(value).phase;
+        events.push(phase === 'pending' ? 'pendingPersist' : 'acceptedPersist');
+      }
+      setItem(key, value);
+    });
+    const unsubscribe = useCanvasStore.subscribe((state, previous) => {
+      if (state.nodes[0]?.data.activeAttemptId !== previous.nodes[0]?.data.activeAttemptId && state.nodes[0]?.data.activeAttemptId === 'a1') events.push('activePatch');
+    });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(async () => { events.push('post'); return attempt(); });
+    const { result } = renderHook(useTask);
+    act(() => result.current.generate(draft));
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
+    unsubscribe();
+    expect(events).toEqual(['pendingPersist', 'post', 'acceptedPersist', 'activePatch']);
+  });
+
+  it('recovers a journaled request when canvas autosave missed the pending patch', async () => {
+    vi.mocked(api.createDirectorAttempt).mockImplementationOnce(() => new Promise(() => undefined));
+    const first = renderHook(useTask);
+    act(() => first.result.current.generate(draft));
+    const originalId = nodeData().pendingSubmission?.requestId;
+    expect(originalId).toBeTruthy();
+    first.unmount();
+    setNode();
+    vi.mocked(api.createDirectorAttempt).mockResolvedValue(attempt());
+    renderHook(useTask);
+    await waitFor(() => expect(api.createDirectorAttempt).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.createDirectorAttempt).mock.calls[1][3]).toBe(originalId);
+    expect(vi.mocked(api.createDirectorAttempt).mock.calls[1][4].segments[0].prompt).toBe('Original');
+  });
+
+  it('recovers an accepted attempt ID when reload happens before canvas autosave', async () => {
+    vi.mocked(api.createDirectorAttempt).mockResolvedValue(attempt());
+    const first = renderHook(useTask);
+    act(() => first.result.current.generate(draft));
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
+    first.unmount();
+    setNode();
+    renderHook(useTask);
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
+    expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not POST if the durable journal cannot be written', async () => {
+    const storageOwner = Object.prototype.hasOwnProperty.call(localStorage, 'setItem') ? localStorage : Object.getPrototypeOf(localStorage) as Storage;
+    vi.spyOn(storageOwner, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+    const { result } = renderHook(useTask);
+    act(() => result.current.generate(draft));
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+    expect(nodeData().pendingSubmission).toBeNull();
+    await waitFor(() => expect(result.current.error).toContain('storage unavailable'));
+  });
+
+  it('periodically resumes the same nonterminal attempt after a lost worker', async () => {
+    setNode({ activeAttemptId: 'live' });
+    vi.mocked(api.getDirectorAttempt).mockResolvedValue(attempt('live'));
+    let tick: (() => void) | undefined;
+    const realSetInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay, ...args) => {
+      if (delay === 2500) tick = () => callback(...args);
+      return realSetInterval(callback, delay, ...args) as never;
+    });
+    renderHook(useTask);
+    await waitFor(() => expect(api.resumeDirectorAttempt).toHaveBeenCalledWith('demo', 'live'));
+    vi.mocked(api.resumeDirectorAttempt).mockClear();
+    await act(async () => { tick?.(); await Promise.resolve(); });
+    expect(api.resumeDirectorAttempt).toHaveBeenCalledWith('demo', 'live');
+  });
+
+  it('does not resume an old attempt after active ID changes or node deletion', async () => {
+    setNode({ activeAttemptId: 'older' });
+    let resolveOld!: (value: DirectorAttempt) => void;
+    vi.mocked(api.getDirectorAttempt).mockImplementation((_, id) => id === 'older'
+      ? new Promise((done) => { resolveOld = done; }) : Promise.resolve(attempt('newer')));
+    const fixedData = nodeData();
+    renderHook(() => useVideoDirectorTask('director', fixedData));
+    await waitFor(() => expect(api.getDirectorAttempt).toHaveBeenCalledWith('demo', 'older'));
+    act(() => useCanvasStore.getState().updateNodeData('director', { activeAttemptId: 'newer' }));
+    await act(async () => resolveOld(attempt('older')));
+    expect(api.resumeDirectorAttempt).not.toHaveBeenCalledWith('demo', 'older');
+    const another = renderHook(() => useVideoDirectorTask('director', fixedData));
+    await waitFor(() => expect(api.getDirectorAttempt).toHaveBeenCalledTimes(2));
+    act(() => useCanvasStore.setState({ nodes: [] }));
+    await act(async () => resolveOld(attempt('older')));
+    expect(api.resumeDirectorAttempt).not.toHaveBeenCalledWith('demo', 'older');
+    another.unmount();
+  });
   it('freezes a request before POST, ignores double clicks, and leaves later draft edits intact', async () => {
     let resolve!: (value: DirectorAttempt) => void;
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((done) => { resolve = done; }));
