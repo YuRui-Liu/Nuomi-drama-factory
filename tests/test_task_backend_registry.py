@@ -14,12 +14,18 @@ def test_importing_runners_registers_builtin_project_task_runners():
     assert len(names) >= 25
     for task_type in {
         "single_video",
+        "freezone_video_director",
         "sketch_generation",
         "audio_generation_indextts2",
         "build_scenes",
     }:
         assert task_type in names
         assert get_project_task_runner(task_type) is not None
+
+    from novelvideo.task_backend.registry import get_project_task_runner_registration
+    from novelvideo.task_backend.run_core import _resource_kind_for_task
+    assert get_project_task_runner_registration("freezone_video_director").text_task_role == "director_plan"
+    assert _resource_kind_for_task("freezone_video_director") == "video"
 
     for removed_task_type in {
         "batch_render",

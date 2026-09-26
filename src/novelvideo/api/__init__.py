@@ -54,6 +54,7 @@ from novelvideo.api.routes import (  # noqa: E402
     episodes,
     files,
     freezone,
+    freezone_video_director,
     generation,
     ingest,
     knowledge_runtime,
@@ -140,6 +141,7 @@ api_router.include_router(model_gateway.router, tags=["model-gateway"])
 api_router.include_router(model_credits.router, tags=["model-credits"])
 api_router.include_router(narrative_groups.router, tags=["narrative-groups"])
 api_router.include_router(freezone.router)
+api_router.include_router(freezone_video_director.router)
 api_router.include_router(release_notifications.router, tags=["release-notifications"])
 _verification_routes_registered = False
 

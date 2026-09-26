@@ -65,6 +65,7 @@ _PROJECT_TASK_RESOURCE_KINDS = {
     "indextts2_audio_generation": "tts",
     "audio_generation_indextts2": "tts",
     "freezone_video_gen": "video",
+    "freezone_video_director": "video",
     "freezone_analyze": "video",
     "freezone_video_story": "video",
     "freezone_image_reverse_prompt": "script",

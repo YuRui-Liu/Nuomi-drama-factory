@@ -15,6 +15,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     episode_assets,
     episode_import,
     freezone,
+    freezone_video_director,
     graph_build,
     identity,
     ingest,
