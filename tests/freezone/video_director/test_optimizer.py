@@ -23,11 +23,12 @@ def draft(*, refs=(), segments=None):
 
 
 class FakeRuntime:
-    def __init__(self, fail=False, wrong_id=False, wrong_mode=False):
+    def __init__(self, fail=False, wrong_id=False, wrong_mode=False, wire_transform=None):
         self.calls = []
         self.fail = fail
         self.wrong_id = wrong_id
         self.wrong_mode = wrong_mode
+        self.wire_transform = wire_transform
 
     async def run_structured(self, *, prompt, output_type, system_prompt, images):
         self.calls.append((prompt, output_type, system_prompt, images))
@@ -38,17 +39,27 @@ class FakeRuntime:
         mode = data["mode"]
         if self.wrong_mode:
             mode = "ref2va" if mode != "ref2va" else "i2va"
+        refs = data["references"]
+        subjects = list(dict.fromkeys(ref["subject_tag"] for ref in refs))
+        definitions = []
+        for subject in subjects:
+            pictures = [ref for ref in refs if ref["subject_tag"] == subject]
+            definitions.append(subject + ": " + "; ".join(
+                f"{ref['variant_label'] or 'appearance'} from {ref['picture_tag']}"
+                for ref in pictures))
         wire = ({"mode": "ref2va", "duration_seconds": data["duration_seconds"],
-                 "subject_definitions": "<Subject 1>: person shown in <Picture 1>",
-                 "summary": "<Subject 1> walks", "retention_analysis": [
-                     {"subject": "<Subject 1>", "retain": "fully_preserved - identity"}],
-                 "detailed_description": "<Subject 1> walks across the room.",
+                 "subject_definitions": "\n".join(definitions),
+                 "summary": "; ".join(subjects) + " walks", "retention_analysis": [
+                     {"subject": subject, "retain": "fully_preserved - identity"} for subject in subjects],
+                 "detailed_description": "; ".join(subjects) + " walk across the room.",
                  "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"}
                 if mode == "ref2va" else
                 {"mode": mode, "duration_seconds": data["duration_seconds"],
                  "final_shot_number": 1,
-                 "integrated_multimodal_description": "[Shot 1] A says Wait while walking.",
+                 "integrated_multimodal_description": "[Shot 1] " + data["source_prompt"] + " while walking.",
                  "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"})
+        if self.wire_transform:
+            wire = self.wire_transform(wire)
         return output_type.model_validate({"segment_id": "wrong" if self.wrong_id else data["segment_id"], "wire": wire})
 
 
@@ -73,6 +84,81 @@ async def test_optimizes_ordered_segments_with_aligned_durations_and_real_images
 
 
 @pytest.mark.asyncio
+async def test_each_call_sees_ordered_adjacent_segment_context_without_extra_images():
+    runtime = FakeRuntime()
+    item = draft(segments=(
+        DirectorSegment(id="first", prompt="Opening", duration_seconds=3, first_frame=image("f1")),
+        DirectorSegment(id="middle", prompt="Transition", duration_seconds=4, first_frame=image("f2")),
+        DirectorSegment(id="last", prompt="Ending", duration_seconds=5, first_frame=image("f3")),
+    ))
+    frozen = {key: StructuredImage(key.encode(), "image/png") for key in ("f1", "f2", "f3")}
+    await optimize(runtime, item, frozen_images=frozen)
+    import json
+    contexts = [json.loads(call[0].partition("INPUT_JSON:\n")[2])["neighbor_segments"]
+                for call in runtime.calls]
+    assert [[part["segment_id"] for part in context] for context in contexts] == [
+        ["first", "middle"], ["first", "middle", "last"], ["middle", "last"]]
+    assert [part["source_prompt"] for part in contexts[1]] == ["Opening", "Transition", "Ending"]
+    assert [part["requested_duration_seconds"] for part in contexts[1]] == [3, 4, 5]
+    assert [len(call[3]) for call in runtime.calls] == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_rejects_missing_exact_quoted_dialogue_in_generated_wire():
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
+        "integrated_multimodal_description": "[Shot 1] A says Wait while walking."})
+    item = draft(segments=(DirectorSegment(id="one", prompt='A says "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+
+
+@pytest.mark.asyncio
+async def test_chinese_speaker_and_quote_are_exact_locked_dialogue():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(id="one", prompt='张三说：“等一下！”',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    result = await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+    import json
+    data = json.loads(runtime.calls[0][0].partition("INPUT_JSON:\n")[2])
+    assert data["locked_dialogue"] == [{"speaker": "张三", "quote": "“等一下！”"}]
+    assert '张三说：“等一下！”' in result.segments[0].prompt
+
+
+@pytest.mark.asyncio
+async def test_custom_context_cannot_remove_absorbed_h3_writing_rules():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                           first_frame=image("f1")),))
+    await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")},
+                   system_prompt="Keep the scene quiet.")
+    rules = runtime.calls[0][2]
+    assert "H3_CANVAS_WRITING_PROFILE=" in rules
+    assert "Picture 1" in rules
+    assert "Keep the scene quiet." in rules
+
+
+@pytest.mark.asyncio
+async def test_rejects_wrong_speaker_binding_for_exact_quote():
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
+        "integrated_multimodal_description": '[Shot 1] 李四说：“等一下！”'})
+    item = draft(segments=(DirectorSegment(id="one", prompt='张三说：“等一下！”',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_dialogue_must_be_retained_twice():
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
+        "integrated_multimodal_description": '[Shot 1] A says "Wait!" once.'})
+    item = draft(segments=(DirectorSegment(id="one", prompt='A says "Wait!" A says "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+
+
+@pytest.mark.asyncio
 async def test_reference_variants_share_subject_but_keep_distinct_picture_order():
     refs = (image("v1", character_id="c", variant_label="coat"),
             image("v2", character_id="c", variant_label="shirt"),
@@ -88,6 +174,42 @@ async def test_reference_variants_share_subject_but_keep_distinct_picture_order(
     assert '"picture_tag": "<Picture 2>"' in prompt
     assert "variant" in rules.lower()
     assert result.segments[0].mode == "ref2va"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("definition", [
+    "<Subject 1>: coat from <Picture 1>; shirt from <Picture 2>; invented <Picture 3>",
+    "<Subject 1>: shirt from <Picture 2>; coat from <Picture 1>",
+    "<Subject 1>: appearance from <Picture 1>; appearance from <Picture 2>",
+])
+async def test_rejects_invented_reordered_or_unlabeled_reference_pictures(definition):
+    refs = (image("v1", character_id="c", variant_label="coat"),
+            image("v2", character_id="c", variant_label="shirt"))
+    item = draft(refs=refs, segments=(DirectorSegment(id="r", prompt="One person walks", duration_seconds=5),))
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire, "subject_definitions": definition})
+    with pytest.raises(ValueError, match="reference"):
+        await optimize(runtime, item, frozen_images={key: StructuredImage(key.encode(), "image/png")
+                                                     for key in ("v1", "v2")})
+
+
+@pytest.mark.asyncio
+async def test_rejects_split_subject_for_two_variants_of_same_character():
+    refs = (image("v1", character_id="c", variant_label="coat"),
+            image("v2", character_id="c", variant_label="shirt"))
+    item = draft(refs=refs, segments=(DirectorSegment(id="r", prompt="One person walks", duration_seconds=5),))
+
+    def split(wire):
+        return {**wire,
+                "subject_definitions": "<Subject 1>: coat from <Picture 1>\n<Subject 2>: shirt from <Picture 2>",
+                "summary": "<Subject 1> and <Subject 2> walk",
+                "retention_analysis": [{"subject": "<Subject 1>", "retain": "fully_preserved - identity"},
+                                       {"subject": "<Subject 2>", "retain": "fully_preserved - identity"}],
+                "detailed_description": "<Subject 1> and <Subject 2> walk."}
+
+    with pytest.raises(ValueError, match="reference"):
+        await optimize(FakeRuntime(wire_transform=split), item,
+                       frozen_images={key: StructuredImage(key.encode(), "image/png")
+                                      for key in ("v1", "v2")})
 
 
 @pytest.mark.asyncio

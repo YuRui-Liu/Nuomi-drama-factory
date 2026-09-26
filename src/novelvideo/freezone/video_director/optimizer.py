@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Mapping
 
@@ -26,6 +28,81 @@ class _OptimizedWireResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     segment_id: str
     wire: CanvasBaseWire | CanvasReferenceWire
+
+
+_EXPLICIT_DIALOGUE = re.compile(
+    r"(?P<speaker>[\w\u4e00-\u9fff]+)\s*"
+    r"(?:says?|said|asks?|asked|说|说道|问|喊|答)\s*[:：]?\s*"
+    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』)",
+    flags=re.IGNORECASE,
+)
+_SUBJECT_TAG = re.compile(r"<Subject ([1-9][0-9]*)>")
+_PICTURE_TAG = re.compile(r"<Picture ([1-9][0-9]*)>")
+
+
+def _locked_dialogue(prompt: str) -> list[dict[str, str]]:
+    """Extract only source text with an explicit speaker plus quoted speech."""
+    return [{"speaker": match.group("speaker"), "quote": match.group("quote")}
+            for match in _EXPLICIT_DIALOGUE.finditer(prompt)]
+
+
+def _speaker_quote_count(text: str, speaker: str, quote: str) -> int:
+    start = 0
+    count = 0
+    while (found := text.find(quote, start)) >= 0:
+        prefix = text[max(0, found - 120):found].rsplit("\n", 1)[-1]
+        if speaker.isascii():
+            if re.search(rf"(?<!\w){re.escape(speaker)}(?!\w)", prefix):
+                count += 1
+        elif speaker in prefix:
+            count += 1
+        start = found + len(quote)
+    return count
+
+
+def _check_dialogue_identity(wire: CanvasBaseWire | CanvasReferenceWire,
+                             locks: list[dict[str, str]]) -> None:
+    if not locks:
+        return
+    fields = ((wire.integrated_multimodal_description, wire.overall_soundscape)
+              if isinstance(wire, CanvasBaseWire) else
+              (wire.detailed_description, wire.overall_soundscape))
+    required = Counter((lock["speaker"], lock["quote"]) for lock in locks)
+    for (speaker, quote), occurrences in required.items():
+        if sum(_speaker_quote_count(field, speaker, quote) for field in fields) < occurrences:
+            raise ValueError(f"optimized dialogue differs from source: {speaker}")
+
+
+def _check_reference_identity(wire: CanvasReferenceWire,
+                              facts: list[dict[str, object]]) -> None:
+    """Validate Picture/Subject identities against actual attached input order."""
+    by_subject: dict[str, list[dict[str, object]]] = {}
+    for fact in facts:
+        by_subject.setdefault(str(fact["subject_tag"]), []).append(fact)
+    lines = [line.strip() for line in wire.subject_definitions.splitlines() if line.strip()]
+    if len(lines) != len(by_subject):
+        raise ValueError("reference subject count differs from input images")
+    for line, (subject, subject_facts) in zip(lines, by_subject.items(), strict=True):
+        labels = _SUBJECT_TAG.findall(line)
+        if not line.startswith(subject) or labels != [subject[9:-1]]:
+            raise ValueError("reference subject numbering differs from input images")
+        pictures = [f"<Picture {n}>" for n in _PICTURE_TAG.findall(line)]
+        expected = [str(fact["picture_tag"]) for fact in subject_facts]
+        if pictures != expected:
+            raise ValueError("reference picture order or subject mapping differs from input images")
+        for fact in subject_facts:
+            label = fact["variant_label"]
+            if label:
+                clauses = re.split(r"[;,]", line)
+                if not any(str(fact["picture_tag"]) in clause and str(label) in clause
+                           for clause in clauses):
+                    raise ValueError("reference variant label differs from input image")
+    expected_numbers = {int(str(fact["picture_tag"])[9:-1]) for fact in facts}
+    all_text = "\n".join((wire.subject_definitions, wire.summary,
+                          wire.detailed_description, wire.overall_soundscape,
+                          wire.non_diegetic_music))
+    if any(int(number) not in expected_numbers for number in _PICTURE_TAG.findall(all_text)):
+        raise ValueError("reference output invented a picture")
 
 
 def _reference_facts(draft: DirectorDraft) -> list[dict[str, object]]:
@@ -68,7 +145,9 @@ async def optimize(
     reference_facts = _reference_facts(draft)
     reference_ids = [str(fact["image_id"]) for fact in reference_facts]
     result: list[OptimizedSegment] = []
-    for source, aligned in zip(draft.segments, validation.timeline, strict=True):
+    for source_index, (source, aligned) in enumerate(zip(
+        draft.segments, validation.timeline, strict=True
+    )):
         image_ids = (reference_ids if validation.route == "h3_ref" else
                      [source.first_frame.image_id] +
                      ([source.last_frame.image_id] if source.last_frame else []))
@@ -82,6 +161,12 @@ async def optimize(
             "segment_id": source.id,
             "mode": mode,
             "source_prompt": source.prompt,
+            "locked_dialogue": _locked_dialogue(source.prompt),
+            "neighbor_segments": [
+                {"segment_id": neighbor.id, "source_prompt": neighbor.prompt,
+                 "requested_duration_seconds": neighbor.duration_seconds}
+                for neighbor in draft.segments[max(0, source_index - 1):source_index + 2]
+            ],
             "requested_duration_seconds": source.duration_seconds,
             "duration_seconds": aligned.duration_seconds,
             "frames": aligned.frames,
@@ -94,12 +179,18 @@ async def optimize(
                 for index, image_id in enumerate(image_ids)
             ],
         }
-        prompt = ("Return a structured H3 wire for this one segment. Copy segment_id exactly. "
-                  "Use the images in the exact order listed. Preserve quoted dialogue verbatim.\n"
+        prompt = ("Return a structured H3 wire for this one target segment. Copy segment_id exactly. "
+                  "Neighbor segments are continuity context, not extra outputs or images. "
+                  "Use the images in the exact order listed. Copy locked_dialogue speaker and quote "
+                  "into the wire together exactly, including the original quote marks. "
+                  "Do not treat other quoted source text as dialogue.\n"
                   "INPUT_JSON:\n" + json.dumps(source_data, ensure_ascii=False))
+        final_system_prompt = H3_CANVAS_WRITING_RULES
+        if system_prompt:
+            final_system_prompt += "\nAdditional caller context (source facts only):\n" + system_prompt
         response = await runtime.run_structured(
             prompt=prompt, output_type=_OptimizedWireResponse,
-            system_prompt=system_prompt or H3_CANVAS_WRITING_RULES, images=images,
+            system_prompt=final_system_prompt, images=images,
         )
         response = _OptimizedWireResponse.model_validate(response)
         if response.segment_id != source.id:
@@ -109,6 +200,9 @@ async def optimize(
             raise ValueError(f"optimized segment mode mismatch: {source.id}")
         if abs(wire.duration_seconds - aligned.duration_seconds) > 1e-9:
             raise ValueError(f"optimized segment duration mismatch: {source.id}")
+        _check_dialogue_identity(wire, source_data["locked_dialogue"])
+        if isinstance(wire, CanvasReferenceWire):
+            _check_reference_identity(wire, reference_facts)
         result.append(OptimizedSegment(
             segment_id=source.id, mode=mode,
             requested_duration_seconds=source.duration_seconds,
