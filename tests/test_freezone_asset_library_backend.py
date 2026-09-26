@@ -29,6 +29,165 @@ from novelvideo.generators.nanobanana_prop import build_prop_reference_prompt
 from novelvideo.generators.nanobanana_character import build_character_state_sheet_prompt
 
 
+@pytest.mark.asyncio
+async def test_mainline_sync_exposes_base_and_identity_images_in_one_character_card(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from novelvideo.api.routes import freezone
+    from novelvideo.freezone.video_node import load_video_character_library
+
+    identity = SimpleNamespace(identity_id="char-1_青年", identity_name="青年")
+    second_identity = SimpleNamespace(identity_id="char-1_老年", identity_name="老年")
+    character = SimpleNamespace(
+        id="char-1", name="林昭", identities=[identity, second_identity]
+    )
+    portrait = tmp_path / "assets/characters/林昭/portrait.png"
+    identity_image = tmp_path / "assets/characters/林昭/identities/青年.png"
+    costume = tmp_path / "assets/characters/林昭/identities/青年_costume.png"
+    identity_portrait = tmp_path / "assets/characters/林昭/identities/林昭_青年_portrait.png"
+    older_identity_image = tmp_path / "assets/characters/林昭/identities/老年.png"
+    for path in (portrait, identity_image, costume, identity_portrait, older_identity_image):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"image")
+
+    class Store:
+        def get_all_characters(self):
+            return [character]
+
+        async def list_scenes(self):
+            return []
+
+        async def list_props(self):
+            return []
+
+    async def fake_resolve(project, user):
+        return SimpleNamespace(project_id=project), "admin", "demo", tmp_path, str(tmp_path)
+
+    async def fake_store(_ctx):
+        return Store()
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", fake_resolve)
+    monkeypatch.setattr(freezone, "make_sqlite_store_for_context", fake_store)
+    monkeypatch.setattr(freezone, "make_static_url_for_context", lambda _ctx, rel, **_kw: f"/static/{rel}")
+    monkeypatch.setattr(freezone, "resolve_character_voice", lambda **_kw: SimpleNamespace(audio_path=None))
+
+    first = await freezone.freezone_sync_asset_library_from_mainline("demo", user={})
+    assert first["synced"] == 1
+    second = await freezone.freezone_sync_asset_library_from_mainline("demo", user={})
+    assert [item["id"] for item in first["data"]] == [item["id"] for item in second["data"]]
+    assert len(second["data"]) == 1
+    card = second["data"][0]
+    assert card["name"] == "林昭"
+    assert card["media"] == "image"
+    assert card["image_urls"] == ["/static/assets/characters/林昭/portrait.png"]
+    assert len(card["images"]) == 5
+    assert [image["asset_kind"] for image in card["images"]] == [
+        "portrait", "identity", "identity_costume", "identity_portrait", "identity"
+    ]
+    assert card["images"][0]["kind"] == "base"
+    assert all(image["kind"] == "variant" for image in card["images"][1:])
+    assert all(image["character_id"] == "char-1" for image in card["images"])
+    assert [image["variant_id"] for image in card["images"][1:]] == [
+        "char-1_青年", "char-1_青年", "char-1_青年", "char-1_老年"
+    ]
+    assert [image["variant_label"] for image in card["images"][1:]] == [
+        "青年", "青年", "青年", "老年"
+    ]
+    assert len({image["image_id"] for image in card["images"]}) == 5
+    assert [image["image_id"] for image in first["data"][0]["images"]] == [
+        image["image_id"] for image in card["images"]
+    ]
+    assert load_video_character_library(tmp_path)[0]["images"] == card["images"]
+
+
+@pytest.mark.asyncio
+async def test_mainline_sync_keeps_variant_when_base_missing_and_drops_deleted_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    identity = SimpleNamespace(identity_id="林昭_青年", identity_name="青年")
+    character = SimpleNamespace(name="林昭", identities=[identity])
+    identity_image = tmp_path / "assets/characters/林昭/identities/青年.png"
+    identity_image.parent.mkdir(parents=True)
+    identity_image.write_bytes(b"image")
+
+    class Store:
+        def get_all_characters(self):
+            return [character]
+
+        async def list_scenes(self):
+            return []
+
+        async def list_props(self):
+            return []
+
+    async def fake_resolve(project, user):
+        return SimpleNamespace(project_id=project), "admin", "demo", tmp_path, str(tmp_path)
+
+    async def fake_store(_ctx):
+        return Store()
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", fake_resolve)
+    monkeypatch.setattr(freezone, "make_sqlite_store_for_context", fake_store)
+    monkeypatch.setattr(freezone, "make_static_url_for_context", lambda _ctx, rel, **_kw: f"/static/{rel}")
+    monkeypatch.setattr(freezone, "resolve_character_voice", lambda **_kw: SimpleNamespace(audio_path=None))
+
+    first = await freezone.freezone_sync_asset_library_from_mainline("demo", user={})
+    card = first["data"][0]
+    assert card["id"] == "mainline:character:林昭"
+    assert card["images"][0]["kind"] == "variant"
+    assert card["images"][0]["url"].endswith("/青年.png")
+    image_id = card["images"][0]["image_id"]
+
+    identity_image.unlink()
+    second = await freezone.freezone_sync_asset_library_from_mainline("demo", user={})
+    assert second["synced"] == 0
+    card = second["data"][0]
+    assert card["images"] == []
+    assert card["image_urls"] == []
+    assert image_id not in json.dumps(second["data"], ensure_ascii=False)
+
+
+def test_character_image_merge_refreshes_url_and_preserves_order() -> None:
+    from novelvideo.freezone.asset_images import merge_character_images
+
+    old = [
+        {"image_id": "base", "url": "/old/base.png", "kind": "base"},
+        {"image_id": "variant", "url": "/old/variant.png", "kind": "variant"},
+    ]
+    new = [
+        {"image_id": "variant", "url": "/new/variant.png", "kind": "variant"},
+        {"image_id": "new", "url": "/new.png", "kind": "variant"},
+        {"image_id": "new", "url": "/latest.png", "kind": "variant"},
+    ]
+    assert merge_character_images(old, new) == [
+        old[0], new[0], new[2]
+    ]
+
+
+def test_mainline_character_sync_preserves_legacy_records_and_other_media(tmp_path: Path) -> None:
+    from novelvideo.freezone.video_node import (
+        load_video_character_library,
+        save_video_character_library,
+        sync_mainline_assets_into_library,
+    )
+
+    save_video_character_library(tmp_path, [
+        {"id": "mainline:character:林昭", "name": "林昭", "media": "image", "source": "character", "image_urls": ["/old.png"], "custom": "keep"},
+        {"id": "upload-1", "name": "Upload", "media": "video", "video_url": "/clip.mp4", "custom": "untouched"},
+    ])
+    image = {"image_id": "mainline:character:林昭:portrait", "character_id": "mainline:character:林昭", "kind": "base", "asset_kind": "portrait", "variant_id": None, "variant_label": None, "url": "/new.png"}
+    result = sync_mainline_assets_into_library(tmp_path, assets=[{
+        "id": "mainline:character:林昭", "name": "林昭", "media": "image", "source": "character", "url": "/new.png", "images": [image],
+    }])
+    assert result[0]["images"] == [image]
+    assert result[0]["custom"] == "keep"
+    assert result[0]["image_urls"] == ["/new.png"]
+    assert result[1] == {"id": "upload-1", "name": "Upload", "media": "video", "video_url": "/clip.mp4", "custom": "untouched"}
+    assert load_video_character_library(tmp_path) == result
+
+
 def test_preset_file_refs_include_media_type_for_beat_video_and_audio(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     video_path = project_dir / "videos" / "beats" / "ep001" / "beat_02.mp4"

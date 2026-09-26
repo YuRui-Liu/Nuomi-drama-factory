@@ -252,6 +252,7 @@ from novelvideo.project_context import (
     resolve_project_context,
 )
 from novelvideo.seedance2_i2v.voice_clone import resolve_character_voice
+from novelvideo.freezone.asset_images import collect_character_images
 from novelvideo.ports import get_task_backend
 from novelvideo.task_backend.limits import ProjectTaskLimitExceeded, ProjectUserTaskLimitExceeded
 from novelvideo.task_identity import (
@@ -6769,22 +6770,24 @@ async def freezone_sync_asset_library_from_mainline(
 
     assets: list[dict[str, Any]] = []
 
-    # 人物：肖像 → 图片；参考语音 → 音频
+    # 人物：基础肖像和身份变体归入同一图片卡片；参考语音单独保留。
     for character in store.get_all_characters():
         name = getattr(character, "name", "") or ""
         if not name:
             continue
-        portrait_url = _static_url(canonical_portrait_path(project_dir, name))
-        if portrait_url:
-            assets.append(
-                {
-                    "id": f"mainline:character:{name}",
-                    "name": name,
-                    "media": "image",
-                    "source": "character",
-                    "url": portrait_url,
-                }
-            )
+        images = collect_character_images(project_dir, character, _static_url)
+        base = next((image for image in images if image["kind"] == "base"), None)
+        cover_url = (base or (images[0] if images else {})).get("url", "")
+        assets.append(
+            {
+                "id": f"mainline:character:{name}",
+                "name": name,
+                "media": "image",
+                "source": "character",
+                "url": cover_url,
+                "images": images,
+            }
+        )
         # 走全站统一的三级声线级联（身份覆盖 → 年龄段预设 → 角色默认），并让
         # resolve_character_voice 负责把项目相对/绝对路径解析成真实存在的绝对路径，
         # 避免这里手拼 project_dir / rel 时对绝对路径拼错、静默丢音。
@@ -6839,7 +6842,11 @@ async def freezone_sync_asset_library_from_mainline(
             )
 
     library = sync_mainline_assets_into_library(project_dir, assets=assets)
-    return {"ok": True, "data": library, "synced": len(assets)}
+    return {
+        "ok": True,
+        "data": library,
+        "synced": sum(1 for asset in assets if asset.get("url")),
+    }
 
 
 @router.delete(

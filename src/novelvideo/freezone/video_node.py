@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from novelvideo.freezone.asset_images import merge_character_images
 from novelvideo.freezone.paths import freezone_root
 
 
@@ -589,6 +590,7 @@ def _upsert_library_item(
     )
     existing = items[existing_idx] if existing_idx is not None else None
     item = {
+        **(existing or {}),
         "id": resolved_id,
         "name": name.strip(),
         "media": media,
@@ -665,18 +667,25 @@ def sync_mainline_assets_into_library(
     for asset in assets:
         media = str(asset.get("media") or "image")
         url = asset.get("url") or ""
-        if not url:
+        has_image_snapshot = media == "image" and "images" in asset
+        item_id = str(asset.get("id") or "") or None
+        exists = any(item.get("id") == item_id for item in items)
+        if not url and not (has_image_snapshot and exists):
             continue
-        _upsert_library_item(
+        item = _upsert_library_item(
             items,
             name=str(asset.get("name") or ""),
             media=media,
             source=str(asset.get("source") or "upload"),
-            item_id=str(asset.get("id") or "") or None,
-            image_urls=[url] if media == "image" else None,
+            item_id=item_id,
+            image_urls=[url] if media == "image" and url else None,
             video_url=url if media == "video" else None,
             audio_url=url if media == "audio" else None,
         )
+        if has_image_snapshot:
+            # A mainline sync reports the current files, so a vanished image must
+            # disappear even though the merge helper supports incremental updates.
+            item["images"] = merge_character_images([], asset["images"] or [])
         changed = True
     if changed:
         save_video_character_library(project_dir, items)
