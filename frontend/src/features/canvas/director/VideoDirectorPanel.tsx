@@ -34,7 +34,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   onDraftChange: (draft: DirectorDraft) => void; onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const tr = (key: string, defaultValue: string) => t(`videoDirector.editor.${key}`, { defaultValue });
+  const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   const [pickTarget, setPickTarget] = useState<PickTarget | null>(null);
   const [localErrors, setErrors] = useState<DirectorErrors>({});
   const errors = { ...task.fieldErrors, ...localErrors };

@@ -14,6 +14,6 @@ export function directorStageLabel(stage: string | null | undefined,
   t: (key: string, options: { defaultValue: string }) => string): string {
   if (!stage) return '';
   const known = Object.prototype.hasOwnProperty.call(STAGES, stage);
-  return t(`videoDirector.status.${known ? stage : 'unknown'}`,
+  return t(`node.videoDirector.status.${known ? stage : 'unknown'}`,
     { defaultValue: known ? STAGES[stage] : '状态未知' });
 }

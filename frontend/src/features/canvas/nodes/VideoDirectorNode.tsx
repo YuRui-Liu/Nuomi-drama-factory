@@ -49,22 +49,22 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
       <div className={`flex h-full w-full flex-col overflow-hidden rounded-[var(--node-radius)] border ${CANVAS_NODE_INPUT_SURFACE_CLASS} ${canvasNodeFrameClass({ selected })}`}>
         <div className="relative min-h-0 flex-1 bg-black/45">
           {videoUrl ? <video className="nodrag h-full w-full object-contain" src={videoUrl} controls playsInline preload="metadata" />
-            : <div className="flex h-full items-center justify-center text-sm text-text-muted">{t('videoDirector.node.empty')}</div>}
+            : <div className="flex h-full items-center justify-center text-sm text-text-muted">{t('node.videoDirector.node.empty')}</div>}
         </div>
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
-          <span>{t('videoDirector.node.segments', { count: segments.length })}</span>
-          <span>{data.durationMs ? `${(data.durationMs / 1000).toFixed(1)} 秒` : t('videoDirector.node.duration', { seconds: durationSeconds.toFixed(1) })}</span>
+          <span>{t('node.videoDirector.node.segments', { count: segments.length })}</span>
+          <span>{t('node.videoDirector.node.duration', { seconds: (data.durationMs ? data.durationMs / 1000 : durationSeconds).toFixed(1) })}</span>
           <span>{directorStageLabel(active?.stage, t)}</span>
           <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
             event.stopPropagation();
             if (onOpenEditor) onOpenEditor(id);
             else setEditorOpen(true);
-          }}>{t('videoDirector.node.edit')}</button>
+          }}>{t('node.videoDirector.node.edit')}</button>
           <button type="button" className="nodrag text-cyan-300" onClick={(event) => {
             event.stopPropagation();
             if (task.capabilities && !Object.keys(validateDirectorDraft(data.draft, task.capabilities)).length && !data.pendingSubmission) task.generate(data.draft);
             else setEditorOpen(true);
-          }}>{t('videoDirector.node.generate', { defaultValue: '生成' })}</button>
+          }}>{t('node.videoDirector.node.generate', { defaultValue: '生成' })}</button>
         </div>
       </div>
       {editorOpen && <Suspense fallback={null}><VideoDirectorPanel nodeId={id} data={data} task={task}

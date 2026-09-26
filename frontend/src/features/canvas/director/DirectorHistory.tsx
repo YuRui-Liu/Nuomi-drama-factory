@@ -4,7 +4,7 @@ import { directorStageLabel } from './directorStatus';
 
 export function DirectorHistory({ attempts, activeId, onRetry, onRefresh }: { attempts: DirectorAttempt[]; activeId: string | null; onRetry: (id: string) => void; onRefresh: () => void }) {
   const { t } = useTranslation();
-  const tr = (key: string, defaultValue: string) => t(`videoDirector.editor.${key}`, { defaultValue });
+  const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   return <section className="mt-4 border-t border-white/10 pt-4" aria-label="生成历史">
     <div className="mb-2 flex justify-between"><h3 className="text-sm font-medium">{tr('history', '生成历史')}</h3><button type="button" onClick={onRefresh} className="text-xs text-cyan-300">{tr('refreshHistory', '刷新历史')}</button></div>
     {!attempts.length && <p className="text-xs text-text-muted">{tr('emptyHistory', '暂无生成记录')}</p>}

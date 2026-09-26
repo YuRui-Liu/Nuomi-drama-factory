@@ -18,7 +18,7 @@ interface Props {
 
 export function DirectorSegmentEditor({ segment, index, count, capabilities, errors, onPatch, onPick, onCopy, onDelete, onMove }: Props) {
   const { t } = useTranslation();
-  const tr = (key: string, defaultValue: string) => t(`videoDirector.editor.${key}`, { defaultValue });
+  const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   const prefix = `segments[${index}]`;
   const aligned = capabilities && alignDirectorDuration(segment.durationSeconds, capabilities);
   return <section className="rounded-xl border border-white/10 bg-white/[0.035] p-3" aria-label={`${tr('segment', '分段')} ${index + 1}`}>
