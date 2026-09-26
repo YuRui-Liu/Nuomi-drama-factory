@@ -149,6 +149,130 @@ async def test_concurrent_resume_submits_once(setup):
 
 
 @pytest.mark.asyncio
+async def test_optimizer_diagnostics_keep_only_chained_validation_locations_and_types(setup):
+    import json
+
+    from pydantic import BaseModel, ValidationError, field_validator
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+
+    class Output(BaseModel):
+        value: str
+
+        @field_validator("value")
+        @classmethod
+        def reject(cls, value):
+            raise ValueError("secret-validation-context")
+
+    ctx, service, _, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+
+    async def fail(*args, **kwargs):
+        try:
+            Output.model_validate({"value": "secret-validation-input"})
+        except ValidationError as exc:
+            raise KnowledgeRuntimeError("secret-runtime-message", code="CODEX_STRUCTURED_OUTPUT_INVALID") from exc
+
+    service.optimizer = fail
+    await service.resume(item["id"])
+    stored = service.store.get(item["id"])
+    assert stored["optimization_validation_errors"] == [{"loc": ["<redacted>"], "type": "value_error"}]
+    assert "secret-" not in json.dumps(stored)
+
+
+@pytest.mark.asyncio
+async def test_optimizer_diagnostics_keep_locations_without_exception_content(setup):
+    import json
+
+    from novelvideo.api.routes.freezone_video_director import _public
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+
+    async def fail_with_private_content(*args, **kwargs):
+        private_prompt = "private-prompt-sentinel"
+        raise KnowledgeRuntimeError(private_prompt, code="private-code-sentinel")
+
+    service.optimizer = fail_with_private_content
+    await service.resume(item["id"])
+    stored = service.store.get(item["id"])
+    assert stored["optimization_error_type"] == "KnowledgeRuntimeError"
+    assert stored["optimization_error_code"] is None
+    last = stored["optimization_error_trace"][-1]
+    assert last["filename"] == "test_service.py"
+    assert last["function"] == "fail_with_private_content"
+    assert isinstance(last["line"], int) and last["line"] > 0
+    assert "private-prompt-sentinel" not in json.dumps(stored)
+    assert "private-code-sentinel" not in json.dumps(stored)
+    assert not any(key.startswith("optimization_") for key in _public(stored))
+    assert provider.submit_calls == 0
+
+
+def test_validation_diagnostics_redact_input_keys_but_keep_schema_locations():
+    from pydantic import ValidationError
+    from novelvideo.freezone.video_director.models import DirectorDraft
+    from novelvideo.freezone.video_director.service import _validation_locations
+
+    try:
+        DirectorDraft.model_validate({
+            "revision": 1, "aspect_ratio": "16:9", "resolution": "720p",
+            "secret-input-key": "private-value", "segments": [{"duration_seconds": "bad"}],
+        })
+    except ValidationError as exc:
+        errors = _validation_locations(exc)
+    assert {"loc": ["<redacted>"], "type": "extra_forbidden"} in errors
+    assert {"loc": ["segments", 0, "duration_seconds"], "type": "float_parsing"} in errors
+    assert "secret-input-key" not in str(errors)
+
+
+@pytest.mark.asyncio
+async def test_optimizer_diagnostic_trace_is_bounded(setup):
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+
+    def nested(depth):
+        if depth:
+            return nested(depth - 1)
+        raise RuntimeError("private-trace-message")
+
+    async def fail(*args, **kwargs):
+        nested(50)
+
+    service.optimizer = fail
+    failed = await service.resume(item["id"])
+    assert len(failed["optimization_error_trace"]) == 32
+    assert provider.submit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_deepseek_image_rejection_explains_runtime_change_without_submitting(setup):
+    from novelvideo.text_task_runtime.deepseek_harness import DeepSeekHarnessStructuredRuntime
+    from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+
+    ctx, _, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    runtime = DeepSeekHarnessStructuredRuntime(AgentTaskRouteSnapshot(
+        runtime="deepseek_harness", task_role="director_plan", source="global",
+    ))
+    service = DirectorService(ctx, provider=provider, runtime=runtime)
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+
+    failed = await service.resume(item["id"])
+
+    assert failed["stage"] == "failed"
+    assert failed["failed_stage"] == "optimizing"
+    assert provider.submit_calls == 0
+    assert failed["optimization_error_code"] == "DSH_IMAGES_UNSUPPORTED"
+    assert failed["error"] == (
+        "当前导演提示词运行时 DeepSeek Harness 不支持图片输入；"
+        "请将导演规划运行时切换为 Codex 或支持图片的模型 API 后重试。"
+    )
+
+
+@pytest.mark.asyncio
 async def test_optimizer_failure_never_submits_and_linked_retry_can_succeed(setup):
     ctx, service, provider, _ = setup
     (ctx.output_dir / "frame.png").write_bytes(png("red"))
@@ -160,6 +284,7 @@ async def test_optimizer_failure_never_submits_and_linked_retry_can_succeed(setu
     service.optimizer = fail
     failed = await service.resume(item["id"])
     assert failed["failed_stage"] == "optimizing" and provider.submit_calls == 0
+    assert failed["error"] == "Director optimization failed"
     retry, _ = service.retry(item["id"])
     service.optimizer = fake_optimize
     assert (await service.resume(retry["id"]))["provider_task_id"] == "paid-task"

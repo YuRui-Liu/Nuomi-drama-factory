@@ -64,6 +64,46 @@ class FakeRuntime:
 
 
 @pytest.mark.asyncio
+async def test_ref_repair_summary_contains_actual_retention_error_without_base_errors():
+    from pydantic import ValidationError
+    from novelvideo.knowledge_runtime.codex import _validation_summary, normalize_codex_output_schema
+
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire, "retention_analysis": [
+        {"subject": "<Subject 1>", "retain": "Preserve face and costume"},
+    ]})
+    item = draft(refs=(image("ref"),), segments=(
+        DirectorSegment(id="one", prompt="Person walks", duration_seconds=5),
+    ))
+    with pytest.raises(ValidationError) as caught:
+        await optimize(runtime, item, frozen_images={"ref": StructuredImage(b"ref", "image/png")})
+    summary = _validation_summary(caught.value)
+    assert "reference_relation_invalid" in summary
+    assert "CanvasBaseWire" not in summary
+    assert all(error["loc"][:2] == ("wire", "retention_analysis") for error in caught.value.errors())
+    import json
+    schema = json.dumps(normalize_codex_output_schema(runtime.calls[0][1].model_json_schema()))
+    assert '"oneOf"' not in schema
+    assert '"discriminator"' not in schema
+    assert "CanvasBaseWire" not in schema
+
+
+@pytest.mark.asyncio
+async def test_runtime_receives_enforced_shot_and_retention_grammar():
+    runtime = FakeRuntime()
+    await optimize(runtime, draft(), frozen_images={
+        key: StructuredImage(key.encode(), "image/png") for key in ("f1", "f2", "l2")})
+    instructions = runtime.calls[0][2]
+    assert "[Shot 1]" in instructions
+    assert "final_shot_number" in instructions
+    assert "fully_preserved -" in instructions
+    import json
+    from novelvideo.knowledge_runtime.codex import normalize_codex_output_schema
+    schema = json.dumps(normalize_codex_output_schema(runtime.calls[0][1].model_json_schema()))
+    assert '"oneOf"' not in schema and '"discriminator"' not in schema
+    assert "CanvasReferenceWire" not in schema
+
+
+@pytest.mark.asyncio
 async def test_optimizes_ordered_segments_with_aligned_durations_and_real_images():
     runtime = FakeRuntime()
     item = draft()

@@ -6,15 +6,19 @@ import asyncio
 import fcntl
 import hashlib
 import os
+import traceback
 from io import BytesIO
+from itertools import islice
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
+from pydantic import ValidationError
 
 from novelvideo.freezone.paths import resolve_static_url_to_path
 from novelvideo.knowledge_runtime.codex import StructuredImage, validate_structured_images
+from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 from novelvideo.media_capabilities.video.h3_prompt_profile import H3_CANVAS_WRITING_RULES
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 
@@ -83,6 +87,37 @@ def _known_rejection(exc: Exception) -> bool:
     if exc.code in {"INVALID_RESPONSE", "INVALID_JSON"}:
         return False
     return (exc.code is not None or exc.http_status in {400, 401, 403, 404, 422})
+
+
+def _diagnostic_schema_names() -> frozenset[str]:
+    names = set()
+    for model in (DirectorDraft, OptimizedDirector):
+        schema = model.model_json_schema()
+        definitions = schema.get("$defs", {})
+        names.update(definitions)
+        for definition in (schema, *definitions.values()):
+            names.update(definition.get("properties", {}))
+    return frozenset(names)
+
+
+_DIAGNOSTIC_SCHEMA_NAMES = _diagnostic_schema_names()
+
+
+def _validation_locations(exc: BaseException) -> list[dict]:
+    errors = []
+    # Only follow explicit causes, with a bound that also handles cycles.
+    for _ in range(8):
+        if isinstance(exc, ValidationError):
+            # Unknown field names and dictionary keys can themselves be private input.
+            errors.extend({"loc": [part if isinstance(part, int) or part in _DIAGNOSTIC_SCHEMA_NAMES
+                                   else "<redacted>" for part in error["loc"]],
+                           "type": error["type"]}
+                          for error in exc.errors(include_input=False, include_context=False,
+                                                  include_url=False)[:32])
+        if exc.__cause__ is None:
+            break
+        exc = exc.__cause__
+    return errors
 
 
 class DirectorService:
@@ -225,9 +260,27 @@ class DirectorService:
                         raise RuntimeError("director text runtime is unavailable")
                     optimized = await self.optimizer(runtime, draft, frozen_images=images,
                                                      reference_limit=reference_limit)
-                except Exception:
+                except Exception as exc:
+                    error = "Director optimization failed"
+                    if isinstance(exc, KnowledgeRuntimeError) and exc.code == "DSH_IMAGES_UNSUPPORTED":
+                        error = ("当前导演提示词运行时 DeepSeek Harness 不支持图片输入；"
+                                 "请将导演规划运行时切换为 Codex 或支持图片的模型 API 后重试。")
                     return self.store.update(attempt_id, stage="failed", failed_stage="optimizing",
-                                             error="Director optimization failed")
+                                             error=error,
+                                             optimization_validation_errors=_validation_locations(exc),
+                                             optimization_error_type=type(exc).__name__,
+                                             optimization_error_code=(exc.code if isinstance(exc, KnowledgeRuntimeError)
+                                                 and exc.code in {"DSH_IMAGES_UNSUPPORTED", "CODEX_STRUCTURED_OUTPUT_INVALID",
+                                                                  "CODEX_NOT_INSTALLED", "CODEX_EXEC_FAILED",
+                                                                  "CODEX_NOT_AUTHENTICATED", "CODEX_SCHEMA_INVALID"}
+                                                 else None),
+                                             # Store locations only: exception messages, source lines and
+                                             # frame locals may contain credentials or private prompts.
+                                             optimization_error_trace=[
+                                                 {"filename": Path(frame.f_code.co_filename).name,
+                                                  "function": frame.f_code.co_name, "line": line}
+                                                 for frame, line in islice(traceback.walk_tb(exc.__traceback__), 32)
+                                             ])
                 item = self.store.update(attempt_id, optimized=optimized.model_dump(mode="json"),
                                          rules_hash=current_hash, stage="preparing")
             # Upload and compilation happen before the paid submission claim.

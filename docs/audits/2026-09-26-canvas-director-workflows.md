@@ -1,6 +1,6 @@
 # Canvas director workflow evidence
 
-Initial observation 2026-09-26 08:04:34 UTC; successful remote follow-up 08:18:06–07 UTC (16:18:06–07 Asia/Shanghai). This audit records current remote definitions and local contracts, **not a claim of remote generation success**. No generation task, upload, or paid operation was performed. The machine-readable sanitized evidence is `tests/fixtures/runninghub/canvas_director_contract.json`.
+Initial observation 2026-09-26 08:04:34 UTC; successful remote follow-up 08:18:06–07 UTC (16:18:06–07 Asia/Shanghai). The initial audit covered definitions and local contracts without paid operations. A later user-authorized paid acceptance run is recorded below. The machine-readable definition evidence remains `tests/fixtures/runninghub/canvas_director_contract.json`.
 
 ## Workflow identity and evidence boundaries
 
@@ -21,10 +21,10 @@ The contract's `sources` hashes separately identify exact local file bytes. Prof
 
 | Mode | Implementation target | Evidence | Current remote definition verified | Generation verified |
 | --- | --- | --- | --- | --- |
-| Pure Ref / r2v | Supported | Authenticated remote r2v definition | Yes | No |
+| Pure Ref / r2v | Supported | Authenticated remote r2v definition and paid output | Yes | Yes |
 | First frame / i2v | Supported | Ordinary profile and runtime | No | No |
-| First + last / fl2v | Supported | Authenticated remote fl2v definition | Yes | No |
-| Multiple segments | Supported | Remote Ref segments; local ordinary compiler | Ref only | No |
+| First + last / fl2v | Supported | Authenticated remote fl2v definition and paid output | Yes | Yes, one segment |
+| Multiple segments | Supported | Remote Ref segments; local ordinary compiler | Ref only | Yes, Ref only |
 | Ref + first frame | Disabled | Local compiler extension only | No | No |
 | Ref + first + last | Disabled | Local compiler extension only | No | No |
 
@@ -54,4 +54,33 @@ The parent-run frontend `npm run build` completed with exit 0: `tsc -b`, Vite bu
 
 A local browser preview of the real node, panel and asset modal was also observed at a localhost-only test page. With fake Director/asset responses and a synthetic two-second video, the flow retained both character images, two prompts, ordering and result after editor reopen and page refresh. It showed an explicit unsupported-hybrid message while preserving inputs, submitted generation without an approval step, kept polling after closing the panel, exposed playback and history, and remained scrollable at 640×800. These observations have no saved screenshot artifact and do not establish production app authentication or remote provider behavior. The full isolated app's authentication route hit a pre-existing Community Edition baseline limitation; the component harness avoided changes to unrelated auth code.
 
-Both authenticated definition reads succeeded without paid work. Their sanitized extraction was held in `/private/tmp/canvas-director-live-definition-summary.json`; no raw graph or credential was persisted. The earlier update checked its hashes and timestamps against that extraction, parsed the contract, checked conservative mode flags, and scanned for secrets/private URLs. **Paid ordinary first/last and pure Ref multisegment generations have not run.** Those supported routes need user authorization for expense and materials before production CLI calls can verify provider output. Hybrid support stays false until evidence establishes that both reference and frame conditioning are consumed.
+Both authenticated definition reads succeeded without paid work. Their sanitized extraction was held in `/private/tmp/canvas-director-live-definition-summary.json`; no raw graph or credential was persisted. The earlier update checked its hashes and timestamps against that extraction, parsed the contract, checked conservative mode flags, and scanned for secrets/private URLs. Paid acceptance subsequently began with explicit user authorization, as recorded below. Hybrid support stays false until evidence establishes that both reference and frame conditioning are consumed.
+
+## Paid acceptance, 2026-09-26
+
+The user explicitly authorized real verification and expense. The implementation worktree served the existing `shanhai_shiyi` project (`01M34T0S1BRCVENZAMM8RFA3YJ`) on localhost:8781. Supported production CLI attempt/retry endpoints submitted the tests; no direct ad-hoc provider generation script was used. No QC or human approval stage was introduced.
+
+The initial attempt `373b34aa078f4219a952baf8117836ad` failed before any provider submission: the configured DeepSeek Harness adapter rejects image attachments (`DSH_IMAGES_UNSUPPORTED`). The existing, authenticated Codex route (`gpt-5.6-sol`, medium) was temporarily selected for the acceptance tasks and the exact original routing configuration restored after enqueue. A regression now verifies that this known failure gives an actionable message and never submits video; other arbitrary exception messages remain private.
+
+### Ordinary H3 first/last: completed
+
+- Director attempt: `39e609bb957247dd9bc9f6f82470d331`; application task: `4354d39f-08aa-4832-beb2-5d545354573c`.
+- RunningHub task: `2103844083033407489`; workflow: `2089723723468328961`.
+- Inputs: existing `修简铺` and `修简铺_夜晚` scene master images; one requested five-second segment, 16:9, 720p.
+- Real runtime optimization completed before upload/submission. The attempt reached completed and saved `freezone/_outputs/video_director/39e609bb957247dd9bc9f6f82470d331.mp4` in the project output directory.
+- `ffprobe`: H.264 High/yuv420p, 1280×736, 24 fps, 124 video frames, 5.166667 seconds of video; AAC LC audio, container duration 5.167 seconds, 381,564 bytes. Full `ffmpeg` decode to null completed with exit 0.
+- First/middle/last frame inspection showed the same empty workshop composition and changing rain/window appearance. This is sample inspection, not a QC gate or a claim of perfect conditioning.
+- Local media GET Range returned HTTP 206 with video/mp4. Direct navigation to the media URL in the in-app browser showed an unavailable player; the media response has a restrictive document CSP. Embedded production-panel playback has not been established by this direct navigation test.
+- The project ledger records one successful RunningHub call (`25eee071-46ac-407e-b917-7e975e1d436c`), but no measured credit usage. Currency valuation is unpriced because the CNY exchange rate is missing. Codex calls are also unpriced. No exact monetary amount can be claimed.
+
+### Pure Ref: completed after optimizer repair
+
+Inputs are the base portrait and `E1雨夜常服` variant of the same `步知遥` character, with two five-second segments at 9:16/720p. Attempt `e95df70a5d2d4b71979086263c8edd83` and diagnostic retry `507b9714a6aa44ceaaecf15f2ea101cf` failed during optimization, with no RunningHub task created. The diagnostic retry identified `CODEX_STRUCTURED_OUTPUT_INVALID` after the runtime's bounded schema-repair calls. The original model response was ephemeral and unavailable; its exact invalid field cannot be asserted.
+
+Local reproduction separately established that a malformed Ref retention value can cause the untagged union's Base errors to consume the entire 600-character runtime repair summary, hiding the real Ref error. Follow-up fixes separate mode-specific response schemas and explicitly state the already-enforced wire grammar. These findings do not justify claiming the earlier unknown response used that particular invalid value.
+
+The post-fix attempt `aa1f18e735404d0ab4c9e6b632e36a2d` (application task `96148382-5490-4e69-9c9e-bb5621fc50f0`) completed both real runtime rewrites and submitted RunningHub task `2103849584924258306` to Ref workflow `2096502793044582401`. Both optimized wires declare one Subject with Picture 1 for identity and Picture 2 for the exact `E1雨夜常服` variant. Neither segment has a first/last frame.
+
+The saved `freezone/_outputs/video_director/aa1f18e735404d0ab4c9e6b632e36a2d.mp4` passed complete ffmpeg decoding. ffprobe measured H.264/yuv420p, 736×1280, 24 fps, 248 frames, 10.333333 seconds of video and AAC audio; container duration 10.334 seconds, 2,271,776 bytes. Six sampled frames including both sides of the segment boundary show the same character/costume and sequential bamboo-scroll action without a reference-sheet collage. The boundary changes framing visibly; this test does not establish seamless continuous motion across independently generated segments. No extra generation was requested to hide this limitation.
+
+Final verification: 89 Director tests and 135 shared H3 wire/optimizer tests passed (224 total); the Director run reported eight existing dependency deprecation warnings. Read-only code review approved mode-specific response schemas, unchanged content/identity guards, and safe private failure diagnostics. Unknown validation-location strings are redacted; diagnostics are excluded from public responses. Exact original runtime routing was restored after every temporary acceptance enqueue. This run submitted exactly two RunningHub video tasks and recorded ten Codex calls including schema repairs. No measured credit or currency amount was available in the ledger, so expense is unknown, not zero.

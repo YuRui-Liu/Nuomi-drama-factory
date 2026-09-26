@@ -24,10 +24,16 @@ from .models import (
 )
 
 
-class _OptimizedWireResponse(BaseModel):
+class _OptimizedBaseResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     segment_id: str
-    wire: CanvasBaseWire | CanvasReferenceWire
+    wire: CanvasBaseWire
+
+
+class _OptimizedReferenceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    segment_id: str
+    wire: CanvasReferenceWire
 
 
 _EXPLICIT_DIALOGUE = re.compile(
@@ -145,6 +151,8 @@ async def optimize(
     never treated as a provider prompt.
     """
     validation = validate_generation(draft, reference_limit=reference_limit)
+    response_type = (_OptimizedReferenceResponse if validation.route == "h3_ref"
+                     else _OptimizedBaseResponse)
     reference_facts = _reference_facts(draft)
     reference_ids = [str(fact["image_id"]) for fact in reference_facts]
     result: list[OptimizedSegment] = []
@@ -192,10 +200,10 @@ async def optimize(
         if system_prompt:
             final_system_prompt += "\nAdditional caller context (source facts only):\n" + system_prompt
         response = await runtime.run_structured(
-            prompt=prompt, output_type=_OptimizedWireResponse,
+            prompt=prompt, output_type=response_type,
             system_prompt=final_system_prompt, images=images,
         )
-        response = _OptimizedWireResponse.model_validate(response)
+        response = response_type.model_validate(response)
         if response.segment_id != source.id:
             raise ValueError(f"optimized segment ID mismatch: {source.id}")
         wire = response.wire
