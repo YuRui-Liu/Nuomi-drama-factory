@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from novelvideo.media_capabilities.video.h3_wire import H3BaseWire, H3ReferenceWire
+
 
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -58,12 +60,41 @@ class DirectorDraft(_FrozenModel):
         return self
 
 
+class CanvasBaseWire(H3BaseWire):
+    """Canvas timeline can align beyond the legacy wire's 15 second ceiling."""
+
+    duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+
+class CanvasReferenceWire(H3ReferenceWire):
+    duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+
+class OptimizedSegment(_FrozenModel):
+    segment_id: str
+    mode: str
+    requested_duration_seconds: float
+    duration_seconds: float
+    frames: int = Field(gt=0)
+    wire: CanvasBaseWire | CanvasReferenceWire
+    prompt: str
+
+
+class OptimizedDirector(_FrozenModel):
+    revision: int = Field(ge=0)
+    route: Literal["h3", "h3_ref"]
+    profile_id: str
+    profile_version: int
+    optimized_at: datetime
+    segments: tuple[OptimizedSegment, ...]
+
+
 class DirectorAttempt(_FrozenModel):
     id: str
     revision: int = Field(ge=0)
     snapshot: DirectorDraft
     stage: str
-    optimized_segments: tuple[DirectorSegment, ...] = ()
+    optimized_segments: tuple[OptimizedSegment, ...] = ()
     provider_task_id: str | None = None
     result_url: str | None = None
     error: str | None = None
@@ -72,4 +103,5 @@ class DirectorAttempt(_FrozenModel):
     updated_at: datetime | None = None
 
 
-__all__ = ["DirectorImage", "DirectorSegment", "DirectorDraft", "DirectorAttempt"]
+__all__ = ["DirectorImage", "DirectorSegment", "DirectorDraft", "DirectorAttempt",
+           "CanvasBaseWire", "CanvasReferenceWire", "OptimizedSegment", "OptimizedDirector"]
