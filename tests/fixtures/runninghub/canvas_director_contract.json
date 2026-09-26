@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "sanitized_canvas_director_evidence",
+  "observed_at": "2026-09-26T08:04:34Z",
+  "semantics": {
+    "supported": "Permitted implementation target based on local contract evidence; not production certification.",
+    "verified": "Successful generation performed in this audit.",
+    "definition_verified": "Authenticated current remote workflow definition inspected in this audit."
+  },
+  "configured_workflows": {
+    "evidence_kind": "live_server_settings_read",
+    "endpoint": "GET /api/v1/media-capabilities/providers/runninghub-main/workflows",
+    "ordinary": "2089723723468328961",
+    "reference": "2096502793044582401",
+    "reference_max_images": 5,
+    "matches_packaged_defaults": true
+  },
+  "remote_definition_read": {
+    "verified": false,
+    "definition_sha256": null,
+    "blocker": "No RunningHub credential in inspected main-workspace .env; inspected main state/local/settings.db contained no provider/settings rows. Live server settings were readable, but its authenticated credential source was not resolved. No remote definition request was sent.",
+    "documented_read_endpoint": "POST /api/openapi/getJsonApiFormat"
+  },
+  "generation_verification": {"performed": false, "tasks_submitted": 0, "reason": "Paid generation not authorized for this audit."},
+  "sources": [
+    {"path": "runninghub/MiniMax H3 导演台全能工作流-参考_api.json", "sha256": "35741b18991ee6a27b1553276c6f1525ee6fd8ca88dc89cc04602a87911058e4", "kind": "local_saved_definition"},
+    {"path": "tests/fixtures/runninghub/minimax_h3_api.json", "sha256": "7329e7992f6869769a1e382f84ee67267adcdf324f8dc197c386df72af80dde1", "kind": "local_simplified_fixture"},
+    {"path": "tests/fixtures/runninghub/minimax_h3_ref_api.json", "sha256": "478304297a7ee7cfb73fa678293022edac23a73552e57c9811366bc45cf97419", "kind": "local_sanitized_contract"},
+    {"path": "src/novelvideo/media_capabilities/video/profiles/minimax_h3.json", "sha256": "f99c10579d54e55e5f33574013c0ee4cd5eacdb3704add1207ef1e1263f4b23a", "kind": "local_profile"},
+    {"path": "src/novelvideo/media_capabilities/video/profiles/minimax_h3_ref.json", "sha256": "b46422efa7eb368a369237d24c5d3a85f4aa23a7e64df3041bcdf71a9e62700f", "kind": "local_profile"},
+    {"path": "src/novelvideo/media_capabilities/video/runtime.py", "sha256": "5ce51d9b216c9ea358e51e172bea0a243f9f61f66de6a84baa4ba603b0738aeb", "kind": "local_runtime"},
+    {"path": "src/novelvideo/media_capabilities/video/h3_reference_payload.py", "sha256": "db1d4811bcdabb14b9d88fc46366386e7aa3e69e3ffe364a36d1ade14c181f20", "kind": "local_compiler"}
+  ],
+  "bindings": {
+    "timeline": {"node_id": "12", "field": "timeline_data"},
+    "video_output": {"node_id": "7", "class_type": "SaveVideo"},
+    "evidence_kind": "local_profiles_and_saved_definition",
+    "definition_verified": false
+  },
+  "modes": [
+    {"mode": "ref_only", "workflow": "reference", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_saved_r2v_definition", "required_inputs": ["compiled_prompt", "global.refs", "timeline_data"], "first_frame_required": false, "last_frame_required": false, "forbidden_fallbacks": ["drop_references", "submit_raw_prompt"], "task_type": "r2v — 参考主体生视频(Reference to Video)", "timeline_mode": "prompt_batch"},
+    {"mode": "i2v", "workflow": "ordinary", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_profile_and_runtime", "required_inputs": ["compiled_prompt", "first_frame", "timeline_data"], "forbidden_fallbacks": ["submit_raw_prompt"]},
+    {"mode": "fl2v", "workflow": "ordinary", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_profile_runtime_and_simplified_fixture", "required_inputs": ["compiled_prompt", "first_frame", "last_frame", "timeline_data"], "forbidden_fallbacks": ["drop_last_frame", "submit_raw_prompt"]},
+    {"mode": "ref_plus_first", "workflow": "reference", "supported": false, "verified": false, "definition_verified": false, "evidence_kind": "local_compiler_only_unproven_combination", "required_inputs": ["compiled_prompt", "global.refs", "first_frame"], "forbidden_fallbacks": ["drop_references", "drop_first_frame", "submit_raw_prompt"]},
+    {"mode": "ref_plus_first_last", "workflow": "reference", "supported": false, "verified": false, "definition_verified": false, "evidence_kind": "local_compiler_only_unproven_combination", "required_inputs": ["compiled_prompt", "global.refs", "first_frame", "last_frame"], "forbidden_fallbacks": ["drop_references", "drop_first_frame", "drop_last_frame", "submit_raw_prompt"]}
+  ],
+  "multi_segment": {"supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_saved_reference_definition_and_ordinary_runtime", "reference_saved_segments": 2, "reference_saved_shots": 3, "reference_saved_keyframes": 6, "caveat": "Saved legacy collections disagree; this is envelope evidence, not proof all collections are executed or hybrid inputs honored."},
+  "dimensions": {"ordinary_refine_node": "18", "ordinary_override_fields": ["width", "height", "aspect_ratio", "megapixels"], "ordinary_custom_aspect_ratio": "自定义", "evidence_kind": "local_runtime_and_prior_audit", "definition_verified": false, "reference_refine_node": null, "reference_refine_status": "absent_from_local_saved_definition_remote_unknown", "override_scope": "Only packaged ordinary workflow ID; inspect any replacement workflow before assuming node 18 exists."},
+  "limits": {"configured_reference_max_images": 5, "local_compiler_reference_range": [1, 10], "provider_reference_max_images": null, "fps": 24, "local_frame_count_rule": "17*k+5, ceil requested seconds*24 to next legal count", "provider_max_frames": null, "provider_max_segments": null, "saved_reference_total_frames": 180, "saved_reference_segment_frames": [107, 73], "evidence_kind": "local_runtime_and_saved_values_not_provider_limits"}
+}
