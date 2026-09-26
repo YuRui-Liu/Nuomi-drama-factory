@@ -159,7 +159,15 @@ function itemUrl(media: AssetLibraryMedia, it: Record<string, unknown>): string 
     const first = urls.find((u): u is string => typeof u === 'string');
     if (first) return first;
   }
-  return typeof it.cover_url === 'string' ? it.cover_url : '';
+  if (typeof it.cover_url === 'string' && it.cover_url) return it.cover_url;
+  if (Array.isArray(it.images)) {
+    const firstChild = it.images.find(
+      (image): image is { url: string } =>
+        Boolean(image && typeof image === 'object' && typeof image.url === 'string' && image.url.trim()),
+    );
+    if (firstChild) return firstChild.url;
+  }
+  return '';
 }
 
 function normalizeLibraryList(payload: unknown): LibraryItem[] {

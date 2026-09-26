@@ -14,6 +14,13 @@ interface CharacterImagePickerProps {
   onBack: () => void;
 }
 
+const IMAGE_KIND_LABEL: Record<FreezoneCharacterLibraryImage['asset_kind'], string> = {
+  portrait: '基础肖像',
+  identity: '身份参考图',
+  identity_costume: '服装参考图',
+  identity_portrait: '变体肖像',
+};
+
 export function CharacterImagePicker({
   characterName,
   images,
@@ -47,12 +54,13 @@ export function CharacterImagePicker({
             const selected = selectedImageIds.has(image.image_id);
             const disabled = !selected && selectionMode === 'multiple' && selectedCount >= maxSelectable;
             const label = image.kind === 'base' ? '基础图' : image.variant_label || '变体';
+            const kindLabel = IMAGE_KIND_LABEL[image.asset_kind];
             return (
               <label key={image.image_id} className={`relative block aspect-square overflow-hidden rounded-[12px] border bg-white/[0.04] ${selected ? 'border-accent/70 ring-1 ring-accent/45' : 'border-white/[0.10]'} ${disabled ? 'opacity-50' : 'cursor-pointer hover:border-white/[0.18]'}`}>
                 <img src={resolveImageDisplayUrl(image.url)} alt="" className="h-full w-full object-cover" draggable={false} />
                 <input
                   type="checkbox"
-                  aria-label={`${characterName} ${label} ${image.asset_kind}`}
+                  aria-label={`${characterName} ${label} ${kindLabel}`}
                   checked={selected}
                   disabled={disabled}
                   onChange={() => onToggle(image)}
@@ -60,7 +68,7 @@ export function CharacterImagePicker({
                 />
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-2 text-xs text-white">
                   <div className="truncate">{label}</div>
-                  <div className="text-[10px] text-white/75">{image.asset_kind}</div>
+                  <div className="text-[10px] text-white/75">{kindLabel}</div>
                 </div>
               </label>
             );

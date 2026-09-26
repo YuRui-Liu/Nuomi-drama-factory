@@ -24,6 +24,7 @@ const characters = [
       { image_id: 'alice-base', character_id: 'alice', kind: 'base', asset_kind: 'portrait', variant_id: null, variant_label: null, url: '/alice-base.png' },
       { image_id: 'alice-coat', character_id: 'alice', kind: 'variant', asset_kind: 'identity_costume', variant_id: 'coat', variant_label: '红外套', url: '/alice-coat.png' },
       { image_id: 'alice-identity', character_id: 'alice', kind: 'variant', asset_kind: 'identity', variant_id: 'coat', variant_label: '红外套', url: '/alice-identity.png' },
+      { image_id: 'alice-portrait', character_id: 'alice', kind: 'variant', asset_kind: 'identity_portrait', variant_id: 'coat', variant_label: '红外套', url: '/alice-portrait.png' },
     ],
   },
   {
@@ -52,13 +53,17 @@ describe('AssetLibraryModal character images', () => {
   it('selects exact base and variant images, preserving checks through back navigation', async () => {
     const { onConfirm } = show();
     await openCharacter('Alice');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' }));
     fireEvent.click(screen.getByRole('button', { name: '返回素材库' }));
     expect(screen.getByRole('status', { name: '已选 2/9' })).toBeInTheDocument();
     await openCharacter('Alice');
-    expect(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' })).toBeChecked();
+    expect(screen.getByText('服装参考图')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 变体肖像' })).toBeInTheDocument();
+    expect(screen.queryByText('identity_costume')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /identity_/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     expect(onConfirm).toHaveBeenCalledWith([
       expect.objectContaining({ imageId: 'alice-base', assetId: 'character:alice', characterId: 'alice', url: '/alice-base.png', assetKind: 'portrait' }),
@@ -69,10 +74,10 @@ describe('AssetLibraryModal character images', () => {
   it('selects across characters and distinguishes image kinds for the same variant', async () => {
     const { onConfirm } = show();
     await openCharacter('Alice');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 identity' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 身份参考图' }));
     fireEvent.click(screen.getByRole('button', { name: '返回素材库' }));
     await openCharacter('Bob');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Bob 基础图 portrait' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Bob 基础图 基础肖像' }));
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     expect(onConfirm.mock.calls[0][0].map((item) => item.imageId)).toEqual(['alice-identity', 'bob-base']);
   });
@@ -80,11 +85,11 @@ describe('AssetLibraryModal character images', () => {
   it('blocks extras at the maximum but permits unselecting', async () => {
     const { onConfirm } = show({ maxSelectable: 1 });
     await openCharacter('Alice');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' }));
-    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' }));
-    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' }));
+    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' }));
+    expect(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' }));
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     expect(onConfirm.mock.calls[0][0].map((item) => item.imageId)).toEqual(['alice-coat']);
   });
@@ -92,14 +97,14 @@ describe('AssetLibraryModal character images', () => {
   it('replaces a prior choice in single mode and restores it when reopened', async () => {
     const { onConfirm, rerender } = show({ selectionMode: 'single' });
     await openCharacter('Alice');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' }));
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     expect(onConfirm.mock.calls[0][0].map((item) => item.imageId)).toEqual(['alice-coat']);
     rerender(<AssetLibraryModal open={false} project="demo" onClose={vi.fn()} onConfirm={onConfirm} selectionMode="single" />);
     rerender(<AssetLibraryModal open project="demo" onClose={vi.fn()} onConfirm={onConfirm} selectionMode="single" initialSelections={onConfirm.mock.calls[0][0]} />);
     await openCharacter('Alice');
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alice 红外套 identity_costume' })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alice 红外套 服装参考图' })).toBeChecked());
   });
 
   it('keeps legacy character cards selectable by their cover', async () => {
@@ -124,9 +129,18 @@ describe('AssetLibraryModal character images', () => {
     ]);
     const { onConfirm } = show();
     await openCharacter('Alice');
-    expect(screen.getAllByRole('checkbox', { name: 'Alice 基础图 portrait' })).toHaveLength(1);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 portrait' }));
+    expect(screen.getAllByRole('checkbox', { name: 'Alice 基础图 基础肖像' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice 基础图 基础肖像' }));
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     expect(onConfirm.mock.calls[0][0].map((item) => item.imageId)).toEqual(['alice-base']);
+  });
+
+  it('shows a character whose only cover is a valid child image', async () => {
+    vi.mocked(syncFreezoneAssetLibraryFromMainline).mockResolvedValue([
+      { id: 'child-only', name: 'ChildOnly', media: 'image', source: 'character', images: [{ image_id: 'child-only-base', character_id: 'child-only', kind: 'base', asset_kind: 'portrait', variant_id: null, variant_label: null, url: '/child-only.png' }] },
+    ]);
+    show();
+    await openCharacter('ChildOnly');
+    expect(screen.getByRole('checkbox', { name: 'ChildOnly 基础图 基础肖像' })).toBeInTheDocument();
   });
 });
