@@ -176,6 +176,15 @@ def test_aligned_timeline_sums_actual_durations_without_rounding_loss():
     assert result.timeline[1].start_frame == 362
 
 
+def test_finite_duration_that_overflows_frame_conversion_is_field_error():
+    segment = DirectorSegment(id="huge", prompt="x", duration_seconds=1e308,
+                              first_frame=image("f"))
+    with pytest.raises(DirectorCapabilityError) as error:
+        validate_generation(draft(segments=(segment,)))
+    assert error.value.field == "segments[0].duration_seconds"
+    assert error.value.segment_id == "huge"
+
+
 def test_unknown_model_and_size_are_field_errors():
     for changes, field in [({"model_id": "other"}, "model_id"),
                            ({"resolution": "4k"}, "resolution"),

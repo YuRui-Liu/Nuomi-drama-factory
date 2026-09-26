@@ -102,12 +102,21 @@ def validate_generation(draft: DirectorDraft, reference_limit: int = 5) -> Gener
             if segment.first_frame is None:
                 raise DirectorCapabilityError(f"{field}.first_frame", "first frame is required without references", segment.id)
             mode = "fl2v" if segment.last_frame is not None else "i2v"
-        frames = frames_for_duration(segment.duration_seconds, H3_FPS)
+        try:
+            frames = frames_for_duration(segment.duration_seconds, H3_FPS)
+            actual_duration = frames / H3_FPS
+            total_duration = (offset + frames) / H3_FPS
+        except OverflowError as exc:
+            raise DirectorCapabilityError(
+                f"{field}.duration_seconds",
+                "duration overflows the H3 frame timeline",
+                segment.id,
+            ) from exc
         timeline.append(AlignedSegment(segment.id, mode, segment.duration_seconds,
-                                       frames, offset, frames / H3_FPS))
+                                       frames, offset, actual_duration))
         offset += frames
     return GenerationValidation(route, tuple(item.mode for item in timeline), size,
-                                reference_ids, tuple(timeline), offset, offset / H3_FPS)
+                                reference_ids, tuple(timeline), offset, total_duration)
 
 
 def describe_capabilities(reference_limit: int = 5) -> dict:
