@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "fixture_kind": "sanitized_canvas_director_evidence",
-  "observed_at": "2026-09-26T08:04:34Z",
+  "observed_at": "2026-09-26T08:18:07Z",
   "semantics": {
-    "supported": "Permitted implementation target based on local contract evidence; not production certification.",
+    "supported": "Permitted implementation target based on stated evidence; not production certification.",
     "verified": "Successful generation performed in this audit.",
     "definition_verified": "Authenticated current remote workflow definition inspected in this audit."
   },
@@ -16,10 +16,16 @@
     "matches_packaged_defaults": true
   },
   "remote_definition_read": {
-    "verified": false,
-    "definition_sha256": null,
-    "blocker": "No RunningHub credential in inspected main-workspace .env; inspected main state/local/settings.db contained no provider/settings rows. Live server settings were readable, but its authenticated credential source was not resolved. No remote definition request was sent.",
-    "documented_read_endpoint": "POST /api/openapi/getJsonApiFormat"
+    "verified": true,
+    "status": "success",
+    "initial_attempt": {"observed_at": "2026-09-26T08:04:34Z", "status": "blocked_superseded", "reason": "Inspected workspace .env and workspace state had no credentials/settings. No remote request was sent during that initial attempt."},
+    "resolution": "Read actual configured data root nuomi-drama-data/state; existing CredentialResolver and OS-backed credential store resolved the configured account after approved escalation. No credentials or private media URLs retained.",
+    "documented_read_endpoint": "POST /api/openapi/getJsonApiFormat",
+    "hash_encoding": "SHA-256 of UTF-8 bytes of exact response data.prompt string before parsing or sanitization",
+    "definitions": [
+      {"workflow_id": "2089723723468328961", "observed_at": "2026-09-26T08:18:06.985738Z", "definition_sha256": "36cf43a116fd721d7b1abba85ef47c56aa3571e7980406ce29dc9e544c738d8f", "task_type": "fl2v — 首尾帧生视频(First-Last Frame)", "timeline_mode": "fl2v", "segment_count": 1, "first_frame_present": true, "last_frame_present": true, "total_frames": 124, "fps": 24},
+      {"workflow_id": "2096502793044582401", "observed_at": "2026-09-26T08:18:07.373545Z", "definition_sha256": "ba96362a6c2b12445e3eb220ea7c73df73d23c533fb27c06237faaaa33564209", "task_type": "r2v — 参考主体生视频(Reference to Video)", "timeline_mode": "prompt_batch", "segment_count": 2, "global_reference_count": 3, "global_gen_image_present": false, "segment_gen_images_present": false, "segment_end_images_present": false, "total_frames": 180, "fps": 24}
+    ]
   },
   "generation_verification": {"performed": false, "tasks_submitted": 0, "reason": "Paid generation not authorized for this audit."},
   "sources": [
@@ -34,17 +40,18 @@
   "bindings": {
     "timeline": {"node_id": "12", "field": "timeline_data"},
     "video_output": {"node_id": "7", "class_type": "SaveVideo"},
-    "evidence_kind": "local_profiles_and_saved_definition",
-    "definition_verified": false
+    "output_chain": ["12", "6", "7"],
+    "evidence_kind": "authenticated_remote_definitions_both_workflows",
+    "definition_verified": true
   },
   "modes": [
-    {"mode": "ref_only", "workflow": "reference", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_saved_r2v_definition", "required_inputs": ["compiled_prompt", "global.refs", "timeline_data"], "first_frame_required": false, "last_frame_required": false, "forbidden_fallbacks": ["drop_references", "submit_raw_prompt"], "task_type": "r2v — 参考主体生视频(Reference to Video)", "timeline_mode": "prompt_batch"},
+    {"mode": "ref_only", "workflow": "reference", "supported": true, "verified": false, "definition_verified": true, "evidence_kind": "authenticated_remote_r2v_definition", "required_inputs": ["compiled_prompt", "global.refs", "timeline_data"], "first_frame_required": false, "last_frame_required": false, "forbidden_fallbacks": ["drop_references", "submit_raw_prompt"], "task_type": "r2v — 参考主体生视频(Reference to Video)", "timeline_mode": "prompt_batch"},
     {"mode": "i2v", "workflow": "ordinary", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_profile_and_runtime", "required_inputs": ["compiled_prompt", "first_frame", "timeline_data"], "forbidden_fallbacks": ["submit_raw_prompt"]},
-    {"mode": "fl2v", "workflow": "ordinary", "supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_profile_runtime_and_simplified_fixture", "required_inputs": ["compiled_prompt", "first_frame", "last_frame", "timeline_data"], "forbidden_fallbacks": ["drop_last_frame", "submit_raw_prompt"]},
+    {"mode": "fl2v", "workflow": "ordinary", "supported": true, "verified": false, "definition_verified": true, "evidence_kind": "authenticated_remote_fl2v_definition", "required_inputs": ["compiled_prompt", "first_frame", "last_frame", "timeline_data"], "forbidden_fallbacks": ["drop_last_frame", "submit_raw_prompt"]},
     {"mode": "ref_plus_first", "workflow": "reference", "supported": false, "verified": false, "definition_verified": false, "evidence_kind": "local_compiler_only_unproven_combination", "required_inputs": ["compiled_prompt", "global.refs", "first_frame"], "forbidden_fallbacks": ["drop_references", "drop_first_frame", "submit_raw_prompt"]},
     {"mode": "ref_plus_first_last", "workflow": "reference", "supported": false, "verified": false, "definition_verified": false, "evidence_kind": "local_compiler_only_unproven_combination", "required_inputs": ["compiled_prompt", "global.refs", "first_frame", "last_frame"], "forbidden_fallbacks": ["drop_references", "drop_first_frame", "drop_last_frame", "submit_raw_prompt"]}
   ],
-  "multi_segment": {"supported": true, "verified": false, "definition_verified": false, "evidence_kind": "local_saved_reference_definition_and_ordinary_runtime", "reference_saved_segments": 2, "reference_saved_shots": 3, "reference_saved_keyframes": 6, "caveat": "Saved legacy collections disagree; this is envelope evidence, not proof all collections are executed or hybrid inputs honored."},
-  "dimensions": {"ordinary_refine_node": "18", "ordinary_override_fields": ["width", "height", "aspect_ratio", "megapixels"], "ordinary_custom_aspect_ratio": "自定义", "evidence_kind": "local_runtime_and_prior_audit", "definition_verified": false, "reference_refine_node": null, "reference_refine_status": "absent_from_local_saved_definition_remote_unknown", "override_scope": "Only packaged ordinary workflow ID; inspect any replacement workflow before assuming node 18 exists."},
-  "limits": {"configured_reference_max_images": 5, "local_compiler_reference_range": [1, 10], "provider_reference_max_images": null, "fps": 24, "local_frame_count_rule": "17*k+5, ceil requested seconds*24 to next legal count", "provider_max_frames": null, "provider_max_segments": null, "saved_reference_total_frames": 180, "saved_reference_segment_frames": [107, 73], "evidence_kind": "local_runtime_and_saved_values_not_provider_limits"}
+  "multi_segment": {"supported": true, "verified": false, "definition_verified": true, "definition_verified_scope": "reference_workflow_only", "ordinary_definition_verified": false, "evidence_kind": "authenticated_remote_reference_definition_and_local_ordinary_runtime", "reference_saved_segments": 2, "reference_saved_shots": 3, "reference_saved_keyframes": 6, "caveat": "Remote saved legacy collections disagree; this is envelope evidence, not proof all collections are executed or hybrid inputs honored. Ordinary remote definition has only one segment."},
+  "dimensions": {"ordinary_refine_node": "18", "ordinary_refine_connection": ["18", 0], "ordinary_saved_refine": {"width": 896, "height": 1184, "aspect_ratio": "3:4 (竖版标准)", "megapixels": 1}, "ordinary_override_fields": ["width", "height", "aspect_ratio", "megapixels"], "ordinary_custom_aspect_ratio": "自定义", "evidence_kind": "authenticated_remote_definitions_and_local_runtime_override", "definition_verified": true, "override_generation_verified": false, "reference_refine_node": null, "reference_refine_status": "absent_from_authenticated_remote_definition", "override_scope": "Only packaged ordinary workflow ID; inspect any replacement workflow before assuming node 18 exists."},
+  "limits": {"configured_reference_max_images": 5, "local_compiler_reference_range": [1, 10], "provider_reference_max_images": null, "fps": 24, "local_frame_count_rule": "17*k+5, ceil requested seconds*24 to next legal count", "provider_max_frames": null, "provider_max_segments": null, "saved_reference_total_frames": 180, "saved_reference_segment_frames": [107, 73], "evidence_kind": "local_runtime_and_remote_saved_values_not_provider_limits"}
 }
