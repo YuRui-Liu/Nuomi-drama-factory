@@ -47,6 +47,7 @@ class FakeProvider:
         self.download_calls = 0
         self.query_status = "queued"
         self.fail_submit = None
+        self.fail_query = False
 
     async def prepare(self, source, optimized, paths, reference_limit):
         return {"workflow_id": "123", "profile_id": "h3", "node_info": [], "uploaded": list(paths)}
@@ -59,6 +60,8 @@ class FakeProvider:
 
     async def query(self, task_id):
         self.query_calls += 1
+        if self.fail_query:
+            raise TimeoutError("query outage")
         return SimpleNamespace(status=self.query_status, results=(SimpleNamespace(url="https://output.test/video.mp4", node_id="7"),))
 
     async def download(self, url):
@@ -220,6 +223,18 @@ async def test_restart_with_provider_id_queries_without_submitting(setup):
     result = await restarted.resume(item["id"])
     assert result["provider_task_id"] == "existing-paid-task"
     assert provider.query_calls == 1 and provider.submit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_successful_poll_clears_transient_query_error(setup):
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+    service.store.update(item["id"], stage="queued", provider_task_id="paid-id")
+    provider.fail_query = True
+    assert (await service.resume(item["id"]))["error"] == "Provider status is temporarily unavailable"
+    provider.fail_query = False
+    assert (await service.resume(item["id"]))["error"] is None
 
 
 @pytest.mark.asyncio

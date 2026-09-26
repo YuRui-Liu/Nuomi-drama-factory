@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .models import DirectorDraft
+
+
+_PROTECTED = frozenset({
+    "id", "project_id", "canvas_id", "node_id", "request_id", "parent_attempt_id",
+    "snapshot", "stage", "detail", "created_at", "updated_at",
+})
+
+
+def _validate_detail(detail: dict) -> None:
+    if _PROTECTED.intersection(detail):
+        raise ValueError("attempt identity and snapshot columns are immutable")
 
 
 def _now() -> str:
@@ -35,11 +47,15 @@ class DirectorAttemptStore:
                 CREATE INDEX IF NOT EXISTS attempts_node ON attempts(project_id,canvas_id,node_id,created_at,id);
             """)
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=30000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=30000")
+            yield db
+        finally:
+            db.close()
 
     @staticmethod
     def _row(row):
@@ -47,7 +63,8 @@ class DirectorAttemptStore:
             return None
         data = dict(row)
         data["snapshot"] = json.loads(data["snapshot"])
-        data.update(json.loads(data.pop("detail")))
+        detail = json.loads(data.pop("detail"))
+        data.update({key: value for key, value in detail.items() if key not in _PROTECTED})
         return data
 
     def get(self, attempt_id: str):
@@ -69,6 +86,7 @@ class DirectorAttemptStore:
 
     def create(self, project_id: str, canvas_id: str, node_id: str,
                request_id: str, draft: DirectorDraft, *, detail: dict | None = None):
+        _validate_detail(detail or {})
         attempt_id, now = uuid4().hex, _now()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -84,6 +102,7 @@ class DirectorAttemptStore:
         return self._row(row), created
 
     def update(self, attempt_id: str, **changes):
+        _validate_detail({key: value for key, value in changes.items() if key != "stage"})
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()

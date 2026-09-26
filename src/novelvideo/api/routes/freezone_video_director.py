@@ -14,6 +14,7 @@ from novelvideo.freezone.video_director.capabilities import (
 from novelvideo.freezone.video_director.models import DirectorDraft
 from novelvideo.freezone.video_director.service import DirectorService
 from novelvideo.ports import get_task_backend
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 
 router = APIRouter(prefix="/projects/{project}/freezone/video-director", tags=["freezone-video"])
@@ -50,7 +51,15 @@ async def _service(project: str, user: dict, *, role: str):
 
 
 async def _enqueue(ctx, service: DirectorService, item):
-    if item.get("task_id") or item["stage"] in {"completed", "submission_unknown"}:
+    item = service.get(item["id"])
+    if item["stage"] in {"completed", "failed", "submission_unknown"}:
+        return item
+    manager = get_task_manager()
+    manager.expire_task_leases(ctx)
+    state = manager.get_task_for_project(ctx, "freezone_video_director", 0, scope=item["id"])
+    if state is not None and state.status in ACTIVE_PROJECT_TASK_STATUSES:
+        if item.get("task_id") != state.task_id:
+            return service.store.update(item["id"], task_id=state.task_id)
         return item
     queued = await get_task_backend().enqueue_project_task(
         ctx, task_type="freezone_video_director", queue_kind="default", scope=item["id"],
@@ -58,6 +67,13 @@ async def _enqueue(ctx, service: DirectorService, item):
                  "node_id": item["node_id"]},
     )
     return service.store.update(item["id"], task_id=queued.task_state.task_id)
+
+
+def _old_task_active(ctx, item) -> bool:
+    manager = get_task_manager()
+    manager.expire_task_leases(ctx)
+    state = manager.get_task_for_project(ctx, "freezone_video_director", 0, scope=item["id"])
+    return state is not None and state.status in ACTIVE_PROJECT_TASK_STATUSES
 
 
 @router.get("/capabilities")
@@ -107,11 +123,29 @@ async def get_attempt(project: str, attempt_id: str, user: dict = Depends(get_ap
 async def retry_attempt(project: str, attempt_id: str, user: dict = Depends(get_api_user)):
     ctx, service = await _service(project, user, role="editor")
     try:
+        current = service.get(attempt_id)
+        if (current["stage"] == "failed" and current.get("failed_stage") == "downloading"
+                and _old_task_active(ctx, current)):
+            raise HTTPException(409, detail="Previous Director task is still finishing; retry after it stops")
         item, _ = service.retry(attempt_id)
     except KeyError as exc:
         raise HTTPException(404, detail="Director attempt not found") from exc
     except ValueError as exc:
         raise HTTPException(409, detail=str(exc)) from exc
+    item = await _enqueue(ctx, service, item)
+    return {"ok": True, "data": {"attempt_id": item["id"], "task_id": item.get("task_id"),
+                                  "attempt": _public(item)}}
+
+
+@router.post("/attempts/{attempt_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+async def resume_attempt(project: str, attempt_id: str, user: dict = Depends(get_api_user)):
+    ctx, service = await _service(project, user, role="editor")
+    try:
+        item = service.get(attempt_id)
+    except KeyError as exc:
+        raise HTTPException(404, detail="Director attempt not found") from exc
+    if item["stage"] in {"failed", "submission_unknown"}:
+        raise HTTPException(409, detail="Director attempt requires explicit retry or reconciliation")
     item = await _enqueue(ctx, service, item)
     return {"ok": True, "data": {"attempt_id": item["id"], "task_id": item.get("task_id"),
                                   "attempt": _public(item)}}

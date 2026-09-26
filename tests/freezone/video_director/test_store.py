@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from novelvideo.freezone.video_director.models import DirectorDraft, DirectorImage, DirectorSegment
 from novelvideo.freezone.video_director.store import DirectorAttemptStore
 
@@ -32,3 +34,25 @@ def test_claim_and_retry_link_are_atomic(tmp_path: Path):
     retry, created = store.retry(attempt["id"])
     assert created and retry["parent_attempt_id"] == attempt["id"]
     assert store.retry(attempt["id"])[0]["id"] == retry["id"]
+
+
+def test_detail_cannot_shadow_immutable_columns(tmp_path: Path):
+    store = DirectorAttemptStore(tmp_path)
+    original, _ = store.create("p", "c", "n", "r", _draft("freezone/a.png"))
+    for field, value in (
+        ("snapshot", {"revision": 999}), ("id", "forged"),
+        ("project_id", "other"), ("created_at", "yesterday"),
+        ("request_id", "other"), ("parent_attempt_id", "forged"),
+    ):
+        with pytest.raises(ValueError, match="immutable"):
+            store.update(original["id"], **{field: value})
+    with pytest.raises(ValueError, match="immutable"):
+        store.create("p", "c", "n", "different", _draft("freezone/a.png"),
+                     detail={"snapshot": {"revision": 999}})
+    assert store.get(original["id"])["snapshot"] == original["snapshot"]
+    assert store.list("p", "c", "n")[0]["id"] == original["id"]
+    detached = store.get(original["id"])
+    detached["snapshot"]["revision"] = 999
+    detached["id"] = "forged"
+    assert store.get(original["id"])["snapshot"]["revision"] == 3
+    assert store.get(original["id"])["id"] == original["id"]

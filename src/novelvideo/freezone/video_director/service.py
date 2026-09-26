@@ -290,7 +290,9 @@ class DirectorService:
                                          error="Provider video output is missing")
             item = self.store.update(attempt_id, stage="generating", remote_url=video.url)
             return await self._download(item)
-        return self.store.update(attempt_id, stage="generating" if snapshot.status == "running" else "queued")
+        return self.store.update(attempt_id,
+                                 stage="generating" if snapshot.status == "running" else "queued",
+                                 error=None)
 
     async def _download(self, item):
         attempt_id = item["id"]
