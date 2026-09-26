@@ -20,9 +20,9 @@ function sameLocation(project: string, canvasId: string): boolean {
 }
 
 function pendingJournal(projectId: string, canvasId: string, nodeId: string,
-  pending: NonNullable<VideoDirectorNodeData['pendingSubmission']>): DirectorSubmissionJournal {
+  pending: NonNullable<VideoDirectorNodeData['pendingSubmission']>, baseActiveAttemptId: string | null): DirectorSubmissionJournal {
   return { version: 1, phase: 'pending', projectId, canvasId, nodeId,
-    requestId: pending.requestId, frozenDraftSnapshot: pending.frozenDraftSnapshot };
+    requestId: pending.requestId, frozenDraftSnapshot: pending.frozenDraftSnapshot, baseActiveAttemptId };
 }
 
 function canResumeAttempt(attempt: DirectorAttempt, project: string, canvasId: string, nodeId: string, mounted: boolean): boolean {
@@ -42,21 +42,32 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const submitting = useRef(false);
   const mounted = useRef(true);
   const latestStages = useRef(new Map<string, string>());
-  const resuming = useRef(new Set<string>());
+  const resuming = useRef(new Map<string, number>());
+  const publicationEpoch = useRef(0);
+  const publicationSequence = useRef(0);
+  const published = useRef(new Map<string, { epoch: number; sequence: number; updatedAt: string | null }>());
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
+
+  const issueToken = useCallback(() => ({ epoch: publicationEpoch.current, sequence: ++publicationSequence.current }), []);
+  const advanceToken = useCallback(() => ({ epoch: ++publicationEpoch.current, sequence: ++publicationSequence.current }), []);
 
   useEffect(() => setFieldErrors({}), [data.draft.revision]);
 
-  const applies = useCallback((attempt: DirectorAttempt) => {
+  const applies = useCallback((attempt: DirectorAttempt, token: { epoch: number; sequence: number }): boolean => {
     if (!mounted.current || !project || !sameLocation(project, canvasId) ||
-      attempt.projectId !== project || attempt.canvasId !== canvasId || attempt.nodeId !== nodeId) return;
+      attempt.projectId !== project || attempt.canvasId !== canvasId || attempt.nodeId !== nodeId ||
+      token.epoch !== publicationEpoch.current) return false;
+    const previous = published.current.get(attempt.id);
+    if (previous?.epoch === token.epoch && (previous.sequence > token.sequence ||
+      previous.updatedAt && attempt.updatedAt && previous.updatedAt > attempt.updatedAt)) return false;
+    published.current.set(attempt.id, { ...token, updatedAt: attempt.updatedAt });
     latestStages.current.set(attempt.id, attempt.stage);
     setAttempts((items) => {
       const next = items.filter((item) => item.id !== attempt.id);
       return [attempt, ...next].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
     });
     const current = currentData(nodeId);
-    if (!current || current.pendingSubmission || current.activeAttemptId !== attempt.id) return;
+    if (!current || current.pendingSubmission || current.activeAttemptId !== attempt.id) return true;
     if (attempt.stage === 'completed' && attempt.resultUrl) {
       const patch: Partial<VideoDirectorNodeData> = {};
       if (current.videoUrl !== attempt.resultUrl) {
@@ -66,17 +77,16 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
       if (current.resultRevision !== attempt.revision) patch.resultRevision = attempt.revision;
       if (Object.keys(patch).length) updateNodeData(nodeId, patch);
     }
+    return true;
   }, [canvasId, nodeId, project, updateNodeData]);
 
   const refresh = useCallback(async () => {
     if (!project) return;
+    const token = issueToken();
     const list = await listDirectorAttempts(project, canvasId, nodeId);
     if (!mounted.current || !sameLocation(project, canvasId)) return;
-    list.forEach((item) => latestStages.current.set(item.id, item.stage));
-    setAttempts(list);
-    const active = currentData(nodeId)?.activeAttemptId;
-    if (active) list.filter((item) => item.id === active).forEach(applies);
-  }, [project, canvasId, nodeId, applies]);
+    list.forEach((item) => { applies(item, token); });
+  }, [project, canvasId, nodeId, applies, issueToken]);
 
   const submitPending = useCallback(async (pending: NonNullable<VideoDirectorNodeData['pendingSubmission']>) => {
     if (!project || submitting.current || !mounted.current || !sameLocation(project, canvasId) ||
@@ -93,14 +103,15 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
         return;
       }
       const stable = journal?.phase === 'pending' && journal.requestId === pending.requestId
-        ? journal : pendingJournal(project, canvasId, nodeId, pending);
+        ? journal : pendingJournal(project, canvasId, nodeId, pending, currentData(nodeId)?.activeAttemptId ?? null);
       if (stable !== journal) writeDirectorJournal(stable);
       const attempt = await createDirectorAttempt(project, canvasId, nodeId, stable.requestId, stable.frozenDraftSnapshot);
       const current = currentData(nodeId);
       if (mounted.current && sameLocation(project, canvasId) && current?.pendingSubmission?.requestId === stable.requestId) {
+        const token = advanceToken();
         writeDirectorJournal({ ...stable, phase: 'accepted', attemptId: attempt.id });
         updateNodeData(nodeId, { pendingSubmission: null, activeAttemptId: attempt.id });
-        applies(attempt);
+        applies(attempt, token);
       }
     } catch (cause) {
       const current = currentData(nodeId);
@@ -116,17 +127,17 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     } finally {
       submitting.current = false;
     }
-  }, [project, canvasId, nodeId, applies, updateNodeData]);
+  }, [project, canvasId, nodeId, applies, advanceToken, updateNodeData]);
 
   const generate = useCallback((draft: DirectorDraft) => {
     const current = currentData(nodeId);
     const active = attempts.find((item) => item.id === current?.activeAttemptId);
-    if (!project || submitting.current || current?.pendingSubmission ||
-      current?.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
+    if (!project || submitting.current || !current || current.pendingSubmission ||
+      current.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
     const frozenDraftSnapshot = structuredClone(draft);
     const pendingSubmission = { requestId: crypto.randomUUID(), frozenDraftSnapshot };
     try {
-      writeDirectorJournal(pendingJournal(project, canvasId, nodeId, pendingSubmission));
+      writeDirectorJournal(pendingJournal(project, canvasId, nodeId, pendingSubmission, current.activeAttemptId));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法保存待提交请求');
       return;
@@ -151,17 +162,19 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
       if (!mounted.current || !sameLocation(project, canvasId) || !current || current.pendingSubmission ||
         current.activeAttemptId !== previousActive || attempt.projectId !== project ||
         attempt.canvasId !== canvasId || attempt.nodeId !== nodeId) return;
+      const token = advanceToken();
       writeDirectorJournal({ version: 1, phase: 'accepted', projectId: project, canvasId, nodeId,
-        requestId: attempt.requestId, frozenDraftSnapshot: attempt.snapshot, attemptId: attempt.id });
+        requestId: attempt.requestId, frozenDraftSnapshot: attempt.snapshot, attemptId: attempt.id,
+        baseActiveAttemptId: previousActive ?? null });
       updateNodeData(nodeId, { activeAttemptId: attempt.id });
-      applies(attempt);
+      applies(attempt, token);
       await refresh();
     } catch (cause) {
       if (mounted.current && sameLocation(project, canvasId) && currentData(nodeId)?.activeAttemptId === previousActive) {
         setError(cause instanceof Error ? cause.message : '重试失败');
       }
     } finally { submitting.current = false; }
-  }, [project, canvasId, nodeId, applies, refresh, updateNodeData]);
+  }, [project, canvasId, nodeId, applies, advanceToken, refresh, updateNodeData]);
 
   useEffect(() => {
     mounted.current = true;
@@ -169,12 +182,23 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     try {
       const journal = readDirectorJournal(project, canvasId, nodeId);
       const current = currentData(nodeId);
-      if (journal?.phase === 'pending' && current && current.pendingSubmission?.requestId !== journal.requestId) {
-        updateNodeData(nodeId, { pendingSubmission: { requestId: journal.requestId,
-          frozenDraftSnapshot: journal.frozenDraftSnapshot } });
-      } else if (journal?.phase === 'accepted' && current &&
-        (current.activeAttemptId !== journal.attemptId || current.pendingSubmission)) {
-        updateNodeData(nodeId, { activeAttemptId: journal.attemptId, pendingSubmission: null });
+      if (journal && current) {
+        const base = journal.baseActiveAttemptId ?? null;
+        const newerActive = current.activeAttemptId !== base && current.activeAttemptId !== journal.attemptId;
+        if (newerActive || (current.pendingSubmission && current.pendingSubmission.requestId !== journal.requestId)) {
+          clearDirectorJournal(project, canvasId, nodeId);
+        } else if (journal.phase === 'pending' && current.pendingSubmission?.requestId !== journal.requestId) {
+          updateNodeData(nodeId, { pendingSubmission: { requestId: journal.requestId,
+            frozenDraftSnapshot: journal.frozenDraftSnapshot } });
+        } else if (journal.phase === 'accepted') {
+          if (current.activeAttemptId === journal.attemptId && !current.pendingSubmission) {
+            // A fresh hydration proves the accepted ID reached canvas storage. A local
+            // remount before autosave does not, so keep the recovery record in that case.
+            if (useCanvasStore.getState().userEditsSinceHydrate === 0) clearDirectorJournal(project, canvasId, nodeId);
+          } else {
+            updateNodeData(nodeId, { activeAttemptId: journal.attemptId, pendingSubmission: null });
+          }
+        }
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法读取待提交请求');
@@ -196,35 +220,37 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   }, [project, canvasId, nodeId, refresh, recoverPending, applies, updateNodeData]);
 
   const resumeIfCurrent = useCallback(async (attempt: DirectorAttempt) => {
-    if (!project || !canResumeAttempt(attempt, project, canvasId, nodeId, mounted.current) || resuming.current.has(attempt.id)) return;
-    resuming.current.add(attempt.id);
+    if (!project || !canResumeAttempt(attempt, project, canvasId, nodeId, mounted.current) ||
+      resuming.current.get(attempt.id) === publicationEpoch.current) return;
+    const token = issueToken();
+    resuming.current.set(attempt.id, token.epoch);
     try {
       const resumed = await resumeDirectorAttempt(project, attempt.id);
-      if (canResumeAttempt(resumed, project, canvasId, nodeId, mounted.current) || terminal.has(resumed.stage)) applies(resumed);
+      if (canResumeAttempt(resumed, project, canvasId, nodeId, mounted.current) || terminal.has(resumed.stage)) applies(resumed, token);
     } catch { /* the next poll or reconnect can retry this same attempt */ }
-    finally { resuming.current.delete(attempt.id); }
-  }, [project, canvasId, nodeId, applies]);
+    finally { if (resuming.current.get(attempt.id) === token.epoch) resuming.current.delete(attempt.id); }
+  }, [project, canvasId, nodeId, applies, issueToken]);
 
   useEffect(() => {
     if (!project || !data.activeAttemptId) return;
     const activeId = data.activeAttemptId;
     const timer = window.setInterval(() => {
       if (terminal.has(latestStages.current.get(activeId) ?? '')) return;
+      const token = issueToken();
       void getDirectorAttempt(project, activeId).then((attempt) => {
-        applies(attempt);
-        void resumeIfCurrent(attempt);
+        if (applies(attempt, token)) void resumeIfCurrent(attempt);
       }).catch(() => undefined);
     }, 2500);
     const onOnline = () => {
+      const token = issueToken();
       void getDirectorAttempt(project, activeId).then((attempt) => {
-        applies(attempt);
-        void resumeIfCurrent(attempt);
+        if (applies(attempt, token)) void resumeIfCurrent(attempt);
       }).catch(() => undefined);
     };
     onOnline();
     window.addEventListener('online', onOnline);
     return () => { window.clearInterval(timer); window.removeEventListener('online', onOnline); };
-  }, [project, data.activeAttemptId, applies, resumeIfCurrent]);
+  }, [project, data.activeAttemptId, applies, issueToken, resumeIfCurrent]);
 
   return { capabilities, attempts, error, fieldErrors, generate, recoverPending, retry, refresh };
 }

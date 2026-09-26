@@ -8,6 +8,8 @@ export interface DirectorSubmissionJournal {
   nodeId: string;
   requestId: string;
   frozenDraftSnapshot: DirectorDraft;
+  /** Active attempt at submission time; used to avoid restoring over a newer canvas. */
+  baseActiveAttemptId?: string | null;
   attemptId?: string;
 }
 

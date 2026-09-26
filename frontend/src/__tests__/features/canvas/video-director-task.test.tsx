@@ -6,7 +6,7 @@ import { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirecto
 import { useCanvasStore } from '@/stores/canvasStore';
 import * as api from '@/api/videoDirector';
 import { ApiError } from '@/api/client';
-import { readDirectorJournal } from '@/features/canvas/director/directorSubmissionJournal';
+import { readDirectorJournal, writeDirectorJournal } from '@/features/canvas/director/directorSubmissionJournal';
 
 vi.mock('@/api/videoDirector', () => ({
   getDirectorCapabilities: vi.fn(), listDirectorAttempts: vi.fn(), getDirectorAttempt: vi.fn(),
@@ -22,7 +22,7 @@ const attempt = (id = 'a1'): DirectorAttempt => ({ id, projectId: 'demo', canvas
   resultUrl: null, error: null, failedStage: null, createdAt: null, updatedAt: null });
 
 function setNode(data: Partial<VideoDirectorNodeData> = {}) {
-  useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
+  useCanvasStore.setState({ userEditsSinceHydrate: 0, nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
     data: { displayName: 'Director', draft: structuredClone(draft), activeAttemptId: null,
       videoUrl: null, resultRevision: null, pendingSubmission: null, ...data } }] as never });
 }
@@ -155,6 +155,42 @@ describe('video director task lifecycle', () => {
     expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
   });
 
+  it('does not let an old accepted journal replace a newer persisted attempt', async () => {
+    writeDirectorJournal({ version: 1, phase: 'accepted', projectId: 'demo', canvasId: 'canvas',
+      nodeId: 'director', requestId: 'old-request', frozenDraftSnapshot: structuredClone(draft),
+      attemptId: 'old', baseActiveAttemptId: null });
+    setNode({ activeAttemptId: 'newer', videoUrl: '/newer.mp4' });
+    renderHook(useTask);
+    await waitFor(() => expect(api.listDirectorAttempts).toHaveBeenCalled());
+    expect(nodeData().activeAttemptId).toBe('newer');
+    expect(nodeData().videoUrl).toBe('/newer.mp4');
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+  });
+
+  it('retires an accepted journal once its attempt is in the loaded node', async () => {
+    writeDirectorJournal({ version: 1, phase: 'accepted', projectId: 'demo', canvasId: 'canvas',
+      nodeId: 'director', requestId: 'request', frozenDraftSnapshot: structuredClone(draft),
+      attemptId: 'a1', baseActiveAttemptId: null });
+    setNode({ activeAttemptId: 'a1' });
+    renderHook(useTask);
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+  });
+
+  it('keeps an accepted journal through a local remount before canvas autosave', async () => {
+    vi.mocked(api.createDirectorAttempt).mockResolvedValue(attempt());
+    const first = renderHook(useTask);
+    act(() => first.result.current.generate(draft));
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
+    first.unmount();
+    const remounted = renderHook(useTask);
+    expect(readDirectorJournal('demo', 'canvas', 'director')?.attemptId).toBe('a1');
+    remounted.unmount();
+    setNode();
+    renderHook(useTask);
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
+    expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
+  });
+
   it('does not POST if the durable journal cannot be written', async () => {
     const storageOwner = Object.prototype.hasOwnProperty.call(localStorage, 'setItem') ? localStorage : Object.getPrototypeOf(localStorage) as Storage;
     vi.spyOn(storageOwner, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
@@ -249,6 +285,64 @@ describe('video director task lifecycle', () => {
     expect(api.retryDirectorAttempt).toHaveBeenCalledWith('demo', 'same');
     expect(api.createDirectorAttempt).not.toHaveBeenCalled();
     expect(nodeData().activeAttemptId).toBe('same');
+  });
+
+  it('keeps a queued download retry when older failed GET and list responses arrive late', async () => {
+    setNode({ activeAttemptId: 'same' });
+    const failed = { ...attempt('same'), stage: 'failed', failedStage: 'downloading' };
+    const queued = { ...attempt('same'), stage: 'queued', failedStage: null };
+    let resolveOldList!: (value: DirectorAttempt[]) => void;
+    let resolveOldGet!: (value: DirectorAttempt) => void;
+    vi.mocked(api.listDirectorAttempts).mockImplementationOnce(() => new Promise((resolve) => { resolveOldList = resolve; }))
+      .mockResolvedValue([queued]);
+    vi.mocked(api.getDirectorAttempt).mockImplementationOnce(() => new Promise((resolve) => { resolveOldGet = resolve; }))
+      .mockResolvedValue(queued);
+    vi.mocked(api.retryDirectorAttempt).mockResolvedValue(queued);
+    let tick: (() => void) | undefined;
+    const realSetInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay, ...args) => {
+      if (delay === 2500) tick = () => callback(...args);
+      return realSetInterval(callback, delay, ...args) as never;
+    });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(api.getDirectorAttempt).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.retry('same'); });
+    expect(result.current.attempts.find((item) => item.id === 'same')?.stage).toBe('queued');
+    await act(async () => { resolveOldGet(failed); });
+    expect(result.current.attempts.find((item) => item.id === 'same')?.stage).toBe('queued');
+    await act(async () => { resolveOldList([failed]); });
+    expect(result.current.attempts.find((item) => item.id === 'same')?.stage).toBe('queued');
+    const calls = vi.mocked(api.getDirectorAttempt).mock.calls.length;
+    await act(async () => { tick?.(); await Promise.resolve(); });
+    expect(api.getDirectorAttempt).toHaveBeenCalledTimes(calls + 1);
+    await waitFor(() => expect(api.resumeDirectorAttempt).toHaveBeenCalledWith('demo', 'same'));
+  });
+
+  it('can resume a retried attempt while an older resume response is still pending', async () => {
+    setNode({ activeAttemptId: 'same' });
+    const queued = { ...attempt('same'), stage: 'queued' };
+    const failed = { ...attempt('same'), stage: 'failed', failedStage: 'downloading' };
+    vi.mocked(api.listDirectorAttempts).mockResolvedValue([queued]);
+    vi.mocked(api.getDirectorAttempt).mockResolvedValueOnce(queued).mockResolvedValueOnce(failed).mockResolvedValue(queued);
+    let resolveOldResume!: (value: DirectorAttempt) => void;
+    vi.mocked(api.resumeDirectorAttempt).mockImplementationOnce(() => new Promise((resolve) => { resolveOldResume = resolve; }))
+      .mockResolvedValue(queued);
+    vi.mocked(api.retryDirectorAttempt).mockResolvedValue(queued);
+    let tick: (() => void) | undefined;
+    const realSetInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay, ...args) => {
+      if (delay === 2500) tick = () => callback(...args);
+      return realSetInterval(callback, delay, ...args) as never;
+    });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(api.resumeDirectorAttempt).toHaveBeenCalledTimes(1));
+    await act(async () => { tick?.(); await Promise.resolve(); });
+    expect(result.current.attempts.find((item) => item.id === 'same')?.stage).toBe('failed');
+    await act(async () => { await result.current.retry('same'); });
+    await act(async () => { tick?.(); await Promise.resolve(); });
+    expect(api.resumeDirectorAttempt).toHaveBeenCalledTimes(2);
+    await act(async () => { resolveOldResume(failed); });
+    expect(result.current.attempts.find((item) => item.id === 'same')?.stage).toBe('queued');
   });
 
   it('does not resume or retry a submission with unknown outcome', async () => {
