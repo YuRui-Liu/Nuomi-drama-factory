@@ -18,9 +18,9 @@ nuomi-drama-scripts 是单独安装、调用和维护的“编剧创作层”，
 
 ## 文档
 
-1. [调研报告](./01_调研报告.md)：红果公开规则、监管要求、GitHub 项目与本地 Nuomi 资产。
-2. [产品设计规格](./docs/superpowers/specs/2026-08-02-nuomi-script-design.md)：边界、数据结构、工作流、质量闸门与 DOCX 适配方案。
-3. [Skill 设计](./03_Skill设计.md)：可复用的 nuomi-drama-scripts Skill/提示词骨架。
+1. [技能入口](SKILL.md)：阶段路由、创作标准和交付协议。
+2. [项目模板](project-template/README.md)：项目文件结构、样稿与审查记录。
+3. [来源台账](project-template/sources/source-ledger.md)：平台资料、创作参考及适用边界。
 
 ## 当前结论
 
@@ -30,11 +30,22 @@ nuomi-drama-scripts 是单独安装、调用和维护的“编剧创作层”，
 - 参考排版：以用户指定的《68岁的婚礼策划师_前30集剧本.docx》为样本建立模板画像，不修改原文件。
 - 研究日期：2026-08-02。平台规则、征集活动和漫剧入口会变化，正式投稿前必须重新核验。
 
-## 下一阶段
+## 0.4 创作流程
+
+默认追求人物可信和短剧吸引力同时成立。先用私人欲望、关系利益和选择代价建立戏，再安排集内回报与后续期待；不设固定反转、金句或打脸配额。
+
+1. 简报、圣经和节拍通过后，先写开篇、关系冲突、情绪回报样稿。
+2. 按人物与场景工艺完成初稿，再单独做语言编辑。破折号按真实功能保留，避免作者解释和假悬念。
+3. 审稿引用正文证据，用户读样校准后再批量生成。创作、连续性、格式和交付分别记录。
+4. 旧项目先读相邻集与审查，做影响分析，用独立候选稿验证，不默认重写已确认故事。
+
+新增 [人物与对白](references/character-and-dialogue.md)、[语言编辑](references/language-editing.md)；修订 [场景工艺](references/screenplay-craft.md)、[短剧节奏](references/short-drama-rhythm.md) 与 [审稿量规](references/review-rubric.md)。安静余波无需每场不可逆，终集无需强开新悬念。
+
+`project.yaml` 的可选 `craft_calibration` 只记录人工流程，不是导出器自动门禁；旧项目配置仍适用。创作工作卡不进入交付剧本。效果验证见 [三集候选稿与审查](evaluations/2026-09-26-shanhai/README.md)，不能据此宣称已获专业认证或平台留存提升。
 
 ## 使用路径
 
-- 只要 Markdown：完成简报、圣经、节拍和审查闸门后，输出指定集数或 `deliverables/screenplay.md`。
+- 只要 Markdown：完成简报、圣经、节拍、样稿校准及审查后，输出指定集数或 `deliverables/screenplay.md`。
 - 要前 30 集 DOCX：E001-E030 齐全，并通过结构、连续性、版权、合规和渲染 QA 后再编译。
 - 要续写/改稿：读取现稿和 reviews，先输出影响分析，再写受影响集数。
 
@@ -56,4 +67,4 @@ python3 tools/audit_docx.py -p deliverables/剧本.docx --expected-episodes 30
 
 `screenplay.md` 只包含集标题、时长、场景、人物、动作、对白和必要音效；禁止图像 prompt、视频 prompt、模型参数和 provider 字段。
 
-本 Skill 不负责生成真实 30 集内容；创作仍按“选题 → 大纲 → 剧本圣经 → 节拍表 → 前 30 集 → 审查 → 可选 DOCX”推进。
+仓库模板不附带一部可直接投稿的 30 集成品。调用本 Skill 时按“选题 → 大纲 → 剧本圣经 → 节拍表 → 样稿校准 → 指定集数创作与语言编辑 → 审查 → 可选 DOCX”推进。

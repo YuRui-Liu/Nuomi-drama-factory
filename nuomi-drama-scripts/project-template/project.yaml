@@ -44,3 +44,12 @@ workflow:
   approved_beats: false
   episodes_written: 0
   last_delivery_version: null
+
+# 可选的人工创作流程记录；现有导出工具不执行此关卡，旧项目无此项也可读取。
+craft_calibration:
+  status: needs_review
+  sample_episodes: []
+  review_file: "reviews/craft/样稿审查.md"
+  user_confirmation: null
+  unresolved_p1: []
+  override_reason: null
