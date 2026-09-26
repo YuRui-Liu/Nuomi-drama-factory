@@ -31,33 +31,32 @@ class _OptimizedWireResponse(BaseModel):
 
 
 _EXPLICIT_DIALOGUE = re.compile(
-    r"(?P<speaker>[\w\u4e00-\u9fff]+)\s*"
-    r"(?:says?|said|asks?|asked|说|说道|问|喊|答)\s*[:：]?\s*"
-    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』)",
+    r"(?<!\w)(?P<speaker>(?:[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2}|"
+    r"[^\W\d_][\w-]{0,39}))\s*"
+    r"(?P<verb>(?:says?|said|asks?|asked|whispers?|whispered|shouts?|shouted|"
+    r"replies|replied|说道|低声说|回答|说|问|喊|答)\s*[:：]?|[:：])\s*"
+    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|'[^'\n]*')",
     flags=re.IGNORECASE,
 )
 _SUBJECT_TAG = re.compile(r"<Subject ([1-9][0-9]*)>")
 _PICTURE_TAG = re.compile(r"<Picture ([1-9][0-9]*)>")
+_NON_SPEAKER_LABELS = frozenset({"camera", "shot", "style", "title", "music", "sfx", "镜头", "画面", "字幕", "音乐", "音效"})
 
 
 def _locked_dialogue(prompt: str) -> list[dict[str, str]]:
     """Extract only source text with an explicit speaker plus quoted speech."""
-    return [{"speaker": match.group("speaker"), "quote": match.group("quote")}
-            for match in _EXPLICIT_DIALOGUE.finditer(prompt)]
+    return [{"speaker": _speaker_for_match(match), "quote": match.group("quote")}
+            for match in _EXPLICIT_DIALOGUE.finditer(prompt)
+            if _speaker_for_match(match).casefold() not in _NON_SPEAKER_LABELS]
 
 
-def _speaker_quote_count(text: str, speaker: str, quote: str) -> int:
-    start = 0
-    count = 0
-    while (found := text.find(quote, start)) >= 0:
-        prefix = text[max(0, found - 120):found].rsplit("\n", 1)[-1]
-        if speaker.isascii():
-            if re.search(rf"(?<!\w){re.escape(speaker)}(?!\w)", prefix):
-                count += 1
-        elif speaker in prefix:
-            count += 1
-        start = found + len(quote)
-    return count
+def _speaker_for_match(match: re.Match[str]) -> str:
+    speaker = match.group("speaker")
+    if match.group("verb") in (":", "："):
+        for suffix in ("低声说", "说道", "回答", "说", "问", "喊", "答"):
+            if speaker.endswith(suffix) and len(speaker) > len(suffix):
+                return speaker[:-len(suffix)]
+    return speaker
 
 
 def _check_dialogue_identity(wire: CanvasBaseWire | CanvasReferenceWire,
@@ -68,8 +67,10 @@ def _check_dialogue_identity(wire: CanvasBaseWire | CanvasReferenceWire,
               if isinstance(wire, CanvasBaseWire) else
               (wire.detailed_description, wire.overall_soundscape))
     required = Counter((lock["speaker"], lock["quote"]) for lock in locks)
+    observed = Counter((_speaker_for_match(match), match.group("quote"))
+                       for field in fields for match in _EXPLICIT_DIALOGUE.finditer(field))
     for (speaker, quote), occurrences in required.items():
-        if sum(_speaker_quote_count(field, speaker, quote) for field in fields) < occurrences:
+        if observed[(speaker, quote)] < occurrences:
             raise ValueError(f"optimized dialogue differs from source: {speaker}")
 
 
@@ -86,16 +87,18 @@ def _check_reference_identity(wire: CanvasReferenceWire,
         labels = _SUBJECT_TAG.findall(line)
         if not line.startswith(subject) or labels != [subject[9:-1]]:
             raise ValueError("reference subject numbering differs from input images")
-        pictures = [f"<Picture {n}>" for n in _PICTURE_TAG.findall(line)]
+        picture_matches = list(_PICTURE_TAG.finditer(line))
+        pictures = [match.group() for match in picture_matches]
         expected = [str(fact["picture_tag"]) for fact in subject_facts]
         if pictures != expected:
             raise ValueError("reference picture order or subject mapping differs from input images")
-        for fact in subject_facts:
+        for picture_index, fact in enumerate(subject_facts):
             label = fact["variant_label"]
             if label:
-                clauses = re.split(r"[;,]", line)
-                if not any(str(fact["picture_tag"]) in clause and str(label) in clause
-                           for clause in clauses):
+                start = (picture_matches[picture_index - 1].end()
+                         if picture_index else len(subject))
+                preceding_picture_span = line[start:picture_matches[picture_index].start()]
+                if str(label) not in preceding_picture_span:
                     raise ValueError("reference variant label differs from input image")
     expected_numbers = {int(str(fact["picture_tag"])[9:-1]) for fact in facts}
     all_text = "\n".join((wire.subject_definitions, wire.summary,

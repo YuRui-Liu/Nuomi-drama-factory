@@ -149,6 +149,52 @@ async def test_rejects_wrong_speaker_binding_for_exact_quote():
 
 
 @pytest.mark.asyncio
+async def test_nearby_source_speaker_does_not_bind_other_speakers_dialogue():
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
+        "integrated_multimodal_description": '[Shot 1] A stays silent. B says "Wait!"'})
+    item = draft(segments=(DirectorSegment(id="one", prompt='A says "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+
+
+@pytest.mark.asyncio
+async def test_colon_speaker_quote_is_locked_but_plain_quoted_text_is_not_speech():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(id="one", prompt='A: "Wait!" Camera: "slow push".',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+    import json
+    data = json.loads(runtime.calls[0][0].partition("INPUT_JSON:\n")[2])
+    assert data["locked_dialogue"] == [{"speaker": "A", "quote": '"Wait!"'}]
+
+
+@pytest.mark.asyncio
+async def test_colon_speaker_quote_must_bind_to_same_speaker_in_wire():
+    runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
+        "integrated_multimodal_description": '[Shot 1] B: "Wait!"'})
+    item = draft(segments=(DirectorSegment(id="one", prompt='A: "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+
+
+@pytest.mark.asyncio
+async def test_multiword_speaker_name_and_chinese_colon_are_locked_exactly():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(
+        id="one", prompt='John Doe says "Wait!" 张三：“等一下！”',
+        duration_seconds=5, first_frame=image("f1")),))
+    await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"a", "image/png")})
+    import json
+    data = json.loads(runtime.calls[0][0].partition("INPUT_JSON:\n")[2])
+    assert data["locked_dialogue"] == [
+        {"speaker": "John Doe", "quote": '"Wait!"'},
+        {"speaker": "张三", "quote": "“等一下！”"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_repeated_identical_dialogue_must_be_retained_twice():
     runtime = FakeRuntime(wire_transform=lambda wire: {**wire,
         "integrated_multimodal_description": '[Shot 1] A says "Wait!" once.'})
@@ -210,6 +256,18 @@ async def test_rejects_split_subject_for_two_variants_of_same_character():
         await optimize(FakeRuntime(wire_transform=split), item,
                        frozen_images={key: StructuredImage(key.encode(), "image/png")
                                       for key in ("v1", "v2")})
+
+
+@pytest.mark.asyncio
+async def test_variant_label_with_comma_is_valid_at_its_picture_tag():
+    refs = (image("v1", character_id="c", variant_label="night, blue"),
+            image("v2", character_id="c", variant_label="day; gold"))
+    item = draft(refs=refs, segments=(DirectorSegment(id="r", prompt="One person walks", duration_seconds=5),))
+    result = await optimize(FakeRuntime(), item,
+                            frozen_images={key: StructuredImage(key.encode(), "image/png")
+                                           for key in ("v1", "v2")})
+    assert "night, blue from <Picture 1>" in result.segments[0].prompt
+    assert "day; gold from <Picture 2>" in result.segments[0].prompt
 
 
 @pytest.mark.asyncio
