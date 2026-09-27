@@ -40,3 +40,34 @@ export interface ScriptSettings {
   durationSeconds: number;
   idea: string;
 }
+
+
+export type GenerationStatus = "pending" | "running" | "paused" | "failed" | "needs_rebase" | "completed";
+export interface GenerationStep {
+  key: string;
+  kind: ScriptDocumentKind;
+  title: string;
+  episode_number: number | null;
+  status: "pending" | "running" | "failed" | "completed";
+  context_revisions: Record<string, string>;
+  task_id: string | null;
+  output: { kind: "document"; document_id: string; revision_id: string } |
+    { kind: "candidate"; candidate_id: string; document_id: string; baseline_revision_id: string } | null;
+  error: string | null;
+}
+export interface GenerationRun {
+  id: string;
+  mode: "bootstrap" | "continue";
+  script_mode: ScriptMode;
+  episode_count: number;
+  episode_number: number;
+  brief_id: string;
+  instruction: string;
+  status: GenerationStatus;
+  task_id: string | null;
+  error: string | null;
+  steps: GenerationStep[];
+}
+export interface GenerationQueued { run: GenerationRun; task_id: string | null; scope?: string }
+export interface GenerationCandidate { id: string; run_id: string; step_key: string; markdown: string;
+  target_document_id: string | null; target_revision_id: string | null; context_revisions: string }

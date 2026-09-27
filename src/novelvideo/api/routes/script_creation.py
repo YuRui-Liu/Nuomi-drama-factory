@@ -1,14 +1,20 @@
 """Creative document endpoints scoped to a project."""
 from dataclasses import asdict
+import json
+import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
 from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.script_creation.documents import import_episode_source
+from novelvideo.script_creation.generation import GenerationConflict, GenerationService, GenerationValidation
+from novelvideo.task_backend.client import enqueue_project_task
+from novelvideo.task_identity import project_task_state_key
+from novelvideo.task_state import get_task_manager
 from novelvideo.script_creation.store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
 
 router = APIRouter()
@@ -136,3 +142,154 @@ async def import_document(project: str, body: ImportBody, user: dict = Depends(g
         raise _error(exc) from exc
     finally:
         await sqlite.close()
+
+
+class GenerationBody(Strict):
+    mode: str
+    brief_id: str = Field(min_length=1)
+    script_mode: str
+    episode_count: int = Field(ge=1, le=100)
+    episode_number: int = Field(default=1, ge=1)
+    instruction: str = Field(default='', max_length=8000)
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+class RebaseBody(Strict):
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+def _generation_error(exc):
+    if isinstance(exc, (GenerationConflict, DocumentConflict)):
+        return HTTPException(409, detail={'code': 'GENERATION_CONFLICT', 'message': str(exc)})
+    return _error(exc)
+
+
+def _saved_settings(brief):
+    match = re.search(r'<!-- nuomi-script-settings\n([\s\S]*?)\n-->', brief.revision.markdown)
+    if not match:
+        return None
+    try:
+        settings = json.loads(match.group(1))
+    except (ValueError, TypeError) as exc:
+        raise GenerationValidation('saved creative settings are invalid') from exc
+    if settings.get('mode') not in {'single', 'series'} or not isinstance(settings.get('episodeCount'), int):
+        raise GenerationValidation('saved creative settings are invalid')
+    return settings
+
+
+def _validate_saved_settings(brief, body: GenerationBody):
+    settings = _saved_settings(brief)
+    if settings and (settings['mode'] != body.script_mode or settings['episodeCount'] != body.episode_count):
+        raise GenerationValidation('saved creative settings changed; refresh before generating')
+
+
+async def _queue_generation(resolved, run):
+    if resolved.ctx is None:
+        raise HTTPException(409, detail={'code': 'project_context_required'})
+    if run['status'] == 'completed':
+        return {'run': run, 'task_id': run.get('task_id'), 'task_type': 'script_creation_generation'}
+    scope = f"run:{run['id']}"
+    if run['status'] in {'failed', 'paused'}:
+        store = DocumentStore(Path(resolved.state_dir) / 'data.db')
+        run = await store.generation_requeue(run['id'])
+    try:
+        queued = await enqueue_project_task(
+            resolved.ctx, task_type='script_creation_generation', queue_kind='default', episode=0,
+            scope=scope, payload={'project_id': str(resolved.ctx.project_id), 'run_id': run['id']})
+    except Exception as exc:
+        if run['status'] in {'pending', 'failed', 'paused'}:
+            store = DocumentStore(Path(resolved.state_dir) / 'data.db')
+            current = await store.generation_get(run['id'])
+            if current['status'] != 'running':
+                current.update(status='failed', error=f'任务提交失败：{exc}')
+                await store.generation_update(run['id'], current)
+        raise
+    return {'run': run, 'task_id': queued.task_state.task_id, 'task_type': 'script_creation_generation',
+            'task_key': project_task_state_key('script_creation_generation', str(resolved.ctx.project_id), 0, scope=scope),
+            'scope': scope, 'backend': queued.backend, 'queue': queued.queue}
+
+
+@router.get(PREFIX + '/generations')
+async def list_generations(project: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    return {'ok': True, 'data': await GenerationService(store).list()}
+
+
+@router.post(PREFIX + '/generations', status_code=status.HTTP_202_ACCEPTED)
+async def create_generation(project: str, body: GenerationBody,
+                            user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    try:
+        brief = await store.get(body.brief_id)
+        _validate_saved_settings(brief, body)
+        run = await GenerationService(store).start(
+            mode=body.mode, brief_id=body.brief_id, script_mode=body.script_mode,
+            episode_count=body.episode_count, episode_number=body.episode_number,
+            instruction=body.instruction, mutation_id=body.client_mutation_id)
+        return {'ok': True, 'data': await _queue_generation(resolved, run)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, GenerationConflict, GenerationValidation) as exc:
+        raise _generation_error(exc) from exc
+
+
+@router.get(PREFIX + '/generations/{run_id}')
+async def get_generation(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await GenerationService(store).get(run_id)}
+    except DocumentNotFound as exc:
+        raise _generation_error(exc) from exc
+
+
+@router.post(PREFIX + '/generations/{run_id}/retry', status_code=status.HTTP_202_ACCEPTED)
+async def retry_generation(project: str, run_id: str,
+                           user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    service = GenerationService(store)
+    try:
+        run = await service.get(run_id)
+        if run['status'] == 'running':
+            state = get_task_manager().get_task_for_project(
+                resolved.ctx, 'script_creation_generation', 0, scope=f'run:{run_id}')
+            if state and state.status in {'submitting', 'queued', 'running'}:
+                raise GenerationConflict('generation is still running')
+            run['status'] = 'paused'
+            run = await store.generation_update(run_id, run, expected_task_id=run['task_id'])
+        if run['status'] not in {'failed', 'paused', 'pending'}:
+            raise GenerationConflict('only failed or paused generation can retry')
+        return {'ok': True, 'data': await _queue_generation(resolved, run)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _generation_error(exc) from exc
+
+
+@router.post(PREFIX + '/generations/{run_id}/rebase', status_code=status.HTTP_202_ACCEPTED)
+async def rebase_generation(project: str, run_id: str, body: RebaseBody,
+                            user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    service = GenerationService(store)
+    try:
+        old = await service.get(run_id)
+        if old['status'] not in {'needs_rebase', 'failed', 'paused'}:
+            raise GenerationConflict('run does not need rebase')
+        brief = await store.get(old['brief_id'])
+        settings = _saved_settings(brief)
+        script_mode = settings['mode'] if settings else old['script_mode']
+        episode_count = settings['episodeCount'] if settings else old['episode_count']
+        if old['mode'] == 'continue' and (script_mode != 'series' or old['episode_number'] > episode_count):
+            raise GenerationValidation('current settings no longer include the target episode')
+        run = await service.start(mode=old['mode'], brief_id=old['brief_id'],
+            script_mode=script_mode, episode_count=episode_count,
+            episode_number=old['episode_number'], instruction=old['instruction'],
+            mutation_id=body.client_mutation_id)
+        return {'ok': True, 'data': await _queue_generation(resolved, run)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _generation_error(exc) from exc
+
+
+@router.get(PREFIX + '/candidates/{candidate_id}')
+async def get_generation_candidate(project: str, candidate_id: str,
+                                   user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await store.generation_candidate(candidate_id)}
+    except DocumentNotFound as exc:
+        raise _generation_error(exc) from exc

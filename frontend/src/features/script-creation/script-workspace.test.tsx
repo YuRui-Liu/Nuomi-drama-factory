@@ -33,6 +33,7 @@ function renderWorkspace() {
 
 beforeEach(() => {
   localStorage.clear();
+  server.use(http.get("/api/v1/projects/demo/script-creation/generations", () => HttpResponse.json({ ok: true, data: [] })));
   server.use(http.get("/api/v1/projects/demo/episode-imports", () =>
     HttpResponse.json({ ok: true, data: { items: [], imports: [], stale: [], project_revision: 0, migration_status: "", confirmation_required: false } })));
 });

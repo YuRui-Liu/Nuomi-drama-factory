@@ -115,6 +115,15 @@ class DocumentStore:
                     client_mutation_id TEXT NOT NULL, created_at TEXT NOT NULL,
                     restored_from_revision_id TEXT);
                 CREATE INDEX IF NOT EXISTS idx_script_revisions_doc ON script_revisions(document_id, created_at);
+                CREATE TABLE IF NOT EXISTS script_generation_runs (
+                    id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL,
+                    request_hash TEXT NOT NULL, data TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS script_generation_candidates (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, step_key TEXT NOT NULL,
+                    target_document_id TEXT, target_revision_id TEXT,
+                    markdown TEXT NOT NULL, context_revisions TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(run_id, step_key));
                 CREATE TABLE IF NOT EXISTS script_mutations (
                     scope TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL,
                     document_id TEXT NOT NULL, revision_id TEXT NOT NULL,
@@ -252,6 +261,179 @@ class DocumentStore:
             except Exception:
                 await db.rollback()
                 raise
+
+    async def generation_start(self, data, mutation_id):
+        digest = _digest({key: data[key] for key in ("mode", "brief_id", "script_mode", "episode_count", "episode_number", "instruction")})
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT * FROM script_generation_runs WHERE mutation_id=?", (mutation_id,))).fetchone()
+                if row:
+                    if row["request_hash"] != digest:
+                        raise DocumentConflict("generation mutation id reused with different payload")
+                    await db.rollback()
+                    return json.loads(row["data"])
+                stamp = _now()
+                data = {**data, "id": _id(), "created_at": stamp, "updated_at": stamp}
+                await db.execute("INSERT INTO script_generation_runs VALUES (?,?,?,?,?,?)",
+                                 (data["id"], mutation_id, digest, json.dumps(data, ensure_ascii=False), stamp, stamp))
+                await db.commit()
+                return data
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def generation_get(self, run_id):
+        async with self._db() as db:
+            row = await (await db.execute("SELECT data FROM script_generation_runs WHERE id=?", (run_id,))).fetchone()
+            if not row:
+                raise DocumentNotFound("generation run not found")
+            return json.loads(row["data"])
+
+    async def generation_list(self):
+        async with self._db() as db:
+            rows = await (await db.execute("SELECT data FROM script_generation_runs ORDER BY created_at DESC",)).fetchall()
+            return [json.loads(row["data"]) for row in rows]
+
+    async def generation_requeue(self, run_id):
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT data FROM script_generation_runs WHERE id=?", (run_id,))).fetchone()
+                if not row:
+                    raise DocumentNotFound("generation run not found")
+                data = json.loads(row["data"])
+                if data["status"] not in {"failed", "paused"}:
+                    raise DocumentConflict("generation run cannot be retried")
+                data.update(status="pending", task_id=None, error=None, updated_at=_now())
+                await db.execute("UPDATE script_generation_runs SET data=?,updated_at=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), data["updated_at"], run_id))
+                await db.commit()
+                return data
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def generation_claim(self, run_id, task_id):
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT data FROM script_generation_runs WHERE id=?", (run_id,))).fetchone()
+                if not row:
+                    raise DocumentNotFound("generation run not found")
+                data = json.loads(row["data"])
+                if data["status"] not in {"pending", "failed", "paused"}:
+                    raise DocumentConflict("generation run is already active or requires rebase")
+                data.update(status="running", task_id=task_id, error=None, updated_at=_now())
+                await db.execute("UPDATE script_generation_runs SET data=?,updated_at=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), data["updated_at"], run_id))
+                await db.commit()
+                return data
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def generation_update(self, run_id, data, *, expected_task_id=None):
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT data FROM script_generation_runs WHERE id=?", (run_id,))).fetchone()
+                if not row:
+                    raise DocumentNotFound("generation run not found")
+                previous = json.loads(row["data"])
+                if expected_task_id is not None and previous.get("task_id") != expected_task_id:
+                    raise DocumentConflict("generation task superseded")
+                if previous.get("task_id") and data.get("task_id") != previous.get("task_id"):
+                    raise DocumentConflict("generation task superseded")
+                data = {**data, "updated_at": _now()}
+                await db.execute("UPDATE script_generation_runs SET data=?,updated_at=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), data["updated_at"], run_id))
+                await db.commit()
+                return data
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def generation_commit_step(self, run_id, *, step_index, task_id, markdown, references,
+                                     target_kind, target_episode, target_id, target_revision,
+                                     allow_fill, commit_guard=None):
+        """Compare every input and target inside one write transaction before publishing output."""
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT data FROM script_generation_runs WHERE id=?", (run_id,))).fetchone()
+                if not row:
+                    raise DocumentNotFound("generation run not found")
+                data = json.loads(row["data"])
+                if data.get("task_id") != task_id or data.get("status") != "running" or data["steps"][step_index]["status"] != "running":
+                    raise DocumentConflict("generation task superseded")
+                for document_id, revision_id in references.items():
+                    ref = await (await db.execute("SELECT current_revision_id FROM script_documents WHERE id=?", (document_id,))).fetchone()
+                    if ref is None or ref["current_revision_id"] != revision_id:
+                        raise DocumentConflict("generation context changed", ref["current_revision_id"] if ref else None)
+                query = "SELECT id,current_revision_id FROM script_documents WHERE kind=? AND episode_number IS ? ORDER BY created_at,id LIMIT 1"
+                target = await (await db.execute(query, (target_kind, target_episode))).fetchone()
+                if (target["id"] if target else None) != target_id or (target["current_revision_id"] if target else None) != target_revision:
+                    raise DocumentConflict("generation target changed", target["current_revision_id"] if target else None)
+                if commit_guard is not None:
+                    commit_guard()
+                    table = await (await db.execute("SELECT name FROM sqlite_master WHERE name='task_states'")).fetchone()
+                    if table:
+                        task = await (await db.execute("SELECT status FROM task_states WHERE task_id=?", (task_id,))).fetchone()
+                        if task is None or task["status"] not in {"queued", "running"}:
+                            from novelvideo.task_backend.cancel import TaskCancelled
+                            raise TaskCancelled()
+                stamp = _now()
+                if target and not allow_fill:
+                    candidate_id = _id()
+                    await db.execute("INSERT INTO script_generation_candidates VALUES (?,?,?,?,?,?,?,?)",
+                                     (candidate_id, run_id, data["steps"][step_index]["key"], target_id,
+                                      target_revision, markdown, json.dumps(references), stamp))
+                    output = {"kind": "candidate", "candidate_id": candidate_id,
+                              "document_id": target_id, "baseline_revision_id": target_revision}
+                else:
+                    document_id = target_id or _id()
+                    revision_id = _id()
+                    if target:
+                        previous = await self._revision(db, target_revision)
+                        blocks = _blocks(markdown, previous=previous.blocks)
+                    else:
+                        blocks = _blocks(markdown)
+                        title = data["steps"][step_index]["title"]
+                        await db.execute("INSERT INTO script_documents VALUES (?,?,?,?,?,?,?,?,?)",
+                                         (document_id, target_kind, title, target_episode, revision_id, None, None, stamp, stamp))
+                    await db.execute("INSERT INTO script_revisions VALUES (?,?,?,?,?,?,?,?)",
+                                     (revision_id, document_id, target_revision, markdown,
+                                      json.dumps(_as_json_blocks(blocks), ensure_ascii=False),
+                                      f"generate:{run_id}:{step_index}", stamp, None))
+                    if target:
+                        await db.execute("UPDATE script_documents SET current_revision_id=?,updated_at=? WHERE id=?",
+                                         (revision_id, stamp, document_id))
+                    output = {"kind": "document", "document_id": document_id, "revision_id": revision_id}
+                    if target_id in data.get("baseline_revisions", {}):
+                        # A run may fill an existing blank template. Move only its own
+                        # target pointer, while step.context_revisions retains the input.
+                        data["baseline_revisions"][target_id] = revision_id
+                step = data["steps"][step_index]
+                step.update(status="completed", output=output, error=None, context_revisions=references,
+                            task_id=task_id)
+                if all(item["status"] == "completed" for item in data["steps"]):
+                    data["status"] = "completed"
+                data["updated_at"] = stamp
+                await db.execute("UPDATE script_generation_runs SET data=?,updated_at=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), stamp, run_id))
+                await db.commit()
+                return data
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def generation_candidate(self, candidate_id):
+        async with self._db() as db:
+            row = await (await db.execute("SELECT * FROM script_generation_candidates WHERE id=?", (candidate_id,))).fetchone()
+            if not row:
+                raise DocumentNotFound("candidate not found")
+            return dict(row)
 
     async def find_import(self, episode_number):
         async with self._db() as db:

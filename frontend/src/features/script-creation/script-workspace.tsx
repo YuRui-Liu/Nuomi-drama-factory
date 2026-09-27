@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { AlertCircle, ChevronDown, ChevronRight, FilePlus2, FileText, Import, Loader2, MessageSquare, Plus, Settings2, Sparkles } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, FilePlus2, FileText, Import, Loader2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import { useEpisodeImports } from "@/lib/queries/ingest";
 import { scriptCreationApi } from "./api";
 import { DraftManager } from "./draft-manager";
+import { GenerationPanel } from "./generation-panel";
 import { readRecovery, writeRecovery } from "./draft-recovery";
 import { DocumentEditor } from "./document-editor";
 import { treeForDocuments } from "./document-tree";
@@ -234,11 +235,10 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       </section>
       <aside aria-label="AI 协作" className="hidden min-h-0 flex-col border-l border-white/[0.07] bg-[#111317] lg:flex">
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-4 text-xs font-semibold"><MessageSquare size={15} className="text-[#E5FF5C]" />AI 协作</div>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-          <div className="rounded-lg border border-white/10 bg-white/[0.025] p-3"><div className="text-[11px] uppercase tracking-wider text-white/35">当前引用</div><div className="mt-2 text-sm">{current?.title ?? "尚未选择文档"}</div>{selection && <div className="mt-2 rounded border-l-2 border-[#E5FF5C] bg-black/20 p-2 text-xs leading-5 text-white/65">“{selection.text}”<br /><span className="text-white/35">字符 {selection.start}–{selection.end}</span></div>}</div>
-          <div className="rounded-lg border border-white/10 p-3 text-xs leading-6 text-white/50"><Sparkles size={16} className="mb-2 text-[#E5FF5C]" />选中文档中的一段文字，之后可在这里提出修改要求。生成接入完成前，文档仍可直接编辑和保存。</div>
-        </div>
-        <div className="border-t border-white/10 p-4"><textarea aria-label="创作要求" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="写下创作要求…" rows={3} className="w-full resize-none rounded border border-white/10 bg-[#0D0E10] p-3 text-xs leading-5 text-white outline-none" /><button disabled className="mt-2 w-full rounded bg-[#E5FF5C]/25 px-3 py-2 text-xs text-[#E5FF5C]/65">AI 协作接入中</button></div>
+        <GenerationPanel project={project} documents={documents} manager={manager} settings={settings}
+          selected={current} instruction={instruction} onSelect={setSelectedId} onRefresh={refresh} />
+        {selection && <div className="mx-4 mb-2 rounded border-l-2 border-[#E5FF5C] bg-black/20 p-2 text-xs leading-5 text-white/65">当前选段：“{selection.text}”<span className="block text-white/35">字符 {selection.start}–{selection.end}</span></div>}
+        <div className="border-t border-white/10 p-4"><textarea aria-label="创作要求" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="写下创作要求…" rows={3} className="w-full resize-none rounded border border-white/10 bg-[#0D0E10] p-3 text-xs leading-5 text-white outline-none" /></div>
       </aside>
     </main>
     {setterOpen && <ScriptSetter initial={settings} onSave={saveSettings} onClose={() => setSetterOpen(false)} />}
