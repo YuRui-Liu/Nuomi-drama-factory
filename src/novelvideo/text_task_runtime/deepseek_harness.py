@@ -19,8 +19,11 @@ import re
 import shutil
 import tempfile
 
+from pydantic_ai import Agent, BinaryContent, PromptedOutput
+
 from novelvideo.knowledge_runtime.codex import (
     build_codex_process_env,
+    validate_structured_images,
     _process_group_kwargs,
 )
 from novelvideo.knowledge_runtime.codex_process import terminate_process_tree
@@ -177,8 +180,32 @@ def _resolve_default_model(snapshot: object) -> tuple[str, str | None]:
     return preset.model, preset.reasoning_effort
 
 
+def _vision_model(model_name: str, *, timeout_seconds: int):
+    """Use the selected DeepSeek model's official image API for visual tasks.
+
+    Headless accepts a text task only; its stdout contract cannot confirm that
+    an agent opened every image. A direct image request keeps the model choice
+    while making the supplied image bytes part of the user message.
+    """
+    from novelvideo import config
+
+    api_key = str(os.getenv("DEEPSEEK_API_KEY") or "").strip()
+    if not api_key:
+        raise KnowledgeRuntimeError(
+            "DeepSeek 图片任务需要配置 DEEPSEEK_API_KEY。",
+            code="DSH_VISION_KEY_MISSING",
+        )
+    return config._newapi_text_openai_model(
+        model_name,
+        api_key=api_key,
+        base_url="https://api.deepseek.com",
+        timeout_seconds=timeout_seconds,
+        profile=None,
+    )
+
+
 class DeepSeekHarnessStructuredRuntime:
-    """Run one structured task through ``dsh --profile headless``."""
+    """Use DSH for text and the selected DeepSeek model's API for images."""
 
     def __init__(self, snapshot):
         if snapshot.runtime != DSH_RUNTIME:
@@ -196,14 +223,29 @@ class DeepSeekHarnessStructuredRuntime:
         validation_context=None,
         images=None,
     ):
-        if images:
-            raise KnowledgeRuntimeError(
-                "此 DeepSeek Harness 文本运行时不支持图片输入；视觉检查请使用 Codex 或模型 API。",
-                code="DSH_IMAGES_UNSUPPORTED",
-            )
         timeout = int(os.getenv("DSH_EXEC_TIMEOUT_SECONDS", "600"))
         if timeout <= 0:
             raise ValueError("DeepSeek Harness timeout must be positive")
+        if images:
+            validate_structured_images(images)
+            model, effort = _resolve_default_model(self.snapshot)
+            agent_kwargs = {
+                "model": _vision_model(model, timeout_seconds=timeout),
+                "output_type": PromptedOutput(output_type) if output_type is not str else str,
+                "system_prompt": system_prompt,
+            }
+            if effort in {"none", "low", "high", "max"}:
+                agent_kwargs["model_settings"] = {"openai_reasoning_effort": effort}
+            if validation_context is not None:
+                agent_kwargs["validation_context"] = validation_context
+            user_prompt = [
+                prompt,
+                *[BinaryContent(data=image.data, media_type=image.media_type)
+                  for image in images],
+            ]
+            result = await Agent(**agent_kwargs).run(user_prompt)
+            output = getattr(result, "output", result)
+            return output if isinstance(output, output_type) else output_type.model_validate(output)
         model, effort = _resolve_default_model(self.snapshot)
         home = harness_home()
         try:

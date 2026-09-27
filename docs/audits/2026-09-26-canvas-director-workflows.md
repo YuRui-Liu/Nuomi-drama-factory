@@ -62,6 +62,10 @@ The user explicitly authorized real verification and expense. The implementation
 
 The initial attempt `373b34aa078f4219a952baf8117836ad` failed before any provider submission: the configured DeepSeek Harness adapter rejects image attachments (`DSH_IMAGES_UNSUPPORTED`). The existing, authenticated Codex route (`gpt-5.6-sol`, medium) was temporarily selected for the acceptance tasks and the exact original routing configuration restored after enqueue. A regression now verifies that this known failure gives an actionable message and never submits video; other arbitrary exception messages remain private.
 
+2026-09-27 correction: the rejection was an adapter transport limitation, **not a limitation of `deepseek-v4-flash-vision-exp`**. DeepSeek's [official vision guide](https://api-docs.deepseek.com/guides/vision/) confirms the legacy alias accepts images and is served by the current Flash model. The former headless path supplied only a text task and rejected `images` before invoking DSH. The repaired runtime sends frozen image bytes as `BinaryContent` to the official DeepSeek image API using the configured model and `DEEPSEEK_API_KEY`; text-only tasks continue through headless DSH. Missing credentials stop before video submission with a fixed actionable error. The earlier Codex reroute describes the historical paid run, not a remaining requirement.
+
+Real visual probe: the configured DeepSeek alias described the existing `修简铺` scene image as a rainy wooden interior with a table and a lantern on the left. A second real call passed the original frozen first/last images through the Director optimizer and returned one valid `fl2va` wire with 1,531 compiled prompt characters. This was an optimizer-only check; it did not upload images to RunningHub or submit another video. Related DeepSeek runtime, Director and routing tests passed (136 tests, eight existing dependency deprecation warnings). The original route setting remained unchanged.
+
 ### Ordinary H3 first/last: completed
 
 - Director attempt: `39e609bb957247dd9bc9f6f82470d331`; application task: `4354d39f-08aa-4832-beb2-5d545354573c`.

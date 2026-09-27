@@ -262,15 +262,14 @@ class DirectorService:
                                                      reference_limit=reference_limit)
                 except Exception as exc:
                     error = "Director optimization failed"
-                    if isinstance(exc, KnowledgeRuntimeError) and exc.code == "DSH_IMAGES_UNSUPPORTED":
-                        error = ("当前导演提示词运行时 DeepSeek Harness 不支持图片输入；"
-                                 "请将导演规划运行时切换为 Codex 或支持图片的模型 API 后重试。")
+                    if isinstance(exc, KnowledgeRuntimeError) and exc.code == "DSH_VISION_KEY_MISSING":
+                        error = "DeepSeek 图片改写需要配置 DEEPSEEK_API_KEY；配置后可重试。"
                     return self.store.update(attempt_id, stage="failed", failed_stage="optimizing",
                                              error=error,
                                              optimization_validation_errors=_validation_locations(exc),
                                              optimization_error_type=type(exc).__name__,
                                              optimization_error_code=(exc.code if isinstance(exc, KnowledgeRuntimeError)
-                                                 and exc.code in {"DSH_IMAGES_UNSUPPORTED", "CODEX_STRUCTURED_OUTPUT_INVALID",
+                                                 and exc.code in {"DSH_VISION_KEY_MISSING", "CODEX_STRUCTURED_OUTPUT_INVALID",
                                                                   "CODEX_NOT_INSTALLED", "CODEX_EXEC_FAILED",
                                                                   "CODEX_NOT_AUTHENTICATED", "CODEX_SCHEMA_INVALID"}
                                                  else None),

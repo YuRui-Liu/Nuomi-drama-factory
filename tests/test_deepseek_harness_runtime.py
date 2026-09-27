@@ -237,14 +237,63 @@ async def test_structured_output_still_unwraps_a_code_fence(monkeypatch, dsh):
 
 
 @pytest.mark.asyncio
-async def test_images_are_never_silently_discarded(monkeypatch, isolated_harness_home):
+async def test_images_use_configured_deepseek_vision_model_without_dsh_text_call(monkeypatch, isolated_harness_home):
+    from novelvideo.knowledge_runtime.codex import StructuredImage
+    from pydantic_ai import BinaryContent
+
     spawn = AsyncMock()
     monkeypatch.setattr(deepseek_harness.asyncio, "create_subprocess_exec", spawn)
-    with pytest.raises(KnowledgeRuntimeError) as error:
-        await runtime().run_structured(prompt="task", output_type=Answer, images=[object()])
-    assert error.value.code == "DSH_IMAGES_UNSUPPORTED"
-    assert "图片输入" in str(error.value)
+    observed = {}
+
+    def fake_model(model_name, *, timeout_seconds):
+        observed["model"] = model_name
+        return object()
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            observed["agent"] = kwargs
+
+        async def run(self, user_prompt):
+            observed["prompt"] = user_prompt
+            return SimpleNamespace(output=Answer(value="ok"))
+
+    monkeypatch.setattr(deepseek_harness, "_vision_model", fake_model, raising=False)
+    monkeypatch.setattr(deepseek_harness, "Agent", FakeAgent, raising=False)
+
+    result = await runtime().run_structured(
+        prompt="describe", system_prompt="system", output_type=Answer,
+        images=[StructuredImage(b"real-image-bytes", "image/png")],
+    )
+
+    assert result.value == "ok"
+    assert observed["model"] == "deepseek-v4-flash-vision-exp"
+    assert observed["agent"]["system_prompt"] == "system"
+    assert observed["prompt"][0] == "describe"
+    assert isinstance(observed["prompt"][1], BinaryContent)
+    assert observed["prompt"][1].data == b"real-image-bytes"
+    assert observed["prompt"][1].media_type == "image/png"
     spawn.assert_not_called()
+
+
+def test_vision_model_requires_existing_deepseek_credential(monkeypatch):
+    import novelvideo.config  # load the project's .env before masking the key
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        deepseek_harness._vision_model("deepseek-v4-flash-vision-exp", timeout_seconds=10)
+    assert error.value.code == "DSH_VISION_KEY_MISSING"
+    assert "DEEPSEEK_API_KEY" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_invalid_image_is_rejected_before_any_deepseek_request(monkeypatch):
+    model = AsyncMock()
+    monkeypatch.setattr(deepseek_harness, "_vision_model", model)
+
+    with pytest.raises(ValueError, match="StructuredImage"):
+        await runtime().run_structured(prompt="task", output_type=Answer, images=[object()])
+
+    model.assert_not_awaited()
 
 
 def test_missing_cli_reports_dsh_not_installed(monkeypatch):

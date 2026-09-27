@@ -248,13 +248,62 @@ async def test_optimizer_diagnostic_trace_is_bounded(setup):
 
 
 @pytest.mark.asyncio
-async def test_deepseek_image_rejection_explains_runtime_change_without_submitting(setup):
+async def test_deepseek_vision_runtime_optimizes_frozen_image_before_submitting(setup, monkeypatch):
+    import json
+    from novelvideo.text_task_runtime import deepseek_harness
     from novelvideo.text_task_runtime.deepseek_harness import DeepSeekHarnessStructuredRuntime
     from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 
     ctx, _, provider, _ = setup
+    seen = {}
+
+    class VisionAgent:
+        def __init__(self, **kwargs):
+            seen["model"] = kwargs["model"]
+
+        async def run(self, content):
+            seen["image"] = content[1].data
+            request = json.loads(content[0].partition("INPUT_JSON:\n")[2])
+            return SimpleNamespace(output={
+                "segment_id": request["segment_id"],
+                "wire": {"mode": request["mode"],
+                         "duration_seconds": request["duration_seconds"],
+                         "integrated_multimodal_description": "[Shot 1] Walk",
+                         "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"},
+            })
+
+    monkeypatch.setattr(deepseek_harness, "_resolve_default_model",
+                        lambda _snapshot: ("deepseek-v4-flash-vision-exp", "low"))
+    monkeypatch.setattr(deepseek_harness, "_vision_model",
+                        lambda model_name, **_kwargs: model_name)
+    monkeypatch.setattr(deepseek_harness, "Agent", VisionAgent)
     (ctx.output_dir / "frame.png").write_bytes(png("red"))
     runtime = DeepSeekHarnessStructuredRuntime(AgentTaskRouteSnapshot(
+        runtime="deepseek_harness", task_role="director_plan", source="global",
+    ))
+    service = DirectorService(ctx, provider=provider, runtime=runtime)
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+
+    submitted = await service.resume(item["id"])
+
+    assert submitted["provider_task_id"] == "paid-task"
+    assert provider.submit_calls == 1
+    assert seen == {"model": "deepseek-v4-flash-vision-exp", "image": png("red")}
+
+
+@pytest.mark.asyncio
+async def test_deepseek_missing_vision_key_explains_failure_without_paid_submission(setup, monkeypatch):
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+    from novelvideo.text_task_runtime import deepseek_harness
+    from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+
+    ctx, _, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    def missing_key(*_args, **_kwargs):
+        raise KnowledgeRuntimeError("credential is private", code="DSH_VISION_KEY_MISSING")
+
+    monkeypatch.setattr(deepseek_harness, "_vision_model", missing_key)
+    runtime = deepseek_harness.DeepSeekHarnessStructuredRuntime(AgentTaskRouteSnapshot(
         runtime="deepseek_harness", task_role="director_plan", source="global",
     ))
     service = DirectorService(ctx, provider=provider, runtime=runtime)
@@ -265,11 +314,8 @@ async def test_deepseek_image_rejection_explains_runtime_change_without_submitti
     assert failed["stage"] == "failed"
     assert failed["failed_stage"] == "optimizing"
     assert provider.submit_calls == 0
-    assert failed["optimization_error_code"] == "DSH_IMAGES_UNSUPPORTED"
-    assert failed["error"] == (
-        "当前导演提示词运行时 DeepSeek Harness 不支持图片输入；"
-        "请将导演规划运行时切换为 Codex 或支持图片的模型 API 后重试。"
-    )
+    assert "DEEPSEEK_API_KEY" in failed["error"]
+    assert "credential is private" not in failed["error"]
 
 
 @pytest.mark.asyncio
