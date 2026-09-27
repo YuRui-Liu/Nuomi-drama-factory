@@ -131,7 +131,7 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 
 ## 任务 3：真实创作任务与逐集续写
 
-执行状态：进行中，由独立生成任务子代理负责后端任务与前端真实接线。
+执行状态：实现与两阶段审查完成（def126a、840a5bb、4e3d50d）。后端 45 项、前端 30 项通过；真实生成已验证大纲与梗概，剩余阶段在隔离数据上续跑，模型连接中断不等于验收完成。
 
 **文件：** generation.py、prompts.py、runner、runtime 模型/设置、registry；tests/script_creation/test_generation.py、tests/test_task_script_creation_runner.py。
 
@@ -145,6 +145,8 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 - [ ] 运行测试并提交 `feat(script-creation): generate resumable story drafts through text runtime`。
 
 ## 任务 4：候选审阅与版本历史
+
+执行状态：已实现至 33a9a56，规格审查中修复保存后引用版本、任务恢复及继续调整范围三项接线问题。尚未通过最终质量审查。候选采纳只更新当前草稿，制作采用指针仅由任务 7 交接更新。
 
 **文件：** proposals.py、proposal-review.tsx、revision-history.tsx；tests/script_creation/test_proposals.py；前端对应测试。
 
