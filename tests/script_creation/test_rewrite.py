@@ -42,6 +42,19 @@ async def test_scene_scope_uses_caret_and_stops_at_next_scene(tmp_path):
     assert "## 1-2" not in job["before"]
 
 
+async def test_scene_scope_accepts_generated_script_scene_headings(tmp_path):
+    store = DocumentStore(tmp_path / "data.db")
+    await store.initialize()
+    text = "# 第一集\n\n### 1-1 夜 外 船厂账房门前\n甲说话。\n\n### 1-2 夜 内 账房\n乙说话。"
+    doc = await store.create(kind="episode_script", title="一", markdown=text, client_mutation_id="create")
+    caret = text.index("甲说话")
+    job = await RewriteService(store).start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        start=caret, end=caret, scope="scene", mode="conflict", instruction="", preserve="",
+        client_mutation_id="scene")
+    assert job["before"].startswith("### 1-1 夜 外")
+    assert "### 1-2" not in job["before"]
+
+
 async def test_cross_block_selection_keeps_exact_global_offsets(tmp_path):
     store = DocumentStore(tmp_path / "data.db")
     await store.initialize()
