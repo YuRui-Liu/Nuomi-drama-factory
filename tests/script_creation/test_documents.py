@@ -165,3 +165,74 @@ async def test_mutation_payload_conflict_identifies_current_head(store):
     with pytest.raises(DocumentConflict) as create_error:
         await store.create(kind="outline", title="Different", client_mutation_id="create")
     assert create_error.value.current_revision_id == latest.current_revision_id
+
+
+async def test_create_response_stays_at_its_committed_revision_when_next_writer_advances(store, monkeypatch):
+    import aiosqlite
+    from novelvideo.script_creation.store import DocumentStore
+
+    other = DocumentStore(store.db_path)
+    await other.initialize()
+    committed = asyncio.Event()
+    resume = asyncio.Event()
+    original_commit = aiosqlite.Connection.commit
+    first_commit = True
+
+    async def pause_after_first_commit(connection):
+        nonlocal first_commit
+        await original_commit(connection)
+        if first_commit:
+            first_commit = False
+            committed.set()
+            await resume.wait()
+
+    monkeypatch.setattr(aiosqlite.Connection, "commit", pause_after_first_commit)
+    task = asyncio.create_task(store.create(kind="brief", title="Brief",
+        markdown="A", client_mutation_id="create"))
+    try:
+        await asyncio.wait_for(committed.wait(), 2)
+        visible = (await other.list())[0]
+        advanced = await other.save(visible.id, base_revision_id=visible.current_revision_id,
+            markdown="B", client_mutation_id="next")
+    finally:
+        resume.set()
+    created = await task
+    assert created.current_revision_id == created.revision.id == visible.current_revision_id
+    assert created.revision.markdown == "A"
+    assert advanced.current_revision_id != created.current_revision_id
+
+
+async def test_save_response_stays_at_its_committed_revision_when_next_writer_advances(store, monkeypatch):
+    import aiosqlite
+    from novelvideo.script_creation.store import DocumentStore
+
+    doc = await store.create(kind="brief", title="Brief", markdown="A", client_mutation_id="create")
+    other = DocumentStore(store.db_path)
+    await other.initialize()
+    committed = asyncio.Event()
+    resume = asyncio.Event()
+    original_commit = aiosqlite.Connection.commit
+    first_commit = True
+
+    async def pause_after_first_commit(connection):
+        nonlocal first_commit
+        await original_commit(connection)
+        if first_commit:
+            first_commit = False
+            committed.set()
+            await resume.wait()
+
+    monkeypatch.setattr(aiosqlite.Connection, "commit", pause_after_first_commit)
+    task = asyncio.create_task(store.save(doc.id, base_revision_id=doc.current_revision_id,
+        markdown="B", client_mutation_id="save"))
+    try:
+        await asyncio.wait_for(committed.wait(), 2)
+        visible = await other.get(doc.id)
+        advanced = await other.save(doc.id, base_revision_id=visible.current_revision_id,
+            markdown="C", client_mutation_id="next")
+    finally:
+        resume.set()
+    saved = await task
+    assert saved.current_revision_id == saved.revision.id == visible.current_revision_id
+    assert saved.revision.markdown == "B"
+    assert advanced.current_revision_id != saved.current_revision_id

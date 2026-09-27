@@ -197,8 +197,9 @@ class DocumentStore:
                                   json.dumps(_as_json_blocks(parsed), ensure_ascii=False), client_mutation_id, stamp, None))
                 await db.execute("INSERT INTO script_mutations VALUES (?,?,?,?,?)",
                                  ("create", client_mutation_id, digest, document_id, revision_id))
+                response = await self._document(db, document_id)
                 await db.commit()
-                return await self._document(db, document_id)
+                return response
             except Exception:
                 await db.rollback()
                 raise
@@ -245,8 +246,9 @@ class DocumentStore:
                                  (revision_id, stamp, document_id))
                 await db.execute("INSERT INTO script_mutations VALUES (?,?,?,?,?)",
                                  (document_id, client_mutation_id, digest, document_id, revision_id))
+                response = await self._document(db, document_id)
                 await db.commit()
-                return await self._document(db, document_id)
+                return response
             except Exception:
                 await db.rollback()
                 raise
