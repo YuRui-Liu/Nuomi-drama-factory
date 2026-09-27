@@ -4,6 +4,7 @@
 export const PROJECT_SECTION_ROUTES = {
   freezone: "/projects/$project/freezone",
   ingest: "/projects/$project/ingest",
+  creation: "/projects/$project/creation",
   characters: "/projects/$project/characters",
   episodes: "/projects/$project/episodes",
   styles: "/projects/$project/styles",
@@ -16,6 +17,7 @@ export type ProjectSection = keyof typeof PROJECT_SECTION_ROUTES;
 
 export const PROJECT_NAV_ITEMS = [
   { labelKey: "nav.ingest", to: PROJECT_SECTION_ROUTES.ingest },
+  { labelKey: "nav.scriptCreation", to: PROJECT_SECTION_ROUTES.creation },
   { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },
   { labelKey: "nav.episodes", to: PROJECT_SECTION_ROUTES.episodes },
   { labelKey: "nav.freezone", to: PROJECT_SECTION_ROUTES.freezone },

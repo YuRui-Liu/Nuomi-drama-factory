@@ -16,8 +16,10 @@ export function isLocalAuthMode(): boolean {
 export async function ensureAuthenticatedForAppRoute(): Promise<boolean> {
   const auth = useAuthStore.getState();
   if (auth.username) return true;
-  // CE explicitly runs without authentication. Treat the route as public
-  // instead of probing /auth/me and redirecting to the login route forever.
-  if (!authRequired()) return true;
-  return Boolean(await auth.getCurrentUser());
+  if (authRequired()) return Boolean(await auth.getCurrentUser());
+  // CE has no login gate, but the app shell still needs the synthetic owner
+  // returned by /auth/me. A transient fetch failure must not redirect to
+  // /login, where CE would immediately send the browser back here.
+  await auth.getCurrentUser({ clearOnNetworkFailure: false });
+  return true;
 }
