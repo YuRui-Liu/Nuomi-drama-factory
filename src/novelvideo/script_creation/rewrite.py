@@ -94,8 +94,36 @@ class RewriteService:
                         raise DocumentNotFound("reference proposal not found")
                     if row["base_revision_id"] != base_revision_id:
                         raise DocumentConflict("旧候选基线已变化，请重新生成", doc.current_revision_id)
-                    if row["block_id"] is None:
-                        matches_range = scope == "episode" and start == 0 and end == len(doc.revision.markdown) and row["before_text"] == doc.revision.markdown
+                    origin_row = await (await db.execute(
+                        "SELECT data FROM script_rewrite_jobs WHERE id=?", (row["round_id"],))).fetchone()
+                    origin = json.loads(origin_row["data"]) if origin_row else None
+                    candidate_after = row["after_text"]
+                    if origin is not None:
+                        if (origin["proposal_id"] != reference_proposal_id or
+                                origin["document_id"] != document_id or
+                                origin["base_revision_id"] != base_revision_id or
+                                origin["status"] != "completed"):
+                            raise DocumentConflict("reference proposal origin changed", doc.current_revision_id)
+                        matches_range = (scope == origin["scope"] and start == origin["start"] and
+                            end == origin["end"] and doc.revision.markdown[start:end] == origin["before"])
+                        if row["block_id"] is None:
+                            prefix = doc.revision.markdown[:start]
+                            suffix = doc.revision.markdown[end:]
+                            candidate_after = row["after_text"]
+                            if (row["before_text"] != doc.revision.markdown or
+                                    not candidate_after.startswith(prefix) or
+                                    not candidate_after.endswith(suffix)):
+                                matches_range = False
+                            else:
+                                candidate_after = candidate_after[len(prefix):
+                                    len(candidate_after) - len(suffix) if suffix else None]
+                        elif row["before_text"] != origin["before"]:
+                            matches_range = False
+                    elif row["block_id"] is None:
+                        matches_range = (row["source_candidate_id"] is not None and
+                            scope == "episode" and start == 0 and
+                            end == len(doc.revision.markdown) and
+                            row["before_text"] == doc.revision.markdown)
                     else:
                         offset = 0
                         matches_range = False
@@ -108,7 +136,8 @@ class RewriteService:
                             offset += len(block.markdown)
                     if not matches_range:
                         raise DocumentConflict("继续调整必须使用原候选范围", doc.current_revision_id)
-                    reference = {"before": row["before_text"], "after": row["after_text"], "reason": row["reason"]}
+                    reference = {"before": doc.revision.markdown[start:end],
+                                 "after": candidate_after, "reason": row["reason"]}
                 references = []
                 for ref_id, revision_id in context_revisions.items():
                     if ref_id == document_id:

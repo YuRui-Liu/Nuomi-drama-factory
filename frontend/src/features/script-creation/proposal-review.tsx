@@ -72,7 +72,8 @@ export function ProposalReview({ project, document, documents = [], saved, selec
 
   const rangeFor = (item: ScriptProposal): Selection => {
     if (item.base_revision_id !== document.current_revision_id) return null;
-    if (item.block_id === null) return { text: item.before, start: 0, end: Array.from(document.revision.markdown).length };
+    if (item.block_id === null) return item.source_candidate_id
+      ? { text: item.before, start: 0, end: Array.from(document.revision.markdown).length } : null;
     let offset = 0;
     for (const block of document.revision.blocks) {
       if (block.id === item.block_id) return { text: item.before, start: offset + item.start, end: offset + item.end };
@@ -80,11 +81,31 @@ export function ProposalReview({ project, document, documents = [], saved, selec
     }
     return null;
   };
-  const continueAdjusting = (item: ScriptProposal) => {
-    const range = rangeFor(item);
-    if (!range) { setError("旧候选范围或基线已变化，请重新生成"); return; }
+  const failRefine = () => { setError("旧候选范围或基线已变化，请重新生成"); };
+  const continueAdjusting = async (item: ScriptProposal) => {
+    if (item.base_revision_id !== document.current_revision_id) { failRefine(); return; }
+    let range: Selection = null;
+    let originalScope: RewriteJob["scope"] = item.block_id === null ? "episode" : "selection";
+    if (!item.source_candidate_id) {
+      setBusy(true);
+      try {
+        const source = await scriptCreationApi.getRewrite(project, item.round_id);
+        if (source.proposal_id !== item.id || source.document_id !== document.id ||
+          source.base_revision_id !== document.current_revision_id || source.status !== "completed") {
+          failRefine(); return;
+        }
+        const current = Array.from(document.revision.markdown).slice(source.start, source.end).join("");
+        if (current !== source.before) { failRefine(); return; }
+        range = { text: source.before, start: source.start, end: source.end };
+        originalScope = source.scope;
+      } catch {
+        if (item.block_id === null) { failRefine(); return; }
+      } finally { setBusy(false); }
+    }
+    range ??= rangeFor(item);
+    if (!range) { failRefine(); return; }
     setReference(item.id); setRefineRange(range);
-    setScope(item.block_id === null ? "episode" : "selection");
+    setScope(originalScope);
     setCustom(item.reason); setError("");
   };
   const start = async () => {
@@ -145,8 +166,8 @@ export function ProposalReview({ project, document, documents = [], saved, selec
       <textarea aria-label="改稿补充要求" value={custom} onChange={(event) => setCustom(event.target.value)} placeholder="补充改稿要求" className="mt-2 w-full rounded border border-white/15 bg-[#0D0E10] p-2" rows={2} />
       <textarea aria-label="必须保留" value={preserve} onChange={(event) => setPreserve(event.target.value)} placeholder="必须保留的人物、情节或台词" className="mt-2 w-full rounded border border-white/15 bg-[#0D0E10] p-2" rows={2} />
       {reference && <p className="mt-2 text-[#E5FF5C]">继续调整旧候选，锁定原范围：{refineRange?.text}<button onClick={() => { setReference(null); setRefineRange(null); }} className="ml-2 underline">取消</button></p>}
-      {scope === "scene" && !selection && <p className="mt-2 text-amber-200">先在编辑器中将光标放到目标场次。</p>}
-      <button disabled={!saved || busy || (scope === "selection" && !(reference ? refineRange?.text : selection?.text)) || (scope === "scene" && !selection)} onClick={() => void start()} className="mt-2 w-full rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-35">生成改稿候选</button>
+      {scope === "scene" && !(reference ? refineRange : selection) && <p className="mt-2 text-amber-200">先在编辑器中将光标放到目标场次。</p>}
+      <button disabled={!saved || busy || (scope === "selection" && !(reference ? refineRange?.text : selection?.text)) || (scope === "scene" && !(reference ? refineRange : selection))} onClick={() => void start()} className="mt-2 w-full rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-35">生成改稿候选</button>
       {!saved && <p className="mt-2 text-amber-200">先保存并解决文档冲突，才能生成或采纳。</p>}
       {job && <p className="mt-2">{job.status === "completed" ? "候选已生成，请逐处审阅" : job.status === "needs_rebase" ? "原文已变化，请重新生成" : job.status === "failed" ? `改稿失败：${job.error}` : "正在生成候选…"}</p>}
     </div>
@@ -162,7 +183,7 @@ export function ProposalReview({ project, document, documents = [], saved, selec
           <p className="mt-2 text-white/50">{item.reason}</p>
           <div className="mt-3 flex flex-wrap gap-2"><button disabled={!saved || busy} onClick={() => void accept([item])} className="rounded bg-[#E5FF5C] px-2 py-1.5 text-black disabled:opacity-35">采纳此处</button>
             <button disabled={busy} onClick={() => void discard(item)} className="rounded border border-white/20 px-2 py-1.5">放弃</button>
-            <button onClick={() => continueAdjusting(item)} className="rounded border border-white/20 px-2 py-1.5">继续调整</button></div>
+            <button disabled={busy} onClick={() => void continueAdjusting(item)} className="rounded border border-white/20 px-2 py-1.5 disabled:opacity-35">继续调整</button></div>
         </article>)}</section>;
     })}
     {!pending.length && <p className="p-2 text-white/40">暂无待审候选。选择正文后可生成局部改稿。</p>}

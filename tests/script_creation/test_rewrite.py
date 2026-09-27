@@ -172,3 +172,47 @@ async def test_refine_candidate_must_use_its_exact_document_range(tmp_path):
         reference_proposal_id=proposal["id"], client_mutation_id="correct")
     assert job["before"] == "同句😀"
     assert job["reference"]["after"] == "新句"
+
+
+@pytest.mark.parametrize("scope", ["selection", "scene"])
+async def test_refine_whole_patch_preserves_original_authorized_scope(tmp_path, scope):
+    store = DocumentStore(tmp_path / "data.db")
+    await store.initialize()
+    if scope == "selection":
+        text = "\u524d\u6587\u7532\n\n\u4e59\u540e\u6587"
+        start, end = 2, 6
+    else:
+        text = "# \u7b2c\u4e00\u96c6\n\n### 1-1 \u591c \u5185 \u8d26\u623f\n\u7532\n\n\u4e59\n\n### 1-2 \u591c \u5916 \u7801\u5934\n\u540e\u6587"
+        start = text.index("\u7532")
+        end = start
+    doc = await store.create(kind="episode_script", title="one", markdown=text, client_mutation_id="create")
+    service = RewriteService(store)
+    first = await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        start=start, end=end, scope=scope, mode="dialogue", instruction="", preserve="",
+        client_mutation_id="first")
+    await service.execute(first["id"], runtime=Runtime(), task_id="first-task")
+    proposal = (await service.proposals.list(doc.id))[0]
+    assert proposal["block_id"] is None
+    assert proposal["before"] == text
+    with pytest.raises(DocumentConflict):
+        await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+            start=0, end=len(text), scope="episode", mode="dialogue", instruction="", preserve="",
+            reference_proposal_id=proposal["id"], client_mutation_id="widen")
+    refined = await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        start=first["start"], end=first["end"], scope=scope, mode="dialogue",
+        instruction="refine", preserve="", reference_proposal_id=proposal["id"],
+        client_mutation_id="refine")
+    assert refined["scope"] == scope
+    assert refined["before"] == first["before"]
+    assert refined["reference"]["before"] == first["before"]
+    assert refined["reference"]["after"] == "新台词" + chr(0x2728)
+    if scope == "scene":
+        with pytest.raises(DocumentConflict):
+            await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+                start=first["start"], end=first["end"], scope="selection", mode="dialogue",
+                instruction="", preserve="", reference_proposal_id=proposal["id"],
+                client_mutation_id="scope-switch")
+    await service.execute(refined["id"], runtime=Runtime(), task_id="refine-task")
+    updated = (await service.proposals.list(doc.id))[-1]
+    assert updated["before"] == text
+    assert updated["after"] == text[:first["start"]] + "\u65b0\u53f0\u8bcd" + chr(0x2728) + text[first["end"]:]

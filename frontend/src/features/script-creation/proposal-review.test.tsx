@@ -63,6 +63,39 @@ describe("ProposalReview", () => {
     })));
   });
 
+  it.each(["selection", "scene"] as const)("continues a whole-document patch within its original %s scope", async (originalScope) => {
+    const user = userEvent.setup();
+    const markdown = originalScope === "selection"
+      ? "preA\n\nBpost"
+      : "# Episode\n\n### 1-1 DAY INT Room\nA\n\nB\n\n### 1-2 DAY EXT Dock\npost";
+    const startOffset = originalScope === "selection" ? 3 : markdown.indexOf("### 1-1");
+    const endOffset = originalScope === "selection" ? 7 : markdown.indexOf("### 1-2");
+    const original = markdown.slice(startOffset, endOffset);
+    const wholeDocument = { ...document, revision: { ...document.revision,
+      markdown, blocks: [{ id: "b1", markdown: markdown.slice(0, startOffset) },
+        { id: "b2", markdown: markdown.slice(startOffset) }] } };
+    const proposal: ScriptProposal = { id: "p", document_id: "d", base_revision_id: "r", block_id: null,
+      start: 0, end: Array.from(markdown).length, before: markdown, after: "candidate", reason: "refine",
+      dependencies: [], context_revisions: {}, round_id: "job", status: "pending",
+      source_candidate_id: null, created_at: "" };
+    const sourceJob: RewriteJob = { id: "job", document_id: "d", base_revision_id: "r",
+      start: startOffset, end: endOffset, scope: originalScope, mode: "dialogue", instruction: "",
+      preserve: "", before: original, status: "completed", proposal_id: "p", error: null };
+    vi.spyOn(scriptCreationApi, "listProposals").mockResolvedValue([proposal]);
+    vi.spyOn(scriptCreationApi, "getRewrite").mockResolvedValue(sourceJob);
+    const start = vi.spyOn(scriptCreationApi, "startRewrite").mockResolvedValue({
+      ...sourceJob, id: "refined", status: "pending", proposal_id: null });
+    render(<ProposalReview project="demo" document={wholeDocument} saved
+      selection={null} instruction="" onApplied={vi.fn()} />);
+    await screen.findByText("candidate");
+    await user.click(screen.getByRole("button", { name: "继续调整" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "生成改稿候选" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "生成改稿候选" }));
+    await waitFor(() => expect(start).toHaveBeenCalledWith("demo", expect.objectContaining({
+      reference_proposal_id: "p", scope: originalScope, start: startOffset, end: endOffset,
+    })));
+  });
+
   it("requires a scene cursor and sends episode offsets in Unicode codepoints", async () => {
     const user = userEvent.setup();
     const emojiDocument = { ...document, revision: { ...document.revision,
