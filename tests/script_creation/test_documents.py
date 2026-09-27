@@ -128,3 +128,40 @@ async def test_create_with_generated_explicit_block_id_replays_same_payload(stor
         client_mutation_id="create", blocks=[{"id": "", "markdown": "甲"}])
     assert replay == doc
     assert replay.revision.blocks[0].id
+
+
+async def test_empty_document_rejects_block_id_from_another_document(store):
+    from novelvideo.script_creation.store import DocumentValidation
+    owner = await store.create(kind="brief", title="Owner", markdown="owner", client_mutation_id="owner")
+    empty = await store.create(kind="brief", title="Empty", client_mutation_id="empty")
+    with pytest.raises(DocumentValidation):
+        await store.save(empty.id, base_revision_id=empty.current_revision_id,
+            markdown="borrowed", client_mutation_id="borrow",
+            blocks=[{"id": owner.revision.blocks[0].id, "markdown": "borrowed"}])
+
+
+async def test_restore_recovers_historical_block_ids_after_deletion(store):
+    doc = await store.create(kind="outline", title="Outline", markdown="甲\n\n乙",
+        client_mutation_id="create")
+    shortened = await store.save(doc.id, base_revision_id=doc.current_revision_id,
+        markdown="甲", client_mutation_id="shorten")
+    restored = await store.restore(doc.id, revision_id=doc.current_revision_id,
+        base_revision_id=shortened.current_revision_id, client_mutation_id="restore")
+    assert restored.revision.blocks == doc.revision.blocks
+    assert restored.revision.restored_from_revision_id == doc.current_revision_id
+
+
+async def test_mutation_payload_conflict_identifies_current_head(store):
+    from novelvideo.script_creation.store import DocumentConflict
+    doc = await store.create(kind="brief", title="Brief", client_mutation_id="create")
+    first = await store.save(doc.id, base_revision_id=doc.current_revision_id,
+        markdown="A", client_mutation_id="save")
+    latest = await store.save(doc.id, base_revision_id=first.current_revision_id,
+        markdown="B", client_mutation_id="later")
+    with pytest.raises(DocumentConflict) as save_error:
+        await store.save(doc.id, base_revision_id=doc.current_revision_id,
+            markdown="different", client_mutation_id="save")
+    assert save_error.value.current_revision_id == latest.current_revision_id
+    with pytest.raises(DocumentConflict) as create_error:
+        await store.create(kind="outline", title="Different", client_mutation_id="create")
+    assert create_error.value.current_revision_id == latest.current_revision_id

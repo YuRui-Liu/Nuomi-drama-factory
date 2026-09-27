@@ -52,7 +52,7 @@ def _parts(markdown):
     return [part + ("\n\n" if index < len(bits) - 1 else "") for index, part in enumerate(bits)]
 
 
-def _blocks(markdown, supplied=None, previous=()):
+def _blocks(markdown, supplied=None, previous=(), *, allow_client_ids=False):
     if supplied is None:
         parts = _parts(markdown)
         previous_text = [block.markdown.rstrip("\n") for block in previous]
@@ -77,7 +77,7 @@ def _blocks(markdown, supplied=None, previous=()):
     for raw in supplied:
         block = raw if isinstance(raw, Block) else Block(**raw)
         block_id = block.id or _id()
-        if block_id in seen or (previous and block.id and block.id not in known):
+        if block_id in seen or (not allow_client_ids and block.id and block.id not in known):
             raise DocumentValidation("duplicate or foreign block id")
         seen.add(block_id)
         result.append(Block(block_id, block.markdown))
@@ -148,7 +148,9 @@ class DocumentStore:
         if row is None:
             return None
         if row["payload_hash"] != digest:
-            raise DocumentConflict("mutation id reused with different payload")
+            current = await self._document(db, row["document_id"])
+            raise DocumentConflict("mutation id reused with different payload",
+                                   current_revision_id=current.current_revision_id)
         document = await self._document(db, row["document_id"], row["revision_id"])
         return replace(document, current_revision_id=row["revision_id"])
 
@@ -176,7 +178,7 @@ class DocumentStore:
             raise DocumentValidation("episode_number must be positive")
         normalized = ([{"id": item.id, "markdown": item.markdown} if isinstance(item, Block) else item
                        for item in blocks] if blocks is not None else None)
-        parsed = _blocks(markdown, normalized)
+        parsed = _blocks(markdown, normalized, allow_client_ids=True)
         digest = _digest(dict(kind=kind, title=title, markdown=markdown, episode_number=episode_number,
                               blocks=normalized, source_origin=source_origin))
         async with self._db() as db:
@@ -211,10 +213,11 @@ class DocumentStore:
             if revision.document_id != document_id:
                 raise DocumentNotFound("revision not found")
         return await self._change(document_id, base_revision_id=base_revision_id, markdown=revision.markdown,
-                                  client_mutation_id=client_mutation_id, blocks=None, restored_from_revision_id=revision_id)
+                                  client_mutation_id=client_mutation_id, blocks=None,
+                                  restored_from_revision_id=revision_id, restored_blocks=revision.blocks)
 
     async def _change(self, document_id, *, base_revision_id, markdown, client_mutation_id,
-                      blocks, restored_from_revision_id):
+                      blocks, restored_from_revision_id, restored_blocks=None):
         if not client_mutation_id or not base_revision_id:
             raise DocumentValidation("base_revision_id and client_mutation_id required")
         normalized = ([{"id": b.id, "markdown": b.markdown} if isinstance(b, Block) else b
@@ -231,7 +234,8 @@ class DocumentStore:
                 current = await self._document(db, document_id)
                 if current.current_revision_id != base_revision_id:
                     raise DocumentConflict(current_revision_id=current.current_revision_id)
-                parsed = _blocks(markdown, normalized, current.revision.blocks)
+                parsed = restored_blocks if restored_blocks is not None else _blocks(
+                    markdown, normalized, current.revision.blocks)
                 revision_id, stamp = _id(), _now()
                 await db.execute("INSERT INTO script_revisions VALUES (?,?,?,?,?,?,?,?)",
                                  (revision_id, document_id, base_revision_id, markdown,
