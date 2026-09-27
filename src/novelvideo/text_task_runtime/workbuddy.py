@@ -1,12 +1,13 @@
 """Structured text tasks through WorkBuddy's bundled CLI, without agent tools."""
 import asyncio
+import base64
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
 
-from novelvideo.knowledge_runtime.codex import build_codex_process_env, _process_group_kwargs
+from novelvideo.knowledge_runtime.codex import build_codex_process_env, validate_structured_images, _process_group_kwargs
 from novelvideo.knowledge_runtime.codex_process import terminate_process_tree
 from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 
@@ -15,6 +16,7 @@ def workbuddy_command():
     explicit = os.getenv('WORKBUDDY_BIN')
     candidates = [explicit] if explicit else [
         shutil.which('workbuddy'),
+        shutil.which('codebuddy'),
         '/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
         str(Path.home() / 'Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy'),
     ]
@@ -33,12 +35,14 @@ class WorkBuddyStructuredRuntime:
         self.snapshot = snapshot
 
     async def run_structured(self, *, prompt, output_type, system_prompt='', validation_context=None, images=None):
-        if images:
-            raise KnowledgeRuntimeError('此 WorkBuddy 文本运行时不支持图片输入；视觉检查请使用 Codex 或模型 API。', code='WORKBUDDY_IMAGES_UNSUPPORTED')
+        images = list(images or [])
+        validate_structured_images(images)
         schema = None if output_type is str else output_type.model_json_schema()
-        argv = [workbuddy_command(), '--print', '--output-format', 'json', '--tools', '',
+        argv = [workbuddy_command(), '--print', '--output-format', 'stream-json' if images else 'json', '--tools', '',
                 '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                 '--setting-sources', 'user', '--max-turns', '3', '--model', self.snapshot.model]
+        if images:
+            argv.extend(['--input-format', 'stream-json'])
         # The bundled CLI implements --json-schema through a StructuredOutput
         # agent tool. Keep tools disabled and validate prompted JSON ourselves.
         if self.snapshot.reasoning_effort and self.snapshot.reasoning_effort != 'none':
@@ -46,25 +50,41 @@ class WorkBuddyStructuredRuntime:
         request = f'{system_prompt}\n\n{prompt}'
         if schema:
             request += '\nReturn only JSON matching this schema:\n' + json.dumps(schema, ensure_ascii=False)
+        if images:
+            content = [{'type': 'text', 'text': request}]
+            content.extend({
+                'type': 'image',
+                'source': {'type': 'base64', 'media_type': image.media_type,
+                           'data': base64.b64encode(image.data).decode('ascii')},
+            } for image in images)
+            request = json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}},
+                                 ensure_ascii=False) + '\n'
         timeout = int(os.getenv('WORKBUDDY_EXEC_TIMEOUT_SECONDS', '600'))
         if timeout <= 0:
             raise ValueError('WorkBuddy timeout must be positive')
         with tempfile.TemporaryDirectory(prefix='nuomi-workbuddy-') as cwd:
-            try:
-                process = await asyncio.create_subprocess_exec(*argv, cwd=cwd,
-                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE, env=build_codex_process_env(), **_process_group_kwargs())
-            except OSError:
-                raise KnowledgeRuntimeError('WorkBuddy 无法启动，请检查 CLI 和 Node.js 安装。', code='WORKBUDDY_START_FAILED') from None
-            try:
-                stdout, _ = await asyncio.wait_for(process.communicate(request.encode()), timeout=timeout)
-            except BaseException:
-                await terminate_process_tree(process)
-                raise
+            stdout_path = Path(cwd) / 'workbuddy-stdout.json'
+            with stdout_path.open('wb') as stdout_sink:
+                try:
+                    process = await asyncio.create_subprocess_exec(*argv, cwd=cwd,
+                        stdin=asyncio.subprocess.PIPE, stdout=stdout_sink,
+                        stderr=asyncio.subprocess.PIPE, env=build_codex_process_env(), **_process_group_kwargs())
+                except OSError:
+                    raise KnowledgeRuntimeError('WorkBuddy 无法启动，请检查 CLI 和 Node.js 安装。', code='WORKBUDDY_START_FAILED') from None
+                try:
+                    communicated_stdout, _ = await asyncio.wait_for(
+                        process.communicate(request.encode()), timeout=timeout)
+                except BaseException:
+                    await terminate_process_tree(process)
+                    raise
+            stdout = stdout_path.read_bytes() or communicated_stdout
         if process.returncode != 0:
             raise KnowledgeRuntimeError('WorkBuddy 执行失败，请检查其登录状态、模型权限及余额。', code='WORKBUDDY_EXEC_FAILED')
         try:
-            envelope = json.loads(stdout)
+            if images:
+                envelope = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+            else:
+                envelope = json.loads(stdout)
             if isinstance(envelope, list):
                 envelope = next((item for item in reversed(envelope)
                                  if isinstance(item, dict) and item.get('type') == 'result'), None)

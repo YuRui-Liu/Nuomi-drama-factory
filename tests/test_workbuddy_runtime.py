@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +11,7 @@ from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from novelvideo.text_task_runtime.runtime import build_text_task_runtime
 from novelvideo.text_task_runtime import workbuddy
 from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+from novelvideo.knowledge_runtime.codex import StructuredImage
 
 
 class Answer(BaseModel):
@@ -59,8 +62,28 @@ async def test_workbuddy_cancellation_cleans_up_process(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_images_are_never_silently_discarded():
-    with pytest.raises(KnowledgeRuntimeError, match='图片输入'):
+async def test_workbuddy_sends_images_through_stream_json(monkeypatch):
+    monkeypatch.setattr(workbuddy, 'workbuddy_command', lambda: '/app/workbuddy')
+    output = b'{"type":"system","subtype":"init"}\n{"type":"result","result":"{\\"value\\":\\"ok\\"}"}\n'
+    proc = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(output, b'')))
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(workbuddy.asyncio, 'create_subprocess_exec', spawn)
+    image = StructuredImage(b'image-bytes', 'image/png')
+    result = await runtime().run_structured(prompt='task', output_type=Answer, images=[image])
+    assert result.value == 'ok'
+    argv = spawn.call_args.args
+    assert argv[argv.index('--input-format') + 1] == 'stream-json'
+    assert argv[argv.index('--output-format') + 1] == 'stream-json'
+    message = json.loads(proc.communicate.call_args.args[0])
+    assert message['message']['content'][1] == {
+        'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png',
+                                    'data': base64.b64encode(image.data).decode('ascii')},
+    }
+
+
+@pytest.mark.asyncio
+async def test_workbuddy_rejects_invalid_image_before_cli():
+    with pytest.raises(ValueError, match='StructuredImage'):
         await runtime().run_structured(prompt='task', output_type=Answer, images=[object()])
 
 

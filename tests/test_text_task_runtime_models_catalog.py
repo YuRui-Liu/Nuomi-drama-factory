@@ -30,7 +30,10 @@ def test_falls_back_to_builtin_when_no_models_json():
         "Deepseek-V4.1-Flash",
         "default-model",
     ]
-    assert catalog["codex"] == ["gpt-5.6-sol", "gpt-6-astra"]
+    assert catalog["codex"] == [
+        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]
     assert catalog["model_api"] == []
 
 

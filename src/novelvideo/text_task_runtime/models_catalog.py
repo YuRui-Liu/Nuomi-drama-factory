@@ -32,7 +32,10 @@ _WORKBUDDY_DEFAULT_MODELS = (
     "Deepseek-V4.1-Flash",
     "default-model",
 )
-_CODEX_DEFAULT_MODELS = ("gpt-5.6-sol", "gpt-6-astra")
+_CODEX_DEFAULT_MODELS = (
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+)
 _DEEPSEEK_HARNESS_DEFAULT_MODELS = ("deepseek-v4-flash-vision-exp",)
 _RUNTIMES = ("workbuddy", "codex", "model_api", "deepseek_harness")
 
