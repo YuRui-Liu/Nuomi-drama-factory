@@ -44,7 +44,7 @@ describe("DocumentEditor conflict comparison", () => {
     await user.click(screen.getByRole("button", { name: "比较最新版本" }));
     expect(await screen.findByText("other writer")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保留我的修改并保存" }));
-    await waitFor(() => expect(save).toHaveBeenLastCalledWith("one", "r2", "my draft"));
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith("one", "r2", "my draft", expect.any(String)));
     expect(mocks.get).toHaveBeenCalledTimes(1);
     manager.dispose();
   });

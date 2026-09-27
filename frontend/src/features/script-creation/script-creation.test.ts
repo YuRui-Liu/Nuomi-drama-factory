@@ -66,8 +66,27 @@ describe("document drafts", () => {
     manager.dispose();
   });
 
+  it("reuses the save mutation after a lost response", async () => {
+    let firstId = "";
+    const save = vi.fn().mockImplementationOnce(async (_id: string, _base: string, _text: string, mutationId: string) => {
+      expect(mutationId).toBeTruthy();
+      firstId = mutationId;
+      throw new Error("response lost");
+    }).mockImplementationOnce(async (_id: string, _base: string, text: string, mutationId: string) => {
+      expect(mutationId).toBe(firstId);
+      return document("one", "outline", text);
+    });
+    const manager = new DraftManager(save);
+    manager.load(document("one", "outline", "original"));
+    manager.edit("one", "changed");
+    await manager.flush("one");
+    await manager.retry("one");
+    expect(manager.get("one")?.status).toBe("saved");
+    manager.dispose();
+  });
+
   it("keeps a buffer when switching documents", () => {
-    const manager = new DraftManager(vi.fn());
+    const manager = new DraftManager(vi.fn().mockResolvedValue(document("one", "outline", "AB")));
     manager.load(document("one", "outline", "A"));
     manager.edit("one", "AB");
     manager.load(document("two", "people", "B"));

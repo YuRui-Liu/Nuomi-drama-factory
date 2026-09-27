@@ -9,12 +9,13 @@ export interface DocumentDraft {
   status: DraftStatus;
   error?: string;
 }
-type Save = (id: string, revisionId: string, markdown: string) => Promise<ScriptDocument>;
+type Save = (id: string, revisionId: string, markdown: string, mutationId: string) => Promise<ScriptDocument>;
 
 export class DraftManager {
   private drafts = new Map<string, DocumentDraft>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private inFlight = new Map<string, Promise<void>>();
+  private mutations = new Map<string, { revisionId: string; markdown: string; id: string }>();
   private listeners = new Set<() => void>();
   constructor(private save: Save) {}
 
@@ -32,9 +33,19 @@ export class DraftManager {
     this.emit();
   }
 
+  restore(document: ScriptDocument, markdown: string, revisionId: string) {
+    if (markdown === document.revision.markdown) return;
+    const status = revisionId === document.current_revision_id ? "dirty" : "conflict";
+    this.drafts.set(document.id, { document, markdown, revisionId, version: 1, status,
+      error: status === "conflict" ? "服务器版本已更新，请比较后再保存" : undefined });
+    if (status === "dirty") this.schedule(document.id);
+    this.emit();
+  }
+
   edit(id: string, markdown: string) {
     const draft = this.drafts.get(id);
     if (!draft || draft.markdown === markdown) return;
+    this.mutations.delete(id);
     this.drafts.set(id, { ...draft, markdown, version: draft.version + 1, status: "dirty", error: undefined });
     this.schedule(id);
     this.emit();
@@ -54,10 +65,15 @@ export class DraftManager {
     const draft = this.drafts.get(id);
     if (!draft || !["dirty", "error"].includes(draft.status)) return;
     const markdown = draft.markdown;
+    const priorMutation = this.mutations.get(id);
+    const mutationId = priorMutation?.revisionId === draft.revisionId && priorMutation.markdown === markdown
+      ? priorMutation.id : crypto.randomUUID();
+    this.mutations.set(id, { revisionId: draft.revisionId, markdown, id: mutationId });
     const version = draft.version;
     this.drafts.set(id, { ...draft, status: "saving", error: undefined });
     this.emit();
-    const operation = this.save(id, draft.revisionId, markdown).then((document) => {
+    const operation = this.save(id, draft.revisionId, markdown, mutationId).then((document) => {
+      if (this.mutations.get(id)?.id === mutationId) this.mutations.delete(id);
       const latest = this.drafts.get(id);
       if (!latest) return;
       const unchanged = latest.version === version;
@@ -81,6 +97,7 @@ export class DraftManager {
   resolveConflict(id: string, latest: ScriptDocument, keepLocal: boolean) {
     const draft = this.drafts.get(id);
     if (!draft) return;
+    this.mutations.delete(id);
     if (keepLocal) {
       this.drafts.set(id, { ...draft, document: latest, revisionId: latest.current_revision_id, status: "dirty", error: undefined });
       this.schedule(id);
@@ -91,5 +108,18 @@ export class DraftManager {
     this.emit();
   }
 
-  dispose() { this.timers.forEach(clearTimeout); this.timers.clear(); this.listeners.clear(); }
+  async flushPending() {
+    for (const draft of this.all()) {
+      const pending = this.inFlight.get(draft.document.id);
+      if (pending) await pending;
+      if (this.get(draft.document.id)?.status === "dirty") await this.flush(draft.document.id);
+    }
+  }
+
+  dispose() {
+    this.timers.forEach(clearTimeout);
+    this.timers.clear();
+    this.listeners.clear();
+    void this.flushPending();
+  }
 }

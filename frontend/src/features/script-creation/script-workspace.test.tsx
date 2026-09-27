@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -32,11 +32,97 @@ function renderWorkspace() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   server.use(http.get("/api/v1/projects/demo/episode-imports", () =>
     HttpResponse.json({ ok: true, data: { items: [], imports: [], stale: [], project_revision: 0, migration_status: "", confirmation_required: false } })));
 });
 
 describe("ScriptWorkspace", () => {
+  it("keeps a rapid unsaved edit recoverable after leaving, even when the exit save fails", async () => {
+    const user = userEvent.setup();
+    const outline = doc("one", "outline", "# 故事大纲");
+    let attempts = 0;
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [outline] })),
+      http.put(base + "/documents/one", () => { attempts++; return HttpResponse.json({ detail: "offline" }, { status: 500 }); }),
+    );
+    const view = renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "故事大纲" }));
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), " 新内容");
+    view.unmount();
+    await waitFor(() => expect(attempts).toBe(1));
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "故事大纲" }));
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    expect(screen.getByRole("textbox", { name: "文档 Markdown" })).toHaveValue("# 故事大纲 新内容");
+    expect(screen.getByText(/待保存|保存失败|版本冲突/)).toBeInTheDocument();
+  });
+
+  it("does not discard a retained draft when the initial document list fails", async () => {
+    localStorage.setItem("script-creation-drafts:demo", JSON.stringify({ one: { markdown: "本地草稿", revisionId: "r1" } }));
+    server.use(http.get(base + "/documents", () => HttpResponse.json({ detail: "offline" }, { status: 500 })));
+    const view = renderWorkspace();
+    expect(await screen.findByRole("button", { name: "重试加载" })).toBeInTheDocument();
+    view.unmount();
+    expect(localStorage.getItem("script-creation-drafts:demo")).toContain("本地草稿");
+  });
+
+  it("keeps a recovered draft in conflict when the server has a newer revision", async () => {
+    const serverDoc = doc("one", "outline", "服务器内容");
+    serverDoc.current_revision_id = "r2";
+    serverDoc.revision.id = "r2";
+    localStorage.setItem("script-creation-drafts:demo", JSON.stringify({ one: { markdown: "本地草稿", revisionId: "r1" } }));
+    server.use(http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [serverDoc] })));
+    renderWorkspace();
+    await screen.findByRole("button", { name: "故事大纲" });
+    expect(screen.getByText("版本冲突")).toBeInTheDocument();
+    expect(screen.getByText("本地草稿")).toBeInTheDocument();
+  });
+
+  it("ignores a late project A document list after switching to project B", async () => {
+    let releaseA!: () => void;
+    const waitingA = new Promise<void>((resolve) => { releaseA = resolve; });
+    server.use(
+      http.get(base + "/documents", async () => { await waitingA; return HttpResponse.json({ ok: true, data: [doc("a", "outline", "# A") ] }); }),
+      http.get("/api/v1/projects/other/script-creation/documents", () => HttpResponse.json({ ok: true, data: [doc("b", "people", "# B")] })),
+      http.get("/api/v1/projects/other/episode-imports", () => HttpResponse.json({ ok: true, data: { items: [], imports: [], stale: [], project_revision: 0, migration_status: "", confirmation_required: false } })),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrap = (project: string) => <QueryClientProvider client={client}><ScriptWorkspace project={project} /></QueryClientProvider>;
+    const view = render(wrap("demo"));
+    view.rerender(wrap("other"));
+    expect(await screen.findByRole("button", { name: "人物小传" })).toBeInTheDocument();
+    await act(async () => { releaseA(); await waitingA; });
+    expect(screen.getByRole("button", { name: "人物小传" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "故事大纲" })).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate a document after its create response is lost during a batch", async () => {
+    const user = userEvent.setup();
+    const docs = [doc("brief", "brief", "# 创作简报")];
+    let lost = false;
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: docs })),
+      http.post(base + "/documents", async ({ request }) => {
+        const body = await request.json() as { kind: ScriptDocumentKind; markdown: string; episode_number?: number };
+        if (body.kind === "outline" && !lost) {
+          lost = true;
+          docs.push(doc("outline", body.kind, body.markdown));
+          return HttpResponse.json({ detail: "response lost" }, { status: 500 });
+        }
+        const created = doc(String(docs.length + 1), body.kind, body.markdown, body.episode_number);
+        docs.push(created);
+        return HttpResponse.json({ ok: true, data: created });
+      }),
+    );
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "创建空白文档" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/response lost|500/);
+    await user.click(screen.getByRole("button", { name: "创建空白文档" }));
+    await waitFor(() => expect(docs).toHaveLength(7));
+    expect(docs.filter((entry) => entry.kind === "outline")).toHaveLength(1);
+  });
   it("creates blank editable documents through the real document API", async () => {
     const user = userEvent.setup();
     const docs: ScriptDocument[] = [];

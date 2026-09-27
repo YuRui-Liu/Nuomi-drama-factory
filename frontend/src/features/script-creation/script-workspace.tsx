@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { AlertCircle, ChevronDown, ChevronRight, FilePlus2, FileText, Import, Loader2, MessageSquare, Plus, Settings2, Sparkles } from "lucide-react";
 import { useEpisodeImports } from "@/lib/queries/ingest";
 import { scriptCreationApi } from "./api";
 import { DraftManager } from "./draft-manager";
+import { readRecovery, writeRecovery } from "./draft-recovery";
 import { DocumentEditor } from "./document-editor";
 import { treeForDocuments } from "./document-tree";
 import type { TreeNode } from "./document-tree";
@@ -15,6 +16,10 @@ import type { ScriptDocument, ScriptSettings } from "./types";
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败，请重试"; }
 
 export function ScriptWorkspace({ project }: { project: string }) {
+  return <ProjectScriptWorkspace key={project} project={project} />;
+}
+
+function ProjectScriptWorkspace({ project }: { project: string }) {
   const [documents, setDocuments] = useState<ScriptDocument[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());
@@ -27,25 +32,55 @@ export function ScriptWorkspace({ project }: { project: string }) {
   const [selection, setSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [, redraw] = useState(0);
   const imports = useEpisodeImports(project);
+  const recovery = useMemo(() => readRecovery(project), [project]);
+  const hydrated = useRef(false);
+  const active = useRef(false);
+  const listSequence = useRef(0);
+  const createMutations = useRef(new Map<string, string>());
   const manager = useMemo(() => {
-    const instance = new DraftManager((id, revision, markdown) => scriptCreationApi.save(project, id, revision, markdown));
-    (instance as DraftManager & { project?: string }).project = project;
+    const instance = new DraftManager((id, revision, markdown, mutationId) => scriptCreationApi.save(project, id, revision, markdown, mutationId));
     return instance;
   }, [project]);
 
   useEffect(() => {
-    const unsubscribe = manager.subscribe(() => redraw((count) => count + 1));
-    return () => { unsubscribe(); manager.dispose(); };
-  }, [manager]);
+    active.current = true;
+    const unsubscribe = manager.subscribe(() => {
+      redraw((count) => count + 1);
+      if (hydrated.current) writeRecovery(project, manager);
+    });
+    return () => {
+      active.current = false;
+      listSequence.current++;
+      if (hydrated.current) writeRecovery(project, manager);
+      unsubscribe();
+      manager.dispose();
+    };
+  }, [manager, project]);
+
+  const createDocument = (template: Parameters<typeof scriptCreationApi.create>[1]) => {
+    const key = JSON.stringify(template);
+    let mutationId = createMutations.current.get(key);
+    if (!mutationId) { mutationId = crypto.randomUUID(); createMutations.current.set(key, mutationId); }
+    return scriptCreationApi.create(project, template, mutationId);
+  };
 
   const refresh = useCallback(async () => {
+    const sequence = ++listSequence.current;
     const list = await scriptCreationApi.list(project);
+    if (!active.current || sequence !== listSequence.current) return null;
     setDocuments(list);
     setError("");
-    list.forEach((doc) => manager.load(doc));
+    list.forEach((doc) => {
+      manager.load(doc);
+      if (!hydrated.current && recovery[doc.id]) manager.restore(doc, recovery[doc.id].markdown, recovery[doc.id].revisionId);
+    });
+    if (!hydrated.current) {
+      hydrated.current = true;
+      writeRecovery(project, manager);
+    }
     setSelectedId((current) => current && list.some((doc) => doc.id === current) ? current : list[0]?.id ?? null);
     return list;
-  }, [project, manager]);
+  }, [project, manager, recovery]);
 
   useEffect(() => {
     let alive = true;
@@ -68,13 +103,16 @@ export function ScriptWorkspace({ project }: { project: string }) {
   const saveSettings = async (value: ScriptSettings) => {
     setBusy(true); setError("");
     try {
-      if (brief) {
-        const currentBrief = manager.get(brief.id);
-        manager.edit(brief.id, encodeBriefSettings(value, currentBrief?.markdown ?? brief.revision.markdown));
-        await manager.flush(brief.id);
-        if (manager.get(brief.id)?.status !== "saved") throw new Error("创作设定保存失败，请重试");
+      const latest = await refresh();
+      if (!latest) return;
+      const existingBrief = latest.find((doc) => doc.kind === "brief");
+      if (existingBrief) {
+        const currentBrief = manager.get(existingBrief.id);
+        manager.edit(existingBrief.id, encodeBriefSettings(value, currentBrief?.markdown ?? existingBrief.revision.markdown));
+        await manager.flush(existingBrief.id);
+        if (manager.get(existingBrief.id)?.status !== "saved") throw new Error("创作设定保存失败，请重试");
       } else {
-        const created = await scriptCreationApi.create(project, starterDocuments(value)[0]);
+        const created = await createDocument(starterDocuments(value)[0]);
         manager.load(created);
         setDocuments((prior) => [...prior, created]);
         setSelectedId(created.id);
@@ -90,35 +128,45 @@ export function ScriptWorkspace({ project }: { project: string }) {
   const createBlankDocuments = async () => {
     setBusy(true); setError("");
     try {
-      const existing = new Set(documents.map((doc) => doc.kind + ":" + String(doc.episode_number ?? "")));
+      const latest = await refresh();
+      if (!latest) return;
+      const existing = new Set(latest.map((doc) => doc.kind + ":" + String(doc.episode_number ?? "")));
       const created: ScriptDocument[] = [];
       for (const template of starterDocuments(settings)) {
         const key = template.kind + ":" + String(template.episode_number ?? "");
         if (existing.has(key)) continue;
-        const document = await scriptCreationApi.create(project, template);
+        const document = await createDocument(template);
         created.push(document);
+        existing.add(key);
         manager.load(document);
+        setDocuments((prior) => prior.some((entry) => entry.id === document.id) ? prior : [...prior, document]);
       }
       if (created.length) {
-        setDocuments((prior) => [...prior, ...created]);
         setSelectedId(created.find((doc) => doc.kind !== "brief")?.id ?? created[0].id);
       }
       await refresh();
-    } catch (cause) { setError(errorMessage(cause)); }
-    finally { setBusy(false); }
+    } catch (cause) {
+      await refresh().catch(() => undefined);
+      setError(errorMessage(cause));
+    } finally { setBusy(false); }
   };
 
   const createNextEpisode = async () => {
     if (settings.mode !== "series" || nextEpisodeNumber > settings.episodeCount) return;
     setBusy(true); setError("");
     try {
-      const number = nextEpisodeNumber;
-      const document = await scriptCreationApi.create(project, episodeScriptTemplate("series", number));
+      const latest = await refresh();
+      if (!latest) return;
+      const number = Math.max(0, ...latest.filter((doc) => doc.kind === "episode_script").map((doc) => doc.episode_number ?? 0)) + 1;
+      if (number > settings.episodeCount) return;
+      const document = await createDocument(episodeScriptTemplate("series", number));
       manager.load(document);
       await refresh();
       setSelectedId(document.id);
-    } catch (cause) { setError(errorMessage(cause)); }
-    finally { setBusy(false); }
+    } catch (cause) {
+      await refresh().catch(() => undefined);
+      setError(errorMessage(cause));
+    } finally { setBusy(false); }
   };
 
   const importEpisode = async (episodeNumber: number) => {
