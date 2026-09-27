@@ -105,3 +105,18 @@ async def test_sequential_same_block_offsets_shift_without_guessing(tmp_path):
     changed = await service.accept([second["id"]], base_revision_id=changed.current_revision_id,
                                    client_mutation_id="a2")
     assert changed.revision.markdown == "长长乙新丁"
+
+
+async def test_adopted_pointer_survives_restoring_older_revision(pair):
+    store, doc, service = pair
+    block = doc.revision.blocks[0]
+    proposal = await service.create(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=block.id, start=0, end=3, before="同句😀", after="新句", reason="测试",
+        round_id="r1", client_mutation_id="p1")
+    adopted = await service.accept([proposal["id"]], base_revision_id=doc.current_revision_id,
+                                   client_mutation_id="accept")
+    assert adopted.adopted_revision_id == adopted.current_revision_id
+    restored = await store.restore(doc.id, revision_id=doc.current_revision_id,
+        base_revision_id=adopted.current_revision_id, client_mutation_id="restore")
+    assert restored.adopted_revision_id == adopted.current_revision_id
+    assert restored.current_revision_id != adopted.current_revision_id

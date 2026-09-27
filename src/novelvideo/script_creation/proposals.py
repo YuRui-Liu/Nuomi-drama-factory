@@ -206,8 +206,8 @@ class ProposalService:
                 await db.execute("INSERT INTO script_revisions VALUES (?,?,?,?,?,?,?,?)",
                     (revision_id, document_id, base_revision_id, markdown,
                      json.dumps(_as_json_blocks(blocks), ensure_ascii=False), client_mutation_id, stamp, None))
-                await db.execute("UPDATE script_documents SET current_revision_id=?,updated_at=? WHERE id=?",
-                                 (revision_id, stamp, document_id))
+                await db.execute("UPDATE script_documents SET current_revision_id=?,adopted_revision_id=?,updated_at=? WHERE id=?",
+                                 (revision_id, revision_id, stamp, document_id))
                 for proposal_id in proposal_ids:
                     await db.execute("UPDATE script_proposals SET status='adopted' WHERE id=?", (proposal_id,))
                     await db.execute("INSERT INTO script_proposal_adoptions VALUES (?,?)", (proposal_id, revision_id))
