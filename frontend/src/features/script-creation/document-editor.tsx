@@ -29,7 +29,7 @@ export function DocumentEditor({ project, draft, manager, onSelection }: Props) 
 
   const select = () => {
     const element = input.current;
-    if (!element || element.selectionStart === element.selectionEnd) { onSelection(null); return; }
+    if (!element) { onSelection(null); return; }
     onSelection({
       text: element.value.slice(element.selectionStart, element.selectionEnd),
       start: Array.from(element.value.slice(0, element.selectionStart)).length,

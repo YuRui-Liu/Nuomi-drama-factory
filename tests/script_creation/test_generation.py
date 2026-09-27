@@ -219,6 +219,7 @@ async def test_stage_prompt_names_required_document_structure_and_fact_source(st
                           instruction='', references=[brief])
     assert 'Logline' in outline and '情绪曲线' in outline and '全剧分段' in outline
     assert '人物弧光' in people and '首次出场' in people and '已写正文' in people
+    assert '身份与人物设定' in people and '被逼急时怎么做' in people and '极端行为' in people
     assert '只能依据引用中的 episode_script 文档' in people
     assert 'craft_status' not in craft_guidance('outline')
 
@@ -230,3 +231,23 @@ def test_target_synopsis_accepts_chinese_episode_numbers_through_100(number, chi
     assert result is not None
     assert '姐妹在码头找到父亲留下的证人' in result
     assert '后续剧情' not in result
+
+
+async def test_generated_candidate_enters_review_and_adopts_with_cas(store):
+    from novelvideo.script_creation.proposals import ProposalService
+    brief = await store.create(kind='brief', title='简报', markdown='独立短片', client_mutation_id='brief')
+    target = await store.create(kind='outline', title='作者大纲', markdown='# 作者大纲\n\n已有内容。', client_mutation_id='target')
+    service = GenerationService(store)
+    run = await service.start(mode='bootstrap', brief_id=brief.id, script_mode='single', episode_count=1,
+                              instruction='', mutation_id='start')
+    result = await service.execute(run['id'], runtime=Runtime(), task_id='task')
+    candidate_id = result['steps'][0]['output']['candidate_id']
+    review = ProposalService(store)
+    proposal = await review.from_candidate(candidate_id)
+    assert proposal['source_candidate_id'] == candidate_id
+    assert proposal['before'] == target.revision.markdown
+    assert (await store.get(target.id)).current_revision_id == target.current_revision_id
+    adopted = await review.accept([proposal['id']], base_revision_id=target.current_revision_id,
+                                  client_mutation_id='accept')
+    assert adopted.revision.markdown == (await store.generation_candidate(candidate_id))['markdown']
+    assert len(await store.revisions(target.id)) == 2

@@ -7,10 +7,10 @@ import type { GenerationCandidate, GenerationQueued, GenerationRun, ScriptDocume
 const textError = (error: unknown) => error instanceof Error ? error.message : "生成请求失败，请检查模型设置并重试";
 const active = (status?: string) => status === "pending" || status === "running";
 
-export function GenerationPanel({ project, documents, manager, settings, selected, instruction, onSelect, onRefresh }: {
+export function GenerationPanel({ project, documents, manager, settings, selected, instruction, onSelect, onRefresh, onReviewCandidate }: {
   project: string; documents: ScriptDocument[]; manager: DraftManager; settings: ScriptSettings;
   selected: ScriptDocument | undefined; instruction: string; onSelect: (id: string) => void;
-  onRefresh: () => Promise<unknown> | void;
+  onRefresh: () => Promise<unknown> | void; onReviewCandidate?: (id: string, documentId: string | null) => void;
 }) {
   const [run, setRun] = useState<GenerationRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -120,7 +120,7 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
         {(status === "failed" || status === "paused") && <button disabled={busy || unsaved} onClick={() => void resume(false)} className="mt-3 inline-flex items-center gap-1 rounded border border-[#E5FF5C]/40 px-2 py-1.5 text-xs text-[#E5FF5C]"><RotateCcw size={12} />继续未完成步骤</button>}
         {active(status) && <button onClick={() => void scriptCreationApi.pauseGeneration(project, run.id).then(() => setTaskFailure("生成已暂停，可继续未完成步骤")).catch((cause) => setError(textError(cause)))} className="mt-3 inline-flex items-center gap-1 text-xs text-white/50"><Pause size={12} />暂停生成</button>}
       </div>}
-      {candidate && <div className="rounded border border-[#E5FF5C]/25 p-3"><div className="text-xs text-[#E5FF5C]">候选正文 · 原文未覆盖</div><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-white/70">{candidate.markdown}</pre></div>}
+      {candidate && <div className="rounded border border-[#E5FF5C]/25 p-3"><div className="text-xs text-[#E5FF5C]">候选正文 · 原文未覆盖</div><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-white/70">{candidate.markdown}</pre><button onClick={() => onReviewCandidate?.(candidate.id, candidate.target_document_id)} className="mt-2 rounded bg-[#E5FF5C] px-2 py-1.5 font-semibold text-black">进入候选审阅</button></div>}
     </div>
     <div className="space-y-2 border-t border-white/10 p-4">
       <button disabled={blocked} onClick={() => void start("bootstrap")} className="flex w-full items-center justify-center gap-2 rounded bg-[#E5FF5C] px-3 py-2 text-xs font-semibold text-black disabled:opacity-35"><Sparkles size={14} />生成故事框架与首集</button>

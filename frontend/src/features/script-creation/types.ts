@@ -71,3 +71,19 @@ export interface GenerationRun {
 export interface GenerationQueued { run: GenerationRun; task_id: string | null; scope?: string }
 export interface GenerationCandidate { id: string; run_id: string; step_key: string; markdown: string;
   target_document_id: string | null; target_revision_id: string | null; context_revisions: string }
+
+export interface ScriptProposal {
+  id: string; document_id: string; base_revision_id: string; block_id: string | null;
+  start: number; end: number; before: string; after: string; reason: string;
+  dependencies: string[]; context_revisions: Record<string, string>;
+  round_id: string; status: "pending" | "adopted" | "discarded";
+  source_candidate_id: string | null; created_at: string;
+}
+export interface RewriteJob {
+  id: string; document_id: string; base_revision_id: string;
+  start: number; end: number; scope: "selection" | "scene" | "episode";
+  mode: "dialogue" | "subtext" | "conflict" | "compress" | "custom";
+  instruction: string; preserve: string; before: string;
+  status: "pending" | "running" | "completed" | "failed" | "needs_rebase";
+  proposal_id: string | null; error: string | null;
+}

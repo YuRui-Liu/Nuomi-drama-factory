@@ -35,6 +35,7 @@ _TASK_NOT_FOUND_GRACE_S = 10.0
 _TASK_TYPE_LABELS = {
     "ingest_fast": "快速导入",
     "script_creation_generation": "剧本创作",
+    "script_creation_rewrite": "剧本改稿",
     "build_characters": "构建角色",
     "build_scenes": "构建场景",
     "build_props": "构建道具",

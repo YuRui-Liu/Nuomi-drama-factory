@@ -130,3 +130,25 @@ def test_same_create_mutation_replay_does_not_restart_failed_run(client, tmp_pat
     assert replay.status_code == 202
     assert replay.json()['data']['run']['status'] == 'failed'
     assert submissions == []
+
+
+def test_rewrite_queue_review_and_editor_scope(client):
+    http, user, roles = client
+    base = '/api/v1/projects/one/script-creation'
+    doc = http.post(base + '/documents', json={'kind': 'episode_script', 'title': '第一集',
+        'markdown': '同句😀\n\n同句😀', 'client_mutation_id': 'doc'}).json()['data']
+    body = {'document_id': doc['id'], 'base_revision_id': doc['current_revision_id'],
+            'start': 5, 'end': 8, 'scope': 'selection', 'mode': 'dialogue',
+            'instruction': '自然', 'preserve': '笑点', 'client_mutation_id': 'rewrite'}
+    started = http.post(base + '/rewrites', json=body)
+    assert started.status_code == 202
+    job = started.json()['data']
+    assert job['before'] == '同句😀' and job['block_id'] == doc['revision']['blocks'][1]['id']
+    assert http.get(base + '/rewrites/' + job['id']).json()['data']['id'] == job['id']
+    assert http.get(base + f"/documents/{doc['id']}/proposals").json()['data'] == []
+    user['role'] = 'viewer'
+    assert http.get(base + '/rewrites/' + job['id']).status_code == 200
+    assert http.post(base + '/rewrites', json={**body, 'client_mutation_id': 'other'}).status_code == 403
+    assert http.post(base + '/proposals/accept', json={'proposal_ids': ['none'],
+        'base_revision_id': doc['current_revision_id'], 'client_mutation_id': 'adopt'}).status_code == 403
+    assert 'editor' in roles and 'viewer' in roles

@@ -11,6 +11,8 @@ from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
 from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.script_creation.documents import import_episode_source
+from novelvideo.script_creation.proposals import ProposalService
+from novelvideo.script_creation.rewrite import RewriteService
 from novelvideo.script_creation.generation import GenerationConflict, GenerationService, GenerationValidation
 from novelvideo.task_backend.client import enqueue_project_task
 from novelvideo.task_identity import project_task_state_key
@@ -293,3 +295,88 @@ async def get_generation_candidate(project: str, candidate_id: str,
         return {'ok': True, 'data': await store.generation_candidate(candidate_id)}
     except DocumentNotFound as exc:
         raise _generation_error(exc) from exc
+
+
+class RewriteBody(Strict):
+    document_id: str
+    base_revision_id: str
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    scope: str
+    mode: str
+    instruction: str = Field(default='', max_length=8000)
+    preserve: str = Field(default='', max_length=4000)
+    context_revisions: dict[str, str] = Field(default_factory=dict)
+    reference_proposal_id: str | None = None
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+class AcceptProposalsBody(Strict):
+    proposal_ids: list[str] = Field(min_length=1)
+    base_revision_id: str
+    client_mutation_id: str = Field(min_length=1)
+
+
+@router.post(PREFIX + '/rewrites', status_code=status.HTTP_202_ACCEPTED)
+async def create_rewrite(project: str, body: RewriteBody,
+                         user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    try:
+        job = await RewriteService(store).start(**body.model_dump())
+        if job['status'] != 'pending':
+            return {'ok': True, 'data': job}
+        queued = await enqueue_project_task(
+            resolved.ctx, task_type='script_creation_rewrite', queue_kind='default', episode=0,
+            scope=f"rewrite:{job['id']}",
+            payload={'project_id': str(resolved.ctx.project_id), 'job_id': job['id']})
+        return {'ok': True, 'data': {**job, 'queued_task_id': queued.task_state.task_id}}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/rewrites/{job_id}')
+async def get_rewrite(project: str, job_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await RewriteService(store).get(job_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/documents/{document_id}/proposals')
+async def list_proposals(project: str, document_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await ProposalService(store).list(document_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/candidates/{candidate_id}/review')
+async def review_generation_candidate(project: str, candidate_id: str,
+                                      user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await ProposalService(store).from_candidate(candidate_id)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/proposals/accept')
+async def accept_proposals(project: str, body: AcceptProposalsBody,
+                           user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'editor')
+    try:
+        return _ok(await ProposalService(store).accept(body.proposal_ids,
+            base_revision_id=body.base_revision_id, client_mutation_id=body.client_mutation_id))
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/proposals/{proposal_id}/discard')
+async def discard_proposal(project: str, proposal_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await ProposalService(store).discard(proposal_id)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc

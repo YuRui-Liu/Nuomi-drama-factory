@@ -124,6 +124,23 @@ class DocumentStore:
                     target_document_id TEXT, target_revision_id TEXT,
                     markdown TEXT NOT NULL, context_revisions TEXT NOT NULL, created_at TEXT NOT NULL,
                     UNIQUE(run_id, step_key));
+                CREATE TABLE IF NOT EXISTS script_rewrite_jobs (
+                    id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL,
+                    request_hash TEXT NOT NULL, data TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS script_proposals (
+                    id TEXT PRIMARY KEY, document_id TEXT NOT NULL,
+                    base_revision_id TEXT NOT NULL, block_id TEXT,
+                    start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,
+                    before_text TEXT NOT NULL, after_text TEXT NOT NULL,
+                    reason TEXT NOT NULL, dependencies TEXT NOT NULL,
+                    context_revisions TEXT NOT NULL, round_id TEXT NOT NULL,
+                    status TEXT NOT NULL, source_candidate_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(document_id, round_id, id));
+                CREATE INDEX IF NOT EXISTS idx_script_proposals_doc ON script_proposals(document_id, created_at);
+                CREATE TABLE IF NOT EXISTS script_proposal_adoptions (
+                    proposal_id TEXT PRIMARY KEY, revision_id TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS script_mutations (
                     scope TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL,
                     document_id TEXT NOT NULL, revision_id TEXT NOT NULL,
