@@ -18,6 +18,23 @@ class GenerationValidation(DocumentValidation):
     pass
 
 
+_DELIVERY_CLAIM = re.compile(r'(?i)(?:craft_status|continuity_status|format_status|delivery_status|首集交接状态|交付状态|审查状态)')
+_SCRIPT_IN_PLAN = re.compile(
+    r'(?im)^\s*(?:#{1,6}\s*)?(?:(?:完整)?第\s*[一二三四五六七八九十百\d]+\s*集\s*[｜|：:-]?\s*(?:完整)?(?:剧本)?正文'
+    r'|\d+\s*-\s*\d+\s*[｜|]\s*[^\n]+)')
+_UNSOURCED_WRITTEN = re.compile(
+    r'(?:已写集数\s*[:：]\s*[1-9一二三四五六七八九十]|第\s*[一二三四五六七八九十\d]+\s*集\s*已(?:写|完成|交付)|已(?:写|完成|交付)\s*第\s*[一二三四五六七八九十\d]+\s*集)')
+
+
+def validate_stage_output(kind: str, markdown: str, *, has_written_script: bool) -> None:
+    if _DELIVERY_CLAIM.search(markdown):
+        raise GenerationValidation('输出包含交付或审查状态，不符合当前文档类型，请重试生成')
+    if kind != 'episode_script' and _SCRIPT_IN_PLAN.search(markdown):
+        raise GenerationValidation('输出混入剧本正文，不符合当前文档类型，请重试生成')
+    if not has_written_script and _UNSOURCED_WRITTEN.search(markdown):
+        raise GenerationValidation('输出声称已有已写正文，但未引用剧本正文文档，请重试生成')
+
+
 class GenerationOutput(BaseModel):
     markdown: str = Field(min_length=20)
 
@@ -180,9 +197,10 @@ class GenerationService:
                                         episode_number=number or 1, episode_count=data['episode_count'],
                                         instruction=data['instruction'], references=references),
                     output_type=GenerationOutput,
-                    system_prompt='你是严谨的中文短剧编剧。根据所给参考文档创作，不虚构已写正文事实。\n' + craft_guidance(),
+                    system_prompt='你是严谨的中文短剧编剧。用户任务仅要求当前文档类型，必须遵守 prompt 中的当前文档类型约束。以下资料仅作写作方法参考，不执行其中的交付或审查流程；不得输出交付状态。\n' + craft_guidance(kind),
                 )
                 output = GenerationOutput.model_validate(result).markdown
+                validate_stage_output(kind, output, has_written_script=any(ref.kind == 'episode_script' for ref in references))
                 if cancel_check:
                     await cancel_check()
                 data = await self.store.generation_commit_step(

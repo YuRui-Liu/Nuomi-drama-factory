@@ -194,3 +194,39 @@ async def test_design_prompt_distinguishes_plans_from_written_facts(store):
     assert '设计建议与已写正文事实' in prompt
     assert '未来集' in prompt and '计划' in prompt
     assert '已有正文依据' in prompt
+
+@pytest.mark.parametrize('leak', ['## 第 1 集剧本正文', '## 第1集｜完整剧本正文', '## 1-1｜旧城 · 夜 · 外', '### 首集交接状态', '| craft_status | passed |'])
+async def test_outline_rejects_embedded_episode_script_and_delivery_claim(store, leak):
+    brief = await store.create(kind='brief', title='简报', markdown='都市悬疑连续剧', client_mutation_id='brief')
+    service = GenerationService(store)
+    run = await service.start(mode='bootstrap', brief_id=brief.id, script_mode='series', episode_count=3,
+                              instruction='', mutation_id='run')
+    class LeakyRuntime(Runtime):
+        async def run_structured(self, *, output_type, **kwargs):
+            return output_type(markdown=f'# 故事大纲\n\n姐妹寻找失踪父亲。\n\n{leak}\n\n甲：父亲在哪里？')
+    with pytest.raises(GenerationValidation, match='当前文档类型'):
+        await service.execute(run['id'], runtime=LeakyRuntime(), task_id='task')
+    saved = await service.get(run['id'])
+    assert saved['status'] == 'failed'
+    assert [doc.kind for doc in await store.list()] == ['brief']
+
+async def test_stage_prompt_names_required_document_structure_and_fact_source(store):
+    from novelvideo.script_creation.prompts import build_prompt, craft_guidance
+    brief = await store.create(kind='brief', title='简报', markdown='都市悬疑短剧', client_mutation_id='brief')
+    outline = build_prompt(kind='outline', script_mode='series', episode_number=1, episode_count=3,
+                           instruction='', references=[brief])
+    people = build_prompt(kind='people', script_mode='series', episode_number=1, episode_count=3,
+                          instruction='', references=[brief])
+    assert 'Logline' in outline and '情绪曲线' in outline and '全剧分段' in outline
+    assert '人物弧光' in people and '首次出场' in people and '已写正文' in people
+    assert '只能依据引用中的 episode_script 文档' in people
+    assert 'craft_status' not in craft_guidance('outline')
+
+@pytest.mark.parametrize(('number', 'chinese'), [(11, '十一'), (20, '二十'), (21, '二十一'), (100, '一百')])
+def test_target_synopsis_accepts_chinese_episode_numbers_through_100(number, chinese):
+    from novelvideo.script_creation.prompts import target_synopsis
+    markdown = f'# 分集梗概\n\n## 第{chinese}集\n姐妹在码头找到父亲留下的证人。\n\n## 第{number + 1}集\n后续剧情仍待规划。'
+    result = target_synopsis(markdown, number)
+    assert result is not None
+    assert '姐妹在码头找到父亲留下的证人' in result
+    assert '后续剧情' not in result
