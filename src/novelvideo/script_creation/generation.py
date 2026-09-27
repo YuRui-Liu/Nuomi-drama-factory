@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field, field_validator
 
-from .prompts import STEP_LABELS, build_prompt, craft_guidance
+from .prompts import STEP_LABELS, build_prompt, craft_guidance, target_synopsis
 from .store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
 
 
@@ -81,6 +81,8 @@ class GenerationService:
             raise GenerationValidation('invalid generation mode')
         if not mutation_id.strip() or episode_count < 1 or episode_count > 100 or episode_number < 1 or episode_number > episode_count:
             raise GenerationValidation('invalid episode count or mutation id')
+        if (script_mode == 'single' and episode_count != 1) or (mode == 'bootstrap' and episode_number != 1):
+            raise GenerationValidation('episode count does not match generation mode')
         if len(instruction) > 8000:
             raise GenerationValidation('instruction too long')
         brief = await self.store.get(brief_id)
@@ -90,8 +92,11 @@ class GenerationService:
         if mode == 'continue':
             if script_mode != 'series' or episode_number < 2:
                 raise GenerationValidation('continuation requires a later series episode')
-            if not _slot(docs, 'outline') or not _slot(docs, 'episode_synopsis'):
+            synopsis = _slot(docs, 'episode_synopsis')
+            if not _slot(docs, 'outline') or synopsis is None:
                 raise GenerationValidation('saved outline and target episode synopsis required')
+            if not target_synopsis(synopsis.revision.markdown, episode_number):
+                raise GenerationValidation('substantive target episode synopsis required')
             if not any(doc.kind == 'episode_script' and doc.episode_number < episode_number
                        and not _blank_scaffold(doc.revision.markdown, doc.kind, doc.episode_number) for doc in docs):
                 raise GenerationValidation('saved previous episode script required')
@@ -101,7 +106,8 @@ class GenerationService:
                   'kind': kind, 'title': (f'第 {episode_number if mode == "continue" else 1} 集' if kind == 'episode_script' and script_mode == 'series'
                                              else STEP_LABELS[kind]),
                   'episode_number': (episode_number if mode == 'continue' else 1) if kind == 'episode_script' else None,
-                  'status': 'pending', 'context_revisions': {}, 'task_id': None, 'output': None, 'error': None}
+                  'status': 'pending', 'context_revisions': {}, 'context_slots': [],
+                  'task_id': None, 'output': None, 'error': None}
                  for kind in kinds]
         payload = {'mode': mode, 'brief_id': brief_id, 'brief_revision_id': brief.current_revision_id,
                    'script_mode': script_mode, 'episode_count': episode_count, 'episode_number': episode_number,
@@ -151,8 +157,18 @@ class GenerationService:
                                        doc.episode_number is not None and doc.episode_number < number),
                                      key=lambda doc: doc.episode_number)
             revisions = {doc.id: doc.current_revision_id for doc in references}
+            slots = [{'kind': ref_kind, 'episode_number': None,
+                      'document_ids': [doc.id for doc in docs if doc.kind == ref_kind and doc.episode_number is None]}
+                     for ref_kind in ('outline', 'episode_synopsis', 'people', 'scenes', 'props') if ref_kind != kind]
+            if kind == 'episode_script' and data['mode'] == 'continue':
+                slots += [{'kind': 'episode_script', 'episode_number': prior_number,
+                           'document_ids': [doc.id for doc in docs if doc.kind == 'episode_script'
+                                            and doc.episode_number == prior_number]}
+                          for prior_number in range(1, number)]
             target = _slot(docs, kind, number)
-            step.update(status='running', task_id=task_id, context_revisions=revisions, error=None)
+            target_ids = [doc.id for doc in docs if doc.kind == kind and doc.episode_number == number]
+            step.update(status='running', task_id=task_id, context_revisions=revisions,
+                        context_slots=slots, error=None)
             data = await self.store.generation_update(run_id, data, expected_task_id=task_id)
             if progress:
                 progress(index, len(data['steps']), step['title'])
@@ -172,8 +188,9 @@ class GenerationService:
                 data = await self.store.generation_commit_step(
                     run_id, step_index=index, task_id=task_id, markdown=output, references=revisions,
                     target_kind=kind, target_episode=number,
-                    target_id=target.id if target else None,
+                    target_id=target.id if target else None, target_ids=target_ids,
                     target_revision=target.current_revision_id if target else None,
+                    context_slots=slots,
                     allow_fill=target is None or _blank_scaffold(target.revision.markdown, kind, number),
                     commit_guard=commit_guard)
             except DocumentConflict:

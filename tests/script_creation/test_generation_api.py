@@ -102,3 +102,31 @@ def test_retry_moves_failed_run_back_to_pollable_pending_state(client, tmp_path)
     assert response.status_code == 202
     assert response.json()['data']['run']['status'] == 'pending'
     assert http.get(base + '/generations/' + created['id']).json()['data']['status'] == 'pending'
+
+
+def test_same_create_mutation_replay_does_not_restart_failed_run(client, tmp_path, monkeypatch):
+    import asyncio
+    from novelvideo.api.routes import script_creation
+    from novelvideo.script_creation.store import DocumentStore
+    http, _, _ = client
+    base = '/api/v1/projects/one/script-creation'
+    brief = http.post(base + '/documents', json={'kind': 'brief', 'title': '简报',
+        'markdown': '独立短片', 'client_mutation_id': 'brief'}).json()['data']
+    body = {'mode': 'bootstrap', 'brief_id': brief['id'], 'script_mode': 'single',
+            'episode_count': 1, 'instruction': '', 'client_mutation_id': 'run'}
+    created = http.post(base + '/generations', json=body).json()['data']['run']
+    async def fail():
+        store = DocumentStore(tmp_path / 'data.db')
+        run = await store.generation_get(created['id'])
+        run['status'], run['error'] = 'failed', 'model unavailable'
+        await store.generation_update(created['id'], run)
+    asyncio.run(fail())
+    submissions = []
+    async def enqueue(ctx, **kwargs):
+        submissions.append(kwargs)
+        return SimpleNamespace(task_state=SimpleNamespace(task_id='other'), backend='inline', queue='default')
+    monkeypatch.setattr(script_creation, 'enqueue_project_task', enqueue)
+    replay = http.post(base + '/generations', json=body)
+    assert replay.status_code == 202
+    assert replay.json()['data']['run']['status'] == 'failed'
+    assert submissions == []

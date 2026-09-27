@@ -150,3 +150,47 @@ async def test_cancel_preflight_does_not_wait_on_generation_write_lock(store):
                                                      cancel_check=cancel_check), timeout=2)
     assert result['status'] == 'completed'
     assert checks >= 2
+
+async def test_continue_requires_substantive_target_episode_synopsis(store):
+    brief = await store.create(kind='brief', title='简报', markdown='三集短剧', client_mutation_id='brief')
+    await store.create(kind='outline', title='大纲', markdown='姐妹在旧城寻人。', client_mutation_id='outline')
+    await store.create(kind='episode_synopsis', title='分集梗概',
+                       markdown='# 分集梗概\n\n## 第 1 集\n\n两人发现钥匙。\n\n## 第 2 集\n\n### 本集目标',
+                       client_mutation_id='synopsis')
+    await store.create(kind='episode_script', title='第一集', episode_number=1,
+                       markdown='# 第一集\n\n两人在码头发现钥匙。', client_mutation_id='first')
+    service = GenerationService(store)
+    with pytest.raises(GenerationValidation, match='target episode synopsis'):
+        await service.start(mode='continue', brief_id=brief.id, script_mode='series', episode_count=3,
+                            episode_number=2, instruction='', mutation_id='continue')
+
+async def test_new_dependency_during_model_call_requires_rebase(store):
+    brief = await store.create(kind='brief', title='简报', markdown='三集短剧', client_mutation_id='brief')
+    await store.create(kind='outline', title='大纲', markdown='姐妹在旧城寻人。', client_mutation_id='outline')
+    await store.create(kind='episode_synopsis', title='分集梗概',
+                       markdown='第一集：找钥匙。\n\n第二集：姐妹在码头寻找证人。', client_mutation_id='synopsis')
+    await store.create(kind='episode_script', title='第一集', episode_number=1,
+                       markdown='# 第一集\n\n两人在码头发现钥匙。', client_mutation_id='first')
+    service = GenerationService(store)
+    run = await service.start(mode='continue', brief_id=brief.id, script_mode='series', episode_count=3,
+                              episode_number=2, instruction='', mutation_id='continue')
+    class NewDependency(Runtime):
+        async def run_structured(self, **kwargs):
+            await store.create(kind='people', title='人物小传', markdown='姐姐很谨慎。',
+                               client_mutation_id='new-people')
+            return await super().run_structured(**kwargs)
+    result = await service.execute(run['id'], runtime=NewDependency(), task_id='task')
+    assert result['status'] == 'needs_rebase'
+    assert not any(doc.kind == 'episode_script' and doc.episode_number == 2 for doc in await store.list())
+
+async def test_design_prompt_distinguishes_plans_from_written_facts(store):
+    from novelvideo.script_creation.prompts import build_prompt
+    people = await store.create(kind='people', title='人物小传', markdown='甲第十集首次登场。', client_mutation_id='people')
+    scenes = await store.create(kind='scenes', title='场景设计', markdown='旧宅预计第十集使用。', client_mutation_id='scenes')
+    props = await store.create(kind='props', title='道具设计', markdown='钥匙预计第十集出现。', client_mutation_id='props')
+    script = await store.create(kind='episode_script', title='第一集', episode_number=1, markdown='第一集里甲尚未登场。', client_mutation_id='script')
+    prompt = build_prompt(kind='episode_script', script_mode='series', episode_number=2, episode_count=10,
+                          instruction='', references=[people, scenes, props, script])
+    assert '设计建议与已写正文事实' in prompt
+    assert '未来集' in prompt and '计划' in prompt
+    assert '已有正文依据' in prompt

@@ -183,10 +183,10 @@ def _validate_saved_settings(brief, body: GenerationBody):
         raise GenerationValidation('saved creative settings changed; refresh before generating')
 
 
-async def _queue_generation(resolved, run):
+async def _queue_generation(resolved, run, *, requeue=False):
     if resolved.ctx is None:
         raise HTTPException(409, detail={'code': 'project_context_required'})
-    if run['status'] == 'completed':
+    if run['status'] in {'completed', 'failed', 'paused'} and not requeue:
         return {'run': run, 'task_id': run.get('task_id'), 'task_type': 'script_creation_generation'}
     scope = f"run:{run['id']}"
     if run['status'] in {'failed', 'paused'}:
@@ -256,7 +256,7 @@ async def retry_generation(project: str, run_id: str,
             run = await store.generation_update(run_id, run, expected_task_id=run['task_id'])
         if run['status'] not in {'failed', 'paused', 'pending'}:
             raise GenerationConflict('only failed or paused generation can retry')
-        return {'ok': True, 'data': await _queue_generation(resolved, run)}
+        return {'ok': True, 'data': await _queue_generation(resolved, run, requeue=True)}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _generation_error(exc) from exc
 

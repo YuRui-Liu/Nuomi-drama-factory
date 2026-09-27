@@ -195,3 +195,19 @@ describe("ScriptWorkspace", () => {
     await waitFor(() => expect(screen.getByText("已保存")).toBeInTheDocument());
   });
 });
+
+describe("ScriptWorkspace compact layout", () => {
+  it("opens document tree and AI creation actions from compact header controls", async () => {
+    const user = userEvent.setup();
+    server.use(http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [doc("brief", "brief", "创作设定") ] })));
+    renderWorkspace();
+    await screen.findByRole("button", { name: "创作简报" });
+    await user.click(screen.getByRole("button", { name: "打开 AI 创作" }));
+    expect(screen.getByRole("complementary", { name: "AI 协作" })).toHaveClass("fixed");
+    expect(screen.getByRole("button", { name: "生成故事框架与首集" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "打开文档目录" }));
+    expect(screen.getByRole("complementary", { name: "创作文档树" })).toHaveClass("fixed");
+    await user.click(screen.getByRole("button", { name: "创作简报" }));
+    expect(screen.getByRole("complementary", { name: "创作文档树" })).not.toHaveClass("fixed");
+  });
+});

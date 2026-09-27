@@ -355,8 +355,8 @@ class DocumentStore:
                 raise
 
     async def generation_commit_step(self, run_id, *, step_index, task_id, markdown, references,
-                                     target_kind, target_episode, target_id, target_revision,
-                                     allow_fill, commit_guard=None):
+                                     target_kind, target_episode, target_id, target_ids, target_revision,
+                                     context_slots, allow_fill, commit_guard=None):
         """Compare every input and target inside one write transaction before publishing output."""
         async with self._db() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -371,8 +371,18 @@ class DocumentStore:
                     ref = await (await db.execute("SELECT current_revision_id FROM script_documents WHERE id=?", (document_id,))).fetchone()
                     if ref is None or ref["current_revision_id"] != revision_id:
                         raise DocumentConflict("generation context changed", ref["current_revision_id"] if ref else None)
-                query = "SELECT id,current_revision_id FROM script_documents WHERE kind=? AND episode_number IS ? ORDER BY created_at,id LIMIT 1"
-                target = await (await db.execute(query, (target_kind, target_episode))).fetchone()
+                for slot in context_slots:
+                    rows = await (await db.execute(
+                        "SELECT id FROM script_documents WHERE kind=? AND episode_number IS ? ORDER BY created_at,id",
+                        (slot["kind"], slot["episode_number"]))).fetchall()
+                    if [item["id"] for item in rows] != slot["document_ids"]:
+                        raise DocumentConflict("generation context document set changed")
+                target_rows = await (await db.execute(
+                    "SELECT id,current_revision_id FROM script_documents WHERE kind=? AND episode_number IS ? ORDER BY created_at,id",
+                    (target_kind, target_episode))).fetchall()
+                if [item["id"] for item in target_rows] != target_ids:
+                    raise DocumentConflict("generation target document set changed")
+                target = target_rows[0] if target_rows else None
                 if (target["id"] if target else None) != target_id or (target["current_revision_id"] if target else None) != target_revision:
                     raise DocumentConflict("generation target changed", target["current_revision_id"] if target else None)
                 if commit_guard is not None:
