@@ -107,16 +107,36 @@ async def test_sequential_same_block_offsets_shift_without_guessing(tmp_path):
     assert changed.revision.markdown == "长长乙新丁"
 
 
-async def test_adopted_pointer_survives_restoring_older_revision(pair):
+async def test_candidate_accept_and_restore_preserve_existing_production_pointer(pair):
+    store, doc, service = pair
+    async with store._db() as db:
+        await db.execute("UPDATE script_documents SET adopted_revision_id=? WHERE id=?",
+                         (doc.current_revision_id, doc.id))
+        await db.commit()
+    block = doc.revision.blocks[0]
+    proposal = await service.create(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=block.id, start=0, end=3, before="同句😀", after="新句", reason="测试",
+        round_id="r1", client_mutation_id="p1")
+    accepted = await service.accept([proposal["id"]], base_revision_id=doc.current_revision_id,
+                                    client_mutation_id="accept")
+    assert accepted.current_revision_id != doc.current_revision_id
+    assert accepted.adopted_revision_id == doc.current_revision_id
+    restored = await store.restore(doc.id, revision_id=doc.current_revision_id,
+        base_revision_id=accepted.current_revision_id, client_mutation_id="restore")
+    assert restored.current_revision_id not in {doc.current_revision_id, accepted.current_revision_id}
+    assert restored.adopted_revision_id == doc.current_revision_id
+
+
+async def test_candidate_accept_preserves_null_production_pointer(pair):
     store, doc, service = pair
     block = doc.revision.blocks[0]
     proposal = await service.create(document_id=doc.id, base_revision_id=doc.current_revision_id,
         block_id=block.id, start=0, end=3, before="同句😀", after="新句", reason="测试",
         round_id="r1", client_mutation_id="p1")
-    adopted = await service.accept([proposal["id"]], base_revision_id=doc.current_revision_id,
-                                   client_mutation_id="accept")
-    assert adopted.adopted_revision_id == adopted.current_revision_id
+    accepted = await service.accept([proposal["id"]], base_revision_id=doc.current_revision_id,
+                                    client_mutation_id="accept")
+    assert accepted.current_revision_id != doc.current_revision_id
+    assert accepted.adopted_revision_id is None
     restored = await store.restore(doc.id, revision_id=doc.current_revision_id,
-        base_revision_id=adopted.current_revision_id, client_mutation_id="restore")
-    assert restored.adopted_revision_id == adopted.current_revision_id
-    assert restored.current_revision_id != adopted.current_revision_id
+        base_revision_id=accepted.current_revision_id, client_mutation_id="restore")
+    assert restored.adopted_revision_id is None
