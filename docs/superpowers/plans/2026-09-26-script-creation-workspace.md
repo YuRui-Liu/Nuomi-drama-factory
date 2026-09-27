@@ -95,6 +95,8 @@ class GenerationRequest(BaseModel):
 
 ## 任务 1：修订存储与文档 API
 
+执行状态：已完成。提交 148c6b8、478702f、ba057a9；规格与质量审查通过，16 项针对性测试通过。
+
 **文件：** models.py、store.py、documents.py、新路由与 API 注册；tests/script_creation/test_documents.py、tests/test_api_script_creation.py。
 
 - [ ] 建立测试：保存产生新修订；旧基线写入冲突；相同 mutation 重放只产生一条修订；恢复历史生成新版本；跨项目读写拒绝。
@@ -114,6 +116,8 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 
 ## 任务 2：V5 工作台与可选可填设定
 
+执行状态：已完成。提交 5d2a02b、049ad06、36cb668；规格与质量审查通过，70 项定向前端测试、类型检查和构建通过。实际浏览器验证可选可填设定持久化、中文及 emoji 编辑保存刷新、人物弧光锚点与集场目录。
+
 **文件：** creation.tsx、workspace/tree/editor/setter/picker/templates/types/api；导航两文件；对应 *.test.tsx。
 
 - [ ] 用 MSW 编写行为测试：时代背景搜索无结果后手动添加；选项移除；确认重开保留；单集隐藏多集目录；编辑失败文本保留且交接禁用。
@@ -126,6 +130,8 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 - [ ] 提交本任务文件，提交说明 `feat(script-creation): add document-first workspace and flexible settings`。
 
 ## 任务 3：真实创作任务与逐集续写
+
+执行状态：进行中，由独立生成任务子代理负责后端任务与前端真实接线。
 
 **文件：** generation.py、prompts.py、runner、runtime 模型/设置、registry；tests/script_creation/test_generation.py、tests/test_task_script_creation_runner.py。
 
