@@ -1,5 +1,5 @@
 import { encodeBriefSettings } from "./settings";
-import type { ScriptDocumentKind, ScriptSettings } from "./types";
+import type { ScriptDocumentKind, ScriptMode, ScriptSettings } from "./types";
 
 export interface StarterDocument {
   kind: ScriptDocumentKind;
@@ -33,15 +33,38 @@ const people = [
 
 const scenes = [
   "# 场景设计", "## 新场景（请命名）",
-  "### 剧情作用", "### 空间布局", "### 视觉设计", "### 光线与氛围",
-  "### 关键物件", "### 连续性约束", "### 首次出场", "### 关键场次",
+  "### 场景类型", "### 剧情作用", "### 空间布局", "### 视觉设计", "### 光线与氛围",
+  "### 关键物件", "### 连续性约束",
+  "### 首次出场（计划）", "### 首次出场（已写）",
+  "### 关键场次（计划）", "### 关键场次（已写）",
 ].join("\n\n");
 
 const props = [
   "# 道具设计", "## 新道具（请命名）",
   "### 剧情作用", "### 外观与材质", "### 持有与流转", "### 使用动作",
-  "### 状态变化", "### 连续性约束", "### 首次出场", "### 关键场次",
+  "### 状态变化", "### 连续性约束",
+  "### 首次出场（计划）", "### 首次出场（已写）",
+  "### 关键场次（计划）", "### 关键场次（已写）",
 ].join("\n\n");
+
+export function episodeScriptTemplate(mode: ScriptMode, episodeNumber: number): StarterDocument {
+  const title = mode === "single" ? "剧本正文" : "第 " + episodeNumber + " 集";
+  return {
+    kind: "episode_script",
+    title,
+    episode_number: episodeNumber,
+    markdown: [
+      "# " + title,
+      "本集目标：",
+      "## " + episodeNumber + "-1｜场景名称 · 日/夜 · 内/外",
+      "出场人物：",
+      "动作描述：",
+      "人物对白：",
+      "必要语气提示（如需）：",
+      "结尾钩子：",
+    ].join("\n\n"),
+  };
+}
 
 export function starterDocuments(settings: ScriptSettings): StarterDocument[] {
   const result: StarterDocument[] = [
@@ -54,13 +77,6 @@ export function starterDocuments(settings: ScriptSettings): StarterDocument[] {
   if (settings.mode === "series") {
     result.push({ kind: "episode_synopsis", title: "分集梗概", markdown: "# 分集梗概\n\n## 第 1 集\n\n### 本集目标\n\n### 冲突推进\n\n### 结尾钩子" });
   }
-  result.push({
-    kind: "episode_script",
-    title: settings.mode === "single" ? "剧本正文" : "第 1 集",
-    episode_number: 1,
-    markdown: settings.mode === "single"
-      ? "# 剧本正文\n\n## 第一场｜地点 · 时间 · 内 / 外\n\n出场人物：\n\n动作：\n\n对白："
-      : "# 第 1 集\n\n## 1-1｜地点 · 时间 · 内 / 外\n\n出场人物：\n\n动作：\n\n对白：",
-  });
+  result.push(episodeScriptTemplate(settings.mode, 1));
   return result;
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, ChevronDown, Search, X } from "lucide-react";
 import { addChoice, removeChoice } from "./settings";
 import type { ScriptSettings, SettingsCategory } from "./types";
@@ -57,7 +57,14 @@ export function ScriptSetter({ initial, onSave, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showPresets, setShowPresets] = useState(true);
+  const composing = useRef(false);
   const update = (patch: Partial<ScriptSettings>) => setDraft((value) => ({ ...value, ...patch }));
+  const addCustom = (key: SettingsCategory) => {
+    if (!custom.trim()) return;
+    update({ [key]: addChoice(draft[key], custom) });
+    setCustom("");
+    setSearch("");
+  };
   const toggle = (key: SettingsCategory, choice: string) => update({
     [key]: draft[key].includes(choice) ? removeChoice(draft[key], choice) : addChoice(draft[key], choice),
   });
@@ -123,7 +130,11 @@ export function ScriptSetter({ initial, onSave, onClose }: Props) {
                 const visible = choices.filter((choice) => choice.includes(search.trim()));
                 return visible.length ? <div key={group}><h4 className="mb-1 text-xs text-white/45">{group}</h4><div className="flex flex-wrap gap-1.5">{visible.map((choice) => <button key={choice} aria-pressed={draft[open].includes(choice)} onClick={() => toggle(open, choice)} className={"rounded-full border px-2.5 py-1 text-xs " + (draft[open].includes(choice) ? "border-[#E5FF5C] text-[#E5FF5C]" : "border-white/15 hover:border-white/35")}>{choice}</button>)}</div></div> : null;
               })}</div>
-              <div className="mt-3 flex gap-2"><input aria-label={"自定义" + catalog[open].title} value={custom} onChange={(event) => setCustom(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); toggle(open, custom.trim()); setCustom(""); setSearch(""); } }} className="min-w-0 flex-1 rounded border border-white/10 bg-white/[0.025] px-3 py-2 text-sm" placeholder="手动填写，回车添加" /><button aria-label={"添加自定义" + catalog[open].title} onClick={() => { if (custom.trim()) { update({ [open]: addChoice(draft[open], custom) }); setCustom(""); setSearch(""); } }} className="rounded bg-[#E5FF5C] px-3 text-xs font-semibold text-black">＋ 添加</button></div>
+              <div className="mt-3 flex gap-2"><input aria-label={"自定义" + catalog[open].title} value={custom} onChange={(event) => setCustom(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
+                if (event.key !== "Enter" || composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                event.preventDefault();
+                addCustom(open);
+              }} className="min-w-0 flex-1 rounded border border-white/10 bg-white/[0.025] px-3 py-2 text-sm" placeholder="手动填写，回车添加" /><button aria-label={"添加自定义" + catalog[open].title} onClick={() => addCustom(open)} className="rounded bg-[#E5FF5C] px-3 text-xs font-semibold text-black">＋ 添加</button></div>
               <div className="mt-3 flex flex-wrap gap-1.5">{draft[open].map((choice) => <button key={choice} aria-label={"移除" + choice} onClick={() => update({ [open]: removeChoice(draft[open], choice) })} className="flex items-center gap-1 rounded-full bg-[#E5FF5C]/10 px-2.5 py-1 text-xs text-[#E5FF5C]">{choice}<X size={11} /></button>)}</div>
             </section>}
             <label className="block text-xs text-white/60">故事想法<textarea aria-label="故事想法" value={draft.idea} onChange={(event) => update({ idea: event.target.value })} rows={3} placeholder="一句话描述你的故事（可稍后补充）" className="mt-2 w-full resize-y rounded border border-white/10 bg-black/20 p-3 text-sm text-white" /></label>

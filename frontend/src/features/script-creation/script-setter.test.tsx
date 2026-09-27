@@ -1,10 +1,30 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ScriptSetter } from "./script-setter";
 import { defaultSettings } from "./settings";
 
 describe("ScriptSetter", () => {
+  it("does not commit a Chinese IME confirmation and never toggles off duplicate custom tags", async () => {
+    const user = userEvent.setup();
+    render(<ScriptSetter initial={defaultSettings()} onSave={() => {}} onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "编辑时代背景" }));
+    const input = screen.getByRole("textbox", { name: "自定义时代背景" });
+    fireEvent.change(input, { target: { value: "宋代" } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true, keyCode: 229 });
+    expect(screen.queryByRole("button", { name: "移除宋代" })).not.toBeInTheDocument();
+    expect(input).toHaveValue("宋代");
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(screen.queryByRole("button", { name: "移除宋代" })).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "移除宋代" })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "宋代" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "移除宋代" })).toBeInTheDocument();
+  });
+
   it("adds a custom era with no matches, deselects it, and saves single mode", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

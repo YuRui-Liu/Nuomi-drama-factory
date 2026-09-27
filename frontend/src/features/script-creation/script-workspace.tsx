@@ -9,7 +9,7 @@ import { treeForDocuments } from "./document-tree";
 import type { TreeNode } from "./document-tree";
 import { decodeBriefSettings, defaultSettings, encodeBriefSettings } from "./settings";
 import { ScriptSetter } from "./script-setter";
-import { starterDocuments } from "./templates";
+import { episodeScriptTemplate, starterDocuments } from "./templates";
 import type { ScriptDocument, ScriptSettings } from "./types";
 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败，请重试"; }
@@ -113,10 +113,7 @@ export function ScriptWorkspace({ project }: { project: string }) {
     setBusy(true); setError("");
     try {
       const number = nextEpisodeNumber;
-      const document = await scriptCreationApi.create(project, {
-        kind: "episode_script", title: "第 " + number + " 集", episode_number: number,
-        markdown: "# 第 " + number + " 集\n\n## " + number + "-1｜地点 · 时间 · 内 / 外\n\n出场人物：\n\n动作：\n\n对白：",
-      });
+      const document = await scriptCreationApi.create(project, episodeScriptTemplate("series", number));
       manager.load(document);
       await refresh();
       setSelectedId(document.id);

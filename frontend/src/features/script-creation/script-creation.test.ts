@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { addChoice, removeChoice, defaultSettings, decodeBriefSettings, encodeBriefSettings } from "./settings";
 import { DraftManager } from "./draft-manager";
 import { treeForDocuments } from "./document-tree";
+import { episodeScriptTemplate, starterDocuments } from "./templates";
 import type { ScriptDocument } from "./types";
 
 function document(id: string, kind: ScriptDocument["kind"], markdown: string, episode_number: number | null = null): ScriptDocument {
@@ -88,3 +89,35 @@ describe("document drafts", () => {
     expect(markdown).toContain("### 人物弧光");
     expect(markdown).not.toMatch(/林川|沈青|讨薪|宗门/);
   });
+
+
+describe("blank creative templates", () => {
+  it("uses one episode skeleton for series first/later and single scripts", () => {
+    for (const [mode, number] of [["series", 1], ["series", 2], ["single", 1]] as const) {
+      const template = episodeScriptTemplate(mode, number);
+      expect(template.markdown).toContain("本集目标：");
+      expect(template.markdown).toContain("场景名称 · 日/夜 · 内/外");
+      expect(template.markdown).toContain("出场人物：");
+      expect(template.markdown).toContain("动作描述：");
+      expect(template.markdown).toContain("人物对白：");
+      expect(template.markdown).toContain("必要语气提示");
+      expect(template.markdown).toContain("结尾钩子：");
+      expect(template.markdown).not.toMatch(/林川|沈青|讨薪/);
+    }
+    const first = starterDocuments(defaultSettings()).find((doc) => doc.kind === "episode_script");
+    expect(first?.markdown).toBe(episodeScriptTemplate("series", 1).markdown);
+  });
+
+  it("distinguishes planned and written appearances in scene and prop designs", () => {
+    const docs = starterDocuments(defaultSettings());
+    const scene = docs.find((doc) => doc.kind === "scenes")!.markdown;
+    const prop = docs.find((doc) => doc.kind === "props")!.markdown;
+    expect(scene).toContain("### 场景类型");
+    for (const markdown of [scene, prop]) {
+      expect(markdown).toContain("### 首次出场（计划）");
+      expect(markdown).toContain("### 首次出场（已写）");
+      expect(markdown).toContain("### 关键场次（计划）");
+      expect(markdown).toContain("### 关键场次（已写）");
+    }
+  });
+});

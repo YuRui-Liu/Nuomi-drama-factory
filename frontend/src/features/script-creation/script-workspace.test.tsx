@@ -60,9 +60,14 @@ describe("ScriptWorkspace", () => {
     expect(await screen.findByRole("button", { name: "人物小传" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "新建第 2 集" }));
     await waitFor(() => expect(docs.some((entry) => entry.episode_number === 2)).toBe(true));
-    expect(docs.find((entry) => entry.episode_number === 2)?.revision.markdown).toContain("\n\n## 2-1");
+    const nextMarkdown = docs.find((entry) => entry.episode_number === 2)?.revision.markdown;
+    expect(nextMarkdown).toContain("\n\n## 2-1");
+    expect(nextMarkdown).toContain("本集目标：");
+    expect(nextMarkdown).toContain("场景名称 · 日/夜 · 内/外");
+    expect(nextMarkdown).toContain("必要语气提示");
+    expect(nextMarkdown).toContain("结尾钩子：");
     await user.click(screen.getByRole("button", { name: "第 2 集" }));
-    expect(screen.getByRole("button", { name: "2-1｜地点 · 时间 · 内 / 外" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2-1｜场景名称 · 日/夜 · 内/外" })).toBeInTheDocument();
   });
 
   it("recovers the empty workspace after retrying a failed list request", async () => {
