@@ -126,3 +126,36 @@ async def test_concurrent_same_task_cannot_clobber_completed_job(tmp_path):
     assert any(isinstance(result, dict) and result["status"] == "completed" for result in results)
     assert (await service.get(job["id"]))["status"] == "completed"
     assert len(await service.proposals.list(doc.id)) == 1
+
+
+async def test_list_rewrite_jobs_by_document_for_panel_recovery(tmp_path):
+    store = DocumentStore(tmp_path / "data.db")
+    await store.initialize()
+    first = await store.create(kind="episode_script", title="一", markdown="甲", client_mutation_id="d1")
+    second = await store.create(kind="episode_script", title="二", markdown="乙", client_mutation_id="d2")
+    service = RewriteService(store)
+    job = await service.start(document_id=first.id, base_revision_id=first.current_revision_id,
+        start=0, end=1, scope="selection", mode="dialogue", instruction="", preserve="",
+        client_mutation_id="rewrite")
+    assert [item["id"] for item in await service.list(first.id)] == [job["id"]]
+    assert await service.list(second.id) == []
+
+
+async def test_refine_candidate_must_use_its_exact_document_range(tmp_path):
+    store = DocumentStore(tmp_path / "data.db")
+    await store.initialize()
+    doc = await store.create(kind="episode_script", title="一", markdown="同句😀\n\n同句😀", client_mutation_id="create")
+    service = RewriteService(store)
+    second = doc.revision.blocks[1]
+    proposal = await service.proposals.create(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=second.id, start=0, end=3, before="同句😀", after="新句", reason="自然",
+        round_id="round", client_mutation_id="p")
+    with pytest.raises(DocumentConflict):
+        await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+            start=0, end=3, scope="selection", mode="dialogue", instruction="再改", preserve="",
+            reference_proposal_id=proposal["id"], client_mutation_id="wrong")
+    job = await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        start=5, end=8, scope="selection", mode="dialogue", instruction="再改", preserve="",
+        reference_proposal_id=proposal["id"], client_mutation_id="correct")
+    assert job["before"] == "同句😀"
+    assert job["reference"]["after"] == "新句"

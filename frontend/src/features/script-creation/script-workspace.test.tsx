@@ -196,6 +196,89 @@ describe("ScriptWorkspace", () => {
   });
 });
 
+describe("ScriptWorkspace saved revision wiring", () => {
+  it("uses the saved head and saved background revisions when submitting a rewrite", async () => {
+    const user = userEvent.setup();
+    const script = doc("script", "episode_script", "旧句");
+    const people = doc("people", "people", "旧人物");
+    let submitted: { base_revision_id: string; context_revisions: Record<string, string> } | null = null;
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [script, people] })),
+      http.put(base + "/documents/people", async ({ request }) => {
+        const body = await request.json() as { markdown: string };
+        const saved = doc("people", "people", body.markdown);
+        saved.current_revision_id = "people-r2";
+        saved.revision.id = "people-r2";
+        return HttpResponse.json({ ok: true, data: saved });
+      }),
+      http.put(base + "/documents/script", async ({ request }) => {
+        const body = await request.json() as { markdown: string };
+        const saved = doc("script", "episode_script", body.markdown);
+        saved.current_revision_id = "script-r2";
+        saved.revision.id = "script-r2";
+        return HttpResponse.json({ ok: true, data: saved });
+      }),
+      http.get(base + "/documents/script/proposals", () => HttpResponse.json({ ok: true, data: [] })),
+      http.post(base + "/rewrites", async ({ request }) => {
+        submitted = await request.json() as typeof submitted;
+        return HttpResponse.json({ ok: true, data: { id: "job", status: "failed", error: "model unavailable" } });
+      }),
+    );
+    renderWorkspace();
+    await screen.findByRole("button", { name: "第 1 集" });
+    await user.click(screen.getByRole("button", { name: "人物小传" }));
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), "新");
+    await user.click(screen.getByRole("button", { name: "立即保存" }));
+    await waitFor(() => expect(screen.getByText("已保存")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "第 1 集" }));
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), "新");
+    await user.click(screen.getByRole("button", { name: "立即保存" }));
+    await waitFor(() => expect(screen.getByText("已保存")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "候选审阅" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "改稿范围" }), "episode");
+    await user.click(screen.getByRole("button", { name: "生成改稿候选" }));
+    await waitFor(() => expect(submitted).not.toBeNull());
+    expect(submitted!.base_revision_id).toBe("script-r2");
+    expect(submitted!.context_revisions.people).toBe("people-r2");
+  });
+
+  it("restores from the saved head even when the document list still has an older head", async () => {
+    const user = userEvent.setup();
+    const script = doc("script", "episode_script", "旧句");
+    let restoredBase = "";
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [script] })),
+      http.put(base + "/documents/script", async ({ request }) => {
+        const body = await request.json() as { markdown: string };
+        const saved = doc("script", "episode_script", body.markdown);
+        saved.current_revision_id = "r2";
+        saved.revision.id = "r2";
+        return HttpResponse.json({ ok: true, data: saved });
+      }),
+      http.get(base + "/documents/script/revisions", () => HttpResponse.json({ ok: true, data: [
+        script.revision, { ...script.revision, id: "r2", markdown: "旧句新" },
+      ] })),
+      http.post(base + "/documents/script/restore", async ({ request }) => {
+        restoredBase = (await request.json() as { base_revision_id: string }).base_revision_id;
+        return HttpResponse.json({ ok: true, data: script });
+      }),
+    );
+    renderWorkspace();
+    await screen.findByRole("button", { name: "第 1 集" });
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), "新");
+    await user.click(screen.getByRole("button", { name: "立即保存" }));
+    await waitFor(() => expect(screen.getByText("已保存")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "版本历史" }));
+    await screen.findByRole("button", { name: /r1/ });
+    await user.click(screen.getByRole("button", { name: /r1/ }));
+    await user.click(screen.getByRole("button", { name: "恢复所选版本" }));
+    await waitFor(() => expect(restoredBase).toBe("r2"));
+  });
+});
+
 describe("ScriptWorkspace compact layout", () => {
   it("opens document tree and AI creation actions from compact header controls", async () => {
     const user = userEvent.setup();

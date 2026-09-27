@@ -50,6 +50,8 @@ export const scriptCreationApi = {
     start: number; end: number; scope: RewriteJob["scope"]; mode: RewriteJob["mode"];
     instruction: string; preserve: string; context_revisions?: Record<string, string>; reference_proposal_id?: string | null; client_mutation_id: string }) =>
     apiCall<RewriteJob>(`${root(project)}/rewrites`, { method: "post", retry: { limit: 0 }, json: body }),
+  listRewrites: (project: string, documentId: string) =>
+    apiCall<RewriteJob[]>(`${docPath(project, documentId)}/rewrites`),
   getRewrite: (project: string, jobId: string) =>
     apiCall<RewriteJob>(`${root(project)}/rewrites/${encodeURIComponent(jobId)}`),
   importEpisode: (project: string, episode_number: number) =>

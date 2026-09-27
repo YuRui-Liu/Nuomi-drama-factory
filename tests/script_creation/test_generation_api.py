@@ -145,9 +145,11 @@ def test_rewrite_queue_review_and_editor_scope(client):
     job = started.json()['data']
     assert job['before'] == '同句😀' and job['block_id'] == doc['revision']['blocks'][1]['id']
     assert http.get(base + '/rewrites/' + job['id']).json()['data']['id'] == job['id']
+    assert [item["id"] for item in http.get(base + f"/documents/{doc['id']}/rewrites").json()["data"]] == [job["id"]]
     assert http.get(base + f"/documents/{doc['id']}/proposals").json()['data'] == []
     user['role'] = 'viewer'
     assert http.get(base + '/rewrites/' + job['id']).status_code == 200
+    assert http.get(base + f"/documents/{doc['id']}/rewrites").status_code == 200
     assert http.post(base + '/rewrites', json={**body, 'client_mutation_id': 'other'}).status_code == 403
     assert http.post(base + '/proposals/accept', json={'proposal_ids': ['none'],
         'base_revision_id': doc['current_revision_id'], 'client_mutation_id': 'adopt'}).status_code == 403

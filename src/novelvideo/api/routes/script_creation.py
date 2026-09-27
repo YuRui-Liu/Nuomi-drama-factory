@@ -343,6 +343,15 @@ async def get_rewrite(project: str, job_id: str, user: dict = Depends(get_api_us
         raise _error(exc) from exc
 
 
+@router.get(PREFIX + '/documents/{document_id}/rewrites')
+async def list_rewrites(project: str, document_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await RewriteService(store).list(document_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
 @router.get(PREFIX + '/documents/{document_id}/proposals')
 async def list_proposals(project: str, document_id: str, user: dict = Depends(get_api_user)):
     store, _ = await _store(project, user, 'viewer')

@@ -55,6 +55,14 @@ class RewriteService:
                 raise DocumentNotFound("rewrite job not found")
             return json.loads(row["data"])
 
+    async def list(self, document_id: str):
+        async with self.store._db() as db:
+            await self.store._document(db, document_id)
+            rows = await (await db.execute(
+                "SELECT data FROM script_rewrite_jobs WHERE json_extract(data, '$.document_id')=? ORDER BY created_at DESC,id DESC",
+                (document_id,))).fetchall()
+            return [json.loads(row["data"]) for row in rows]
+
     async def start(self, *, document_id: str, base_revision_id: str, start: int, end: int,
                     scope: str, mode: str, instruction: str, preserve: str,
                     client_mutation_id: str, context_revisions=None, reference_proposal_id=None):
@@ -84,6 +92,22 @@ class RewriteService:
                     row = await (await db.execute("SELECT * FROM script_proposals WHERE id=?", (reference_proposal_id,))).fetchone()
                     if row is None or row["document_id"] != document_id:
                         raise DocumentNotFound("reference proposal not found")
+                    if row["base_revision_id"] != base_revision_id:
+                        raise DocumentConflict("旧候选基线已变化，请重新生成", doc.current_revision_id)
+                    if row["block_id"] is None:
+                        matches_range = scope == "episode" and start == 0 and end == len(doc.revision.markdown) and row["before_text"] == doc.revision.markdown
+                    else:
+                        offset = 0
+                        matches_range = False
+                        for block in doc.revision.blocks:
+                            if block.id == row["block_id"]:
+                                matches_range = (scope == "selection" and start == offset + row["start_offset"] and
+                                    end == offset + row["end_offset"] and
+                                    doc.revision.markdown[start:end] == row["before_text"])
+                                break
+                            offset += len(block.markdown)
+                    if not matches_range:
+                        raise DocumentConflict("继续调整必须使用原候选范围", doc.current_revision_id)
                     reference = {"before": row["before_text"], "after": row["after_text"], "reason": row["reason"]}
                 references = []
                 for ref_id, revision_id in context_revisions.items():

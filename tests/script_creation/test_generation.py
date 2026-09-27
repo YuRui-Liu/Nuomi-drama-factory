@@ -217,9 +217,20 @@ async def test_stage_prompt_names_required_document_structure_and_fact_source(st
                            instruction='', references=[brief])
     people = build_prompt(kind='people', script_mode='series', episode_number=1, episode_count=3,
                           instruction='', references=[brief])
+    scenes = build_prompt(kind='scenes', script_mode='series', episode_number=1, episode_count=3,
+                          instruction='', references=[brief])
+    script = build_prompt(kind='episode_script', script_mode='series', episode_number=1, episode_count=3,
+                          instruction='', references=[brief])
     assert 'Logline' in outline and '情绪曲线' in outline and '全剧分段' in outline
+    assert '题材' in outline and '目标观众' in outline and '目标体量' in outline
     assert '人物弧光' in people and '首次出场' in people and '已写正文' in people
     assert '身份与人物设定' in people and '被逼急时怎么做' in people and '极端行为' in people
+    assert people.index('记忆点') < people.index('人物弧光') < people.index('被逼急时怎么做') < people.index('称呼规则')
+    assert '可复用' in scenes and '场景类型' in scenes and '账房' in scenes and '码头' in scenes
+    assert '寻找单据' in scenes and '剧本正文' in scenes
+    assert script.index('本集标题') < script.index('本集目标') < script.index('场号｜场景名称·日夜·内外')
+    assert script.index('出场人物') < script.index('动作') < script.index('对白') < script.index('结尾钩子')
+    assert '必要语气' in script
     assert '只能依据引用中的 episode_script 文档' in people
     assert 'craft_status' not in craft_guidance('outline')
 

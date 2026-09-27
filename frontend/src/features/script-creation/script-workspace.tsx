@@ -102,7 +102,8 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
     const draft = manager.get(doc.id);
     return draft ? { ...draft.document, revision: { ...draft.document.revision, markdown: draft.markdown } } : doc;
   }), settings.mode);
-  const current = documents.find((doc) => doc.id === selectedId);
+  const savedDocuments = documents.map((doc) => manager.get(doc.id)?.document ?? doc);
+  const current = savedDocuments.find((doc) => doc.id === selectedId);
   const draft = current && manager.get(current.id);
   const availableImports = imports.data?.data.items ?? [];
   const nextEpisodeNumber = Math.max(0, ...documents.filter((doc) => doc.kind === "episode_script").map((doc) => doc.episode_number ?? 0)) + 1;
@@ -253,10 +254,10 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
             onClick={() => setRightTab(id)} aria-current={rightTab === id ? "page" : undefined}
             className={"flex-1 rounded px-1 py-2 " + (rightTab === id ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/50")}>{label}</button>)}
         </div>
-        {rightTab === "generation" && <GenerationPanel project={project} documents={documents} manager={manager} settings={settings}
+        {rightTab === "generation" && <GenerationPanel project={project} documents={savedDocuments} manager={manager} settings={settings}
           selected={current} instruction={instruction} onSelect={setSelectedId} onRefresh={refresh}
           onReviewCandidate={(id, documentId) => { if (documentId) setSelectedId(documentId); setCandidateId(id); setCandidateTargetId(documentId); setRightTab("review"); }} />}
-        {rightTab === "review" && current && <ProposalReview key={current.id} project={project} document={current} documents={documents}
+        {rightTab === "review" && current && <ProposalReview key={current.id} project={project} document={current} documents={savedDocuments}
           saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} selection={selection} instruction={instruction}
           candidateId={candidateTargetId === current.id ? candidateId : null} onApplied={refresh} />}
         {rightTab === "history" && current && <RevisionHistory key={current.id} project={project} document={current}
