@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from novelvideo.models import NovelCharacter
+
 from .store import DocumentConflict, DocumentNotFound, DocumentValidation, _digest, _id
 
 KINDS = {"people": "character", "scenes": "scene", "props": "prop"}
@@ -134,11 +136,19 @@ class EntityService:
                 asset_type = KINDS[doc[0]]
                 relations = json.loads(existing["relations"]) if relations is None and existing else (relations or [])
                 appearances = json.loads(existing["appearances"]) if appearances is None and existing else (appearances or [])
+                previous_relations = {
+                    (item["kind"], item["entity_id"]) for item in json.loads(existing["relations"])
+                } if existing else set()
                 for relation in relations:
-                    target = await (await db.execute("SELECT asset_type FROM script_entities WHERE entity_id=?", (relation.get("entity_id"),))).fetchone()
+                    target = await (await db.execute("SELECT asset_type,document_id,block_id FROM script_entities WHERE entity_id=?", (relation.get("entity_id"),))).fetchone()
                     allowed = {"holding": ("character", "prop"), "key_prop": ("scene", "prop"), "entry": ("scene", "character")}
                     if not target or allowed.get(relation.get("kind")) != (asset_type, target[0]):
                         raise DocumentValidation("relation requires a compatible stable entity in this project")
+                    if (relation["kind"], relation["entity_id"]) not in previous_relations:
+                        target_revision = await (await db.execute("""SELECT r.blocks FROM script_documents d
+                            JOIN script_revisions r ON r.id=d.current_revision_id WHERE d.id=?""", (target[1],))).fetchone()
+                        if not target_revision or not any(b["id"] == target[2] for b in json.loads(target_revision[0])):
+                            raise DocumentValidation("cannot add a relation to a missing entry")
                 for appearance in appearances:
                     if appearance.get("kind") not in ("first_appearance", "critical_scene"):
                         raise DocumentValidation("invalid appearance kind")
@@ -154,8 +164,16 @@ class EntityService:
                 if create_text:
                     if asset_id or not create_text.get("name", "").strip():
                         raise DocumentValidation("choose an existing asset or create a named text asset")
-                    await db.execute(f"INSERT INTO {TABLES[asset_type]}(name,description) VALUES (?,?)", (create_text["name"].strip(), create_text.get("description", "")))
-                    asset_id = (await (await db.execute("SELECT asset_uuid FROM asset_registry WHERE kind=? AND current_name=? AND deleted_at IS NULL", (asset_type, create_text["name"].strip()))).fetchone())[0]
+                    asset_name = create_text["name"].strip()
+                    description = create_text.get("description", "")
+                    if asset_type == "character":
+                        # Keep the same name contract as the asset center, without
+                        # inventing age facts from the legacy schema default.
+                        asset_name = NovelCharacter(name=asset_name, age_group="").name
+                        await db.execute("INSERT INTO characters(name,description,age_group) VALUES (?,?,?)", (asset_name, description, ""))
+                    else:
+                        await db.execute(f"INSERT INTO {TABLES[asset_type]}(name,description) VALUES (?,?)", (asset_name, description))
+                    asset_id = (await (await db.execute("SELECT asset_uuid FROM asset_registry WHERE kind=? AND current_name=? AND deleted_at IS NULL", (asset_type, asset_name))).fetchone())[0]
                 if asset_id:
                     target = await (await db.execute(f"""SELECT r.asset_uuid FROM asset_registry r JOIN {TABLES[asset_type]} a ON a.name=r.current_name
                         WHERE r.asset_uuid=? AND r.kind=? AND r.deleted_at IS NULL""", (asset_id, asset_type))).fetchone()

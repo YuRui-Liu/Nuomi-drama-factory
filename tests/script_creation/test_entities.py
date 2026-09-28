@@ -193,3 +193,44 @@ async def test_unambiguous_heading_rename_preserves_identity(setup):
     confirmed = await service.put(entity_id=original["entity_id"], document_id=doc.id, base_revision_id=saved.current_revision_id,
         block_id=original["block_id"], name="Alicia", client_mutation_id="confirm")
     assert confirmed["entity_id"] == original["entity_id"]
+
+
+@pytest.mark.parametrize("description", ["年龄未知", "年迈的老人"])
+async def test_text_character_does_not_invent_youth_age(setup, description):
+    store, service, assets = setup
+    doc, ent = await entity(store, service)
+    result = await service.put(entity_id=ent["entity_id"], document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=ent["block_id"], name="A", create_text={"name": "A", "description": description}, client_mutation_id="text")
+    assert result["asset_record"]["age_group"] == ""
+    await assets.load_graph_state()
+    assert assets.get_character("A").age_group == ""
+
+
+async def test_text_character_uses_existing_name_normalization_without_overwriting(setup):
+    store, service, assets = setup
+    doc, ent = await entity(store, service)
+    args = dict(entity_id=ent["entity_id"], document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=ent["block_id"], name="A", client_mutation_id="first", create_text={"name": "A/B", "description": "original"})
+    result = await service.put(**args)
+    assert result["asset_name"] == "A_B"
+    await assets.load_graph_state()
+    assert assets.get_character("A_B").name == result["asset_name"]
+    with pytest.raises(DocumentConflict):
+        await service.put(**{**args, "client_mutation_id": "collision", "create_text": {"name": "A:B", "description": "must not overwrite"}})
+    assert (await service.assets("character")) == [{"asset_id": result["asset_id"], "asset_type": "character", "name": "A_B", "description": "original"}]
+    await assets.delete_character("A_B")
+    assert (await service.list(doc.id))[0]["asset_missing"]
+
+
+async def test_new_relations_cannot_target_deleted_entries_but_old_ones_can_be_removed(setup):
+    store, service, _ = setup
+    doc, ent = await entity(store, service)
+    prop_doc, prop = await entity(store, service, "props", "key", "prop")
+    args = dict(entity_id=ent["entity_id"], document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=ent["block_id"], name="A", relations=[{"kind": "holding", "entity_id": prop["entity_id"]}])
+    await service.put(**args, client_mutation_id="relation")
+    await store.save(prop_doc.id, base_revision_id=prop_doc.current_revision_id, markdown="", client_mutation_id="delete")
+    removed = await service.put(**{**args, "relations": []}, client_mutation_id="remove")
+    assert removed["relations"] == []
+    with pytest.raises(DocumentValidation):
+        await service.put(**args, client_mutation_id="readd")

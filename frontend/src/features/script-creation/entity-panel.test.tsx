@@ -76,6 +76,12 @@ it("labels missing relation targets and prevents selecting deleted entries", asy
   render(<EntityPanel project="demo" document={doc} documents={[doc]} allSaved />);
   expect(await screen.findByText("持有道具：条目缺失（钥匙）")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "关联 / 确认 Alice" }));
-  expect(screen.getByRole("checkbox", { name: "持有 · 钥匙（条目缺失）" })).toBeDisabled();
-  expect(screen.getByRole("checkbox", { name: "持有 · 钥匙（条目缺失）" })).toBeChecked();
+  const checkbox = screen.getByRole("checkbox", { name: "持有 · 钥匙（条目缺失）" });
+  expect(checkbox).toBeEnabled();
+  expect(checkbox).toBeChecked();
+  await user.click(checkbox);
+  expect(checkbox).not.toBeChecked();
+  expect(checkbox).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "保存关联" }));
+  await waitFor(() => expect(scriptCreationApi.putEntity).toHaveBeenCalledWith("demo", expect.objectContaining({ relations: [] })));
 });
