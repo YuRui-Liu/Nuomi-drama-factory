@@ -184,3 +184,52 @@ async def test_build_awaits_async_guarded_save_callback(tmp_path):
     service = ScreenplaySemanticService(ScreenplaySemanticStore(tmp_path), extractor=extractor)
     result = await service.build(source(SCRIPT), save_revision=save_revision)
     assert saved == [result.revision_id]
+
+
+@pytest.mark.asyncio
+async def test_unchanged_text_reextracts_when_frozen_design_context_changes(tmp_path):
+    calls = []
+
+    async def extractor(scenes, *, concurrency, reference_context):
+        calls.append((tuple(scene.id for scene in scenes), reference_context))
+        return tuple(SceneBeatDraft(scene_id=scene.id, beats=(make_draft(scene).model_copy(update={"script_facts": (scene.blocks[0].text.lstrip("△"),), "must_show": (scene.blocks[0].text.lstrip("△"),)}),)) for scene in scenes)
+
+    store = ScreenplaySemanticStore(tmp_path)
+    service = ScreenplaySemanticService(store, extractor=extractor)
+    design_a = {"documents": [{"document_id": "people", "revision_id": "design-a", "markdown": "旧设计"}], "entities": []}
+    design_b = {"documents": [{"document_id": "people", "revision_id": "design-b", "markdown": "新设计"}], "entities": []}
+    first = await service.build(source(SCRIPT), reference_context=design_a)
+    store.activate(1, first.revision_id, expected_source_revision=1)
+    calls.clear()
+
+    second = await service.build(source(SCRIPT, revision=2), reference_context=design_b)
+
+    assert calls == [(tuple(scene.id for scene in second.scenes), design_b)]
+    assert all(scene.status == "validated" for scene in second.scenes)
+    assert second.reference_context_hash != first.reference_context_hash
+
+
+@pytest.mark.asyncio
+async def test_changed_unselected_scene_retains_old_beats_with_explicit_old_source_evidence(tmp_path):
+    async def extractor(scenes, *, concurrency):
+        return tuple(SceneBeatDraft(scene_id=scene.id, beats=(make_draft(scene).model_copy(update={"script_facts": (scene.blocks[0].text.lstrip("△"),), "must_show": (scene.blocks[0].text.lstrip("△"),)}),)) for scene in scenes)
+
+    store = ScreenplaySemanticStore(tmp_path)
+    service = ScreenplaySemanticService(store, extractor=extractor)
+    first = await service.build(source(SCRIPT))
+    store.activate(1, first.revision_id, expected_source_revision=1)
+    changed = SCRIPT.replace("△林默扶住栏杆。", "△林默猛地扶住栏杆。")
+    second = await service.build(source(changed, revision=2), selected_scene_ids={first.scenes[0].id})
+
+    stale_scene = second.scenes[1]
+    old_beats = first.beats_for(first.scenes[1].id)
+    retained = second.beats_for(stale_scene.id)
+    assert stale_scene.status == "stale"
+    assert len(retained) == len(old_beats) > 0
+    assert retained[0].stale is True
+    assert retained[0].stale_reason
+    assert retained[0].evidence_source_revision == first.source_revision
+    assert retained[0].evidence_source_hash == first.source_hash
+    assert retained[0].script_facts == old_beats[0].script_facts
+    assert retained[0].script_facts != ("林默猛地扶住栏杆。",)
+    assert second.status == "review_required"

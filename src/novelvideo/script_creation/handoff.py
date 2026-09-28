@@ -17,6 +17,20 @@ from .entities import EntityService
 from .store import DocumentConflict, DocumentNotFound, DocumentValidation, _digest, _id, _now
 
 
+def _semantic_extraction_failure(result):
+    """A generated revision can be archived while extraction itself has failed."""
+    if not isinstance(result, dict):
+        return None
+    report = result.get("validation_report") or {}
+    issues = (report.get("issues") or []) if isinstance(report, dict) else []
+    failures = [issue for issue in issues if isinstance(issue, dict) and
+                issue.get("code") in {"scene_extraction_failed", "scene_not_processed"}]
+    if not failures and not result.get("failed_scenes"):
+        return None
+    details = [str(issue.get("message") or issue.get("code")) for issue in failures]
+    return "; ".join(details) or f"{result.get('failed_scenes', 0)} scene extraction(s) failed"
+
+
 class HandoffService:
     """The database row and outbox are the business identity, not the task slot."""
 
@@ -133,12 +147,18 @@ class HandoffService:
                             None, old_dialogue, new_dialogue, autojunk=False).get_opcodes()
                         if tag != "equal"]
             available = [scene.id for scene in new_scenes] if not needs_reparse else []
+            available_scenes = [
+                {"id": scene.id, "heading": scene.heading.lstrip("# ").strip(),
+                 "location": scene.location}
+                for scene in new_scenes
+            ] if not needs_reparse else []
         except (ValueError, TypeError):
-            scene_changes, dialogue, reused, available, needs_reparse = [], [], [], [], True
+            scene_changes, dialogue, reused, available, available_scenes, needs_reparse = [], [], [], [], [], True
         return {"text": text, "scenes": scene_changes, "dialogue": dialogue,
                 "references": [], "reused_scenes": reused,
                 "inferred_impacts": (["scene_semantics"] if scene_changes else []),
-                "needs_reparse": needs_reparse, "available_scene_ids": available}
+                "needs_reparse": needs_reparse, "available_scene_ids": available,
+                "available_scenes": available_scenes}
 
     async def _fact_ack(self, db, document_id, refs, acknowledgement):
         mode = acknowledgement.get("mode")
@@ -211,6 +231,10 @@ class HandoffService:
             raise DocumentValidation("scene ids only apply to selected scope")
         if not isinstance(fact_acknowledgement, dict):
             raise DocumentValidation("fact acknowledgement required")
+        # Selection order has no business meaning; normalize before hashing or freezing.
+        selected_entity_ids = sorted(selected_entity_ids)
+        if mode == "selected":
+            update_scope = {**update_scope, "scene_ids": sorted(scene_ids)}
         request = dict(document_id=document_id, revision_id=revision_id,
                        reference_revisions=reference_revisions,
                        selected_entity_ids=selected_entity_ids, update_scope=update_scope,
@@ -344,10 +368,12 @@ class HandoffService:
                             "previous_stage_revisions": previous_stage_revisions,
                             "previous_source": ({"revision": prior_source["source_revision"],
                                                  "hash": prior_source["content_hash"]} if prior_source else None)}
+                source_project_revision = await self._project_source_revision(db)
                 identity_hash = _digest({"project_id": self.project_id, "episode": doc.episode_number,
                                          "revision": revision_id, "references": reference_revisions,
-                                         "action": {"entities": selected_entity_ids,
-                                                    "scope": update_scope, "fact_ack": fact_ack}})
+                                         "entities": frozen, "scope": update_scope, "fact_ack": fact_ack,
+                                         "source_project_revision": source_project_revision,
+                                         "previous_source": snapshot["previous_source"]})
                 existing = await (await db.execute(
                     "SELECT * FROM script_handoffs WHERE project_id=? AND identity_hash=?",
                     (self.project_id, identity_hash),
@@ -355,10 +381,26 @@ class HandoffService:
                 if existing:
                     await db.rollback()
                     return self._decode(existing)
+                # An already written handoff remains the result for this exact action
+                # while its own episode source is still current. Other episodes may
+                # advance the project CAS without requiring another source write.
+                for prior_row in prior_handoffs:
+                    prior_item = json.loads(prior_row["data"])
+                    prior_snap = prior_item["snapshot"]
+                    if (prior_source and prior_item.get("source_revision") == prior_source["source_revision"]
+                            and prior_item.get("source_hash") == prior_source["content_hash"]
+                            and prior_item.get("document_id") == doc.id
+                            and prior_item.get("revision_id") == revision_id
+                            and prior_snap["reference_revisions"] == reference_revisions
+                            and prior_snap["entities"] == frozen
+                            and prior_snap["update_scope"] == update_scope
+                            and prior_snap["fact_acknowledgement"] == fact_ack):
+                        await db.rollback()
+                        return prior_item
                 item = {"id": _id(), "status": "prepared", "project_id": self.project_id,
                         "episode_number": doc.episode_number, "document_id": doc.id,
                         "revision_id": revision_id, "snapshot": snapshot, "diff": diff,
-                        "expected_source_project_revision": await self._project_source_revision(db),
+                        "expected_source_project_revision": source_project_revision,
                         "source_revision": None, "source_hash": None, "task_id": None,
                         "task_result": None, "error": None,
                         "created_at": stamp, "updated_at": stamp}
@@ -546,7 +588,13 @@ class HandoffService:
         scope = f"handoff:{handoff_id}"
         task = get_task_manager().get_task_for_project(
             ctx, "screenplay_semantics", item["episode_number"], scope=scope)
-        if task and task.status == "completed" and isinstance(task.result, dict) and task.result.get("semantic_revision_id"):
+        failed_terminal_result = bool(
+            task and task.status == "completed" and item["status"] == "failed"
+            and item.get("task_result") == task.result
+            and _semantic_extraction_failure(task.result)
+        )
+        if (task and task.status == "completed" and not failed_terminal_result
+                and isinstance(task.result, dict) and task.result.get("semantic_revision_id")):
             if item.get("task_id") is None:
                 item = await self._set_dispatch(handoff_id, task_id=task.task_id, status="dispatched",
                                                 attempt_token=item.get("dispatch_token"))
@@ -554,7 +602,7 @@ class HandoffService:
         if task and task.status in {"submitting", "queued", "running"}:
             return await self._set_dispatch(handoff_id, task_id=task.task_id, status="dispatched",
                                             attempt_token=item.get("dispatch_token"))
-        if task and task.status == "completed":
+        if task and task.status == "completed" and not failed_terminal_result:
             return await self._set_dispatch(
                 handoff_id, status="failed", error="completed task result unavailable",
                 expected_task_id=item.get("task_id"))
@@ -577,6 +625,26 @@ class HandoffService:
         return result
 
     async def retry(self, handoff_id, ctx):
+        if str(ctx.project_id) != self.project_id:
+            raise DocumentNotFound("handoff not found in this project")
+        # Repair the status of revisions archived by older builds which treated a
+        # failed extraction as a successful handoff. Preserve their source/result.
+        async with self.documents._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                item = self._decode(await self._row(db, handoff_id))
+                failure = _semantic_extraction_failure(item.get("task_result"))
+                if item["status"] == "completed" and failure:
+                    item.update(status="failed", error=failure)
+                    await db.execute("UPDATE script_handoff_outbox SET status='failed',error=?,updated_at=? WHERE handoff_id=?",
+                                     (failure, _now(), handoff_id))
+                    await self._save(db, item)
+                    await db.commit()
+                else:
+                    await db.rollback()
+            except BaseException:
+                await db.rollback()
+                raise
         return await self.dispatch(handoff_id, ctx)
 
     async def claim(self, handoff_id, *, task_id, dispatch_token):
@@ -609,7 +677,7 @@ class HandoffService:
             try:
                 row = await self._row(db, handoff_id)
                 item = self._decode(row)
-                if item["status"] == "completed":
+                if item["status"] == "completed" or (item["status"] == "failed" and item.get("task_result") == result):
                     await db.rollback()
                     return item
                 if item["task_id"] != task_id:
@@ -618,9 +686,11 @@ class HandoffService:
                 if (not source or source["source_revision"] != item["source_revision"]
                         or source["content_hash"] != item["source_hash"]):
                     raise DocumentConflict("handoff source superseded")
-                item.update(status="completed", task_result=result, error=None)
-                await db.execute("UPDATE script_handoff_outbox SET status='completed',result=?,error=NULL,updated_at=? WHERE handoff_id=?",
-                                 (json.dumps(result, ensure_ascii=False), _now(), handoff_id))
+                failure = _semantic_extraction_failure(result)
+                status = "failed" if failure else "completed"
+                item.update(status=status, task_result=result, error=failure)
+                await db.execute("UPDATE script_handoff_outbox SET status=?,result=?,error=?,updated_at=? WHERE handoff_id=?",
+                                 (status, json.dumps(result, ensure_ascii=False), failure, _now(), handoff_id))
                 await self._save(db, item)
                 await db.commit()
                 return item

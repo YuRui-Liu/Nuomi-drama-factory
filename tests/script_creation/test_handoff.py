@@ -513,3 +513,191 @@ async def test_selected_relation_requires_explicit_target_design_and_entity(work
     )
     assert {e["entity_id"] for e in prepared["snapshot"]["entities"]} == {
         person["entity_id"], key["entity_id"]}
+
+
+async def test_prepare_rebases_after_other_episode_source_changes_without_rewriting_completed_handoff(workspace):
+    from novelvideo.episode_sources import build_episode_candidate
+
+    documents, sources, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 屋内 日 内\n甲：你好。", client_mutation_id="rebase-script")
+    kwargs = dict(document_id=script.id, revision_id=script.current_revision_id,
+                  reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "none"},
+                  fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"})
+    old = await service.prepare(**kwargs, client_mutation_id="rebase-prepare-old")
+    await sources.upsert_sources([build_episode_candidate("E02.md", "第2集\n第二集")], expected_revision=0)
+    fresh = await service.prepare(**kwargs, client_mutation_id="rebase-prepare-fresh")
+    assert fresh["id"] != old["id"]
+    assert fresh["expected_source_project_revision"] == 1
+    assert (await service.prepare(**kwargs, client_mutation_id="rebase-prepare-old"))["id"] == old["id"]
+    confirmed = await service.confirm(fresh["id"], expected_source_project_revision=1,
+                                      client_mutation_id="rebase-confirm")
+    assert confirmed["status"] == "completed"
+    await sources.upsert_sources([build_episode_candidate("E02.md", "第2集\n第二集再改")], expected_revision=2)
+    same = await service.prepare(**kwargs, client_mutation_id="rebase-prepare-again")
+    assert same["id"] == confirmed["id"]
+    assert len([item for item in await sources.list_sources() if item.episode_number == 1]) == 1
+
+
+async def test_prepare_identity_changes_with_selected_entity_and_asset_record(workspace):
+    from novelvideo.script_creation.entities import EntityService
+
+    documents, _, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 屋内 日 内\n甲：你好。", client_mutation_id="entity-id-script")
+    people = await documents.create(kind="people", title="人物", markdown="甲", client_mutation_id="entity-id-people")
+    entity = await EntityService(documents).put(
+        document_id=people.id, base_revision_id=people.current_revision_id,
+        block_id=people.revision.blocks[0].id, name="甲", create_text={"name": "甲资产", "description": "旧描述"},
+        client_mutation_id="entity-id-create")
+    kwargs = dict(document_id=script.id, revision_id=script.current_revision_id,
+                  reference_revisions={people.id: people.current_revision_id},
+                  selected_entity_ids=[entity["entity_id"]], update_scope={"mode": "none"},
+                  fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"})
+    first = await service.prepare(**kwargs, client_mutation_id="entity-id-prepare-1")
+    async with documents._db() as db:
+        await db.execute("UPDATE characters SET description=? WHERE name=?", ("新描述", "甲资产"))
+        await db.commit()
+    second = await service.prepare(**kwargs, client_mutation_id="entity-id-prepare-2")
+    assert second["id"] != first["id"]
+    assert second["snapshot"]["entities"][0]["asset_record"]["description"] == "新描述"
+    renamed = await EntityService(documents).put(
+        document_id=people.id, base_revision_id=people.current_revision_id,
+        block_id=people.revision.blocks[0].id, name="甲别名", entity_id=entity["entity_id"],
+        client_mutation_id="entity-id-rename")
+    third = await service.prepare(**kwargs, client_mutation_id="entity-id-prepare-3")
+    assert third["id"] not in {first["id"], second["id"]}
+    assert third["snapshot"]["entities"][0]["name"] == "甲别名"
+    assert renamed["entity_id"] == entity["entity_id"]
+    assert (await service.prepare(**kwargs, client_mutation_id="entity-id-prepare-1"))["id"] == first["id"]
+
+
+async def test_prepare_diff_exposes_titled_scene_choices(workspace):
+    documents, _, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="## 1-1｜账房 · 夜 · 内\n甲：你好。", client_mutation_id="titles-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "all"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="titles-prepare")
+    assert prepared["diff"]["available_scenes"] == [{
+        "id": prepared["diff"]["available_scene_ids"][0],
+        "heading": "1-1｜账房 · 夜 · 内", "location": "账房"}]
+
+
+async def test_extraction_failure_keeps_result_but_retries_without_rewriting_source(workspace, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.script_creation import handoff as module
+
+    documents, sources, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 屋内 日 内\n甲：你好。", client_mutation_id="failed-result-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "all"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="failed-result-prepare")
+    await service.confirm(prepared["id"], expected_source_project_revision=0,
+                          client_mutation_id="failed-result-confirm")
+    _, envelope = await service._begin_dispatch(prepared["id"])
+    await service.claim(prepared["id"], task_id="task-old", dispatch_token=envelope["dispatch_token"])
+    failed_result = {"semantic_revision_id": "semantic-failed", "status": "review_required",
+                     "succeeded_scenes": 0, "failed_scenes": 1,
+                     "validation_report": {"passed": False, "issues": [
+                         {"code": "scene_extraction_failed", "message": "API key 未配置"}]}}
+    failed = await service.complete(prepared["id"], task_id="task-old", result=failed_result)
+    assert failed["status"] == "failed"
+    assert failed["task_result"] == failed_result
+    assert "API key 未配置" in failed["error"]
+    async with documents._db() as db:
+        row = await (await db.execute("SELECT status,result FROM script_handoff_outbox WHERE handoff_id=?",
+                                      (prepared["id"],))).fetchone()
+    assert row["status"] == "failed"
+    assert "semantic-failed" in row["result"]
+
+    class Manager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return SimpleNamespace(task_id="task-old", status="completed", result=failed_result)
+
+    async def enqueue(_ctx, **kwargs):
+        assert kwargs["payload"]["dispatch_token"] != envelope["dispatch_token"]
+        return SimpleNamespace(task_state=SimpleNamespace(task_id="task-new"))
+
+    monkeypatch.setattr(module, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(module, "enqueue_project_task", enqueue)
+    ctx = SimpleNamespace(project_id="handoff-project")
+    retried = await service.retry(prepared["id"], ctx)
+    assert retried["task_id"] == "task-new"
+    assert retried["status"] == "dispatched"
+    assert (await sources.list_sources())[0].source_revision == failed["source_revision"]
+    review = {"semantic_revision_id": "semantic-review", "status": "review_required",
+              "succeeded_scenes": 1, "failed_scenes": 0,
+              "validation_report": {"passed": False, "issues": [
+                  {"code": "creative_warning", "message": "需要人工审阅"}]}}
+    complete = await service.complete(prepared["id"], task_id="task-new", result=review)
+    assert complete["status"] == "completed"
+    assert complete["task_result"] == review
+
+
+async def test_retry_reclassifies_legacy_completed_extraction_failure(workspace, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from novelvideo.script_creation import handoff as module
+
+    documents, sources, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 屋内 日 内\n甲：你好。", client_mutation_id="legacy-failed-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "all"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="legacy-failed-prepare")
+    await service.confirm(prepared["id"], expected_source_project_revision=0,
+                          client_mutation_id="legacy-failed-confirm")
+    _, envelope = await service._begin_dispatch(prepared["id"])
+    await service.claim(prepared["id"], task_id="legacy-task", dispatch_token=envelope["dispatch_token"])
+    legacy_result = {"semantic_revision_id": "semantic-legacy", "status": "review_required",
+                     "succeeded_scenes": 0, "failed_scenes": 1,
+                     "validation_report": {"passed": False, "issues": [
+                         {"code": "scene_extraction_failed", "message": "旧配置缺少 API key"}]}}
+    item = await service.get(prepared["id"])
+    item.update(status="completed", task_result=legacy_result, error=None)
+    async with documents._db() as db:
+        await db.execute("UPDATE script_handoffs SET data=? WHERE id=?", (json.dumps(item), item["id"]))
+        await db.execute("UPDATE script_handoff_outbox SET status='completed',result=? WHERE handoff_id=?",
+                         (json.dumps(legacy_result), item["id"]))
+        await db.commit()
+
+    class Manager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return SimpleNamespace(task_id="legacy-task", status="completed", result=legacy_result)
+
+    async def enqueue(_ctx, **kwargs):
+        return SimpleNamespace(task_state=SimpleNamespace(task_id="fresh-task"))
+
+    monkeypatch.setattr(module, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(module, "enqueue_project_task", enqueue)
+    retried = await service.retry(prepared["id"], SimpleNamespace(project_id="handoff-project"))
+    assert retried["task_id"] == "fresh-task"
+    assert retried["status"] == "dispatched"
+    assert (await sources.list_sources())[0].source_revision == item["source_revision"]
+
+
+async def test_selected_scene_order_is_one_handoff_action(workspace):
+    from novelvideo.screenplay_semantics.parser import parse_screenplay_document
+
+    documents, _, service = workspace
+    content = "## 1-1｜账房 · 夜 · 内\n甲：你好。\n\n## 1-2｜海边 · 夜 · 外\n乙：再见。"
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown=content, client_mutation_id="scene-order-script")
+    ids = [scene.id for scene in parse_screenplay_document(content).scenes]
+    kwargs = dict(document_id=script.id, revision_id=script.current_revision_id,
+                  reference_revisions={}, selected_entity_ids=[],
+                  fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"})
+    first = await service.prepare(**kwargs, update_scope={"mode": "selected", "scene_ids": ids},
+                                  client_mutation_id="scene-order-first")
+    second = await service.prepare(**kwargs, update_scope={"mode": "selected", "scene_ids": list(reversed(ids))},
+                                   client_mutation_id="scene-order-second")
+    assert second["id"] == first["id"]
+    assert second["snapshot"]["update_scope"]["scene_ids"] == sorted(ids)
