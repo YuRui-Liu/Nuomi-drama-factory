@@ -59,6 +59,7 @@ async def extract_scene_beats(
     *,
     invoke: SceneInvoker | None = None,
     concurrency: int = 5,
+    reference_context: dict | None = None,
 ) -> tuple[SceneExtractionResult, ...]:
     if concurrency < 1:
         raise ValueError("concurrency must be at least 1")
@@ -68,7 +69,7 @@ async def extract_scene_beats(
     async def extract(scene: Scene) -> SceneExtractionResult:
         async with semaphore:
             try:
-                result = await call(scene, build_scene_prompt(scene))
+                result = await call(scene, build_scene_prompt(scene, reference_context=reference_context))
                 if result.scene_id != scene.id:
                     raise ValueError(
                         f"scene id mismatch: expected {scene.id}, got {result.scene_id}"

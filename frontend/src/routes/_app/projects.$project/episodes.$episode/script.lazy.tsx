@@ -74,6 +74,7 @@ function ScriptTabContent() {
   const { t } = useTranslation();
   const { project, episode } = Route.useParams();
   const epNum = parseInt(episode, 10);
+  const creationDocument = new URLSearchParams(window.location.search).get("creationDocument");
   const queryClient = useQueryClient();
   const { data: episodeRes } = useEpisodeDetail(project, epNum);
   const { data: projectRes } = useProject(project);
@@ -381,6 +382,7 @@ function ScriptTabContent() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border/30 px-5 py-3 text-xs">
+        {creationDocument && <a className="text-primary underline" href={`/projects/${encodeURIComponent(project)}/creation?document=${encodeURIComponent(creationDocument)}`}>返回创作文档</a>}
         <EpisodeHealthSummary
           project={project}
           episode={epNum}

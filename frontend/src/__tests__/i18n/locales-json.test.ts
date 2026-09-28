@@ -84,6 +84,7 @@ describe("locale translation files", () => {
     expect(zh.nav).toMatchObject({
       xiaji: "项目中心",
       ingest: "剧本导入",
+      scriptCreation: "剧本创作",
       assets: "资产中心",
       episodes: "剧集制作",
       freezone: "创作画布",
@@ -94,6 +95,7 @@ describe("locale translation files", () => {
     expect(en.nav).toMatchObject({
       xiaji: "Project Center",
       ingest: "Script Import",
+      scriptCreation: "Script Creation",
       assets: "Asset Center",
       episodes: "Episode Production",
       freezone: "Creation Canvas",

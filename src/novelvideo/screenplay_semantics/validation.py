@@ -116,9 +116,10 @@ def validate_revision_beats(
         drafts = tuple(
             DramaticBeatDraft.model_validate(beat.model_dump(exclude={
                 "id", "ordinal", "scene_id", "stale", "stale_reason",
+                "evidence_source_revision", "evidence_source_hash", "evidence_scene_id",
             }))
             for beat in sorted(
-                (item for item in beats if item.scene_id == scene.id),
+                (item for item in beats if item.scene_id == scene.id and not item.stale),
                 key=lambda item: item.ordinal,
             )
         )

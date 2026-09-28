@@ -1,6 +1,8 @@
 """Versioned screenplay semantic extraction and review endpoints."""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -150,7 +152,9 @@ async def activate_screenplay_semantics(project: str, episode: int, revision_id:
     ctx = await _resolve(project, user, role="editor")
     current_revision = await _resolve_source_revision(ctx, episode)
     try:
-        revision = _store(ctx).activate(episode, revision_id, expected_source_revision=current_revision)
+        revision = await asyncio.to_thread(
+            _store(ctx).activate, episode, revision_id, expected_source_revision=current_revision
+        )
     except LookupError as exc:
         raise HTTPException(404, detail={"code": "SCREENPLAY_SEMANTIC_REVISION_NOT_FOUND"}) from exc
     except ScreenplaySemanticActivationConflict as exc:

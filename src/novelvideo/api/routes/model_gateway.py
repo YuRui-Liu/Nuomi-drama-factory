@@ -99,6 +99,7 @@ class TextRuntimeConfigBody(BaseModel):
 
 
 TEXT_TASK_ROLE_LABELS = {
+    "script_creation": "剧本创作",
     "episode_normalization": "剧本解析与规范化",
     "knowledge_extraction": "知识图谱与角色/场景/道具提取",
     "director_plan": "整集导演规划",

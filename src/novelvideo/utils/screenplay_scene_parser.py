@@ -281,6 +281,16 @@ def parse_location_line(line: str) -> list[tuple[str, str, bool]]:
     if not text:
         return []
 
+    # Workspace scene headings use "## 1-1｜账房 · 夜 · 内". Keep the
+    # separators out of the location while preserving the authored header.
+    workspace = re.fullmatch(
+        rf"[｜|]?\s*(?P<location>.+?)\s*[·•]\s*(?P<time>{TIME_TOKEN_RE})\s*[·•]\s*(?P<interior>内|外)",
+        text,
+    )
+    if workspace:
+        return [(workspace.group("location").strip(), workspace.group("time"),
+                 workspace.group("interior") == "内")]
+
     tod = ""
     interior_exterior = ""
 
@@ -342,7 +352,7 @@ def parse_character_line(line: str) -> list[str]:
     ):
         parts = re.split(r"\s+", text)
     for part in parts:
-        item = part.strip()
+        item = part.strip().rstrip("。；;！!")
         if not item:
             continue
         paren_match = re.search(r"[（(]([^）)]+)[）)]", item)

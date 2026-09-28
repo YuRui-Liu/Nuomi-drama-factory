@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 from novelvideo.screenplay_semantics.models import ScreenplaySemanticRevision
-from novelvideo.episode_source_versions import SourceVersionConflict, require_current_source
+from novelvideo.episode_source_versions import (
+    SourceVersionConflict, current_source_version, require_current_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,20 @@ class ScreenplaySemanticStore:
         ]
         return tuple(sorted(revisions, key=lambda item: item.created_at, reverse=True))
 
+    def load_last_active_revision(self, episode: int) -> ScreenplaySemanticRevision | None:
+        """Read the archival revision behind the pointer for hash-proven reuse.
+
+        It is not a current/active result after its source was overwritten.
+        """
+        pointer = self._episode_dir(episode) / "active.json"
+        if not pointer.exists():
+            return None
+        try:
+            data = json.loads(pointer.read_text(encoding="utf-8"))
+            return self.load(episode, str(data["revision_id"]))
+        except (OSError, UnicodeError, ValueError, KeyError):
+            return None
+
     def load_active(self, episode: int) -> ScreenplaySemanticRevision | None:
         pointer = self._episode_dir(episode) / "active.json"
         if not pointer.exists():
@@ -99,6 +117,35 @@ class ScreenplaySemanticStore:
             update={"status": "active", "activated_at": activated_at}
         )
 
+    @contextmanager
+    def _current_source_write_guard(self, episode: int, revision: ScreenplaySemanticRevision):
+        """Hold the source DB writer lock through active-pointer publication."""
+        project_dir = self.root.parent
+        locator = project_dir / ".episode-source-db.json"
+        if not locator.exists():
+            # Legacy source-less projects retain their existing activation contract.
+            yield
+            return
+        try:
+            database = Path(json.loads(locator.read_text(encoding="utf-8"))["db_path"]).resolve(strict=True)
+            if database.name != "data.db":
+                raise ValueError("invalid source database")
+            connection = sqlite3.connect(database.as_uri() + "?mode=rw", uri=True, timeout=10)
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            raise SourceVersionConflict("SOURCE_VERSION_UNAVAILABLE: source database cannot be verified") from exc
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            current = current_source_version(project_dir, episode)
+            if current != (revision.source_revision, revision.source_hash):
+                raise SourceVersionConflict("SOURCE_VERSION_CONFLICT: episode source changed")
+            yield
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def activate(
         self,
         episode: int,
@@ -111,22 +158,20 @@ class ScreenplaySemanticStore:
             raise LookupError(f"semantic revision not found: {revision_id}")
         if revision.source_revision != expected_source_revision:
             raise ScreenplaySemanticActivationConflict("source revision changed")
-        require_current_source(
-            self.root.parent, episode, revision.source_hash, source_revision=revision.source_revision,
-        )
         if not revision.validation_report.passed:
             raise ScreenplaySemanticActivationConflict("validation report did not pass")
         if not revision.scenes or not revision.beats:
             raise ScreenplaySemanticActivationConflict("empty scenes or dramatic beats cannot be activated")
         activated_at = datetime.now(timezone.utc)
-        self._atomic_json(
-            self._episode_dir(episode) / "active.json",
-            {
-                "revision_id": revision_id,
-                "source_revision": expected_source_revision,
-                "activated_at": activated_at.isoformat(),
-            },
-        )
+        with self._current_source_write_guard(episode, revision):
+            self._atomic_json(
+                self._episode_dir(episode) / "active.json",
+                {
+                    "revision_id": revision_id,
+                    "source_revision": expected_source_revision,
+                    "activated_at": activated_at.isoformat(),
+                },
+            )
         return revision.model_copy(
             update={"status": "active", "activated_at": activated_at}
         )

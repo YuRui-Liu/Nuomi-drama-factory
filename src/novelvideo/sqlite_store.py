@@ -587,6 +587,7 @@ class SQLiteStore:
             await self._ensure_indextts2_columns(self._db)
             await self._ensure_character_extraction_columns(self._db)
             await self._db.commit()
+            await self._ensure_asset_registry(self._db)
             # Phase 2 DB split: failure-mode *definitions* live in the
             # user-shared verification.db (not this project DB). They are
             # seeded lazily by `failure_registry.load_negative_clause_for_project`
@@ -595,6 +596,43 @@ class SQLiteStore:
             # convergence facts — the schema above already creates
             # `sketch_failure_mode_hits`, which stays project-local.
         return self._db
+
+    async def _ensure_asset_registry(self, db: aiosqlite.Connection) -> None:
+        """Give asset lifetimes stable IDs, including writes from other connections."""
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute("""CREATE TABLE IF NOT EXISTS asset_registry (
+                asset_uuid TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK(kind IN ('character','scene','prop')),
+                current_name TEXT NOT NULL, deleted_at TEXT)""")
+            await db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS asset_registry_live_name
+                ON asset_registry(kind,current_name) WHERE deleted_at IS NULL""")
+            for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+                await db.execute(f"""INSERT INTO asset_registry(asset_uuid,kind,current_name)
+                    SELECT lower(hex(randomblob(16))), ?, name FROM {table} AS source
+                    WHERE NOT EXISTS (SELECT 1 FROM asset_registry AS registry
+                        WHERE registry.kind=? AND registry.current_name=source.name AND registry.deleted_at IS NULL)""", (kind, kind))
+                await db.execute(f"""CREATE TRIGGER IF NOT EXISTS registry_{kind}_insert
+                    AFTER INSERT ON {table} BEGIN
+                    UPDATE asset_registry SET deleted_at=datetime('now')
+                      WHERE kind='{kind}' AND current_name=NEW.name AND deleted_at IS NULL;
+                    INSERT INTO asset_registry(asset_uuid,kind,current_name)
+                      VALUES(lower(hex(randomblob(16))),'{kind}',NEW.name);
+                    END""")
+                await db.execute(f"""CREATE TRIGGER IF NOT EXISTS registry_{kind}_delete
+                    AFTER DELETE ON {table} BEGIN
+                    UPDATE asset_registry SET deleted_at=datetime('now')
+                      WHERE kind='{kind}' AND current_name=OLD.name AND deleted_at IS NULL;
+                    END""")
+                await db.execute(f"""CREATE TRIGGER IF NOT EXISTS registry_{kind}_rename
+                    AFTER UPDATE OF name ON {table} WHEN OLD.name != NEW.name BEGIN
+                    UPDATE asset_registry SET current_name=NEW.name
+                      WHERE kind='{kind}' AND current_name=OLD.name AND deleted_at IS NULL;
+                    END""")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
     async def _ensure_scene_columns(self, db: aiosqlite.Connection) -> None:
         await _add_column_if_missing(
@@ -1840,14 +1878,25 @@ class SQLiteStore:
         if self.get_character(new_name):
             raise ValueError(f"角色 {new_name} 已存在")
         db = await self._ensure_db()
-        await db.execute("DELETE FROM characters WHERE name = ?", (old_name,))
+        char = char.model_copy(deep=True)
         identities = char.identities
         for identity in identities:
             identity.character_name = new_name
             identity.identity_id = f"{new_name}_{identity.identity_name}"
         char.identities = identities
         char.name = new_name
-        await self.add_character(char)
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "UPDATE characters SET name=?, identities_json=?, updated_at=datetime('now') WHERE name=?",
+                (new_name, char.identities_json, old_name),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"角色 {old_name} 不存在")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         self._characters.pop(old_name, None)
         self._characters[new_name] = char
         new_alias_index = {}

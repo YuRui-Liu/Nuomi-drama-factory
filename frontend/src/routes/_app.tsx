@@ -109,11 +109,21 @@ function AppLayout() {
         navigate({ to: "/login" });
         return;
       }
-      // CE runs without an authenticated session. Do not call /auth/me and
-      // redirect back to /login when the runtime config explicitly disables
-      // auth; that creates an endless redirect loop on a fresh browser.
+      // CE never redirects to login. If /auth/me was briefly unavailable in
+      // beforeLoad, retry until the synthetic local identity is established.
       setValidated(true);
-      return;
+      let cancelled = false;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      const establishIdentity = async () => {
+        await validateSession();
+        if (cancelled || useAuthStore.getState().username) return;
+        retryTimer = setTimeout(establishIdentity, 3_000);
+      };
+      void establishIdentity();
+      return () => {
+        cancelled = true;
+        clearTimeout(retryTimer);
+      };
     }
     if (validatedUsernameRef.current === username) {
       setValidated(true);
