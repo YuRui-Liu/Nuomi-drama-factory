@@ -256,3 +256,36 @@ async def test_hypothetical_quote_cannot_use_unchanged_suffix_of_cross_block_pat
     with pytest.raises(DocumentValidation):
         await service.execute(run["id"], runtime=Runtime([finding]), task_id="check-task")
     assert (await service.get(run["id"]))["issues"] == []
+
+
+async def test_large_hypothetical_context_stays_frozen_outside_user_instruction(tmp_path):
+    from novelvideo.script_creation.rewrite import RewriteService
+    store, people, _, _, episode = await setup(tmp_path)
+    candidate_text = "阿宁已知密钥😀。" + ("人物关系补充。" * 1400) + "候选尾部标记"
+    assert len(candidate_text) > 8000
+    source = await ProposalService(store).create(document_id=people.id, base_revision_id=people.current_revision_id,
+        block_id=None, start=0, end=len(people.revision.markdown), before=people.revision.markdown,
+        after=candidate_text, reason="知情变化", round_id="large-source", client_mutation_id="large-source")
+    service = ConsistencyService(store)
+    refs = {d.id: d.current_revision_id for d in (people, episode)}
+    run = await service.start(episode.id, context_revisions=refs,
+                              proposal_id=source["id"], client_mutation_id="large-check")
+    finding = issue("character_knowledge", people, episode, "阿宁不知密钥😀", "我知道密钥😀")
+    finding["hypothetical_quote"] = "阿宁已知密钥😀"
+    checked = await service.execute(run["id"], runtime=Runtime([finding]), task_id="check-task")
+    job = (await service.create_target_rewrites(checked["issues"][0]["id"],
+                                                 target_document_ids=[episode.id]))[0]
+    assert len(job["instruction"]) <= 8000
+    assert job["hypothetical_context"] == candidate_text
+    class RewriteRuntime:
+        async def run_structured(self, **kwargs):
+            assert "候选尾部标记" in kwargs["prompt"]
+            return {"after": "阿宁说：我已知密钥。", "reason": "保持知情一致"}
+    rewrite = RewriteService(store)
+    await rewrite.execute(job["id"], runtime=RewriteRuntime(), task_id="rewrite-task")
+    first = (await ProposalService(store).list(episode.id))[0]
+    refined = await rewrite.start(document_id=episode.id, base_revision_id=episode.current_revision_id,
+        start=0, end=len(episode.revision.markdown), scope="episode", mode="custom", instruction="继续调整",
+        preserve="", context_revisions={}, reference_proposal_id=first["id"], client_mutation_id="large-refine")
+    assert refined["hypothetical_context"] == candidate_text
+    await rewrite.execute(refined["id"], runtime=RewriteRuntime(), task_id="refine-task")

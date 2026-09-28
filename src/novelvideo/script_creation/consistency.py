@@ -353,11 +353,12 @@ class ConsistencyService:
             instruction = (f"修复关联检查问题：{issue['explanation']}；建议：{issue['suggested_action']}。"
                            f"证据：{issue['source']} 与 {issue['target']}。")
             if run["proposal_id"]:
-                instruction += f"若采纳候选 {run['proposal_id']} 后的影响；假设正文：{run['hypothetical_markdown']}。"
+                instruction += f"若采纳候选 {run['proposal_id']} 后的影响；完整候选正文作为冻结背景提供。"
             job = await RewriteService(self.store).start(document_id=doc_id, base_revision_id=doc.current_revision_id,
                 start=0, end=len(doc.revision.markdown), scope="episode", mode="custom",
                 instruction=instruction, preserve="保留未涉及的事实、人物和场景",
-                context_revisions=context, client_mutation_id=f"consistency:{issue_id}:{doc_id}")
+                context_revisions=context, consistency_run_id=run["id"],
+                client_mutation_id=f"consistency:{issue_id}:{doc_id}")
             jobs.append(job)
             async with self.store._db() as db:
                 await db.execute("INSERT OR IGNORE INTO script_consistency_target_jobs VALUES (?,?,?,?)",
