@@ -1,152 +1,157 @@
 import { useRef, useState } from "react";
-import { Check, ChevronDown, Search, X } from "lucide-react";
+import type { KeyboardEvent } from "react";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import { ArrowRight, Clapperboard, Globe2, Palette, Search, Sparkles, Target, UserRound, X } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { addChoice, removeChoice } from "./settings";
+import { catalog, genres, presets } from "./script-setter-data";
 import type { ScriptSettings, SettingsCategory } from "./types";
-
-const genres = ["玄幻修仙", "都市现实", "古装言情", "悬疑推理", "惊悚怪谈", "末世科幻", "历史传奇", "喜剧", "剧情", "热血竞技"];
-const catalog: Record<SettingsCategory, { title: string; groups: Record<string, string[]> }> = {
-  audience: { title: "目标受众", groups: {
-    "观众方向": ["大众向", "男频", "女频", "年轻职场人", "女性成长", "家庭观众", "青年学生", "成熟观众"],
-    "内容偏好": ["轻松解压", "情感共鸣", "爽感逆袭", "烧脑推理", "现实议题", "传统文化", "幻想冒险", "亲子陪伴"],
-  }},
-  roles: { title: "角色设定", groups: {
-    "身份原型": ["普通打工人", "落魄天才", "宗门弟子", "世家继承人", "市井小人物", "独立创业者", "刑侦人员", "医生", "记者", "古代女官", "退役军人", "非人主角"],
-    "人物关系": ["师徒", "同门", "欢喜冤家", "宿敌", "同事", "陌生搭档", "重组家庭", "代际关系", "契约关系", "隐秘亲缘"],
-  }},
-  era: { title: "时代背景", groups: {
-    "古代 / 历史": ["上古神话", "先秦", "秦汉", "魏晋南北朝", "隋唐", "宋元", "明清", "古代架空"],
-    "近现代": ["晚清变局", "民国", "20 世纪五六十年代", "改革开放初期", "20 世纪九十年代"],
-    "当代 / 未来": ["当代都市", "当代乡村", "近未来", "远未来", "星际文明", "末日之后"],
-    "架空 / 世界": ["仙侠世界", "武侠江湖", "平行时空", "东方奇幻", "西方奇幻", "蒸汽朋克", "赛博朋克"],
-  }},
-  hooks: { title: "核心看点", groups: {
-    "人物与成长": ["小人物逆袭", "隐藏身份", "天才被低估", "职业成长", "女性成长", "反英雄", "师徒传承"],
-    "关系与情感": ["双向救赎", "欢喜冤家", "破镜重圆", "先婚后爱", "代际和解", "信任与背叛", "宿敌合作"],
-    "情节与机制": ["身份错位", "时间循环", "重生改命", "穿越生存", "规则怪谈", "层层解谜", "极限求生", "金手指", "群像博弈"],
-    "表达与体验": ["反差喜剧", "职场讽刺", "温暖治愈", "现实困境", "东方美学", "热血竞技", "悬念递进"],
-  }},
-  style: { title: "画风", groups: {
-    "项目风格": ["沿用项目已确认风格"],
-    "动画": ["3D 国漫动画", "二维动画", "日系动画", "美式动画", "水墨动画", "定格动画", "像素风"],
-    "写实与美术": ["真人影视", "电影写实", "写实国风", "复古胶片", "黑白电影", "绘本插画", "轻写实", "赛博视觉"],
-  }},
-  structure: { title: "剧本结构", groups: {
-    "叙事方式": ["人物驱动", "单线叙事", "双线并行", "群像叙事", "单元故事", "时间循环", "非线性叙事"],
-  }},
-};
-
-const presets: { name: string; note: string; primary: string; secondary: string; era: string[]; hooks: string[]; roles: string[]; audience: string[] }[] = [
-  { name: "玄幻修仙逆袭", note: "小人物 · 身份反差", primary: "玄幻修仙", secondary: "喜剧", era: ["仙侠世界", "古代架空"], hooks: ["天才被低估", "职场讽刺"], roles: ["宗门弟子", "普通打工人"], audience: ["年轻职场人", "大众向"] },
-  { name: "现实职场成长", note: "现实处境 · 人物成长", primary: "都市现实", secondary: "剧情", era: ["当代都市"], hooks: ["职业成长", "现实困境"], roles: ["普通打工人", "同事"], audience: ["年轻职场人"] },
-  { name: "末世生存悬疑", note: "生存抉择 · 未知谜团", primary: "末世科幻", secondary: "悬疑推理", era: ["近未来", "末日之后"], hooks: ["极限求生", "层层解谜"], roles: ["陌生搭档"], audience: ["大众向", "烧脑推理"] },
-  { name: "非遗国潮视觉", note: "手艺传承 · 东方美学", primary: "都市现实", secondary: "历史传奇", era: ["当代乡村"], hooks: ["师徒传承", "东方美学"], roles: ["师徒"], audience: ["传统文化"] },
-  { name: "古代女频甜宠", note: "情感关系 · 命运相遇", primary: "古装言情", secondary: "喜剧", era: ["古代架空"], hooks: ["欢喜冤家", "双向救赎"], roles: ["古代女官", "世家继承人"], audience: ["女频", "情感共鸣"] },
-  { name: "规则怪谈悬疑", note: "规则试探 · 悬念递进", primary: "惊悚怪谈", secondary: "悬疑推理", era: ["平行时空"], hooks: ["规则怪谈", "悬念递进"], roles: ["市井小人物"], audience: ["烧脑推理"] },
-];
+import "./script-setter.css";
 
 type Props = { initial: ScriptSettings; onSave: (settings: ScriptSettings) => void | Promise<void>; onClose: () => void };
 const categoryKeys: SettingsCategory[] = ["audience", "roles", "era", "hooks", "style", "structure"];
+const icons = { audience: Target, roles: UserRound, era: Globe2, hooks: Sparkles, style: Palette, structure: Clapperboard };
+const presetKeys = ["genrePrimary", "genreSecondary", "audience", "roles", "era", "hooks"] as const;
+type PresetFields = Pick<ScriptSettings, typeof presetKeys[number]>;
+const presetFields = (preset: typeof presets[number]): PresetFields => ({
+  genrePrimary: preset.primary, genreSecondary: preset.secondary,
+  audience: [...preset.audience], roles: [...preset.roles], era: [...preset.era], hooks: [...preset.hooks],
+});
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const whole = (value: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER) =>
+  Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? Math.round(value) : minimum));
+const normalize = (draft: ScriptSettings): ScriptSettings => ({
+  ...draft, episodeCount: draft.mode === "single" ? 1 : whole(draft.episodeCount, 2, 100),
+  durationSeconds: whole(draft.durationSeconds, 15),
+});
+const isConfirm = (event: KeyboardEvent<HTMLInputElement>, composing: boolean) =>
+  event.key === "Enter" && !composing && !event.nativeEvent.isComposing && event.keyCode !== 229;
 
 export function ScriptSetter({ initial, onSave, onClose }: Props) {
-  const [draft, setDraft] = useState<ScriptSettings>(() => structuredClone(initial));
+  const [draft, setDraft] = useState<ScriptSettings>(() => normalize(structuredClone(initial)));
   const [open, setOpen] = useState<SettingsCategory | null>(null);
   const [search, setSearch] = useState("");
-  const [custom, setCustom] = useState("");
-  const [customPrimary, setCustomPrimary] = useState("");
-  const [customSecondary, setCustomSecondary] = useState("");
+  const [customGenres, setCustomGenres] = useState({ genrePrimary: "", genreSecondary: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [showPresets, setShowPresets] = useState(true);
+  const [showPresets, setShowPresets] = useState(() => typeof window === "undefined" || window.innerWidth > 760);
+  const [undo, setUndo] = useState<{ before: PresetFields; applied: PresetFields } | null>(null);
+  const saving = useRef(false);
   const composing = useRef(false);
-  const update = (patch: Partial<ScriptSettings>) => setDraft((value) => ({ ...value, ...patch }));
-  const addCustom = (key: SettingsCategory) => {
-    if (!custom.trim()) return;
-    update({ [key]: addChoice(draft[key], custom) });
-    setCustom("");
+  const mainRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const update = (patch: Partial<ScriptSettings>) => setDraft(value => ({ ...value, ...patch }));
+  const activePreset = presets.findIndex(preset => presetKeys.every(key => same(draft[key], presetFields(preset)[key])));
+  const applyPreset = (preset: typeof presets[number]) => {
+    const applied = presetFields(preset);
+    const before = Object.fromEntries(presetKeys.map(key => [key, structuredClone(draft[key])])) as PresetFields;
+    setUndo({ before, applied });
+    update(applied);
+  };
+  const undoPreset = () => {
+    if (!undo) return;
+    // A later manual change wins over undo, including edits to preset-controlled fields.
+    const patch = Object.fromEntries(presetKeys.filter(key => same(draft[key], undo.applied[key])).map(key => [key, undo.before[key]]));
+    update(patch);
+    setUndo(null);
+  };
+  const addCustom = () => {
+    if (!open || !search.trim() || composing.current) return;
+    update({ [open]: addChoice(draft[open], search) });
     setSearch("");
+    searchRef.current?.focus();
   };
   const toggle = (key: SettingsCategory, choice: string) => update({
     [key]: draft[key].includes(choice) ? removeChoice(draft[key], choice) : addChoice(draft[key], choice),
   });
-  const applyPreset = (preset: typeof presets[number]) => update({
-    genrePrimary: preset.primary, genreSecondary: preset.secondary, era: preset.era,
-    hooks: preset.hooks, roles: preset.roles, audience: preset.audience,
-  });
-  const save = async () => {
-    setBusy(true); setError("");
-    try { await onSave(draft); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败，请重试"); }
-    finally { setBusy(false); }
+  const addGenre = (key: "genrePrimary" | "genreSecondary") => {
+    const value = customGenres[key].trim();
+    if (!value || composing.current) return;
+    update({ [key]: value });
+    setCustomGenres(value => ({ ...value, [key]: "" }));
   };
+  const save = async () => {
+    if (saving.current) return;
+    saving.current = true; setBusy(true); setError("");
+    try { await onSave(normalize(structuredClone(draft))); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败，请重试"); }
+    finally { saving.current = false; setBusy(false); }
+  };
+  const close = () => { if (!saving.current) onClose(); };
+  const closeDrawer = () => { setDraft(normalize); setOpen(null); composing.current = false; };
+  const genreList = (field: "genrePrimary" | "genreSecondary") => {
+    const secondary = field === "genreSecondary";
+    const options = [...new Set([...(secondary ? ["不融合"] : []), ...genres, draft[field]].filter(Boolean))];
+    return <div className={"ns-genre-column" + (secondary ? " ns-secondary-column" : "")}>
+      <div className="ns-genres" aria-label={secondary ? "融合题材" : "主题材"}>{options.map(genre => <button key={genre} type="button" aria-label={genre} aria-pressed={draft[field] === genre} onClick={() => update({ [field]: genre })}>
+        <span aria-hidden="true" className="ns-genre-icon">{genre === "不融合" ? "−" : genre.slice(0, 1)}</span><span>{genre}</span>
+      </button>)}</div>
+      <div className="ns-custom-genre"><input aria-label={secondary ? "自定义融合题材" : "自定义主题材"} placeholder={secondary ? "自定义融合" : "自定义题材"} value={customGenres[field]} onChange={event => setCustomGenres(value => ({ ...value, [field]: event.target.value }))}
+        onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
+        onKeyDown={event => { if (isConfirm(event, composing.current)) { event.preventDefault(); addGenre(field); } }} />
+        <button type="button" aria-label={secondary ? "添加自定义融合题材" : "添加自定义主题材"} onClick={() => addGenre(field)}>＋</button>
+      </div>
+    </div>;
+  };
+  const visibleGroups = open ? Object.entries(catalog[open].groups).map(([name, choices]) => [name, choices.filter(choice => choice.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))] as const).filter(([, choices]) => choices.length > 0) : [];
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3" role="presentation">
-      <section role="dialog" aria-modal="true" aria-label="剧本设定器" className="flex max-h-[92vh] w-full max-w-[1180px] overflow-hidden rounded-xl border border-white/10 bg-[#14161A] text-[#ECEFF2] shadow-2xl">
-        {showPresets && <aside aria-label="创作预设" className="hidden w-52 shrink-0 overflow-y-auto border-r border-white/10 bg-[#101216] p-4 md:block">
-          <h2 className="text-base font-semibold">创作预设</h2>
-          <p className="mt-1 text-xs text-white/50">选择起点，所有设定都可调整</p>
-          <div className="mt-5 space-y-2">{presets.map((preset, index) =>
-            <button key={preset.name} type="button" onClick={() => applyPreset(preset)} className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-sm hover:border-[#E5FF5C]/50 hover:bg-[#E5FF5C]/5">
-              <span className="mr-2 text-[#E5FF5C]">{String(index + 1).padStart(2, "0")}</span>{preset.name}
-              <small className="block pl-7 text-white/45">{preset.note}</small>
-            </button>)}</div>
-          <p className="mt-5 text-xs leading-5 text-white/45">预设只是创作起点，可继续调整。</p>
-        </aside>}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-3 border-b border-white/10 px-6 py-4">
-            <h2 className="text-lg font-semibold">剧本设定器</h2>
-            <span className="rounded bg-[#E5FF5C]/10 px-2 py-1 text-xs text-[#E5FF5C]">自定义创作</span>
-            <button className="ml-auto rounded p-1 hover:bg-white/10" onClick={onClose} aria-label="关闭剧本设定器"><X size={18} /></button>
-          </header>
-          <div className="min-h-0 space-y-5 overflow-y-auto p-6">
-            <div className="grid gap-3 lg:grid-cols-[1fr_180px_1fr]">
-              {(["genrePrimary", "genreSecondary"] as const).map((field, index) => <div key={field} className={index ? "lg:col-start-3" : ""}>
-                <h3 className="mb-2 text-xs font-medium text-white/55">{index ? "融合题材" : "主题材"}</h3>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(index ? ["不融合", ...genres] : genres).map((genre) =>
-                    <button key={genre} aria-pressed={draft[field] === genre} onClick={() => update({ [field]: genre })} className={"rounded border px-2 py-1.5 text-left text-xs " + (draft[field] === genre ? "border-[#E5FF5C] bg-[#E5FF5C]/10 text-[#E5FF5C]" : "border-white/10 text-white/75 hover:border-white/30")}>{genre}</button>)}
-                </div>
-                <div className="mt-2 flex gap-1"><input aria-label={index ? "自定义融合题材" : "自定义主题材"} value={index ? customSecondary : customPrimary} onChange={(event) => index ? setCustomSecondary(event.target.value) : setCustomPrimary(event.target.value)} className="min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-2 py-1.5 text-xs" placeholder="自定义题材" />
-                  <button aria-label={index ? "添加自定义融合题材" : "添加自定义主题材"} onClick={() => { const value = (index ? customSecondary : customPrimary).trim(); if (value) update({ [field]: value }); }} className="rounded border border-white/10 px-2 text-[#E5FF5C]">＋</button></div>
-              </div>)}
-              <div className="row-start-2 flex items-center justify-center rounded border border-white/10 bg-[#0D0E10] p-3 text-center text-xs text-[#E5FF5C] lg:col-start-2 lg:row-start-1">
-                {draft.genrePrimary}<br />{draft.genreSecondary === "不融合" ? "单题材" : "× " + draft.genreSecondary}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">{categoryKeys.map((key) => <button key={key} aria-label={"编辑" + catalog[key].title} onClick={() => { setOpen(open === key ? null : key); setSearch(""); setCustom(""); }} className={"rounded-lg border p-3 text-left " + (open === key ? "border-[#E5FF5C]/60 bg-[#E5FF5C]/5" : "border-white/10 bg-white/[0.025]")}>
-              <span className="flex items-center justify-between text-sm font-medium">{catalog[key].title}<ChevronDown size={14} /></span>
-              <small className="mt-1 block truncate text-white/50">{key === "structure" ? (draft.mode === "single" ? "单集" : String(draft.episodeCount) + " 集") + " · " + String(draft.durationSeconds) + " 秒" : draft[key].join("、") || "选择或手动填写"}</small>
-            </button>)}</div>
-            {open && <section className="rounded-lg border border-white/10 bg-[#0D0E10] p-4">
-              <h3 className="mb-3 font-medium">{catalog[open].title}</h3>
-              {open === "structure" && <div className="mb-4 flex flex-wrap items-end gap-3">
-                <button aria-pressed={draft.mode === "series"} onClick={() => update({ mode: "series" })} className={"rounded border px-3 py-2 text-xs " + (draft.mode === "series" ? "border-[#E5FF5C] text-[#E5FF5C]" : "border-white/20")}>连续短剧</button>
-                <button aria-pressed={draft.mode === "single"} onClick={() => update({ mode: "single" })} className={"rounded border px-3 py-2 text-xs " + (draft.mode === "single" ? "border-[#E5FF5C] text-[#E5FF5C]" : "border-white/20")}>单集 / 短片</button>
-                {draft.mode === "series" && <label className="text-xs">计划集数<input aria-label="计划集数" type="number" min={2} max={200} value={draft.episodeCount} onChange={(event) => update({ episodeCount: Math.max(2, Number(event.target.value) || 2) })} className="ml-2 w-20 rounded border border-white/20 bg-black/20 p-2" /></label>}
-                <label className="text-xs">目标时长 / 秒<input aria-label="目标时长 / 秒" type="number" min={15} value={draft.durationSeconds} onChange={(event) => update({ durationSeconds: Math.max(15, Number(event.target.value) || 15) })} className="ml-2 w-24 rounded border border-white/20 bg-black/20 p-2" /></label>
+  return <Dialog open onOpenChange={value => { if (!value) close(); }}>
+    <DialogContent className="ns-modal" overlayClassName="ns-backdrop" showCloseButton={false} aria-label="剧本设定器">
+      {showPresets && <aside className="ns-presets" aria-label="创作预设">
+        <h2>创作预设</h2><p>选择起点，所有设定都可调整</p>
+        <div className="ns-preset-list">{presets.map((preset, index) => <button type="button" key={preset.name} aria-pressed={activePreset === index} onClick={() => applyPreset(preset)} disabled={busy}>
+          <span className="ns-preset-number">{index + 1}</span>{preset.name}<small>{preset.note}</small>
+        </button>)}</div>
+        <p className="ns-preset-note">预设是起点，所有设定都可调整。<br />切换会保留你的故事想法与篇幅。</p>
+      </aside>}
+      <div className="ns-main" ref={mainRef}>
+        <header className="ns-header"><DialogTitle>剧本设定器</DialogTitle><span className="ns-badge">{activePreset >= 0 ? presets[activePreset].name : "自定义创作"}</span>
+          <button type="button" className="ns-close" aria-label="关闭剧本设定器" disabled={busy} onClick={close}><X size={19} /></button>
+        </header>
+        <DialogDescription className="sr-only">选择创作预设，融合题材，精调六项设定并保存你的故事想法。</DialogDescription>
+        <div className="ns-body"><fieldset disabled={busy} className="ns-fields">
+          <div className="ns-genre-heading"><span>主题材</span><span>两种题材，碰撞出新的故事</span><span>融合题材</span></div>
+          <div className="ns-genre-board">{genreList("genrePrimary")}<div className="ns-fusion-container">
+            <div className="ns-fusion" aria-hidden="true"><div className="ns-disc"><strong>{draft.genrePrimary}</strong></div>{draft.genreSecondary !== "不融合" && <div className="ns-disc ns-disc-secondary"><strong>{draft.genreSecondary}</strong></div>}</div>
+            <p className="ns-fusion-note"><b>{draft.genrePrimary}{draft.genreSecondary !== "不融合" && " × " + draft.genreSecondary}</b><small>{draft.genreSecondary === "不融合" ? "围绕单一题材展开" : "保留主故事类型，融入第二题材的表达"}</small></p>
+          </div>{genreList("genreSecondary")}</div>
+          <div className="ns-tiles">{categoryKeys.map(key => {
+            const Icon = icons[key];
+            const summary = key === "structure" ? (draft.mode === "single" ? "单集" : `${draft.episodeCount} 集`) + ` · ${draft.durationSeconds} 秒` : draft[key].join("、") || "暂未指定";
+            return <button type="button" key={key} aria-label={"编辑" + catalog[key].title} aria-haspopup="dialog" aria-expanded={open === key} onClick={event => { triggerRef.current = event.currentTarget; setSearch(""); composing.current = false; setOpen(key); }}>
+              <Icon size={19} aria-hidden="true" /><span className="ns-tile-caption">{catalog[key].title}</span><span className="ns-tile-value" title={summary}>{summary}</span>
+            </button>;
+          })}</div>
+          <div className="ns-idea"><label htmlFor="ns-story-idea">故事的种子 <span> / 一句话，或一段自由的想象</span></label><textarea id="ns-story-idea" aria-label="故事想法" value={draft.idea} onChange={event => update({ idea: event.target.value })} rows={2} placeholder="你想讲述怎样的故事？" /></div>
+        </fieldset></div>
+        <footer className="ns-footer"><label className="ns-toggle"><input type="checkbox" checked={showPresets} onChange={event => setShowPresets(event.target.checked)} />显示创作预设</label>
+          {undo && <button type="button" className="ns-undo" disabled={busy} onClick={undoPreset}>撤销预设</button>}
+          {error && <span role="alert" className="ns-error">{error}</span>}
+          <div className="ns-actions"><button type="button" disabled={busy} onClick={close}>取消</button><button type="button" className="ns-primary" disabled={busy} aria-label="保存创作设定" onClick={() => void save()}>{busy ? "保存中…" : "保存创作设定"}<ArrowRight size={14} /></button></div>
+        </footer>
+        <Dialog open={open !== null} onOpenChange={value => { if (!value) closeDrawer(); }}>
+          {open && <DialogPrimitive.Portal container={mainRef.current}>
+            <DialogPrimitive.Backdrop className="ns-drawer-shade" />
+            <DialogPrimitive.Popup className="ns-drawer" aria-label={"编辑" + catalog[open].title} initialFocus={searchRef} finalFocus={triggerRef}>
+              <header className="ns-drawer-header"><DialogTitle><span className="sr-only">编辑</span>{catalog[open].title}</DialogTitle><button type="button" aria-label={"关闭" + catalog[open].title} onClick={closeDrawer}><X size={18} /></button></header>
+              <DialogDescription className="ns-drawer-hint">可以多选，也可以写下自己的设定，让故事保留更多可能。</DialogDescription>
+              {open === "structure" && <div className="ns-structure">
+                <div className="ns-mode"><button type="button" aria-pressed={draft.mode === "series"} onClick={() => update({ mode: "series", episodeCount: whole(draft.episodeCount, 2, 100) })}>连续短剧</button><button type="button" aria-pressed={draft.mode === "single"} onClick={() => update({ mode: "single", episodeCount: 1 })}>单集 / 短片</button></div>
+                {draft.mode === "series" && <label>计划集数<input aria-label="计划集数" type="number" min={2} max={100} step={1} value={draft.episodeCount || ""} onChange={event => update({ episodeCount: Number(event.target.value) })} onBlur={() => update({ episodeCount: whole(draft.episodeCount, 2, 100) })} /></label>}
+                <label>目标时长 / 秒<input aria-label="目标时长 / 秒" type="number" min={15} step={1} value={draft.durationSeconds || ""} onChange={event => update({ durationSeconds: Number(event.target.value) })} onBlur={() => update({ durationSeconds: whole(draft.durationSeconds, 15) })} /></label>
               </div>}
-              <label className="flex items-center gap-2 rounded border border-white/10 bg-white/[0.025] px-3 py-2"><Search size={14} className="text-white/40" /><input type="search" aria-label={"搜索" + catalog[open].title} value={search} onChange={(event) => { setSearch(event.target.value); setCustom(event.target.value); }} placeholder="搜索候选项，找不到也可以自己填…" className="w-full bg-transparent text-sm outline-none" /></label>
-              <div className="mt-3 max-h-44 space-y-3 overflow-y-auto">{Object.entries(catalog[open].groups).map(([group, choices]) => {
-                const visible = choices.filter((choice) => choice.includes(search.trim()));
-                return visible.length ? <div key={group}><h4 className="mb-1 text-xs text-white/45">{group}</h4><div className="flex flex-wrap gap-1.5">{visible.map((choice) => <button key={choice} aria-pressed={draft[open].includes(choice)} onClick={() => toggle(open, choice)} className={"rounded-full border px-2.5 py-1 text-xs " + (draft[open].includes(choice) ? "border-[#E5FF5C] text-[#E5FF5C]" : "border-white/15 hover:border-white/35")}>{choice}</button>)}</div></div> : null;
-              })}</div>
-              <div className="mt-3 flex gap-2"><input aria-label={"自定义" + catalog[open].title} value={custom} onChange={(event) => setCustom(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
-                if (event.key !== "Enter" || composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
-                event.preventDefault();
-                addCustom(open);
-              }} className="min-w-0 flex-1 rounded border border-white/10 bg-white/[0.025] px-3 py-2 text-sm" placeholder="手动填写，回车添加" /><button aria-label={"添加自定义" + catalog[open].title} onClick={() => addCustom(open)} className="rounded bg-[#E5FF5C] px-3 text-xs font-semibold text-black">＋ 添加</button></div>
-              <div className="mt-3 flex flex-wrap gap-1.5">{draft[open].map((choice) => <button key={choice} aria-label={"移除" + choice} onClick={() => update({ [open]: removeChoice(draft[open], choice) })} className="flex items-center gap-1 rounded-full bg-[#E5FF5C]/10 px-2.5 py-1 text-xs text-[#E5FF5C]">{choice}<X size={11} /></button>)}</div>
-            </section>}
-            <label className="block text-xs text-white/60">故事想法<textarea aria-label="故事想法" value={draft.idea} onChange={(event) => update({ idea: event.target.value })} rows={3} placeholder="一句话描述你的故事（可稍后补充）" className="mt-2 w-full resize-y rounded border border-white/10 bg-black/20 p-3 text-sm text-white" /></label>
-          </div>
-          <footer className="flex items-center gap-3 border-t border-white/10 px-6 py-4">
-            <label className="mr-auto flex items-center gap-2 text-xs text-white/50"><input type="checkbox" checked={showPresets} onChange={(event) => setShowPresets(event.target.checked)} />显示创作预设</label>
-            {error && <span role="alert" className="text-xs text-red-400">{error}</span>}
-            <button onClick={onClose} className="rounded px-3 py-2 text-sm text-white/60">取消</button>
-            <button disabled={busy} onClick={() => void save()} className="inline-flex items-center gap-1 rounded bg-[#E5FF5C] px-4 py-2 text-sm font-semibold text-black disabled:opacity-50"><Check size={15} />保存创作设定</button>
-          </footer>
-        </div>
-      </section>
-    </div>
-  );
+              <label className="ns-search"><Search size={16} aria-hidden="true" /><input ref={searchRef} type="search" aria-label={"搜索或自定义" + catalog[open].title} value={search} placeholder="搜索选项，或直接输入自己的设定" onChange={event => setSearch(event.target.value)}
+                onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
+                onKeyDown={event => { if (isConfirm(event, composing.current)) { event.preventDefault(); addCustom(); } }} /></label>
+              {search.trim() && <button type="button" className="ns-add-custom" aria-label={"添加自定义" + catalog[open].title} onClick={addCustom}>＋ 使用「{search.trim()}」</button>}
+              <div className="ns-options">{visibleGroups.length ? visibleGroups.map(([group, choices]) => <section key={group}><h3>{group}</h3><div className="ns-chips">{choices.map(choice => <button type="button" key={choice} aria-pressed={draft[open].includes(choice)} onClick={() => toggle(open, choice)}>{choice}</button>)}</div></section>) : <p className="ns-empty">没有匹配项，可以使用上方输入添加自己的设定。</p>}</div>
+              <div className="ns-picked"><p>已选 {draft[open].length} 项 · 点击可移除</p><div className="ns-chips">{draft[open].map(choice => <button type="button" key={choice} aria-label={"移除" + choice} onClick={() => update({ [open]: removeChoice(draft[open], choice) })}>{choice}<X size={11} /></button>)}</div>{!draft[open].length && <small>暂不指定，留给创作更多可能。</small>}</div>
+              <button type="button" className="ns-primary ns-done" onClick={closeDrawer}>完成设置</button>
+            </DialogPrimitive.Popup>
+          </DialogPrimitive.Portal>}
+        </Dialog>
+      </div>
+    </DialogContent>
+  </Dialog>;
 }
