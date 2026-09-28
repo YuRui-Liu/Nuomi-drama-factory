@@ -131,7 +131,7 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 
 ## 任务 3：真实创作任务与逐集续写
 
-执行状态：实现与两阶段审查完成（def126a、840a5bb、4e3d50d）。后端 45 项、前端 30 项通过；真实生成已验证大纲与梗概，剩余阶段在隔离数据上续跑，模型连接中断不等于验收完成。
+执行状态：实现与两阶段审查完成（def126a、840a5bb、4e3d50d）。后端 45 项、前端 30 项通过；真实六阶段已完成并人工读样，未默认生成后续集；结构读样发现的问题已补提示词，补充复验进行中。证据位于 /private/tmp/nuomi-generation-corrected。
 
 **文件：** generation.py、prompts.py、runner、runtime 模型/设置、registry；tests/script_creation/test_generation.py、tests/test_task_script_creation_runner.py。
 
@@ -146,7 +146,7 @@ assert adopted_snapshot.revision_id == originally_adopted_revision
 
 ## 任务 4：候选审阅与版本历史
 
-执行状态：已实现至 33a9a56，规格审查中修复保存后引用版本、任务恢复及继续调整范围三项接线问题。尚未通过最终质量审查。候选采纳只更新当前草稿，制作采用指针仅由任务 7 交接更新。
+执行状态：已完成至 8f5badc，规格与质量审查均通过。后端 62 项、前端 41 项及类型检查通过；实际浏览器验证真实选段改稿、切换面板恢复、精确单处采纳、历史恢复新修订。候选采纳只更新当前草稿，制作采用指针仅由任务 7 交接更新。跨块或多段场次继续调整保持原始授权范围，不因整文补丁存储形式扩围。
 
 **文件：** proposals.py、proposal-review.tsx、revision-history.tsx；tests/script_creation/test_proposals.py；前端对应测试。
 
@@ -164,6 +164,8 @@ assert all(item.status == "pending" for item in rejected_batch)
 ```
 
 ## 任务 5：关联检查、证据与有意安排
+
+执行状态：进行中，由独立子代理负责真实检查任务、证据校验、目标选择与关联候选 UI。
 
 **文件：** consistency.py、issue-list.tsx；tests/script_creation/test_consistency.py；前端对应测试。
 
