@@ -41,7 +41,7 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateTargetId, setCandidateTargetId] = useState<string | null>(null);
   const [focusEvidence, setFocusEvidence] = useState<ConsistencyEvidence | null>(null);
-  const [selection, setSelection] = useState<{ text: string; start: number; end: number } | null>(null);
+  const [selection, setSelection] = useState<{ text: string; start: number; end: number; documentId: string; revisionId: string; markdown: string } | null>(null);
   const [, redraw] = useState(0);
   const imports = useEpisodeImports(project);
   const recovery = useMemo(() => readRecovery(project), [project]);
@@ -114,6 +114,9 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
   });
   const current = savedDocuments.find((doc) => doc.id === selectedId);
   const draft = current && manager.get(current.id);
+  const validSelection = selection && current && draft && selection.documentId === current.id &&
+    selection.revisionId === current.current_revision_id && selection.markdown === draft.markdown &&
+    Array.from(draft.markdown).slice(selection.start, selection.end).join("") === selection.text ? selection : null;
   const allSaved = manager.all().every((item) => item.status === "saved");
   const availableImports = imports.data?.data.items ?? [];
   const nextEpisodeNumber = Math.max(0, ...documents.filter((doc) => doc.kind === "episode_script").map((doc) => doc.episode_number ?? 0)) + 1;
@@ -254,7 +257,7 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
           <span className="text-white/50">当前草稿 {current.current_revision_id.slice(0, 8)} · 已交接 {current.adopted_revision_id?.slice(0, 8) ?? "无"}</span>
           <button disabled={!allSaved || busy} onClick={() => setHandoffOpen(true)} className="rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>
         </div>}
-        {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={setSelection} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
+        {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={(value) => setSelection(value && current && draft ? { ...value, documentId: current.id, revisionId: current.current_revision_id, markdown: draft.markdown } : null)} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
           <div className="mb-5 flex size-16 items-center justify-center rounded-2xl border border-[#E5FF5C]/20 bg-[#E5FF5C]/5 text-[#E5FF5C]"><FileText size={30} /></div>
           <h2 className="text-xl font-semibold">你的下一部故事，从这里开始。</h2><p className="mt-3 text-sm leading-7 text-white/45">从创作预设找到方向，或写下一个想法。设定、大纲和正文都会保存在这里。</p>
           <button onClick={() => setSetterOpen(true)} className="mt-6 rounded bg-[#E5FF5C] px-5 py-2.5 text-sm font-semibold text-black">从创作预设开始</button>
@@ -276,12 +279,12 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
           onNavigate={(evidence) => { setSelectedId(evidence.document_id); setFocusEvidence(evidence); }}
           onReview={(documentId) => { setSelectedId(documentId); setRightTab("review"); }} />}
         {rightTab === "review" && current && <ProposalReview key={current.id} project={project} document={current} documents={savedDocuments}
-          saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} selection={selection} instruction={instruction}
+          saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} selection={validSelection} instruction={instruction}
           candidateId={candidateTargetId === current.id ? candidateId : null} onApplied={refresh} />}
         {rightTab === "assets" && <EntityPanel key={current?.id ?? "none"} project={project} document={current ?? null} documents={savedDocuments} allSaved={manager.all().every((item) => item.status === "saved")} />}
         {rightTab === "history" && current && <RevisionHistory key={current.id} project={project} document={current}
           saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} onApplied={refresh} />}
-        {rightTab === "generation" && selection?.text && <div className="mx-4 mb-2 rounded border-l-2 border-[#E5FF5C] bg-black/20 p-2 text-xs leading-5 text-white/65">当前选段：“{selection.text}”<span className="block text-white/35">字符 {selection.start}–{selection.end}</span></div>}
+        {rightTab === "generation" && validSelection?.text && <div className="mx-4 mb-2 rounded border-l-2 border-[#E5FF5C] bg-black/20 p-2 text-xs leading-5 text-white/65">当前选段：“{validSelection.text}”<span className="block text-white/35">字符 {validSelection.start}–{validSelection.end}</span></div>}
         {rightTab === "generation" && <div className="border-t border-white/10 p-4"><textarea aria-label="创作要求" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="写下创作要求…" rows={3} className="w-full resize-none rounded border border-white/10 bg-[#0D0E10] p-3 text-xs leading-5 text-white outline-none" /></div>}
       </aside>
     </main>

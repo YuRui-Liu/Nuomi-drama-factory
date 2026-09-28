@@ -26,7 +26,8 @@ export function DocumentEditor({ project, draft, manager, onSelection, focusEvid
     : "heading-" + draft.document.id + "-" + Array.from(draft.markdown.slice(0, offset)).length;
 
   useEffect(() => { if (!composing.current) setValue(draft.markdown); }, [draft.markdown]);
-  useEffect(() => { setServer(null); setCompareError(""); onSelection(null); }, [draft.document.id]);
+  useEffect(() => { setServer(null); setCompareError(""); }, [draft.document.id]);
+  useEffect(() => { onSelection(null); }, [draft.document.id, draft.document.current_revision_id, draft.markdown]);
 
   useEffect(() => {
     if (!focusEvidence || focusEvidence.document_id !== draft.document.id ||

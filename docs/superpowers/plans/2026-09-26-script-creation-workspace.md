@@ -192,21 +192,23 @@ assert all(item.status == "pending" for item in rejected_batch)
 
 ## 任务 7：采用快照与幂等制作交接
 
-执行状态：进行中，由独立子代理负责原子快照、来源写入、持久派发恢复及交接界面。
+执行状态：已完成。规格审查于 atade7e8e 通过；前端界面提交 e6cc0fe、99a782f；质量审查于 45145ad 通过（相关测试 224 项，独立复核 43 项）。实际单集交接确认后来源更新，场次校对完成 1 场、validation passed。交接不会自动激活媒体生成；独立图谱索引因本地 OllamaEmbedding 未配置失败，不属于剧本交接校验结果。
 
 **文件：** handoff.py、episode_source_store.py、screenplay runner、handoff-dialog.tsx、单集 script 路由；tests/script_creation/test_handoff.py、tests/test_task_screenplay_semantics_runner.py。
 
-- [ ] 测试快照不可变、重复点击、来源版本冲突、派发失败重试、保存失败禁交接、旧任务完成不成为新版当前结果。
-- [ ] 运行 `uv run pytest tests/script_creation/test_handoff.py tests/test_task_screenplay_semantics_runner.py -q` 验证先失败。
-- [ ] 冻结正文、相关设计修订、资产关联、检查确认及用户更新范围。快照唯一键绑定 project/episode/revision/ref hash/action。
-- [ ] 交接状态：prepared → source_written → dispatched → completed；另含 failed 与 needs_rebase。记录每步结果，重试从最近已完成步骤继续。
-- [ ] 通过 EpisodeSourceStore.upsert_sources 的 expected_revision 更新来源；在来源事务内记录 handoff_id，解决“来源写成功、交接状态写失败”的重放窗口，不能先写文件再猜测成功。
-- [ ] 采用事务后以 outbox 派发既有场次校对，任务 envelope 带 snapshot_id/source_revision。旧任务可以保留归档结果，但激活必须校验当前来源版本。
-- [ ] 新旧差异展示确定变化与推测影响；无法匹配的场次要求重新校对，未更新受影响媒体标 stale。仅更新文字不调用媒体生成。
-- [ ] 测试覆盖故障注入在来源提交后、派发前、派发后；重试不创建重复来源或任务。
-- [ ] 测试通过后提交 `feat(script-creation): hand off immutable screenplay snapshots`。
+- [x] 测试快照不可变、重复点击、来源版本冲突、派发失败重试、保存失败禁交接、旧任务完成不成为新版当前结果。
+- [x] 运行 `uv run pytest tests/script_creation/test_handoff.py tests/test_task_screenplay_semantics_runner.py -q` 验证先失败。
+- [x] 冻结正文、相关设计修订、资产关联、检查确认及用户更新范围。快照唯一键绑定 project/episode/revision/ref hash/action。
+- [x] 交接状态：prepared → source_written → dispatched → completed；另含 failed 与 needs_rebase。记录每步结果，重试从最近已完成步骤继续。
+- [x] 通过 EpisodeSourceStore.upsert_sources 的 expected_revision 更新来源；在来源事务内记录 handoff_id，解决“来源写成功、交接状态写失败”的重放窗口，不能先写文件再猜测成功。
+- [x] 采用事务后以 outbox 派发既有场次校对，任务 envelope 带 snapshot_id/source_revision。旧任务可以保留归档结果，但激活必须校验当前来源版本。
+- [x] 新旧差异展示确定变化与推测影响；无法匹配的场次要求重新校对，未更新受影响媒体标 stale。仅更新文字不调用媒体生成。
+- [x] 测试覆盖故障注入在来源提交后、派发前、派发后；重试不创建重复来源或任务。
+- [x] 测试通过后提交 `feat(script-creation): hand off immutable screenplay snapshots`。
 
 ## 任务 8：集成验收与交付
+
+执行状态：实现与确定性测试已完成，待规格和质量复审；不得在复审前标为交付完成。真实六阶段生成的上下文与产出证据已保存在 `/private/tmp/nuomi-generation-corrected/ACCEPTANCE.md`；本任务继续补前端边界与自动化验收。
 
 **文件：** tests/acceptance/test_script_creation_workflow.py；前端工作台集成测试；docs/cookbook/creation/ 下新增创作使用说明。
 

@@ -3,6 +3,7 @@ import { Check, Clock3, Loader2, Pause, RotateCcw, Sparkles } from "lucide-react
 import { scriptCreationApi } from "./api";
 import type { DraftManager } from "./draft-manager";
 import type { GenerationCandidate, GenerationQueued, GenerationRun, ScriptDocument, ScriptSettings } from "./types";
+import { episodeScriptTemplate } from "./templates";
 
 const textError = (error: unknown) => error instanceof Error ? error.message : "生成请求失败，请检查模型设置并重试";
 const active = (status?: string) => status === "pending" || status === "running";
@@ -21,8 +22,18 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
   const brief = documents.find((doc) => doc.kind === "brief");
   const unsaved = manager.all().some((draft) => draft.status !== "saved");
   const priorScripts = documents.filter((doc) => doc.kind === "episode_script" && doc.episode_number != null);
-  const source = selected?.kind === "episode_script" ? selected : priorScripts.reduce<ScriptDocument | undefined>(
-    (best, doc) => !best || (doc.episode_number ?? 0) > (best.episode_number ?? 0) ? doc : best, undefined);
+  const authored = (doc: ScriptDocument) => {
+    const content = doc.revision.markdown.trim();
+    if (!content) return false;
+    const scaffold = episodeScriptTemplate("series", doc.episode_number ?? 1).markdown;
+    const lines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
+    return lines(content) !== lines(scaffold);
+  };
+  let contiguous = 0;
+  while (priorScripts.some((doc) => doc.episode_number === contiguous + 1 && authored(doc))) contiguous++;
+  const source = selected?.kind === "episode_script"
+    ? (selected.episode_number != null && selected.episode_number <= contiguous && authored(selected) ? selected : undefined)
+    : priorScripts.find((doc) => doc.episode_number === contiguous && authored(doc));
   const targetNumber = (source?.episode_number ?? 0) + 1;
   const canContinue = settings.mode === "series" && !!source && targetNumber <= settings.episodeCount &&
     documents.some((doc) => doc.kind === "outline") && documents.some((doc) => doc.kind === "episode_synopsis");

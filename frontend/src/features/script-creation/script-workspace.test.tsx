@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -374,4 +374,33 @@ describe("ScriptWorkspace adopted revision", () => {
     await user.click(screen.getByRole("button", { name: "关闭交接窗口" }));
     await waitFor(() => expect(screen.getByText(/已交接 r1/)).toBeInTheDocument());
   });
+});
+
+
+it("clears a selected text range when restoring a new document revision", async () => {
+  const user = userEvent.setup();
+  let script = doc("script", "episode_script", "旧句甲乙");
+  script.current_revision_id = "r2"; script.revision.id = "r2";
+  const prior = { ...script.revision, id: "r1", markdown: "替代正文" };
+  server.use(
+    http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [script] })),
+    http.get(base + "/documents/script/revisions", () => HttpResponse.json({ ok: true, data: [prior, script.revision] })),
+    http.post(base + "/documents/script/restore", () => {
+      script = doc("script", "episode_script", "替代正文");
+      script.current_revision_id = "r3"; script.revision.id = "r3";
+      return HttpResponse.json({ ok: true, data: script });
+    }),
+  );
+  renderWorkspace();
+  await screen.findByRole("button", { name: "第 1 集" });
+  await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+  const editor = screen.getByRole("textbox", { name: "文档 Markdown" }) as HTMLTextAreaElement;
+  editor.setSelectionRange(0, 2); fireEvent.select(editor);
+  expect(screen.getByText(/当前选段：“旧句”/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "版本历史" }));
+  await user.click(await screen.findByRole("button", { name: /r1/ }));
+  await user.click(screen.getByRole("button", { name: "恢复所选版本" }));
+  await screen.findByText(/当前草稿 r3/);
+  await user.click(screen.getByRole("button", { name: "候选审阅" }));
+  expect(screen.getByRole("button", { name: "生成改稿候选" })).toBeDisabled();
 });

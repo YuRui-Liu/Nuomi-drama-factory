@@ -79,3 +79,14 @@ it("keeps the checked episode visible while navigating to a source document", as
     onNavigate={vi.fn()} onReview={vi.fn()} />);
   expect(screen.getByText("知情顺序冲突")).toBeInTheDocument();
 });
+
+
+it("hides a model supplied hypothetical quote on an actual run", async () => {
+  api.listConsistencyRuns.mockResolvedValue([{ ...run, issues: [{ ...run.issues[0], hypothetical_quote: "未采纳的文案" }] }]);
+  render(<IssueList project="demo" documents={[people, episode]} selected={episode} saved
+    onNavigate={vi.fn()} onReview={vi.fn()} />);
+  await screen.findByText("知情顺序冲突");
+  expect(screen.getByText(/当前版本检查/)).toBeInTheDocument();
+  expect(screen.queryByText(/若采纳候选将出现/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/未采纳的文案/)).not.toBeInTheDocument();
+});

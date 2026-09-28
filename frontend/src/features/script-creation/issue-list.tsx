@@ -125,7 +125,7 @@ export function IssueList({ project, documents, selected, saved, onNavigate, onR
         <b>{item.explanation}</b>{item.stale && <span className="ml-2 text-amber-200">证据版本已变化，需重查</span>}
         {item.intentional_reason && !item.stale && <p className="mt-1 text-[#E5FF5C]">这是有意安排：{item.intentional_reason}</p>}
         {evidence("来源", item.source)}{evidence("目标", item.target)}
-        {item.hypothetical_quote && <p className="mt-2 rounded border border-[#E5FF5C]/20 p-2 text-[#E5FF5C]">若采纳候选将出现：“{item.hypothetical_quote}”</p>}
+        {run.mode === "hypothetical" && item.mode === "hypothetical" && item.hypothetical_quote && <p className="mt-2 rounded border border-[#E5FF5C]/20 p-2 text-[#E5FF5C]">若采纳候选将出现：“{item.hypothetical_quote}”</p>}
         <p className="mt-2 text-white/45">{item.suggested_action}</p>
         {!!item.selected_target_document_ids?.length && <p className="mt-1 text-[#E5FF5C]">已选择目标：{item.selected_target_document_ids.map((id) => documents.find((doc) => doc.id === id)?.title ?? id).join("、")}</p>}
         {!item.intentional_reason && !item.stale && <div className="mt-2 flex gap-1"><input aria-label={`有意安排原因 ${item.id}`} value={reasons[item.id] ?? ""}

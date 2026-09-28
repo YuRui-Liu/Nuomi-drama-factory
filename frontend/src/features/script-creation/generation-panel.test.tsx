@@ -77,3 +77,43 @@ describe("GenerationPanel retry", () => {
     manager.dispose();
   });
 });
+
+
+describe("GenerationPanel continuation target", () => {
+  const base = () => {
+    const brief = doc("brief", "brief", "三集故事");
+    const outline = doc("outline", "outline", "完整大纲");
+    const synopsis = doc("synopsis", "episode_synopsis", "第二集：抵达码头。第三集：揭晓真相。");
+    const first = doc("first", "episode_script", "# 第一集\n\n两人在码头发现钥匙。", 1);
+    const blankSecond = doc("second", "episode_script", ["# 第 2 集", "本集目标：", "## 2-1｜场景名称 · 日/夜 · 内/外", "出场人物：", "动作描述：", "人物对白：", "必要语气提示（如需）：", "结尾钩子："].join("\n\n"), 2);
+    const manager = new DraftManager(vi.fn());
+    for (const item of [brief, outline, synopsis, first, blankSecond]) manager.load(item);
+    return { brief, outline, synopsis, first, blankSecond, manager };
+  };
+
+  it("targets the first unfinished episode when a blank template has a higher number", async () => {
+    const user = userEvent.setup();
+    const { brief, outline, synopsis, first, blankSecond, manager } = base();
+    api.startGeneration.mockResolvedValue({ run: { id: "run", status: "completed", steps: [] }, task_id: "task" });
+    render(<GenerationPanel project="demo" documents={[brief, outline, synopsis, first, blankSecond]} manager={manager}
+      settings={defaultSettings()} selected={brief} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    const button = await screen.findByRole("button", { name: "按此风格续下一集 · 第 2 集" });
+    await user.click(button);
+    expect(api.startGeneration).toHaveBeenCalledWith("demo", expect.objectContaining({ mode: "continue", episode_number: 2 }));
+    manager.dispose();
+  });
+
+  it("does not continue from a selected blank episode or skip an unfinished earlier episode", async () => {
+    const { brief, outline, synopsis, first, blankSecond, manager } = base();
+    const third = doc("third", "episode_script", "# 第三集\n\n结局已写。", 3);
+    manager.load(third);
+    const docs = [brief, outline, synopsis, first, blankSecond, third];
+    const view = render(<GenerationPanel project="demo" documents={docs} manager={manager}
+      settings={{ ...defaultSettings(), episodeCount: 4 }} selected={blankSecond} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: /按此风格续下一集/ })).toBeDisabled();
+    view.rerender(<GenerationPanel project="demo" documents={docs} manager={manager}
+      settings={{ ...defaultSettings(), episodeCount: 4 }} selected={third} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /按此风格续下一集/ })).toBeDisabled();
+    manager.dispose();
+  });
+});
