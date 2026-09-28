@@ -165,7 +165,7 @@ assert all(item.status == "pending" for item in rejected_batch)
 
 ## 任务 5：关联检查、证据与有意安排
 
-执行状态：进行中，由独立子代理负责真实检查任务、证据校验、目标选择与关联候选 UI。
+执行状态：已完成至 d62b909，规格与质量审查通过；剧本创作后端 78 项通过，质量复审独立 24 项通过。候选影响仅引用实际替换内容，继续调整保留来源约束；长候选全文独立冻结，不挤占用户指令限额。真实隔离模型检查成功定位知情顺序冲突，原始输出保存在 /private/tmp/nuomi-consistency-evidence-probe/raw-output.json；一次 UI 检查的无效位置被安全拒绝并展示失败。
 
 **文件：** consistency.py、issue-list.tsx；tests/script_creation/test_consistency.py；前端对应测试。
 
@@ -178,6 +178,8 @@ assert all(item.status == "pending" for item in rejected_batch)
 - [ ] 服务与 UI 测试通过，提交 `feat(script-creation): surface evidence-bound continuity suggestions`。
 
 ## 任务 6：人物、场景和道具资产关联
+
+执行状态：进行中，由独立子代理负责稳定资产标识、叙事实体关系与显式关联 UI。
 
 **文件：** models/store、asset-link-dialog.tsx、新路由关联接口；tests/script_creation/test_asset_links.py。
 
