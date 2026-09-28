@@ -182,3 +182,77 @@ async def test_hypothetical_fact_must_quote_candidate_text(tmp_path):
     with pytest.raises(DocumentValidation):
         await service.execute(run["id"], runtime=Runtime([finding]), task_id="task")
     assert (await service.get(run["id"]))["issues"] == []
+
+
+async def test_refined_consistency_rewrite_inherits_source_and_all_original_refs(tmp_path):
+    from novelvideo.script_creation.rewrite import RewriteService
+    store, people, scenes, _, episode = await setup(tmp_path)
+    source = await ProposalService(store).create(document_id=people.id, base_revision_id=people.current_revision_id,
+        block_id=None, start=0, end=len(people.revision.markdown), before=people.revision.markdown,
+        after="阿宁已知密钥😀。", reason="知情变化", round_id="source-round", client_mutation_id="source")
+    service = ConsistencyService(store)
+    refs = {d.id: d.current_revision_id for d in (people, scenes, episode)}
+    run = await service.start(episode.id, context_revisions=refs, proposal_id=source["id"], client_mutation_id="check")
+    finding = issue("character_knowledge", people, episode, "阿宁不知密钥😀", "我知道密钥😀")
+    finding["hypothetical_quote"] = "阿宁已知密钥😀"
+    result = await service.execute(run["id"], runtime=Runtime([finding]), task_id="check-task")
+    original = (await service.create_target_rewrites(result["issues"][0]["id"], target_document_ids=[episode.id]))[0]
+    class RewriteRuntime:
+        async def run_structured(self, **kwargs):
+            return {"after": "阿宁说：我仍不知密钥。", "reason": "修复知情顺序"}
+    rewrite = RewriteService(store)
+    await rewrite.execute(original["id"], runtime=RewriteRuntime(), task_id="first-task")
+    first = (await ProposalService(store).list(episode.id))[0]
+    refined = await rewrite.start(document_id=episode.id, base_revision_id=episode.current_revision_id,
+        start=0, end=len(episode.revision.markdown), scope="episode", mode="custom", instruction="继续调整",
+        preserve="", context_revisions={}, reference_proposal_id=first["id"], client_mutation_id="refine")
+    assert refined["context_revisions"][people.id] == people.current_revision_id
+    assert refined["context_revisions"][scenes.id] == scenes.current_revision_id
+    await rewrite.execute(refined["id"], runtime=RewriteRuntime(), task_id="second-task")
+    derived = next(p for p in await ProposalService(store).list(episode.id) if p["round_id"] == refined["id"])
+    await ProposalService(store).discard(source["id"])
+    with pytest.raises(DocumentConflict):
+        await ProposalService(store).accept([derived["id"]], base_revision_id=episode.current_revision_id,
+                                            client_mutation_id="accept-derived")
+
+
+async def test_hypothetical_quote_cannot_use_unchanged_block(tmp_path):
+    store, people, _, _, episode = await setup(tmp_path)
+    block = episode.revision.blocks[0]
+    before = "我知道密钥😀"
+    start = block.markdown.index(before)
+    source = await ProposalService(store).create(document_id=episode.id, base_revision_id=episode.current_revision_id,
+        block_id=block.id, start=start, end=start + len(before), before=before,
+        after="我还不知道密钥", reason="知情变化", round_id="source-round", client_mutation_id="source")
+    service = ConsistencyService(store)
+    run = await service.start(episode.id, context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+                              proposal_id=source["id"], client_mutation_id="check")
+    finding = issue("character_knowledge", people, episode, "阿宁不知密钥😀", before)
+    finding["hypothetical_quote"] = "阿宁从后门进来"
+    with pytest.raises(DocumentValidation):
+        await service.execute(run["id"], runtime=Runtime([finding]), task_id="task")
+    assert (await service.get(run["id"]))["issues"] == []
+
+
+async def test_hypothetical_quote_cannot_use_unchanged_suffix_of_cross_block_patch(tmp_path):
+    from novelvideo.script_creation.rewrite import RewriteService
+    store, people, _, _, episode = await setup(tmp_path)
+    text = episode.revision.markdown
+    rewrite = RewriteService(store)
+    job = await rewrite.start(document_id=episode.id, base_revision_id=episode.current_revision_id,
+        start=text.index("我知道密钥😀"), end=text.index("阿宁从后门进来") + len("阿宁从后门进来"),
+        scope="selection", mode="custom", instruction="改知情", preserve="", client_mutation_id="rewrite")
+    class RewriteRuntime:
+        async def run_structured(self, **kwargs):
+            return {"after": "我还不知道密钥。阿宁从正门进来", "reason": "修复知情"}
+    await rewrite.execute(job["id"], runtime=RewriteRuntime(), task_id="rewrite-task")
+    proposal = (await ProposalService(store).list(episode.id))[0]
+    assert proposal["block_id"] is None and "交出钥匙" in proposal["after"]
+    service = ConsistencyService(store)
+    run = await service.start(episode.id, context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+                              proposal_id=proposal["id"], client_mutation_id="check")
+    finding = issue("character_knowledge", people, episode, "阿宁不知密钥😀", "我知道密钥😀")
+    finding["hypothetical_quote"] = "交出钥匙"
+    with pytest.raises(DocumentValidation):
+        await service.execute(run["id"], runtime=Runtime([finding]), task_id="check-task")
+    assert (await service.get(run["id"]))["issues"] == []

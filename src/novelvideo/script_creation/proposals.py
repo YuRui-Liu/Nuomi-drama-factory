@@ -19,6 +19,35 @@ def _proposal(row):
     return value
 
 
+async def consistency_issue_for_proposal(db, proposal_id: str, document_id: str):
+    """Follow rewrite refinements back to their selected consistency issue."""
+    seen = set()
+    while proposal_id:
+        if proposal_id in seen:
+            raise DocumentConflict("proposal reference cycle")
+        seen.add(proposal_id)
+        proposal = await (await db.execute(
+            "SELECT document_id,round_id FROM script_proposals WHERE id=?", (proposal_id,))).fetchone()
+        if proposal is None or proposal["document_id"] != document_id:
+            raise DocumentConflict("proposal reference changed")
+        linked = await (await db.execute(
+            "SELECT i.data FROM script_consistency_target_jobs j "
+            "JOIN script_consistency_issues i ON i.id=j.issue_id "
+            "WHERE j.rewrite_job_id=? AND j.document_id=?",
+            (proposal["round_id"], document_id))).fetchone()
+        if linked:
+            return json.loads(linked["data"])
+        job_row = await (await db.execute(
+            "SELECT data FROM script_rewrite_jobs WHERE id=?", (proposal["round_id"],))).fetchone()
+        if job_row is None:
+            return None
+        job = json.loads(job_row["data"])
+        if job["proposal_id"] != proposal_id or job["document_id"] != document_id:
+            raise DocumentConflict("proposal rewrite origin changed")
+        proposal_id = job.get("reference_proposal_id")
+    return None
+
+
 class ProposalService:
     def __init__(self, store: DocumentStore):
         self.store = store
@@ -166,13 +195,12 @@ class ProposalService:
                         if ref.current_revision_id != revision_id:
                             raise DocumentConflict("proposal context changed", ref.current_revision_id)
                 for p in rows:
-                    source_row = await (await db.execute(
-                        "SELECT i.data FROM script_consistency_target_jobs j "
-                        "JOIN script_consistency_issues i ON i.id=j.issue_id "
-                        "WHERE j.rewrite_job_id=? AND j.document_id=?",
-                        (p["round_id"], document_id))).fetchone()
-                    if source_row:
-                        linked_issue = json.loads(source_row["data"])
+                    linked_issue = await consistency_issue_for_proposal(db, p["id"], document_id)
+                    if linked_issue:
+                        for ref_id, revision_id in linked_issue["context_revisions"].items():
+                            ref = await self.store._document(db, ref_id)
+                            if ref.current_revision_id != revision_id:
+                                raise DocumentConflict("consistency issue context changed", ref.current_revision_id)
                         source_id = linked_issue.get("proposal_id")
                         if source_id:
                             source = await (await db.execute(

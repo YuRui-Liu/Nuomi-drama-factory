@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
-from .proposals import ProposalService
+from .proposals import ProposalService, consistency_issue_for_proposal
 from .store import DocumentConflict, DocumentNotFound, DocumentValidation, DocumentStore, _digest, _id, _now
 
 MODES = {"dialogue": "让对白更自然", "subtext": "增强潜台词", "conflict": "调整冲突", "compress": "压缩表达", "custom": "按用户要求改写"}
@@ -68,7 +68,7 @@ class RewriteService:
                     client_mutation_id: str, context_revisions=None, reference_proposal_id=None):
         if scope not in SCOPES or mode not in MODES or not client_mutation_id or len(instruction) > 8000 or len(preserve) > 4000:
             raise DocumentValidation("改稿参数无效")
-        context_revisions = context_revisions or {}
+        context_revisions = dict(context_revisions or {})
         payload = dict(document_id=document_id, base_revision_id=base_revision_id, start=start, end=end,
                        scope=scope, mode=mode, instruction=instruction, preserve=preserve,
                        context_revisions=context_revisions, reference_proposal_id=reference_proposal_id)
@@ -138,6 +138,23 @@ class RewriteService:
                         raise DocumentConflict("继续调整必须使用原候选范围", doc.current_revision_id)
                     reference = {"before": doc.revision.markdown[start:end],
                                  "after": candidate_after, "reason": row["reason"]}
+                    linked_issue = await consistency_issue_for_proposal(db, reference_proposal_id, document_id)
+                    if linked_issue:
+                        source_id = linked_issue.get("proposal_id")
+                        if source_id:
+                            source = await (await db.execute(
+                                "SELECT status FROM script_proposals WHERE id=?", (source_id,))).fetchone()
+                            if source is None or source["status"] != "pending":
+                                raise DocumentConflict("hypothetical source candidate changed", doc.current_revision_id)
+                        for ref_id, revision_id in linked_issue["context_revisions"].items():
+                            if ref_id == document_id:
+                                if revision_id != doc.current_revision_id:
+                                    raise DocumentConflict("consistency target changed", doc.current_revision_id)
+                                continue
+                            if ref_id in context_revisions and context_revisions[ref_id] != revision_id:
+                                raise DocumentConflict("consistency reference cannot be changed", revision_id)
+                            context_revisions[ref_id] = revision_id
+                        payload["context_revisions"] = context_revisions
                 references = []
                 for ref_id, revision_id in context_revisions.items():
                     if ref_id == document_id:

@@ -53,6 +53,29 @@ def _proposal_text(doc, row):
     raise DocumentConflict("candidate block changed", doc.current_revision_id)
 
 
+async def _proposal_after(db, doc, row):
+    """The candidate replacement only, excluding unchanged surrounding text."""
+    _proposal_text(doc, row)
+    if row["block_id"] is not None or row["source_candidate_id"] is not None:
+        return row["after_text"]
+    origin_row = await (await db.execute("SELECT data FROM script_rewrite_jobs WHERE id=?",
+                                        (row["round_id"],))).fetchone()
+    if origin_row is None:
+        return row["after_text"]
+    origin = json.loads(origin_row["data"])
+    start, end = origin["start"], origin["end"]
+    before = doc.revision.markdown
+    after = row["after_text"]
+    if (origin["proposal_id"] != row["id"] or origin["document_id"] != doc.id or
+            origin["base_revision_id"] != doc.current_revision_id or
+            origin["before"] != before[start:end] or start < 0 or end > len(before) or start > end):
+        raise DocumentConflict("candidate rewrite origin changed", doc.current_revision_id)
+    prefix, suffix = before[:start], before[end:]
+    if not after.startswith(prefix) or not after.endswith(suffix):
+        raise DocumentConflict("candidate authorized range changed", doc.current_revision_id)
+    return after[len(prefix):len(after) - len(suffix) if suffix else None]
+
+
 class ConsistencyService:
     def __init__(self, store: DocumentStore):
         self.store = store
@@ -126,6 +149,7 @@ class ConsistencyService:
                 if episode.kind != "episode_script":
                     raise DocumentValidation("current episode must be a script")
                 hypothetical_markdown = None
+                hypothetical_after = None
                 if proposal_id:
                     row = await (await db.execute("SELECT * FROM script_proposals WHERE id=?", (proposal_id,))).fetchone()
                     if row is None or row["status"] != "pending" or row["document_id"] not in documents:
@@ -134,10 +158,12 @@ class ConsistencyService:
                     if row["base_revision_id"] != source.current_revision_id:
                         raise DocumentConflict("candidate baseline changed", source.current_revision_id)
                     hypothetical_markdown = _proposal_text(source, row)
+                    hypothetical_after = await _proposal_after(db, source, row)
                 stamp = _now()
                 run = {**payload, "id": _id(), "mode": "hypothetical" if proposal_id else "actual",
                        "hypothetical_document_id": row["document_id"] if proposal_id else None,
                        "hypothetical_markdown": hypothetical_markdown,
+                       "hypothetical_after": hypothetical_after,
                        "status": "pending", "task_id": None, "error": None,
                        "created_at": stamp, "updated_at": stamp}
                 await db.execute("INSERT INTO script_consistency_runs VALUES (?,?,?,?,?,?)",
@@ -186,7 +212,8 @@ class ConsistencyService:
                        + "".join(f"block={b.id} codepoint 0..{len(b.markdown)}: {b.markdown}\n" for b in doc.revision.blocks))
         if run["proposal_id"]:
             prompt += (f"若采纳候选 {run['proposal_id']}，文档 {run['hypothetical_document_id']} 将变成：\n"
-                       f"{run['hypothetical_markdown']}\n这仅是假设。source/target 证据仍必须引用上述不可变原始版本。\n")
+                       f"{run['hypothetical_markdown']}\n候选实际替换片段（hypothetical_quote 只能逐字引用此片段）："
+                       f"{run.get('hypothetical_after')}\n这仅是假设。source/target 证据仍必须引用上述不可变原始版本。\n")
         prompt += ("返回 issues。category 仅 fact 或 creative；fact 必须有 source/target 两个原文精确证据，"
                    "含 document_id、revision_id、block_id、块内 Python codepoint start/end、quote。"
                    "若采纳的 fact 还必须给 hypothetical_quote，逐字摘自候选采纳后的正文；"
@@ -211,7 +238,10 @@ class ConsistencyService:
                         docs[doc_id] = doc
                     if run["proposal_id"]:
                         row = await (await db.execute("SELECT * FROM script_proposals WHERE id=?", (run["proposal_id"],))).fetchone()
-                        if row is None or row["status"] != "pending" or _proposal_text(docs[row["document_id"]], row) != run["hypothetical_markdown"]:
+                        if (row is None or row["status"] != "pending" or
+                                "hypothetical_after" not in run or
+                                _proposal_text(docs[row["document_id"]], row) != run["hypothetical_markdown"] or
+                                await _proposal_after(db, docs[row["document_id"]], row) != run["hypothetical_after"]):
                             raise DocumentConflict("candidate changed")
                     if commit_guard: commit_guard()
                     table = await (await db.execute("SELECT name FROM sqlite_master WHERE name='task_states'")).fetchone()
@@ -228,7 +258,7 @@ class ConsistencyService:
                             raise DocumentValidation("fact issue requires two exact references")
                         if run["proposal_id"] and finding.category == "fact" and (
                                 not finding.hypothetical_quote or
-                                finding.hypothetical_quote not in run["hypothetical_markdown"]):
+                                finding.hypothetical_quote not in run["hypothetical_after"]):
                             raise DocumentValidation("hypothetical quote not in candidate text")
                         for evidence in (finding.source, finding.target):
                             if evidence is None: continue
