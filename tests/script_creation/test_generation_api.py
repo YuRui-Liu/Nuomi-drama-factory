@@ -154,3 +154,33 @@ def test_rewrite_queue_review_and_editor_scope(client):
     assert http.post(base + '/proposals/accept', json={'proposal_ids': ['none'],
         'base_revision_id': doc['current_revision_id'], 'client_mutation_id': 'adopt'}).status_code == 403
     assert 'editor' in roles and 'viewer' in roles
+
+
+def test_consistency_queue_scope_and_project_references(client):
+    http, user, _ = client
+    base = '/api/v1/projects/one/script-creation'
+    episode = http.post(base + '/documents', json={'kind': 'episode_script', 'title': '第一集',
+        'markdown': '甲持有钥匙。', 'episode_number': 1, 'client_mutation_id': 'c-episode'}).json()['data']
+    people = http.post(base + '/documents', json={'kind': 'people', 'title': '人物',
+        'markdown': '甲没有钥匙。', 'client_mutation_id': 'c-people'}).json()['data']
+    body = {'episode_document_id': episode['id'], 'context_revisions': {
+        episode['id']: episode['current_revision_id'], people['id']: people['current_revision_id']},
+        'client_mutation_id': 'check'}
+    started = http.post(base + '/consistency-runs', json=body)
+    assert started.status_code == 202
+    run = started.json()['data']
+    assert run['status'] == 'pending' and run['queued_task_id'] == 'task-id'
+    assert http.get(base + '/consistency-runs/' + run['id']).json()['data']['id'] == run['id']
+    assert http.get(base + '/consistency-runs').json()['data'][0]['id'] == run['id']
+    assert http.post(base + '/consistency-runs', json={**body, 'client_mutation_id': 'foreign',
+        'context_revisions': {**body['context_revisions'], 'foreign': 'r1'}}).status_code == 404
+    user['role'] = 'viewer'
+    assert http.post(base + '/consistency-runs', json={**body, 'client_mutation_id': 'viewer'}).status_code == 403
+    assert http.get(base + '/consistency-runs/' + run['id']).status_code == 200
+
+
+def test_consistency_requires_selected_targets_and_intentional_reason(client):
+    http, _, _ = client
+    base = '/api/v1/projects/one/script-creation'
+    assert http.post(base + '/consistency-issues/missing/target-rewrites', json={'target_document_ids': []}).status_code == 422
+    assert http.post(base + '/consistency-issues/missing/intentional', json={'reason': ' '}).status_code == 422

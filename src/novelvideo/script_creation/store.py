@@ -124,6 +124,17 @@ class DocumentStore:
                     target_document_id TEXT, target_revision_id TEXT,
                     markdown TEXT NOT NULL, context_revisions TEXT NOT NULL, created_at TEXT NOT NULL,
                     UNIQUE(run_id, step_key));
+                CREATE TABLE IF NOT EXISTS script_consistency_runs (
+                    id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL,
+                    request_hash TEXT NOT NULL, data TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS script_consistency_issues (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, data TEXT NOT NULL,
+                    created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS idx_script_consistency_issues_run ON script_consistency_issues(run_id);
+                CREATE TABLE IF NOT EXISTS script_consistency_target_jobs (
+                    issue_id TEXT NOT NULL, document_id TEXT NOT NULL, rewrite_job_id TEXT NOT NULL,
+                    selected_at TEXT NOT NULL, PRIMARY KEY(issue_id,document_id));
                 CREATE TABLE IF NOT EXISTS script_rewrite_jobs (
                     id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL,
                     request_hash TEXT NOT NULL, data TEXT NOT NULL,

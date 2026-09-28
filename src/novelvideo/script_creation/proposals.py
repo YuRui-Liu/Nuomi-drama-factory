@@ -165,6 +165,20 @@ class ProposalService:
                         ref = await self.store._document(db, ref_id)
                         if ref.current_revision_id != revision_id:
                             raise DocumentConflict("proposal context changed", ref.current_revision_id)
+                for p in rows:
+                    source_row = await (await db.execute(
+                        "SELECT i.data FROM script_consistency_target_jobs j "
+                        "JOIN script_consistency_issues i ON i.id=j.issue_id "
+                        "WHERE j.rewrite_job_id=? AND j.document_id=?",
+                        (p["round_id"], document_id))).fetchone()
+                    if source_row:
+                        linked_issue = json.loads(source_row["data"])
+                        source_id = linked_issue.get("proposal_id")
+                        if source_id:
+                            source = await (await db.execute(
+                                "SELECT status FROM script_proposals WHERE id=?", (source_id,))).fetchone()
+                            if source is None or source["status"] != "pending":
+                                raise DocumentConflict("hypothetical source candidate changed", doc.current_revision_id)
                 block_map = {b.id: b for b in doc.revision.blocks}
                 whole = [p for p in rows if p["block_id"] is None]
                 if whole:

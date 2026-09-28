@@ -26,7 +26,7 @@ def _range(markdown: str, scope: str, start: int, end: int):
         raise DocumentValidation("选段范围无效，请重新选择")
     if scope == "selection":
         return start, end
-    matches = list(re.finditer(r"(?m)^#{2,3}[ \t]+(?:\d+[-－]\d+|场景[一二三四五六七八九十\d]+)[^\n]*$", markdown))
+    matches = list(re.finditer(r"(?m)^#{2,3}[ \t]+(?:\d+[-－]\d+|\d+[｜|][^\n]+|场景[一二三四五六七八九十\d]+)[^\n]*$", markdown))
     current = next((index for index, match in reversed(list(enumerate(matches))) if match.start() <= start), None)
     if current is None:
         raise DocumentValidation("未找到当前场，请选择正文中的场次")

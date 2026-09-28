@@ -6,6 +6,7 @@ import { scriptCreationApi } from "./api";
 import { DraftManager } from "./draft-manager";
 import { GenerationPanel } from "./generation-panel";
 import { ProposalReview } from "./proposal-review";
+import { IssueList } from "./issue-list";
 import { RevisionHistory } from "./revision-history";
 import { readRecovery, writeRecovery } from "./draft-recovery";
 import { DocumentEditor } from "./document-editor";
@@ -14,7 +15,7 @@ import type { TreeNode } from "./document-tree";
 import { decodeBriefSettings, defaultSettings, encodeBriefSettings } from "./settings";
 import { ScriptSetter } from "./script-setter";
 import { episodeScriptTemplate, starterDocuments } from "./templates";
-import type { ScriptDocument, ScriptSettings } from "./types";
+import type { ConsistencyEvidence, ScriptDocument, ScriptSettings } from "./types";
 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败，请重试"; }
 
@@ -33,9 +34,10 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [instruction, setInstruction] = useState("");
-  const [rightTab, setRightTab] = useState<"generation" | "review" | "history">("generation");
+  const [rightTab, setRightTab] = useState<"generation" | "review" | "history" | "consistency">("generation");
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateTargetId, setCandidateTargetId] = useState<string | null>(null);
+  const [focusEvidence, setFocusEvidence] = useState<ConsistencyEvidence | null>(null);
   const [selection, setSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [, redraw] = useState(0);
   const imports = useEpisodeImports(project);
@@ -240,7 +242,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
         </div>
       </aside>
       <section aria-label="文档正文" className="min-h-0 overflow-y-auto bg-[#15171B] px-4">
-        {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={setSelection} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
+        {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={setSelection} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
           <div className="mb-5 flex size-16 items-center justify-center rounded-2xl border border-[#E5FF5C]/20 bg-[#E5FF5C]/5 text-[#E5FF5C]"><FileText size={30} /></div>
           <h2 className="text-xl font-semibold">你的下一部故事，从这里开始。</h2><p className="mt-3 text-sm leading-7 text-white/45">从创作预设找到方向，或写下一个想法。设定、大纲和正文都会保存在这里。</p>
           <button onClick={() => setSetterOpen(true)} className="mt-6 rounded bg-[#E5FF5C] px-5 py-2.5 text-sm font-semibold text-black">从创作预设开始</button>
@@ -250,13 +252,17 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       <aside aria-label="AI 协作" className={(mobilePanel === "ai" ? "fixed bottom-0 right-0 top-[74px] z-30 flex w-[min(90vw,360px)] shadow-2xl" : "hidden") + " min-h-0 flex-col border-l border-white/[0.07] bg-[#111317] lg:static lg:flex lg:w-auto lg:shadow-none"}>
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-4 text-xs font-semibold"><MessageSquare size={15} className="text-[#E5FF5C]" />AI 协作<button aria-label="关闭 AI 创作" onClick={() => setMobilePanel(null)} className="ml-auto text-white/50 lg:hidden"><X size={16} /></button></div>
         <div className="flex gap-1 border-b border-white/10 p-2 text-xs">
-          {([ ["generation", "整文生成"], ["review", "候选审阅"], ["history", "版本历史"] ] as const).map(([id, label]) => <button key={id}
+          {([ ["generation", "整文生成"], ["consistency", "关联检查"], ["review", "候选审阅"], ["history", "版本历史"] ] as const).map(([id, label]) => <button key={id}
             onClick={() => setRightTab(id)} aria-current={rightTab === id ? "page" : undefined}
             className={"flex-1 rounded px-1 py-2 " + (rightTab === id ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/50")}>{label}</button>)}
         </div>
         {rightTab === "generation" && <GenerationPanel project={project} documents={savedDocuments} manager={manager} settings={settings}
           selected={current} instruction={instruction} onSelect={setSelectedId} onRefresh={refresh}
           onReviewCandidate={(id, documentId) => { if (documentId) setSelectedId(documentId); setCandidateId(id); setCandidateTargetId(documentId); setRightTab("review"); }} />}
+        {rightTab === "consistency" && <IssueList project={project} documents={savedDocuments} selected={current}
+          saved={manager.all().every((item) => item.status === "saved")}
+          onNavigate={(evidence) => { setSelectedId(evidence.document_id); setFocusEvidence(evidence); }}
+          onReview={(documentId) => { setSelectedId(documentId); setRightTab("review"); }} />}
         {rightTab === "review" && current && <ProposalReview key={current.id} project={project} document={current} documents={savedDocuments}
           saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} selection={selection} instruction={instruction}
           candidateId={candidateTargetId === current.id ? candidateId : null} onApplied={refresh} />}

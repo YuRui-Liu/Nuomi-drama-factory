@@ -4,16 +4,17 @@ import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, CircleDashed, Pencil, Save } from "lucide-react";
 import { scriptCreationApi } from "./api";
 import type { DocumentDraft, DraftManager } from "./draft-manager";
-import type { ScriptDocument } from "./types";
+import type { ConsistencyEvidence, ScriptDocument } from "./types";
 
 type Props = {
   project: string;
   draft: DocumentDraft;
   manager: DraftManager;
   onSelection: (selection: { text: string; start: number; end: number } | null) => void;
+  focusEvidence?: ConsistencyEvidence | null;
 };
 
-export function DocumentEditor({ project, draft, manager, onSelection }: Props) {
+export function DocumentEditor({ project, draft, manager, onSelection, focusEvidence }: Props) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(draft.markdown);
   const [server, setServer] = useState<ScriptDocument | null>(null);
@@ -26,6 +27,29 @@ export function DocumentEditor({ project, draft, manager, onSelection }: Props) 
 
   useEffect(() => { if (!composing.current) setValue(draft.markdown); }, [draft.markdown]);
   useEffect(() => { setServer(null); setCompareError(""); onSelection(null); }, [draft.document.id]);
+
+  useEffect(() => {
+    if (!focusEvidence || focusEvidence.document_id !== draft.document.id ||
+        focusEvidence.revision_id !== draft.document.current_revision_id) return;
+    setEditing(true);
+  }, [focusEvidence, draft.document.id, draft.document.current_revision_id]);
+  useEffect(() => {
+    if (!editing || !focusEvidence || focusEvidence.document_id !== draft.document.id ||
+        focusEvidence.revision_id !== draft.document.current_revision_id || !input.current) return;
+    let offset = 0;
+    const block = draft.document.revision.blocks.find((item) => {
+      if (item.id === focusEvidence.block_id) return true;
+      offset += Array.from(item.markdown).length;
+      return false;
+    });
+    if (!block || Array.from(block.markdown).slice(focusEvidence.start, focusEvidence.end).join("") !== focusEvidence.quote) return;
+    const codepoints = Array.from(draft.markdown);
+    const start = codepoints.slice(0, offset + focusEvidence.start).join("").length;
+    const end = codepoints.slice(0, offset + focusEvidence.end).join("").length;
+    input.current.focus();
+    input.current.setSelectionRange(start, end);
+    input.current.scrollIntoView?.({ block: "center" });
+  }, [editing, focusEvidence, draft.document.id, draft.document.current_revision_id, draft.markdown]);
 
   const select = () => {
     const element = input.current;

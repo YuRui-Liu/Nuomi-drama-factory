@@ -87,3 +87,24 @@ export interface RewriteJob {
   status: "pending" | "running" | "completed" | "failed" | "needs_rebase";
   proposal_id: string | null; error: string | null;
 }
+
+export interface ConsistencyEvidence {
+  document_id: string; revision_id: string; block_id: string;
+  start: number; end: number; quote: string;
+}
+export interface ConsistencyIssue {
+  id: string; run_id: string; category: "fact" | "creative"; kind: string;
+  explanation: string; suggested_action: string;
+  source: ConsistencyEvidence | null; target: ConsistencyEvidence | null;
+  hypothetical_quote?: string | null;
+  context_revisions: Record<string, string>; mode: "actual" | "hypothetical";
+  proposal_id: string | null; stale: boolean; intentional_reason: string | null;
+  selected_target_document_ids?: string[];
+}
+export interface ConsistencyRun {
+  id: string; episode_document_id: string; context_revisions: Record<string, string>;
+  mode: "actual" | "hypothetical"; proposal_id: string | null;
+  hypothetical_document_id: string | null;
+  status: "pending" | "running" | "completed" | "failed" | "needs_rebase";
+  task_id: string | null; error: string | null; issues: ConsistencyIssue[];
+}

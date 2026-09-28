@@ -13,6 +13,7 @@ from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.script_creation.documents import import_episode_source
 from novelvideo.script_creation.proposals import ProposalService
 from novelvideo.script_creation.rewrite import RewriteService
+from novelvideo.script_creation.consistency import ConsistencyService
 from novelvideo.script_creation.generation import GenerationConflict, GenerationService, GenerationValidation
 from novelvideo.task_backend.client import enqueue_project_task
 from novelvideo.task_identity import project_task_state_key
@@ -387,5 +388,95 @@ async def discard_proposal(project: str, proposal_id: str, user: dict = Depends(
     store, _ = await _store(project, user, 'editor')
     try:
         return {'ok': True, 'data': await ProposalService(store).discard(proposal_id)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+class ConsistencyBody(Strict):
+    episode_document_id: str
+    context_revisions: dict[str, str]
+    proposal_id: str | None = None
+    client_mutation_id: str = Field(min_length=1)
+
+
+class IntentionalBody(Strict):
+    reason: str = Field(min_length=1)
+
+
+class TargetRewritesBody(Strict):
+    target_document_ids: list[str] = Field(min_length=1)
+
+
+@router.get(PREFIX + '/consistency-runs')
+async def list_consistency_runs(project: str, episode_document_id: str | None = None,
+                                user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await ConsistencyService(store).list(episode_document_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/consistency-runs', status_code=status.HTTP_202_ACCEPTED)
+async def create_consistency_run(project: str, body: ConsistencyBody,
+                                 user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    try:
+        run = await ConsistencyService(store).start(**body.model_dump())
+        if run['status'] != 'pending':
+            return {'ok': True, 'data': run}
+        queued = await enqueue_project_task(resolved.ctx, task_type='script_creation_consistency',
+            queue_kind='default', episode=0, scope=f"consistency:{run['id']}",
+            payload={'project_id': str(resolved.ctx.project_id), 'run_id': run['id']})
+        return {'ok': True, 'data': {**run, 'queued_task_id': queued.task_state.task_id}}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/consistency-runs/{run_id}')
+async def get_consistency_run(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await ConsistencyService(store).get(run_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/consistency-issues/{issue_id}/intentional')
+async def mark_consistency_intentional(project: str, issue_id: str, body: IntentionalBody,
+                                       user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await ConsistencyService(store).mark_intentional(issue_id, reason=body.reason)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/consistency-issues/{issue_id}/target-rewrites')
+async def list_consistency_targets(project: str, issue_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await ConsistencyService(store).target_selections(issue_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/consistency-issues/{issue_id}/target-rewrites', status_code=status.HTTP_202_ACCEPTED)
+async def create_consistency_targets(project: str, issue_id: str, body: TargetRewritesBody,
+                                     user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    try:
+        jobs = await ConsistencyService(store).create_target_rewrites(issue_id,
+            target_document_ids=body.target_document_ids)
+        result = []
+        for job in jobs:
+            if job['status'] == 'pending':
+                queued = await enqueue_project_task(resolved.ctx, task_type='script_creation_rewrite',
+                    queue_kind='default', episode=0, scope=f"rewrite:{job['id']}",
+                    payload={'project_id': str(resolved.ctx.project_id), 'job_id': job['id']})
+                result.append({**job, 'queued_task_id': queued.task_state.task_id})
+            else:
+                result.append(job)
+        return {'ok': True, 'data': result}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc

@@ -1,5 +1,5 @@
 import { apiCall } from "@/api/client";
-import type { ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob } from "./types";
+import type { ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
 const docPath = (project: string, id: string) => `${root(project)}/documents/${encodeURIComponent(id)}`;
@@ -54,6 +54,19 @@ export const scriptCreationApi = {
     apiCall<RewriteJob[]>(`${docPath(project, documentId)}/rewrites`),
   getRewrite: (project: string, jobId: string) =>
     apiCall<RewriteJob>(`${root(project)}/rewrites/${encodeURIComponent(jobId)}`),
+  listConsistencyRuns: (project: string, episodeId?: string) =>
+    apiCall<ConsistencyRun[]>(`${root(project)}/consistency-runs${episodeId ? `?episode_document_id=${encodeURIComponent(episodeId)}` : ""}`),
+  getConsistencyRun: (project: string, runId: string) =>
+    apiCall<ConsistencyRun>(`${root(project)}/consistency-runs/${encodeURIComponent(runId)}`),
+  startConsistencyRun: (project: string, body: { episode_document_id: string;
+    context_revisions: Record<string, string>; proposal_id: string | null; client_mutation_id: string }) =>
+    apiCall<ConsistencyRun>(`${root(project)}/consistency-runs`, { method: "post", retry: { limit: 0 }, json: body }),
+  markIntentional: (project: string, issueId: string, reason: string) =>
+    apiCall<ConsistencyIssue>(`${root(project)}/consistency-issues/${encodeURIComponent(issueId)}/intentional`,
+      { method: "post", retry: { limit: 0 }, json: { reason } }),
+  createConsistencyTargets: (project: string, issueId: string, targetDocumentIds: string[]) =>
+    apiCall<RewriteJob[]>(`${root(project)}/consistency-issues/${encodeURIComponent(issueId)}/target-rewrites`,
+      { method: "post", retry: { limit: 0 }, json: { target_document_ids: targetDocumentIds } }),
   importEpisode: (project: string, episode_number: number) =>
     apiCall<ScriptDocument>(`${root(project)}/imports`, { method: "post", json: { episode_number } }),
 };

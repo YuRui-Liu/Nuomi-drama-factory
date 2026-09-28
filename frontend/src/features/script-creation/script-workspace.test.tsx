@@ -294,3 +294,30 @@ describe("ScriptWorkspace compact layout", () => {
     expect(screen.getByRole("complementary", { name: "创作文档树" })).not.toHaveClass("fixed");
   });
 });
+
+
+it("opens the consistency panel and checks the saved current episode", async () => {
+  const user = userEvent.setup();
+  const episode = doc("episode", "episode_script", "甲持有钥匙。", 2);
+  const calls: unknown[] = [];
+  server.use(
+    http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [episode] })),
+    http.get(base + "/documents/episode/proposals", () => HttpResponse.json({ ok: true, data: [] })),
+    http.get(base + "/consistency-runs", () => HttpResponse.json({ ok: true, data: [] })),
+    http.post(base + "/consistency-runs", async ({ request }) => {
+      calls.push(await request.json());
+      return HttpResponse.json({ ok: true, data: { id: "check", episode_document_id: "episode",
+        context_revisions: { episode: "r1" }, mode: "actual", proposal_id: null,
+        hypothetical_document_id: null, status: "pending", task_id: "task", error: null, issues: [] } });
+    }),
+    http.get(base + "/consistency-runs/check", () => HttpResponse.json({ ok: true, data: {
+      id: "check", episode_document_id: "episode", context_revisions: { episode: "r1" }, mode: "actual",
+      proposal_id: null, hypothetical_document_id: null, status: "completed", task_id: "task", error: null, issues: [],
+    } })),
+  );
+  renderWorkspace();
+  await user.click(await screen.findByRole("button", { name: "关联检查" }));
+  await user.click(screen.getByRole("button", { name: "检查当前集" }));
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0]).toMatchObject({ episode_document_id: "episode", context_revisions: { episode: "r1" }, proposal_id: null });
+});

@@ -216,3 +216,16 @@ async def test_refine_whole_patch_preserves_original_authorized_scope(tmp_path, 
     updated = (await service.proposals.list(doc.id))[-1]
     assert updated["before"] == text
     assert updated["after"] == text[:first["start"]] + "\u65b0\u53f0\u8bcd" + chr(0x2728) + text[first["end"]:]
+
+
+async def test_scene_scope_accepts_existing_single_number_pipe_heading(tmp_path):
+    store = DocumentStore(tmp_path / "data.db")
+    await store.initialize()
+    text = "# 第一集\n\n## 1｜账房外·夜·外\n甲说话。\n\n## 2｜码头·日·外\n乙说话。"
+    doc = await store.create(kind="episode_script", title="一", markdown=text, client_mutation_id="create")
+    caret = text.index("甲说话")
+    job = await RewriteService(store).start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        start=caret, end=caret, scope="scene", mode="dialogue", instruction="", preserve="",
+        client_mutation_id="scene")
+    assert job["before"].startswith("## 1｜账房外")
+    assert "## 2｜" not in job["before"]

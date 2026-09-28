@@ -72,7 +72,7 @@ def build_prompt(*, kind: str, script_mode: str, episode_number: int, episode_co
     parts.append('只返回当前文档的创作内容。禁止输出 craft_status、continuity_status、format_status、delivery_status、passed、自评、交付/交接状态或工作流程备注。写作参考资料仅是方法，不是本次要执行的交付流程。')
     parts.append('已写正文事实只能依据引用中的 episode_script 文档；brief、outline、episode_synopsis、people、scenes、props 即使提及集数或场次，也只是设定或计划，不能充当已写正文证据。')
     if kind == 'episode_script':
-        parts.append(f'仅写第 {episode_number} 集完整正文。使用可拍摄的场次、动作和对白，保持前文事实。不要写其他集正文。')
+        parts.append(f'仅写第 {episode_number} 集完整正文。场号使用 {episode_number}-1、{episode_number}-2 依次编号，例如 ## {episode_number}-1｜场景名称·日夜·内外。使用可拍摄的场次、动作和对白，保持前文事实。不要写其他集正文。')
     elif kind == 'episode_synopsis':
         parts.append('规划全剧各集梗概；未来集只记作计划，不当作已发生事实。')
     parts.append('区分人物、场景、道具的设计建议与已写正文事实：设定中的首次出场、关键场次或道具使用，若指向未来集，一律标为计划；引用已写集、已写场或已发生事件时，必须有已有正文依据。不要把设计预期写成已发生事实，也不要假造已写证据。')

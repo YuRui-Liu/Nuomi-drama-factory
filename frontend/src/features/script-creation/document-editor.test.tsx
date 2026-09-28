@@ -21,6 +21,16 @@ function document(revision: string, markdown: string): ScriptDocument {
 const conflict = () => Object.assign(new Error("revision conflict"), { status: 409 });
 
 describe("DocumentEditor conflict comparison", () => {
+  it("opens and selects exact codepoint evidence on navigation", async () => {
+    const manager = new DraftManager(vi.fn());
+    manager.load(document("r1", "甲😀证据乙"));
+    render(<DocumentEditor project="demo" draft={manager.get("one")!} manager={manager} onSelection={() => {}}
+      focusEvidence={{ document_id: "one", revision_id: "r1", block_id: "block", start: 2, end: 4, quote: "证据" }} />);
+    const input = await screen.findByRole("textbox", { name: "文档 Markdown" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe("证据"));
+    manager.dispose();
+  });
+
   it("assigns every heading its source codepoint anchor under StrictMode", () => {
     const markdown = "<!-- nuomi-script-settings\n{}\n-->\n\n# 人物小传\n\n## 林川\n\n### 人物弧光";
     const manager = new DraftManager(vi.fn());

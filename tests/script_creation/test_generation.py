@@ -262,3 +262,10 @@ async def test_generated_candidate_enters_review_and_adopts_with_cas(store):
                                   client_mutation_id='accept')
     assert adopted.revision.markdown == (await store.generation_candidate(candidate_id))['markdown']
     assert len(await store.revisions(target.id)) == 2
+
+
+def test_episode_script_prompt_requires_episode_scoped_scene_numbers():
+    from novelvideo.script_creation.prompts import build_prompt
+    prompt = build_prompt(kind="episode_script", script_mode="series", episode_number=3,
+                          episode_count=8, instruction="", references=[])
+    assert "3-1" in prompt and "3-2" in prompt
