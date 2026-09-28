@@ -179,7 +179,7 @@ assert all(item.status == "pending" for item in rejected_batch)
 
 ## 任务 6：人物、场景和道具资产关联
 
-执行状态：进行中，由独立子代理负责稳定资产标识、叙事实体关系与显式关联 UI。
+执行状态：已完成至 1035c2b，规格与质量审查通过。后端 223 项、前端 53 项及类型检查通过；最终质量复审独立 32 项后端、6 项界面测试通过。资产 UUID 改名保留、删除重建不复活；歧义块不保留旧实体；缺失关系可清理，文字角色不默认年龄且遵循名称规范。实际 UI 验证创建文字资产、绑定已写出场版本，并在既有资产中心显示。
 
 **文件：** models/store、asset-link-dialog.tsx、新路由关联接口；tests/script_creation/test_asset_links.py。
 
@@ -191,6 +191,8 @@ assert all(item.status == "pending" for item in rejected_batch)
 - [ ] 运行测试并提交 `feat(script-creation): link narrative designs to production assets`。
 
 ## 任务 7：采用快照与幂等制作交接
+
+执行状态：进行中，由独立子代理负责原子快照、来源写入、持久派发恢复及交接界面。
 
 **文件：** handoff.py、episode_source_store.py、screenplay runner、handoff-dialog.tsx、单集 script 路由；tests/script_creation/test_handoff.py、tests/test_task_screenplay_semantics_runner.py。
 
@@ -207,6 +209,8 @@ assert all(item.status == "pending" for item in rejected_batch)
 ## 任务 8：集成验收与交付
 
 **文件：** tests/acceptance/test_script_creation_workflow.py；前端工作台集成测试；docs/cookbook/creation/ 下新增创作使用说明。
+
+实际界面待收尾项：候选采纳后清理失效选段，避免使用旧偏移；实际版本检查不展示模型误带的 hypothetical_quote 假设文案。保存 409、重挂载草稿恢复、版本对照及显式保留本地保存已完成真实验收。
 
 - [ ] 临时项目跑三集路径：自定义设定 → 首稿 → 人物弧光修改 → 关联范围 → 采纳 → 下一集 → 场景道具关联 → 制作交接。
 - [ ] 临时项目跑 single 和已有剧本接入；确认不会默认创作整部，不会静默覆盖现有制作来源。
