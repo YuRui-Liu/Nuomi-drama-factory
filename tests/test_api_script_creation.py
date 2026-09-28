@@ -19,8 +19,15 @@ def client(tmp_path: Path, monkeypatch):
             raise HTTPException(403, detail="editor required")
         state_dir = tmp_path / project
         state_dir.mkdir(exist_ok=True)
-        return SimpleNamespace(state_dir=str(state_dir), ctx=None)
+        return SimpleNamespace(state_dir=str(state_dir), ctx=SimpleNamespace(state_dir=str(state_dir)))
 
+    async def make_store(ctx):
+        from novelvideo.sqlite_store import SQLiteStore
+        store = SQLiteStore("test", ctx.state_dir, ctx.state_dir)
+        await store.initialize()
+        return store
+
+    monkeypatch.setattr(script_creation, "make_sqlite_store_for_context", make_store)
     monkeypatch.setattr(script_creation, "resolve_project_scope", resolve)
     app = FastAPI()
     app.include_router(script_creation.router, prefix="/api/v1")
@@ -105,3 +112,25 @@ def test_api_rejects_invalid_blocks_and_reused_mutation(client):
         "base_revision_id": revision_id, "markdown": "甲\n\n丁", "client_mutation_id": "save",
     })
     assert different_payload.status_code == 409
+
+
+def test_entity_api_roles_cas_and_no_queue(client, monkeypatch):
+    from novelvideo.api.routes import script_creation
+    def forbidden(*args, **kwargs):
+        raise AssertionError("narrative asset links must never queue media")
+    monkeypatch.setattr(script_creation, "enqueue_project_task", forbidden)
+    http, user, roles = client
+    base = "/api/v1/projects/one/script-creation"
+    doc = http.post(base + "/documents", json={"kind": "people", "title": "人物", "markdown": "## A", "client_mutation_id": "doc"}).json()["data"]
+    args = dict(document_id=doc["id"], base_revision_id=doc["current_revision_id"], block_id=doc["revision"]["blocks"][0]["id"], name="A", client_mutation_id="entity", create_text={"name": "A", "description": "text"})
+    response = http.post(base + "/entities", json=args)
+    assert response.status_code == 200, response.text
+    entity = response.json()["data"]
+    assert entity["asset_id"]
+    assert http.get(base + "/assets?asset_type=character").json()["data"][0]["asset_id"] == entity["asset_id"]
+    user["role"] = "viewer"
+    assert http.get(base + "/entities").status_code == 200
+    assert http.post(base + "/entities", json=args).status_code == 403
+    user["role"] = "editor"
+    assert http.post(base + "/entities", json={**args, "base_revision_id": "stale", "client_mutation_id": "stale"}).status_code == 409
+    assert http.post("/api/v1/projects/two/script-creation/entities", json={**args, "client_mutation_id": "foreign"}).status_code == 404

@@ -108,3 +108,19 @@ export interface ConsistencyRun {
   status: "pending" | "running" | "completed" | "failed" | "needs_rebase";
   task_id: string | null; error: string | null; issues: ConsistencyIssue[];
 }
+
+export type NarrativeAssetType = "character" | "scene" | "prop";
+export interface EntityRelation { kind: "holding" | "key_prop" | "entry"; entity_id: string; missing?: boolean; stale?: boolean }
+export interface EntityAppearance { kind: "first_appearance" | "critical_scene"; status: "planned" | "written"; episode_number?: number; document_id?: string; revision_id?: string; stale?: boolean }
+export interface NarrativeEntity {
+  entity_id: string; document_id: string; block_id: string; name: string; asset_type: NarrativeAssetType;
+  confirmed_revision: string; asset_id: string | null; selected_revision: string | null;
+  relations: EntityRelation[]; appearances: EntityAppearance[];
+  asset_missing: boolean; entry_missing: boolean; stale: boolean; asset_name: string | null;
+}
+export interface NarrativeAsset { asset_id: string; asset_type: NarrativeAssetType; name: string; description: string }
+export interface EntityInput {
+  document_id: string; base_revision_id: string; block_id: string; name: string; client_mutation_id: string;
+  entity_id?: string; asset_id?: string; create_text?: { name: string; description: string };
+  relations?: EntityRelation[]; appearances?: EntityAppearance[];
+}

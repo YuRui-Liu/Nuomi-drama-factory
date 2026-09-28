@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
 from novelvideo.episode_source_store import EpisodeSourceStore
+from novelvideo.script_creation.entities import EntityService
 from novelvideo.script_creation.documents import import_episode_source
 from novelvideo.script_creation.proposals import ProposalService
 from novelvideo.script_creation.rewrite import RewriteService
@@ -478,5 +479,72 @@ async def create_consistency_targets(project: str, issue_id: str, body: TargetRe
             else:
                 result.append(job)
         return {'ok': True, 'data': result}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+class EntityRelationBody(Strict):
+    kind: str
+    entity_id: str
+
+
+class EntityAppearanceBody(Strict):
+    kind: str
+    status: str
+    episode_number: int | None = None
+    document_id: str | None = None
+    revision_id: str | None = None
+
+
+class TextAssetBody(Strict):
+    name: str = Field(min_length=1)
+    description: str = ""
+
+
+class EntityBody(Strict):
+    document_id: str
+    base_revision_id: str
+    block_id: str
+    name: str = Field(min_length=1)
+    client_mutation_id: str = Field(min_length=1)
+    entity_id: str | None = None
+    asset_id: str | None = None
+    create_text: TextAssetBody | None = None
+    relations: list[EntityRelationBody] | None = None
+    appearances: list[EntityAppearanceBody] | None = None
+
+
+async def _entities(project, user, role):
+    store, resolved = await _store(project, user, role)
+    sqlite = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        await sqlite.initialize()
+    finally:
+        await sqlite.close()
+    service = EntityService(store)
+    await service.initialize()
+    return service
+
+
+@router.get(PREFIX + "/entities")
+async def list_entities(project: str, document_id: str | None = None, user: dict = Depends(get_api_user)):
+    service = await _entities(project, user, "viewer")
+    return {"ok": True, "data": await service.list(document_id)}
+
+
+@router.get(PREFIX + "/assets")
+async def list_entity_assets(project: str, asset_type: str, user: dict = Depends(get_api_user)):
+    service = await _entities(project, user, "viewer")
+    try:
+        return {"ok": True, "data": await service.assets(asset_type)}
+    except DocumentValidation as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + "/entities")
+async def put_entity(project: str, body: EntityBody, user: dict = Depends(get_api_user)):
+    service = await _entities(project, user, "editor")
+    try:
+        return {"ok": True, "data": await service.put(**body.model_dump())}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc

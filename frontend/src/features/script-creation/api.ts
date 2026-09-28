@@ -1,11 +1,14 @@
 import { apiCall } from "@/api/client";
-import type { ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue } from "./types";
+import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
 const docPath = (project: string, id: string) => `${root(project)}/documents/${encodeURIComponent(id)}`;
 const mutation = () => crypto.randomUUID();
 
 export const scriptCreationApi = {
+  listEntities: (project: string) => apiCall<NarrativeEntity[]>(`${root(project)}/entities`),
+  listEntityAssets: (project: string, assetType: NarrativeAssetType) => apiCall<NarrativeAsset[]>(`${root(project)}/assets?asset_type=${assetType}`),
+  putEntity: (project: string, body: EntityInput) => apiCall<NarrativeEntity>(`${root(project)}/entities`, { method: "post", retry: { limit: 0 }, json: body }),
   list: (project: string) => apiCall<ScriptDocument[]>(`${root(project)}/documents`),
   get: (project: string, id: string) => apiCall<ScriptDocument>(docPath(project, id)),
   create: (project: string, body: { kind: ScriptDocumentKind; title: string; markdown?: string; episode_number?: number }, client_mutation_id: string = mutation()) =>

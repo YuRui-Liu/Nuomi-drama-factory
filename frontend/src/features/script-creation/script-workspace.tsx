@@ -6,6 +6,7 @@ import { scriptCreationApi } from "./api";
 import { DraftManager } from "./draft-manager";
 import { GenerationPanel } from "./generation-panel";
 import { ProposalReview } from "./proposal-review";
+import { EntityPanel } from "./entity-panel";
 import { IssueList } from "./issue-list";
 import { RevisionHistory } from "./revision-history";
 import { readRecovery, writeRecovery } from "./draft-recovery";
@@ -34,7 +35,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [instruction, setInstruction] = useState("");
-  const [rightTab, setRightTab] = useState<"generation" | "review" | "history" | "consistency">("generation");
+  const [rightTab, setRightTab] = useState<"generation" | "review" | "history" | "consistency" | "assets">("generation");
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateTargetId, setCandidateTargetId] = useState<string | null>(null);
   const [focusEvidence, setFocusEvidence] = useState<ConsistencyEvidence | null>(null);
@@ -252,7 +253,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       <aside aria-label="AI 协作" className={(mobilePanel === "ai" ? "fixed bottom-0 right-0 top-[74px] z-30 flex w-[min(90vw,360px)] shadow-2xl" : "hidden") + " min-h-0 flex-col border-l border-white/[0.07] bg-[#111317] lg:static lg:flex lg:w-auto lg:shadow-none"}>
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-4 text-xs font-semibold"><MessageSquare size={15} className="text-[#E5FF5C]" />AI 协作<button aria-label="关闭 AI 创作" onClick={() => setMobilePanel(null)} className="ml-auto text-white/50 lg:hidden"><X size={16} /></button></div>
         <div className="flex gap-1 border-b border-white/10 p-2 text-xs">
-          {([ ["generation", "整文生成"], ["consistency", "关联检查"], ["review", "候选审阅"], ["history", "版本历史"] ] as const).map(([id, label]) => <button key={id}
+          {([ ["generation", "整文生成"], ["consistency", "关联检查"], ["review", "候选审阅"], ["history", "版本历史"], ["assets", "资产关联"] ] as const).map(([id, label]) => <button key={id}
             onClick={() => setRightTab(id)} aria-current={rightTab === id ? "page" : undefined}
             className={"flex-1 rounded px-1 py-2 " + (rightTab === id ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/50")}>{label}</button>)}
         </div>
@@ -266,6 +267,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
         {rightTab === "review" && current && <ProposalReview key={current.id} project={project} document={current} documents={savedDocuments}
           saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} selection={selection} instruction={instruction}
           candidateId={candidateTargetId === current.id ? candidateId : null} onApplied={refresh} />}
+        {rightTab === "assets" && <EntityPanel key={current?.id ?? "none"} project={project} document={current ?? null} documents={savedDocuments} allSaved={manager.all().every((item) => item.status === "saved")} />}
         {rightTab === "history" && current && <RevisionHistory key={current.id} project={project} document={current}
           saved={draft?.status === "saved" && manager.all().every((item) => item.status === "saved")} onApplied={refresh} />}
         {rightTab === "generation" && selection?.text && <div className="mx-4 mb-2 rounded border-l-2 border-[#E5FF5C] bg-black/20 p-2 text-xs leading-5 text-white/65">当前选段：“{selection.text}”<span className="block text-white/35">字符 {selection.start}–{selection.end}</span></div>}
