@@ -318,7 +318,7 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
             </div>
             {activePreview.diff.needs_reparse && <p className="text-amber-200">场次无法可靠复用，需要重新解析；不可只选部分场次。</p>}
             {!!activePreview.diff.inferred_impacts.length && <p className="text-amber-200">场次校对可能受影响，需校对确认（依据场次差异规则推断）</p>}
-            {!!activePreview.diff.reused_scenes.length && <p className="text-xs text-white/60">未变化场次沿用原来源版本：{activePreview.diff.reused_scenes.map((scene) => `${sceneName(activePreview, scene.new_scene_id)} ← ${scene.source_revision ?? "无"}`).join("、")}</p>}
+            {!!activePreview.diff.reused_scenes.length && <p className="text-xs text-white/60">原文未变，可参考旧版来源：{activePreview.diff.reused_scenes.map((scene) => `${sceneName(activePreview, scene.new_scene_id)} ← ${scene.source_revision ?? "无"}`).join("、")}</p>}
             {!!activePreview.diff.affected_nonupdated_scene_ids.length && <p className="text-amber-200">改动但未校对的场次保持旧阶段结果：{activePreview.diff.affected_nonupdated_scene_ids.map((id) => sceneName(activePreview, id)).join("、")}</p>}
             {!!Object.keys(activePreview.snapshot.previous_stage_revisions).length && <p className="text-xs text-white/60">已有阶段：{Object.entries(activePreview.snapshot.previous_stage_revisions).map(([stage, value]) => `${stage} ${value.stale ? "已失效" : "待核对"}`).join("、")}</p>}
             {activePreview.status === "prepared" && <button disabled={!canConfirm || busy} onClick={() => void confirm()} className="rounded bg-[#E5FF5C] px-4 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>}
