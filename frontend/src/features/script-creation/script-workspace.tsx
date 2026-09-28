@@ -9,6 +9,7 @@ import { ProposalReview } from "./proposal-review";
 import { EntityPanel } from "./entity-panel";
 import { IssueList } from "./issue-list";
 import { RevisionHistory } from "./revision-history";
+import { HandoffDialog } from "./handoff-dialog";
 import { readRecovery, writeRecovery } from "./draft-recovery";
 import { DocumentEditor } from "./document-editor";
 import { treeForDocuments } from "./document-tree";
@@ -20,16 +21,17 @@ import type { ConsistencyEvidence, ScriptDocument, ScriptSettings } from "./type
 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败，请重试"; }
 
-export function ScriptWorkspace({ project }: { project: string }) {
-  return <ProjectScriptWorkspace key={project} project={project} />;
+export function ScriptWorkspace({ project, initialDocumentId }: { project: string; initialDocumentId?: string }) {
+  return <ProjectScriptWorkspace key={project} project={project} initialDocumentId={initialDocumentId} />;
 }
 
-function ProjectScriptWorkspace({ project }: { project: string }) {
+function ProjectScriptWorkspace({ project, initialDocumentId }: { project: string; initialDocumentId?: string }) {
   const [documents, setDocuments] = useState<ScriptDocument[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());
   const [setterOpen, setSetterOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"docs" | "ai" | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -88,9 +90,10 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       hydrated.current = true;
       writeRecovery(project, manager);
     }
-    setSelectedId((current) => current && list.some((doc) => doc.id === current) ? current : list[0]?.id ?? null);
+    setSelectedId((current) => current && list.some((doc) => doc.id === current) ? current :
+      (initialDocumentId && list.some((doc) => doc.id === initialDocumentId) ? initialDocumentId : list[0]?.id ?? null));
     return list;
-  }, [project, manager, recovery]);
+  }, [project, manager, recovery, initialDocumentId]);
 
   useEffect(() => {
     let alive = true;
@@ -108,6 +111,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
   const savedDocuments = documents.map((doc) => manager.get(doc.id)?.document ?? doc);
   const current = savedDocuments.find((doc) => doc.id === selectedId);
   const draft = current && manager.get(current.id);
+  const allSaved = manager.all().every((item) => item.status === "saved");
   const availableImports = imports.data?.data.items ?? [];
   const nextEpisodeNumber = Math.max(0, ...documents.filter((doc) => doc.kind === "episode_script").map((doc) => doc.episode_number ?? 0)) + 1;
 
@@ -243,6 +247,10 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
         </div>
       </aside>
       <section aria-label="文档正文" className="min-h-0 overflow-y-auto bg-[#15171B] px-4">
+        {current?.kind === "episode_script" && <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2 border-b border-white/10 py-3 text-xs">
+          <span className="text-white/50">当前草稿 {current.current_revision_id.slice(0, 8)} · 已交接 {current.adopted_revision_id?.slice(0, 8) ?? "无"}</span>
+          <button disabled={!allSaved || busy} onClick={() => setHandoffOpen(true)} className="rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>
+        </div>}
         {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={setSelection} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
           <div className="mb-5 flex size-16 items-center justify-center rounded-2xl border border-[#E5FF5C]/20 bg-[#E5FF5C]/5 text-[#E5FF5C]"><FileText size={30} /></div>
           <h2 className="text-xl font-semibold">你的下一部故事，从这里开始。</h2><p className="mt-3 text-sm leading-7 text-white/45">从创作预设找到方向，或写下一个想法。设定、大纲和正文都会保存在这里。</p>
@@ -252,7 +260,7 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       </section>
       <aside aria-label="AI 协作" className={(mobilePanel === "ai" ? "fixed bottom-0 right-0 top-[74px] z-30 flex w-[min(90vw,360px)] shadow-2xl" : "hidden") + " min-h-0 flex-col border-l border-white/[0.07] bg-[#111317] lg:static lg:flex lg:w-auto lg:shadow-none"}>
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-4 text-xs font-semibold"><MessageSquare size={15} className="text-[#E5FF5C]" />AI 协作<button aria-label="关闭 AI 创作" onClick={() => setMobilePanel(null)} className="ml-auto text-white/50 lg:hidden"><X size={16} /></button></div>
-        <div className="flex gap-1 border-b border-white/10 p-2 text-xs">
+        <div className="flex gap-1 overflow-x-auto whitespace-nowrap border-b border-white/10 p-2 text-xs">
           {([ ["generation", "整文生成"], ["consistency", "关联检查"], ["review", "候选审阅"], ["history", "版本历史"], ["assets", "资产关联"] ] as const).map(([id, label]) => <button key={id}
             onClick={() => setRightTab(id)} aria-current={rightTab === id ? "page" : undefined}
             className={"flex-1 rounded px-1 py-2 " + (rightTab === id ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/50")}>{label}</button>)}
@@ -275,5 +283,6 @@ function ProjectScriptWorkspace({ project }: { project: string }) {
       </aside>
     </main>
     {setterOpen && <ScriptSetter initial={settings} onSave={saveSettings} onClose={() => setSetterOpen(false)} />}
+    {handoffOpen && current?.kind === "episode_script" && <HandoffDialog key={current.id} project={project} document={current} documents={savedDocuments} allSaved={allSaved} onClose={() => setHandoffOpen(false)} onRefresh={refresh} />}
   </div>;
 }

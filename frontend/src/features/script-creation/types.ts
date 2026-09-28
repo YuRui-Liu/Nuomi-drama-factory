@@ -124,3 +124,40 @@ export interface EntityInput {
   entity_id?: string; asset_id?: string; create_text?: { name: string; description: string };
   relations?: EntityRelation[]; appearances?: EntityAppearance[];
 }
+
+
+export type HandoffStatus = "prepared" | "source_written" | "dispatching" | "dispatched" | "completed" | "failed" | "needs_rebase";
+export interface HandoffScope { mode: "none" | "all" | "selected"; scene_ids: string[] }
+export interface HandoffFactRequest { mode: "unchecked" | "checked"; reason?: string | null; run_id?: string | null; issue_reasons: Record<string, string> }
+export interface HandoffPrepareRequest {
+  document_id: string; revision_id: string; reference_revisions: Record<string, string>;
+  selected_entity_ids: string[]; update_scope: HandoffScope;
+  fact_acknowledgement: HandoffFactRequest; client_mutation_id: string;
+}
+export interface HandoffSnapshot {
+  episode_number: number; document_id: string; revision_id: string; title: string; markdown: string;
+  reference_revisions: Record<string, string>;
+  references: Array<{ document_id: string; revision_id: string; kind: ScriptDocumentKind; title: string; markdown: string }>;
+  entities: NarrativeEntity[];
+  fact_acknowledgement: { mode: "unchecked" | "checked"; run_id: string | null; reason: string | null;
+    known_fact_issues: Record<string, { run_id: string; reason: string; context_revisions: Record<string, string> }> };
+  update_scope: HandoffScope;
+  previous_source: { revision: string; hash: string } | null;
+  previous_stage_revisions: Record<string, { consumed_revision: string | null; stale: boolean }>;
+}
+export interface HandoffDiff {
+  text: Array<{ operation: string; old_lines: number[]; new_lines: number[]; before: string[]; after: string[] }>;
+  scenes: Array<{ operation: string; old_scene_ids: string[]; new_scene_ids: string[] }>;
+  dialogue: Array<{ operation: string; before: string[]; after: string[] }>;
+  references: Array<{ document_id: string; before_revision: string | null; after_revision: string | null; operation: string }>;
+  entity_references: Array<{ entity_id: string; before_asset_id: string | null; after_asset_id: string | null; operation: string }>;
+  reused_scenes: Array<{ old_scene_id: string; new_scene_id: string; source_revision: string | null; source_hash: string | null }>;
+  affected_nonupdated_scene_ids: string[]; available_scene_ids: string[];
+  needs_reparse: boolean; inferred_impacts: string[];
+}
+export interface ScriptHandoff {
+  id: string; status: HandoffStatus; episode_number: number; document_id: string; revision_id: string;
+  snapshot: HandoffSnapshot; diff: HandoffDiff; expected_source_project_revision: number;
+  source_revision: string | null; source_hash: string | null; task_id: string | null;
+  task_result: Record<string, unknown> | null; error: string | null; created_at: string; updated_at: string;
+}

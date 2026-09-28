@@ -321,3 +321,20 @@ it("opens the consistency panel and checks the saved current episode", async () 
   await waitFor(() => expect(calls).toHaveLength(1));
   expect(calls[0]).toMatchObject({ episode_document_id: "episode", context_revisions: { episode: "r1" }, proposal_id: null });
 });
+
+
+describe("ScriptWorkspace handoff gate", () => {
+  it("disables episode handoff while any document has an unsaved draft", async () => {
+    const user = userEvent.setup();
+    const episode = doc("episode", "episode_script", "# 正文\n\n## 1-1 内景");
+    const people = doc("people", "people", "# 人物");
+    server.use(http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [episode, people] })));
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "人物小传" }));
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), " 新内容");
+    await user.click(screen.getByRole("button", { name: "第 1 集" }));
+    expect(screen.getByRole("button", { name: "确认本集并交接制作" })).toBeDisabled();
+    expect(screen.queryByRole("dialog", { name: "确认本集并交接制作" })).not.toBeInTheDocument();
+  });
+});

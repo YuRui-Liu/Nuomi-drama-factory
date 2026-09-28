@@ -1,5 +1,5 @@
 import { apiCall } from "@/api/client";
-import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue } from "./types";
+import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, ScriptHandoff } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
 const docPath = (project: string, id: string) => `${root(project)}/documents/${encodeURIComponent(id)}`;
@@ -70,6 +70,18 @@ export const scriptCreationApi = {
   createConsistencyTargets: (project: string, issueId: string, targetDocumentIds: string[]) =>
     apiCall<RewriteJob[]>(`${root(project)}/consistency-issues/${encodeURIComponent(issueId)}/target-rewrites`,
       { method: "post", retry: { limit: 0 }, json: { target_document_ids: targetDocumentIds } }),
+  listHandoffs: (project: string, episodeNumber: number) =>
+    apiCall<ScriptHandoff[]>(`${root(project)}/handoffs?episode_number=${episodeNumber}`),
+  getHandoff: (project: string, handoffId: string) =>
+    apiCall<ScriptHandoff>(`${root(project)}/handoffs/${encodeURIComponent(handoffId)}`),
+  prepareHandoff: (project: string, body: HandoffPrepareRequest) =>
+    apiCall<ScriptHandoff>(`${root(project)}/handoffs/prepare`, { method: "post", retry: { limit: 0 }, json: body }),
+  confirmHandoff: (project: string, handoffId: string, body: { expected_source_project_revision: number; client_mutation_id: string }) =>
+    apiCall<ScriptHandoff>(`${root(project)}/handoffs/${encodeURIComponent(handoffId)}/confirm`,
+      { method: "post", retry: { limit: 0 }, json: body }),
+  retryHandoff: (project: string, handoffId: string) =>
+    apiCall<ScriptHandoff>(`${root(project)}/handoffs/${encodeURIComponent(handoffId)}/retry`,
+      { method: "post", retry: { limit: 0 } }),
   importEpisode: (project: string, episode_number: number) =>
     apiCall<ScriptDocument>(`${root(project)}/imports`, { method: "post", json: { episode_number } }),
 };

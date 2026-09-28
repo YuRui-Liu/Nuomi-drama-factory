@@ -5,9 +5,11 @@ import { ScriptWorkspace } from "@/features/script-creation/script-workspace";
 
 function ProjectScriptCreationPage() {
   const { project } = Route.useParams();
-  return <ScriptWorkspace project={project} />;
+  const { document } = Route.useSearch();
+  return <ScriptWorkspace project={project} initialDocumentId={document} />;
 }
 
 export const Route = createFileRoute("/_app/projects/$project/creation")({
+  validateSearch: (search: Record<string, unknown>) => ({ document: typeof search.document === "string" ? search.document : undefined }),
   component: ProjectScriptCreationPage,
 });
