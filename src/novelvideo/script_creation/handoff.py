@@ -588,10 +588,15 @@ class HandoffService:
         scope = f"handoff:{handoff_id}"
         task = get_task_manager().get_task_for_project(
             ctx, "screenplay_semantics", item["episode_number"], scope=scope)
+        persisted_result = item.get("task_result")
+        queue_result = task.result if task else None
         failed_terminal_result = bool(
             task and task.status == "completed" and item["status"] == "failed"
-            and item.get("task_result") == task.result
-            and _semantic_extraction_failure(task.result)
+            and item.get("task_id") == task.task_id
+            and isinstance(persisted_result, dict) and isinstance(queue_result, dict)
+            and persisted_result.get("semantic_revision_id")
+            and persisted_result["semantic_revision_id"] == queue_result.get("semantic_revision_id")
+            and _semantic_extraction_failure(persisted_result)
         )
         if (task and task.status == "completed" and not failed_terminal_result
                 and isinstance(task.result, dict) and task.result.get("semantic_revision_id")):

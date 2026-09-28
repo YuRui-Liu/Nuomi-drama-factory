@@ -78,6 +78,11 @@ class ScreenplaySemanticService:
             if (context_compatible and old_scene is not None
                     and old_scene.status in {"validated", "reused"}
                     and old_beats and all(not beat.stale for beat in old_beats)
+                    # Hash equality alone does not preserve evidence coordinates.
+                    # Re-extract if source lines or block IDs moved, including dialogue IDs.
+                    and old_scene.source_range == parsed_scene.source_range
+                    and tuple((block.id, block.source_range) for block in old_scene.blocks)
+                        == tuple((block.id, block.source_range) for block in parsed_scene.blocks)
                     and not force_selected_retry):
                 reusable[parsed_scene.id] = tuple(
                     beat.model_copy(update={"scene_id": parsed_scene.id}) for beat in old_beats

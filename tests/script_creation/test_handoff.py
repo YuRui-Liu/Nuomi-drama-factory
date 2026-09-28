@@ -701,3 +701,46 @@ async def test_selected_scene_order_is_one_handoff_action(workspace):
                                    client_mutation_id="scene-order-second")
     assert second["id"] == first["id"]
     assert second["snapshot"]["update_scope"]["scene_ids"] == sorted(ids)
+
+
+async def test_first_retry_skips_decorated_completed_failed_task_result(workspace, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.script_creation import handoff as module
+
+    documents, sources, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 屋内 日 内\n甲：你好。", client_mutation_id="metadata-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "all"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="metadata-prepare")
+    await service.confirm(prepared["id"], expected_source_project_revision=0,
+                          client_mutation_id="metadata-confirm")
+    _, envelope = await service._begin_dispatch(prepared["id"])
+    await service.claim(prepared["id"], task_id="old-task", dispatch_token=envelope["dispatch_token"])
+    archived_result = {"semantic_revision_id": "semantic-failed", "status": "review_required",
+                       "succeeded_scenes": 0, "failed_scenes": 1,
+                       "validation_report": {"passed": False, "issues": [
+                           {"code": "scene_extraction_failed", "message": "provider missing"}]}}
+    await service.complete(prepared["id"], task_id="old-task", result=archived_result)
+    queue_result = {**archived_result, "task_metadata": {"backend": "local", "attempt": 1}}
+    queued = []
+
+    class Manager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return SimpleNamespace(task_id="old-task", status="completed", result=queue_result)
+
+    async def enqueue(_ctx, **kwargs):
+        queued.append(kwargs)
+        return SimpleNamespace(task_state=SimpleNamespace(task_id="new-task"))
+
+    monkeypatch.setattr(module, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(module, "enqueue_project_task", enqueue)
+    retried = await service.retry(prepared["id"], SimpleNamespace(project_id="handoff-project"))
+    assert retried["task_id"] == "new-task"
+    assert retried["status"] == "dispatched"
+    assert len(queued) == 1
+    assert (await sources.list_sources())[0].source_revision == retried["source_revision"]
+    with pytest.raises(DocumentConflict, match="consumer superseded"):
+        await service.complete(prepared["id"], task_id="old-task", result=queue_result)

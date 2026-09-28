@@ -233,3 +233,46 @@ async def test_changed_unselected_scene_retains_old_beats_with_explicit_old_sour
     assert retained[0].script_facts == old_beats[0].script_facts
     assert retained[0].script_facts != ("林默猛地扶住栏杆。",)
     assert second.status == "review_required"
+
+
+@pytest.mark.asyncio
+async def test_unchanged_scene_with_shifted_evidence_coordinates_is_reextracted(tmp_path):
+    from novelvideo.screenplay_semantics.models import SourceRange
+
+    calls = []
+
+    async def extractor(scenes, *, concurrency):
+        calls.extend(scene.id for scene in scenes)
+        return tuple(SceneBeatDraft(
+            scene_id=scene.id,
+            beats=(make_draft(scene).model_copy(update={
+                "source_ranges": (SourceRange(
+                    start_line=scene.blocks[0].source_range.start_line,
+                    end_line=scene.blocks[-1].source_range.end_line),),
+                "script_facts": (scene.blocks[0].text.lstrip("△"),),
+                "must_show": (scene.blocks[0].text.lstrip("△"),),
+                "dialogue_source_ids": tuple(block.id for block in scene.blocks if block.kind == "dialogue"),
+            }),),
+        ) for scene in scenes)
+
+    content = SCRIPT + "林默：我看见了。\n"
+    store = ScreenplaySemanticStore(tmp_path)
+    service = ScreenplaySemanticService(store, extractor=extractor)
+    first = await service.build(source(content))
+    assert first.validation_report.passed
+    store.activate(1, first.revision_id, expected_source_revision=1)
+    calls.clear()
+    shifted = content.replace("△林默撞门。", "△林默撞门。\n△又传来脚步。\n△门外有人。\n△灯突然熄灭。")
+
+    second = await service.build(source(shifted, revision=2))
+
+    assert first.scenes[1].id == second.scenes[1].id
+    assert first.scenes[1].source_range != second.scenes[1].source_range
+    assert calls == [scene.id for scene in second.scenes]
+    assert second.scenes[1].status == "validated"
+    beat = second.beats_for(second.scenes[1].id)[0]
+    assert all(second.scenes[1].source_range.start_line <= item.start_line <= item.end_line <=
+               second.scenes[1].source_range.end_line for item in beat.source_ranges)
+    assert beat.dialogue_source_ids != first.beats_for(first.scenes[1].id)[0].dialogue_source_ids
+    assert beat.dialogue_source_ids == tuple(
+        block.id for block in second.scenes[1].blocks if block.kind == "dialogue")
