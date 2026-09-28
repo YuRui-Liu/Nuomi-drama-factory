@@ -19,7 +19,7 @@ def client(tmp_path: Path, monkeypatch):
             raise HTTPException(403, detail="editor required")
         state_dir = tmp_path / project
         state_dir.mkdir(exist_ok=True)
-        return SimpleNamespace(state_dir=str(state_dir), ctx=SimpleNamespace(state_dir=str(state_dir)))
+        return SimpleNamespace(state_dir=str(state_dir), ctx=SimpleNamespace(state_dir=str(state_dir), project_id=project))
 
     async def make_store(ctx):
         from novelvideo.sqlite_store import SQLiteStore
@@ -134,3 +134,38 @@ def test_entity_api_roles_cas_and_no_queue(client, monkeypatch):
     user["role"] = "editor"
     assert http.post(base + "/entities", json={**args, "base_revision_id": "stale", "client_mutation_id": "stale"}).status_code == 409
     assert http.post("/api/v1/projects/two/script-creation/entities", json={**args, "client_mutation_id": "foreign"}).status_code == 404
+
+
+def test_handoff_api_freezes_draft_and_enforces_project_roles(client):
+    http, user, roles = client
+    base = "/api/v1/projects/one/script-creation"
+    created = http.post(base + "/documents", json={
+        "kind": "episode_script", "title": "第一集", "episode_number": 1,
+        "markdown": "## 1-1｜账房 · 夜 · 内\n甲：你好。", "client_mutation_id": "handoff-create",
+    })
+    assert created.status_code == 200
+    doc = created.json()["data"]
+    request = {
+        "document_id": doc["id"], "revision_id": doc["current_revision_id"],
+        "reference_revisions": {}, "selected_entity_ids": [],
+        "update_scope": {"mode": "none"},
+        "fact_acknowledgement": {"mode": "unchecked", "reason": "人工确认"},
+        "client_mutation_id": "handoff-prepare",
+    }
+    prepared = http.post(base + "/handoffs/prepare", json=request)
+    assert prepared.status_code == 200
+    handoff = prepared.json()["data"]
+    assert handoff["snapshot"]["markdown"] == doc["revision"]["markdown"]
+    assert http.get(base + "/handoffs", params={"episode_number": 1}).json()["data"][0]["id"] == handoff["id"]
+    confirm = http.post(base + f"/handoffs/{handoff['id']}/confirm", json={
+        "expected_source_project_revision": 0, "client_mutation_id": "handoff-confirm",
+    })
+    assert confirm.status_code == 202
+    assert confirm.json()["data"]["status"] == "completed"
+    assert http.get(base + f"/handoffs/{handoff['id']}").status_code == 200
+    assert http.get(f"/api/v1/projects/two/script-creation/handoffs/{handoff['id']}").status_code == 404
+    user["role"] = "viewer"
+    assert http.get(base + f"/handoffs/{handoff['id']}").status_code == 200
+    assert http.post(base + "/handoffs/prepare", json={**request, "client_mutation_id": "viewer"}).status_code == 403
+    assert http.post(base + f"/handoffs/{handoff['id']}/retry").status_code == 403
+    assert "viewer" in roles and "editor" in roles

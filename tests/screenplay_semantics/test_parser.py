@@ -99,3 +99,15 @@ episode: E002
         block.text for scene in parsed.scenes for block in scene.blocks
     )
     assert any(block.text.startswith("<!--") for block in parsed.metadata_blocks)
+
+
+def test_workspace_markdown_heading_and_cast_keep_clean_names():
+    parsed = parse_screenplay_document(
+        "## 1-1｜账房 · 夜 · 内\n出场人物：林川、掌柜。\n林川：快走。"
+    )
+    scene = parsed.scenes[0]
+    assert scene.location == "账房"
+    assert scene.time_of_day == "夜"
+    assert scene.interior_exterior == "interior"
+    assert scene.characters == ("林川", "掌柜")
+    assert scene.blocks[0].kind == "dialogue"

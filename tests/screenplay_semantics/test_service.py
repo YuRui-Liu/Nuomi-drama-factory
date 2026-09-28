@@ -112,3 +112,75 @@ async def test_build_does_not_trigger_paid_media_and_returns_reviewable_failure(
 
     assert result.status == "review_required"
     assert {issue.code for issue in result.validation_report.issues} == {"scene_extraction_failed"}
+
+
+@pytest.mark.asyncio
+async def test_selected_reference_context_reaches_scene_extractor(tmp_path):
+    seen = []
+    context = {"documents": [{"document_id": "people-1", "markdown": "林默过去曾受伤"}],
+               "entities": []}
+
+    async def extractor(scenes, *, concurrency, reference_context):
+        seen.append(reference_context)
+        return ()
+
+    service = ScreenplaySemanticService(ScreenplaySemanticStore(tmp_path), extractor=extractor)
+    await service.build(source(SCRIPT), reference_context=context)
+    assert seen == [context]
+
+
+@pytest.mark.asyncio
+async def test_source_overwrite_reuses_unchanged_scene_from_archived_active_revision(tmp_path):
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.episode_sources import build_episode_candidate
+    from novelvideo.sqlite_store import SQLiteStore
+
+    sqlite = SQLiteStore("semantic-reuse", str(tmp_path / "project"), str(tmp_path / "state"))
+    await sqlite.initialize()
+    sources = EpisodeSourceStore(sqlite)
+    calls = []
+
+    async def extractor(scenes, *, concurrency):
+        calls.extend(item.id for item in scenes)
+        return tuple(SceneBeatDraft(
+            scene_id=item.id,
+            beats=(make_draft(item).model_copy(update={
+                "script_facts": (item.blocks[0].text.lstrip("△"),),
+                "must_show": (item.blocks[0].text.lstrip("△"),),
+            }),),
+        ) for item in scenes)
+
+    try:
+        await sources.upsert_sources([build_episode_candidate("E01.md", SCRIPT)], expected_revision=0)
+        first_source = (await sources.list_sources())[0]
+        store = ScreenplaySemanticStore(tmp_path / "project")
+        service = ScreenplaySemanticService(store, extractor=extractor)
+        first = await service.build(first_source)
+        store.activate(1, first.revision_id, expected_source_revision=1)
+        calls.clear()
+        changed = SCRIPT.replace("△林默扶住栏杆。", "△林默猛地扶住栏杆。")
+        await sources.upsert_sources([build_episode_candidate("E01.md", changed)], expected_revision=1)
+        assert store.load_active(1) is None
+        second_source = (await sources.list_sources())[0]
+        second = await service.build(second_source)
+        assert second.parent_revision_id == first.revision_id
+        assert second.scenes[0].status == "reused"
+        assert calls == [second.scenes[1].id]
+    finally:
+        await sqlite.close()
+
+
+@pytest.mark.asyncio
+async def test_build_awaits_async_guarded_save_callback(tmp_path):
+    saved = []
+
+    async def extractor(scenes, *, concurrency):
+        return ()
+
+    async def save_revision(revision):
+        saved.append(revision.revision_id)
+        return revision
+
+    service = ScreenplaySemanticService(ScreenplaySemanticStore(tmp_path), extractor=extractor)
+    result = await service.build(source(SCRIPT), save_revision=save_revision)
+    assert saved == [result.revision_id]

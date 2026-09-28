@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspect import isawaitable
+
 from collections.abc import Awaitable, Callable
 
 from novelvideo.episode_source_store import EpisodeSource
@@ -41,13 +43,16 @@ class ScreenplaySemanticService:
         *,
         concurrency: int = 5,
         selected_scene_ids: set[str] | None = None,
+        save_revision: Callable[[ScreenplaySemanticRevision], ScreenplaySemanticRevision] | None = None,
+        reference_context: dict | None = None,
     ) -> ScreenplaySemanticRevision:
         parsed = parse_screenplay_document(source.content)
         if not parsed.scenes:
             raise ValueError(
                 "SCREENPLAY_SCENES_NOT_FOUND: 未识别到场次，请检查场头格式，例如 1-1 海边灯塔 外 夜"
             )
-        previous = self.store.load_active(source.episode_number)
+        previous = (self.store.load_active(source.episode_number)
+                    or self.store.load_last_active_revision(source.episode_number))
         previous_by_hash = {
             item.content_hash: item for item in previous.scenes
         } if previous else {}
@@ -75,7 +80,9 @@ class ScreenplaySemanticService:
                 scenes.append(parsed_scene)
                 targets.append(parsed_scene)
 
-        extraction = await self.extractor(tuple(targets), concurrency=concurrency)
+        extraction_options = {"reference_context": reference_context} if reference_context else {}
+        extraction = await self.extractor(tuple(targets), concurrency=concurrency,
+                                          **extraction_options)
         extracted_by_id = {item.scene_id: item for item in extraction}
         beats: list[DramaticBeat] = []
         issues: list[SemanticValidationIssue] = []
@@ -119,7 +126,8 @@ class ScreenplaySemanticService:
             validation_report=report,
             parent_revision_id=previous.revision_id if previous else None,
         ).model_copy(update={"status": "draft" if report.passed else "review_required"})
-        return self.store.save(revision)
+        saved = (save_revision or self.store.save)(revision)
+        return await saved if isawaitable(saved) else saved
 
 
 __all__ = ["ScreenplaySemanticService"]

@@ -548,3 +548,105 @@ async def put_entity(project: str, body: EntityBody, user: dict = Depends(get_ap
         return {"ok": True, "data": await service.put(**body.model_dump())}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
+
+
+class HandoffScopeBody(Strict):
+    mode: str
+    scene_ids: list[str] = []
+
+
+class HandoffFactAcknowledgementBody(Strict):
+    mode: str
+    reason: str | None = None
+    run_id: str | None = None
+    issue_reasons: dict[str, str] = {}
+
+
+class HandoffPrepareBody(Strict):
+    document_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    reference_revisions: dict[str, str] = {}
+    selected_entity_ids: list[str] = []
+    update_scope: HandoffScopeBody
+    fact_acknowledgement: HandoffFactAcknowledgementBody
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+class HandoffConfirmBody(Strict):
+    expected_source_project_revision: int = Field(ge=0)
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+async def _handoff_service(project, user, role):
+    from novelvideo.script_creation.handoff import HandoffService
+    store, resolved = await _store(project, user, role)
+    if resolved.ctx is None:
+        raise HTTPException(409, detail={"code": "project_context_required"})
+    sqlite = await make_sqlite_store_for_context(resolved.ctx)
+    service = HandoffService(store, EpisodeSourceStore(sqlite), project_id=str(resolved.ctx.project_id))
+    try:
+        await service.initialize()
+    except BaseException:
+        await sqlite.close()
+        raise
+    return service, resolved, sqlite
+
+
+@router.get(PREFIX + "/handoffs")
+async def list_handoffs(project: str, episode_number: int | None = None,
+                        user: dict = Depends(get_api_user)):
+    service, _, sqlite = await _handoff_service(project, user, "viewer")
+    try:
+        return {"ok": True, "data": await service.list(episode_number)}
+    finally:
+        await sqlite.close()
+
+
+@router.get(PREFIX + "/handoffs/{handoff_id}")
+async def get_handoff(project: str, handoff_id: str, user: dict = Depends(get_api_user)):
+    service, _, sqlite = await _handoff_service(project, user, "viewer")
+    try:
+        return {"ok": True, "data": await service.get(handoff_id)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+    finally:
+        await sqlite.close()
+
+
+@router.post(PREFIX + "/handoffs/prepare")
+async def prepare_handoff(project: str, body: HandoffPrepareBody,
+                          user: dict = Depends(get_api_user)):
+    service, _, sqlite = await _handoff_service(project, user, "editor")
+    try:
+        return {"ok": True, "data": await service.prepare(**body.model_dump())}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+    finally:
+        await sqlite.close()
+
+
+@router.post(PREFIX + "/handoffs/{handoff_id}/confirm", status_code=status.HTTP_202_ACCEPTED)
+async def confirm_handoff(project: str, handoff_id: str, body: HandoffConfirmBody,
+                          user: dict = Depends(require_scope("tasks:submit"))):
+    service, resolved, sqlite = await _handoff_service(project, user, "editor")
+    try:
+        item = await service.confirm(handoff_id, **body.model_dump())
+        if item["status"] == "source_written":
+            item = await service.dispatch(handoff_id, resolved.ctx)
+        return {"ok": True, "data": item}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+    finally:
+        await sqlite.close()
+
+
+@router.post(PREFIX + "/handoffs/{handoff_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_handoff(project: str, handoff_id: str,
+                        user: dict = Depends(require_scope("tasks:submit"))):
+    service, resolved, sqlite = await _handoff_service(project, user, "editor")
+    try:
+        return {"ok": True, "data": await service.retry(handoff_id, resolved.ctx)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+    finally:
+        await sqlite.close()
