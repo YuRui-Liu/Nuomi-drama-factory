@@ -744,3 +744,103 @@ async def test_first_retry_skips_decorated_completed_failed_task_result(workspac
     assert (await sources.list_sources())[0].source_revision == retried["source_revision"]
     with pytest.raises(DocumentConflict, match="consumer superseded"):
         await service.complete(prepared["id"], task_id="old-task", result=queue_result)
+
+
+async def test_selected_fresh_handoff_completes_with_unselected_scene_awaiting_review(workspace, tmp_path):
+    from novelvideo.screenplay_semantics.extractor import SceneBeatDraft
+    from novelvideo.screenplay_semantics.parser import parse_screenplay_document
+    from novelvideo.screenplay_semantics.service import ScreenplaySemanticService
+    from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
+    from tests.screenplay_semantics.test_extractor import make_draft
+
+    documents, sources, service = workspace
+    markdown = "1-1 广播站 深夜 内\n人物：林默\n△林默撞门。\n1-2 天台 黄昏 外\n人物：林默\n△林默扶住栏杆。\n"
+    selected_id = parse_screenplay_document(markdown).scenes[0].id
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown=markdown, client_mutation_id="subset-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[],
+        update_scope={"mode": "selected", "scene_ids": [selected_id]},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="subset-prepare",
+    )
+    await service.confirm(prepared["id"], expected_source_project_revision=0,
+                          client_mutation_id="subset-confirm")
+    _, envelope = await service._begin_dispatch(prepared["id"])
+    await service.claim(prepared["id"], task_id="subset-task",
+                        dispatch_token=envelope["dispatch_token"])
+
+    async def extractor(scenes, *, concurrency):
+        assert [scene.id for scene in scenes] == [selected_id]
+        return tuple(SceneBeatDraft(scene_id=scene.id, beats=(make_draft(scene),)) for scene in scenes)
+
+    revision = await ScreenplaySemanticService(
+        ScreenplaySemanticStore(tmp_path / "semantic"), extractor=extractor,
+    ).build((await sources.list_sources())[0], selected_scene_ids={selected_id})
+    result = {"semantic_revision_id": revision.revision_id, "status": revision.status,
+              "succeeded_scenes": 1, "failed_scenes": 0,
+              "validation_report": revision.validation_report.model_dump(mode="json")}
+    completed = await service.complete(prepared["id"], task_id="subset-task", result=result)
+    assert completed["status"] == "completed"
+    assert completed["error"] is None
+    assert [scene.status for scene in revision.scenes] == ["validated", "stale"]
+
+
+@pytest.mark.parametrize("terminal", ["fail", "complete_failed"])
+async def test_inline_terminal_failure_is_not_overwritten_by_late_enqueue_ack(workspace, monkeypatch, terminal):
+    from types import SimpleNamespace
+    from novelvideo.script_creation import handoff as module
+
+    documents, _, service = workspace
+    script = await documents.create(kind="episode_script", title="第一集", episode_number=1,
+                                    markdown="1-1 室内 日\n甲：你好。", client_mutation_id=f"late-{terminal}-script")
+    prepared = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "all"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id=f"late-{terminal}-prepare",
+    )
+    await service.confirm(prepared["id"], expected_source_project_revision=0,
+                          client_mutation_id=f"late-{terminal}-confirm")
+    ctx = SimpleNamespace(project_id="handoff-project")
+    state = None
+    tokens = []
+    failed_result = {"semantic_revision_id": "semantic-inline-failed", "status": "review_required",
+                     "succeeded_scenes": 0, "failed_scenes": 1,
+                     "validation_report": {"passed": False, "issues": [
+                         {"code": "scene_extraction_failed", "message": "immediate model failure"}]}}
+
+    class Manager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return state
+
+    async def enqueue(_ctx, **kwargs):
+        nonlocal state
+        token = kwargs["payload"]["dispatch_token"]
+        tokens.append(token)
+        task_id = f"task-{len(tokens)}"
+        state = SimpleNamespace(task_id=task_id, status="running", result={})
+        await service.claim(prepared["id"], task_id=task_id, dispatch_token=token)
+        if len(tokens) == 1:
+            if terminal == "fail":
+                await service.fail(prepared["id"], task_id=task_id, error="immediate model failure")
+                state.status = "failed"
+            else:
+                await service.complete(prepared["id"], task_id=task_id, result=failed_result)
+                state.status = "completed"
+                state.result = failed_result
+        return SimpleNamespace(task_state=state)
+
+    monkeypatch.setattr(module, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(module, "enqueue_project_task", enqueue)
+    first = await service.dispatch(prepared["id"], ctx)
+    assert first["status"] == "failed"
+    assert "immediate model failure" in first["error"]
+    if terminal == "complete_failed":
+        assert first["task_result"] == failed_result
+    assert (await service.get(prepared["id"]))["status"] == "failed"
+    second = await service.retry(prepared["id"], ctx)
+    assert second["status"] == "dispatched"
+    assert second["task_id"] == "task-2"
+    assert tokens[0] != tokens[1]

@@ -276,3 +276,46 @@ async def test_unchanged_scene_with_shifted_evidence_coordinates_is_reextracted(
     assert beat.dialogue_source_ids != first.beats_for(first.scenes[1].id)[0].dialogue_source_ids
     assert beat.dialogue_source_ids == tuple(
         block.id for block in second.scenes[1].blocks if block.kind == "dialogue")
+
+
+@pytest.mark.asyncio
+async def test_selected_fresh_scene_leaves_unselected_unarchived_scene_stale_without_failure(tmp_path):
+    from novelvideo.screenplay_semantics.parser import parse_screenplay_document
+
+    selected_id = parse_screenplay_document(SCRIPT).scenes[0].id
+    calls = []
+
+    async def extractor(scenes, *, concurrency):
+        calls.extend(scene.id for scene in scenes)
+        return tuple(SceneBeatDraft(scene_id=scene.id, beats=(make_draft(scene),)) for scene in scenes)
+
+    revision = await ScreenplaySemanticService(
+        ScreenplaySemanticStore(tmp_path), extractor=extractor,
+    ).build(source(SCRIPT), selected_scene_ids={selected_id})
+
+    assert calls == [selected_id]
+    assert [scene.status for scene in revision.scenes] == ["validated", "stale"]
+    assert revision.beats_for(revision.scenes[1].id) == ()
+    issue_codes = {issue.code for issue in revision.validation_report.issues}
+    assert "scene_requires_reparse" in issue_codes
+    assert "scene_not_processed" not in issue_codes
+    assert revision.status == "review_required"
+
+
+@pytest.mark.asyncio
+async def test_selected_scene_without_extractor_result_still_reports_processing_failure(tmp_path):
+    from novelvideo.screenplay_semantics.parser import parse_screenplay_document
+
+    selected_id = parse_screenplay_document(SCRIPT).scenes[0].id
+
+    async def extractor(scenes, *, concurrency):
+        assert [scene.id for scene in scenes] == [selected_id]
+        return ()
+
+    revision = await ScreenplaySemanticService(
+        ScreenplaySemanticStore(tmp_path), extractor=extractor,
+    ).build(source(SCRIPT), selected_scene_ids={selected_id})
+
+    issues = {(issue.code, issue.scene_id) for issue in revision.validation_report.issues}
+    assert ("scene_not_processed", selected_id) in issues
+    assert ("scene_requires_reparse", revision.scenes[1].id) in issues

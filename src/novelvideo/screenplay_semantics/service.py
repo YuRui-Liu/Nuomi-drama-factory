@@ -65,6 +65,7 @@ class ScreenplaySemanticService:
         context_compatible = previous is not None and previous.reference_context_hash == context_hash
         reusable: dict[str, tuple[DramaticBeat, ...]] = {}
         stale_archival: dict[str, tuple[DramaticBeat, ...]] = {}
+        intentionally_unselected: set[str] = set()
         scenes: list[Scene] = []
         targets: list[Scene] = []
         issues: list[SemanticValidationIssue] = []
@@ -89,6 +90,7 @@ class ScreenplaySemanticService:
                 )
                 scenes.append(parsed_scene.model_copy(update={"status": "reused"}))
             elif selected_scene_ids is not None and parsed_scene.id not in selected_scene_ids:
+                intentionally_unselected.add(parsed_scene.id)
                 # Scene ids include their content hash. Only a same-position, same-heading
                 # predecessor can be shown as archival context for changed unselected text.
                 archival_scene = previous_by_ordinal.get(parsed_scene.ordinal)
@@ -126,6 +128,11 @@ class ScreenplaySemanticService:
                 continue
             if scene.id in stale_archival:
                 beats.extend(stale_archival[scene.id])
+                final_scenes.append(scene)
+                continue
+            if scene.id in intentionally_unselected:
+                # A fresh unselected scene has no old beats to archive; its stale
+                # review state is intentional, not an extractor result failure.
                 final_scenes.append(scene)
                 continue
             result = extracted_by_id.get(scene.id)

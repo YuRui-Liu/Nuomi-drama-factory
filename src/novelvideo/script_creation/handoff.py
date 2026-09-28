@@ -515,6 +515,12 @@ class HandoffService:
                     raise DocumentConflict("handoff consumer superseded")
                 if task_id and item.get("task_id") not in {None, task_id}:
                     raise DocumentConflict("handoff consumer superseded")
+                if (item["status"] == "failed" and status == "dispatched"
+                        and attempt_token is not None and item.get("dispatch_token") == attempt_token):
+                    # The consumer can claim and fail before enqueue returns. Its
+                    # terminal result wins over this attempt's late queue ACK.
+                    await db.rollback()
+                    return item
                 item.update(status=status or item["status"], task_id=task_id or item.get("task_id"),
                             error=error, task_result=result if result is not None else item.get("task_result"))
                 await db.execute("UPDATE script_handoff_outbox SET task_id=?,status=?,result=?,error=?,updated_at=? WHERE handoff_id=?",
