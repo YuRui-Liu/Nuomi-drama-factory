@@ -4,6 +4,38 @@ import type { ConsistencyIssue, ConsistencyRun, HandoffPrepareRequest, HandoffSc
 
 function message(cause: unknown) { return cause instanceof Error ? cause.message : "操作失败，请重试"; }
 const pending = new Set(["source_written", "dispatching", "dispatched"]);
+const operationName: Record<string, string> = { insert: "新增", delete: "移除", replace: "修改",
+  selected: "新增", removed: "移除", changed: "修改" };
+function isConflict(cause: unknown) {
+  if (!cause || typeof cause !== "object") return false;
+  if ("status" in cause && cause.status === 409) return true;
+  return "response" in cause && typeof cause.response === "object" && cause.response !== null &&
+    "status" in cause.response && cause.response.status === 409;
+}
+function extractionFailure(record: ScriptHandoff): string | null {
+  const result = record.task_result;
+  if (!result || typeof result !== "object") return null;
+  const report = result.validation_report;
+  const issues = report && typeof report === "object" && "issues" in report && Array.isArray(report.issues)
+    ? report.issues : [];
+  const failures = issues.filter((issue): issue is { code: string; message?: string } =>
+    !!issue && typeof issue === "object" && "code" in issue &&
+    (issue.code === "scene_extraction_failed" || issue.code === "scene_not_processed"));
+  if (!failures.length && !(typeof result.failed_scenes === "number" && result.failed_scenes > 0)) return null;
+  return failures.map((issue) => issue.message || issue.code).join("；") || `${result.failed_scenes} 个场次提取失败`;
+}
+function recordStatus(record: ScriptHandoff) {
+  if (record.status === "completed" && extractionFailure(record)) return "校对失败，可恢复";
+  if (record.status === "completed" && record.task_result?.status === "review_required") return "已交接，校对待确认";
+  return statusName[record.status];
+}
+function canRetry(record: ScriptHandoff) {
+  return pending.has(record.status) || record.status === "failed" ||
+    (record.status === "completed" && !!extractionFailure(record));
+}
+function sceneName(record: ScriptHandoff, id: string) {
+  return record.diff.available_scenes?.find((scene) => scene.id === id)?.heading || "原场次（当前不可用）";
+}
 const statusName: Record<ScriptHandoff["status"], string> = {
   prepared: "待确认", source_written: "正文已交接，待派发", dispatching: "派发中",
   dispatched: "制作校对中", completed: "已完成", failed: "校对失败", needs_rebase: "源版本变化，需重新预览",
@@ -29,6 +61,10 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
   const [scopeMode, setScopeMode] = useState<HandoffScope["mode"]>("all");
   const [sceneIds, setSceneIds] = useState<string[]>([]);
   const [availableSceneIds, setAvailableSceneIds] = useState<string[]>([]);
+  const [availableScenes, setAvailableScenes] = useState<Array<{ id: string; heading: string; location: string }>>([]);
+  const [parseReliable, setParseReliable] = useState(true);
+  const [pollTick, setPollTick] = useState(0);
+  const pollFailures = useRef(0);
   const [factMode, setFactMode] = useState<"unchecked" | "checked">("unchecked");
   const [uncheckedReason, setUncheckedReason] = useState("");
   const [checkedRunId, setCheckedRunId] = useState("");
@@ -78,7 +114,7 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
     update_scope: scope, fact_acknowledgement: acknowledgement };
   const requestKey = JSON.stringify(requestCore);
   const valid = allSaved && document.revision.markdown.trim() && !relationErrors.length &&
-    (scopeMode !== "selected" || (sceneIds.length > 0 && sceneIds.every((id) => availableSceneIds.includes(id)))) &&
+    (scopeMode !== "selected" || (parseReliable && sceneIds.length > 0 && sceneIds.every((id) => availableSceneIds.includes(id)))) &&
     (factMode === "unchecked" ? !!uncheckedReason.trim() : !!checkedRunId && matchingRuns.some((run) => run.id === checkedRunId)) &&
     uniqueFacts.every((issue) => !!(issue.intentional_reason || issueReasons[issue.id] || "").trim());
   const activePreview = prepared && (historyView || preparedKey === requestKey) ? prepared : null;
@@ -106,26 +142,46 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
   }, [prepared, preparedKey, requestKey, historyView]);
 
   useEffect(() => {
+    setAvailableSceneIds([]); setAvailableScenes([]); setSceneIds([]); setParseReliable(true);
+  }, [document.id, document.current_revision_id]);
+
+  const pendingKey = history.filter((item) => pending.has(item.status)).map((item) => item.id + ":" + item.status).join("|");
+  useEffect(() => {
     const active = history.filter((item) => pending.has(item.status));
     if (!active.length) return;
     let stopped = false;
+    const delay = Math.min(2000 * 2 ** pollFailures.current, 10000);
     const timer = setTimeout(() => {
-      void Promise.all(active.map((item) => scriptCreationApi.getHandoff(project, item.id)))
-        .then((updates) => {
+      void Promise.allSettled(active.map((item) => scriptCreationApi.getHandoff(project, item.id)))
+        .then((results) => {
           if (stopped) return;
+          const updates = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
           const byId = new Map(updates.map((item) => [item.id, item]));
-          setHistory((prior) => prior.map((item) => byId.get(item.id) ?? item));
-          setPrepared((prior) => prior && byId.get(prior.id) || prior);
-          if (updates.some((item) => item.source_revision)) void onRefresh();
-        }).catch((cause) => { if (!stopped) setError(message(cause)); });
-    }, 2000);
+          const sourceChanged = updates.some((item) => item.source_revision &&
+            history.find((prior) => prior.id === item.id)?.source_revision !== item.source_revision);
+          if (updates.length) {
+            setHistory((prior) => prior.map((item) => byId.get(item.id) ?? item));
+            setPrepared((prior) => prior ? byId.get(prior.id) ?? prior : null);
+            if (sourceChanged) void onRefresh();
+          }
+          const failure = results.find((result) => result.status === "rejected");
+          if (failure?.status === "rejected") {
+            pollFailures.current = Math.min(pollFailures.current + 1, 3);
+            setError(`交接状态查询暂时失败：${message(failure.reason)}；正在自动重试`);
+          } else {
+            pollFailures.current = 0;
+            setError((current) => current.startsWith("交接状态查询暂时失败：") ? "" : current);
+          }
+          setPollTick((count) => count + 1);
+        });
+    }, delay);
     return () => { stopped = true; clearTimeout(timer); };
-  }, [history, project, onRefresh]);
+  // pendingKey and pollTick advance one non-overlapping request cycle.
+  }, [pendingKey, pollTick, project, onRefresh]);
 
   function mergeRecord(record: ScriptHandoff) {
     setHistory((prior) => [record, ...prior.filter((item) => item.id !== record.id)]);
     setPrepared(record);
-    if (record.diff.available_scene_ids.length) setAvailableSceneIds(record.diff.available_scene_ids);
   }
   async function preview() {
     if (!valid || busy) return;
@@ -139,7 +195,20 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
         client_mutation_id: mutationId } as HandoffPrepareRequest);
       if (!mounted.current || requestSequence.current !== sequence) return;
       mergeRecord(record); setPreparedKey(key);
-    } catch (cause) { if (mounted.current && requestSequence.current === sequence) setError(message(cause)); }
+      const ids = record.diff.needs_reparse ? [] : record.diff.available_scene_ids;
+      setAvailableSceneIds(ids);
+      setAvailableScenes(record.diff.needs_reparse ? [] : record.diff.available_scenes ?? []);
+      setParseReliable(!record.diff.needs_reparse);
+      setSceneIds((prior) => prior.filter((id) => ids.includes(id)));
+    } catch (cause) {
+      if (mounted.current && requestSequence.current === sequence) {
+        if (isConflict(cause)) {
+          setPrepared(null); setPreparedKey(""); prepareMutation.current = null;
+          setAvailableSceneIds([]); setAvailableScenes([]); setSceneIds([]);
+          setError("正文或参考版本已变化，请刷新文档后重新预览交接差异。");
+        } else setError(message(cause));
+      }
+    }
     finally { if (mounted.current && requestSequence.current === sequence) setBusy(false); }
   }
   async function confirm() {
@@ -156,7 +225,13 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
       if (!mounted.current || sequence !== requestSequence.current) return;
       mergeRecord(updated); await onRefresh();
     } catch (cause) {
-      if (mounted.current && sequence === requestSequence.current) setError(message(cause) + "；可以用同一确认记录重试");
+      if (mounted.current && sequence === requestSequence.current) {
+        if (isConflict(cause)) {
+          setPrepared(null); setPreparedKey(""); setHistoryView(false);
+          prepareMutation.current = null;
+          setError("正文、参考版本或制作来源已变化，请刷新文档并重新预览；旧交接不可直接确认。");
+        } else setError(message(cause) + "；请用同一确认记录重试，避免重复交接");
+      }
     } finally { if (mounted.current && sequence === requestSequence.current) setBusy(false); }
   }
   async function retry(record: ScriptHandoff) {
@@ -204,8 +279,8 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
             <fieldset className="rounded border border-white/10 p-3"><legend className="px-1 text-white/70">正文与场次校对</legend>
               <label className="mr-4"><input type="radio" name="handoff-scope" checked={scopeMode === "all"} onChange={() => setScopeMode("all")} /> 校对本集全部场次</label>
               <label className="mr-4"><input type="radio" name="handoff-scope" checked={scopeMode === "none"} onChange={() => setScopeMode("none")} /> 仅采用正文</label>
-              <label><input type="radio" name="handoff-scope" checked={scopeMode === "selected"} onChange={() => setScopeMode("selected")} /> 仅校对所选场次</label>
-              {scopeMode === "selected" && <div className="mt-2">{availableSceneIds.length ? availableSceneIds.map((id) => <label key={id} className="mr-3 inline-flex gap-1"><input type="checkbox" checked={sceneIds.includes(id)} onChange={(event) => setSceneIds((prior) => event.target.checked ? [...prior, id] : prior.filter((entry) => entry !== id))} />{id}</label>) : <p className="text-amber-200">先以“校对本集全部场次”预览，获取可选的解析场次；无法可靠解析时不可选择场次。</p>}</div>}
+              <label><input type="radio" name="handoff-scope" checked={scopeMode === "selected"} disabled={!parseReliable} onChange={() => setScopeMode("selected")} /> 仅校对所选场次</label>
+              {scopeMode === "selected" && <div className="mt-2">{availableSceneIds.length ? availableSceneIds.map((id) => <label key={id} title={`技术 ID：${id}`} className="mr-3 inline-flex gap-1"><input type="checkbox" checked={sceneIds.includes(id)} onChange={(event) => setSceneIds((prior) => event.target.checked ? [...prior, id] : prior.filter((entry) => entry !== id))} />{availableScenes.find((scene) => scene.id === id)?.heading || "场次标题不可用"}</label>) : <p className="text-amber-200">先以“校对本集全部场次”预览，获取可选的解析场次；无法可靠解析时不可选择场次。</p>}</div>}
             </fieldset>
             <fieldset className="rounded border border-white/10 p-3"><legend className="px-1 text-white/70">事实关联确认</legend>
               {matchingRuns.length > 0 && <label className="block"><input type="radio" name="fact-mode" checked={factMode === "checked"} onChange={() => { setFactMode("checked"); setCheckedRunId(matchingRuns[0].id); }} /> 采用当前关联检查
@@ -220,31 +295,46 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
             <button disabled={!valid || busy} onClick={() => void preview()} className="rounded bg-[#E5FF5C] px-4 py-2 font-semibold text-black disabled:opacity-40">{busy ? "正在准备…" : "预览交接差异"}</button>
           </section>}
           {activePreview && <section className="mt-5 space-y-3 border-t border-white/15 pt-5">
-            <h3 className="font-semibold">冻结快照与差异 · {statusName[activePreview.status]}</h3>
+            <h3 className="font-semibold">冻结快照与差异 · {recordStatus(activePreview)}</h3>
             <p className="text-xs text-white/55">正文版本 {activePreview.snapshot.revision_id.slice(0, 8)}；参考文档 {activePreview.snapshot.references.map((ref) => `${ref.title} (${ref.revision_id.slice(0, 8)})`).join("、") || "无"}；实体 {activePreview.snapshot.entities.map((entity) => `${entity.name} (${entity.asset_name ?? "未关联资产"})`).join("、") || "无"}</p>
             <details><summary className="cursor-pointer text-[#E5FF5C]">查看冻结的完整正文</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-[#0D0E10] p-3 text-xs">{activePreview.snapshot.markdown}</pre></details>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded border border-white/10 p-3"><h4>实际文本修改</h4>{activePreview.diff.text.length ? activePreview.diff.text.map((change, index) => <p key={index} className="mt-1 text-xs">{change.operation} · 原行 {change.old_lines.join("-")} → 新行 {change.new_lines.join("-")}：{change.after.join(" ") || "删除内容"}</p>) : <p className="text-xs text-white/45">正文相同</p>}</div>
-              <div className="rounded border border-white/10 p-3"><h4>实际场次修改</h4>{activePreview.diff.scenes.map((change, index) => <p key={index} className="text-xs">{change.operation}：{change.old_scene_ids.join("、") || "无"} → {change.new_scene_ids.join("、") || "无"}</p>)}{!activePreview.diff.scenes.length && <p className="text-xs text-white/45">无</p>}</div>
-              <div className="rounded border border-white/10 p-3"><h4>实际对白修改</h4>{activePreview.diff.dialogue.map((change, index) => <p key={index} className="text-xs">{change.operation}：{change.before.join("、") || "无"} → {change.after.join("、") || "无"}</p>)}{!activePreview.diff.dialogue.length && <p className="text-xs text-white/45">无</p>}</div>
-              <div className="rounded border border-white/10 p-3"><h4>参考与资产变更</h4>{activePreview.diff.references.map((change) => <p key={change.document_id} className="text-xs">文档 {change.document_id}：{change.operation} {change.before_revision ?? "无"} → {change.after_revision ?? "无"}</p>)}{activePreview.diff.entity_references.map((change) => <p key={change.entity_id} className="text-xs">实体 {change.entity_id}：{change.operation} {change.before_asset_id ?? "无"} → {change.after_asset_id ?? "无"}</p>)}</div>
+              <div className="rounded border border-white/10 p-3"><h4>实际文本修改</h4>{activePreview.diff.text.length ? activePreview.diff.text.map((change, index) => <div key={index} className="mt-2 border-t border-white/10 pt-2 text-xs">
+                <p>{operationName[change.operation] ?? "变更"} · 原行 {change.old_lines.join("-")} → 新行 {change.new_lines.join("-")}</p>
+                <p className="mt-1 text-white/50">原文</p><pre className="whitespace-pre-wrap rounded bg-[#0D0E10] p-2">{change.before.join("\n") || "（无）"}</pre>
+                <p className="mt-1 text-white/50">新文</p><pre className="whitespace-pre-wrap rounded bg-[#0D0E10] p-2">{change.after.join("\n") || "（无）"}</pre>
+              </div>) : <p className="text-xs text-white/45">正文相同</p>}</div>
+              <div className="rounded border border-white/10 p-3"><h4>实际场次修改</h4>{activePreview.diff.scenes.map((change, index) => <div key={index} className="mt-1 text-xs"><span>{operationName[change.operation] ?? "变更"}：
+                {change.old_scene_ids.length ? change.old_scene_ids.map((id) => sceneName(activePreview, id)).join("、") : "无"} → {change.new_scene_ids.length ? change.new_scene_ids.map((id) => sceneName(activePreview, id)).join("、") : "无"}</span>
+                <details className="text-white/35"><summary>技术 ID</summary>{change.old_scene_ids.join("、") || "无"} → {change.new_scene_ids.join("、") || "无"}</details>
+              </div>)}{!activePreview.diff.scenes.length && <p className="text-xs text-white/45">无</p>}</div>
+              <div className="rounded border border-white/10 p-3"><h4>实际对白修改</h4>{activePreview.diff.dialogue.map((change, index) => <div key={index} className="mt-2 border-t border-white/10 pt-2 text-xs"><p>{operationName[change.operation] ?? "变更"}</p><p className="text-white/50">原对白</p><pre className="whitespace-pre-wrap">{change.before.join("\n") || "（无）"}</pre><p className="text-white/50">新对白</p><pre className="whitespace-pre-wrap">{change.after.join("\n") || "（无）"}</pre></div>)}{!activePreview.diff.dialogue.length && <p className="text-xs text-white/45">无</p>}</div>
+              <div className="rounded border border-white/10 p-3"><h4>参考与资产变更</h4>{activePreview.diff.references.map((change) => <div key={change.document_id} className="mt-1 text-xs"><span>{documents.find((doc) => doc.id === change.document_id)?.title || activePreview.snapshot.references.find((ref) => ref.document_id === change.document_id)?.title || "原参考文档（当前不可用）"} · {operationName[change.operation] ?? "变更"}：{change.before_revision ? "原版本" : "未采用"} → {change.after_revision ? "当前版本" : "不再采用"}</span><details className="text-white/35"><summary>技术 ID 与版本</summary>{change.document_id} · {change.before_revision ?? "无"} → {change.after_revision ?? "无"}</details></div>)}
+                {activePreview.diff.entity_references.map((change) => {
+                  const entity = entities.find((item) => item.entity_id === change.entity_id) || activePreview.snapshot.entities.find((item) => item.entity_id === change.entity_id);
+                  const assetName = (id: string | null) => !id ? "未关联资产" : entities.find((item) => item.asset_id === id)?.asset_name || activePreview.snapshot.entities.find((item) => item.asset_id === id)?.asset_name || "原资产（当前不可用）";
+                  return <div key={change.entity_id} className="mt-1 text-xs"><span>{entity?.name || "原实体（当前不可用）"} · {operationName[change.operation] ?? "变更"}：{assetName(change.before_asset_id)} → {assetName(change.after_asset_id)}</span><details className="text-white/35"><summary>技术 ID</summary>{change.entity_id} · {change.before_asset_id ?? "无"} → {change.after_asset_id ?? "无"}</details></div>;
+                })}</div>
             </div>
             {activePreview.diff.needs_reparse && <p className="text-amber-200">场次无法可靠复用，需要重新解析；不可只选部分场次。</p>}
-            {!!activePreview.diff.inferred_impacts.length && <p className="text-amber-200">可能受影响，需校对确认：{activePreview.diff.inferred_impacts.join("、")}（根据差异规则推断）</p>}
-            {!!activePreview.diff.reused_scenes.length && <p className="text-xs text-white/60">未变化场次沿用原来源版本：{activePreview.diff.reused_scenes.map((scene) => `${scene.new_scene_id} ← ${scene.source_revision ?? "无"}`).join("、")}</p>}
-            {!!activePreview.diff.affected_nonupdated_scene_ids.length && <p className="text-amber-200">改动但未校对的场次保持旧阶段结果：{activePreview.diff.affected_nonupdated_scene_ids.join("、")}</p>}
+            {!!activePreview.diff.inferred_impacts.length && <p className="text-amber-200">场次校对可能受影响，需校对确认（依据场次差异规则推断）</p>}
+            {!!activePreview.diff.reused_scenes.length && <p className="text-xs text-white/60">未变化场次沿用原来源版本：{activePreview.diff.reused_scenes.map((scene) => `${sceneName(activePreview, scene.new_scene_id)} ← ${scene.source_revision ?? "无"}`).join("、")}</p>}
+            {!!activePreview.diff.affected_nonupdated_scene_ids.length && <p className="text-amber-200">改动但未校对的场次保持旧阶段结果：{activePreview.diff.affected_nonupdated_scene_ids.map((id) => sceneName(activePreview, id)).join("、")}</p>}
             {!!Object.keys(activePreview.snapshot.previous_stage_revisions).length && <p className="text-xs text-white/60">已有阶段：{Object.entries(activePreview.snapshot.previous_stage_revisions).map(([stage, value]) => `${stage} ${value.stale ? "已失效" : "待核对"}`).join("、")}</p>}
             {activePreview.status === "prepared" && <button disabled={!canConfirm || busy} onClick={() => void confirm()} className="rounded bg-[#E5FF5C] px-4 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>}
             {activePreview.status === "needs_rebase" && <p className="text-amber-200">源版本已变化，请返回新交接，重新预览当前版本。</p>}
-            {activePreview.status === "completed" && <a className="text-[#E5FF5C] underline" href={`/projects/${encodeURIComponent(project)}/episodes/${activePreview.episode_number}/script?creationDocument=${encodeURIComponent(document.id)}`}>前往本集制作剧本</a>}
+            {extractionFailure(activePreview) && <p className="text-amber-200">校对失败：{extractionFailure(activePreview)}。可在交接记录中恢复原交接。</p>}
+            {activePreview.error && <p className="text-amber-200">{activePreview.error}</p>}
+            {activePreview.status === "completed" && !extractionFailure(activePreview) && <a className="text-[#E5FF5C] underline" href={`/projects/${encodeURIComponent(project)}/episodes/${activePreview.episode_number}/script?creationDocument=${encodeURIComponent(document.id)}`}>{activePreview.task_result?.status === "review_required" ? "查看校对结果" : "前往本集制作剧本"}</a>}
           </section>}
           <section className="mt-6 border-t border-white/10 pt-4"><h3 className="mb-2 font-semibold">本集交接记录</h3>
             {!history.length && <p className="text-xs text-white/45">暂无记录</p>}
             {history.map((record) => <div key={record.id} className="mb-2 flex flex-wrap items-center gap-2 rounded border border-white/10 p-2 text-xs">
-              <span>{record.revision_id.slice(0, 8)} · {statusName[record.status]}</span><button onClick={() => openHistory(record)} className="text-[#E5FF5C]">查看快照</button>
-              {(record.status === "failed" || record.status === "source_written") && <button disabled={busy} onClick={() => void retry(record)} className="text-[#E5FF5C]">重试原交接</button>}
+              <span>{record.revision_id.slice(0, 8)} · {recordStatus(record)}</span><button onClick={() => openHistory(record)} className="text-[#E5FF5C]">查看快照</button>
+              {canRetry(record) && <button disabled={busy} onClick={() => void retry(record)} className="text-[#E5FF5C]">恢复/重试交接</button>}
               {record.status === "needs_rebase" && <span className="text-amber-200">请根据当前版本重新准备</span>}
-              {record.error && <span className="text-amber-200">{record.error}</span>}
+              {(record.error || extractionFailure(record)) && <span className="text-amber-200">{record.error || extractionFailure(record)}</span>}
+              {record.status === "completed" && !extractionFailure(record) && <a className="text-[#E5FF5C] underline" href={`/projects/${encodeURIComponent(project)}/episodes/${record.episode_number}/script?creationDocument=${encodeURIComponent(document.id)}`}>{record.task_result?.status === "review_required" ? "查看校对结果" : "前往本集制作剧本"}</a>}
             </div>)}
           </section>
         </>}

@@ -153,6 +153,7 @@ export interface HandoffDiff {
   entity_references: Array<{ entity_id: string; before_asset_id: string | null; after_asset_id: string | null; operation: string }>;
   reused_scenes: Array<{ old_scene_id: string; new_scene_id: string; source_revision: string | null; source_hash: string | null }>;
   affected_nonupdated_scene_ids: string[]; available_scene_ids: string[];
+  available_scenes?: Array<{ id: string; heading: string; location: string }>;
   needs_reparse: boolean; inferred_impacts: string[];
 }
 export interface ScriptHandoff {
