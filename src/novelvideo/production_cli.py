@@ -102,10 +102,14 @@ def _body(value: str, file: Path | None) -> dict[str, Any]:
 def _perform(
     connection: Connection, method: str, relative: str,
     body: dict[str, Any] | None = None, *, files: Any = None,
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path = _path(connection, relative)
     if connection.dry_run:
-        return {"ok": True, "dry_run": True, "method": method, "path": path, "body": body}
+        preview = {"ok": True, "dry_run": True, "method": method, "path": path, "body": body}
+        if params is not None:
+            preview["params"] = params
+        return preview
     token = os.environ.get("NUOMI_TOKEN", "").strip()
     session = os.environ.get("NUOMI_SESSION", "").strip()
     # Local CE permits unauthenticated loopback access. The API, not the CLI,
@@ -118,6 +122,8 @@ def _perform(
             timeout=connection.timeout, follow_redirects=False,
         ) as client:
             kwargs = {"files": files, "data": body} if files else {"json": body} if body is not None else {}
+            if params is not None:
+                kwargs["params"] = params
             response = client.request(method, path.lstrip("/"), **kwargs)
     except httpx.TransportError:
         code = "transport_error" if method == "GET" else "submission_unknown"
@@ -338,6 +344,11 @@ def batch(
     _emit(summary)
     if not summary["ok"]:
         raise typer.Exit(1)
+
+
+from novelvideo.script_creation_cli import create_script_app
+
+app.add_typer(create_script_app(perform=_perform, body=_body, segment=_segment, emit=_emit), name="script")
 
 
 if __name__ == "__main__":
