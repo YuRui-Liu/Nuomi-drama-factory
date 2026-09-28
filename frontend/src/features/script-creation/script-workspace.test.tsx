@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -336,5 +336,42 @@ describe("ScriptWorkspace handoff gate", () => {
     await user.click(screen.getByRole("button", { name: "第 1 集" }));
     expect(screen.getByRole("button", { name: "确认本集并交接制作" })).toBeDisabled();
     expect(screen.queryByRole("dialog", { name: "确认本集并交接制作" })).not.toBeInTheDocument();
+  });
+});
+
+
+describe("ScriptWorkspace adopted revision", () => {
+  it("shows the adopted revision after a handoff that keeps the current draft revision", async () => {
+    const user = userEvent.setup();
+    let episode = doc("episode", "episode_script", "# 正文\n\n## 1-1 内景");
+    const handoff = { id: "handoff", status: "prepared", document_id: "episode", revision_id: "r1",
+      episode_number: 1, expected_source_project_revision: 0, source_revision: null,
+      source_hash: null, task_id: null, task_result: null, error: null, created_at: "", updated_at: "",
+      snapshot: { document_id: "episode", revision_id: "r1", episode_number: 1, title: "第 1 集",
+        markdown: episode.revision.markdown, reference_revisions: {}, references: [], entities: [],
+        fact_acknowledgement: { mode: "unchecked", reason: "人工核对", run_id: null, known_fact_issues: {} },
+        update_scope: { mode: "none", scene_ids: [] }, previous_source: null, previous_stage_revisions: {} },
+      diff: { text: [], scenes: [], dialogue: [], references: [], entity_references: [], reused_scenes: [],
+        affected_nonupdated_scene_ids: [], available_scene_ids: [], needs_reparse: false, inferred_impacts: [] } };
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [episode] })),
+      http.get(base + "/entities", () => HttpResponse.json({ ok: true, data: [] })),
+      http.get(base + "/consistency-runs", () => HttpResponse.json({ ok: true, data: [] })),
+      http.get(base + "/handoffs", () => HttpResponse.json({ ok: true, data: [] })),
+      http.post(base + "/handoffs/prepare", () => HttpResponse.json({ ok: true, data: handoff })),
+      http.post(base + "/handoffs/handoff/confirm", () => {
+        episode = { ...episode, adopted_revision_id: "r1" };
+        return HttpResponse.json({ ok: true, data: { ...handoff, status: "completed", source_revision: "source-r1" } }, { status: 202 });
+      }),
+    );
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "确认本集并交接制作" }));
+    await screen.findByText("选择交接范围");
+    await user.type(screen.getByRole("textbox", { name: "未运行关联检查的说明" }), "人工核对");
+    await user.click(screen.getByRole("button", { name: "预览交接差异" }));
+    const dialog = screen.getByRole("dialog", { name: "确认本集并交接制作" });
+    await user.click(await within(dialog).findByRole("button", { name: "确认本集并交接制作" }));
+    await user.click(screen.getByRole("button", { name: "关闭交接窗口" }));
+    await waitFor(() => expect(screen.getByText(/已交接 r1/)).toBeInTheDocument());
   });
 });

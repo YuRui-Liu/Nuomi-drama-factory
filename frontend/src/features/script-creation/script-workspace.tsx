@@ -108,7 +108,10 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
     const draft = manager.get(doc.id);
     return draft ? { ...draft.document, revision: { ...draft.document.revision, markdown: draft.markdown } } : doc;
   }), settings.mode);
-  const savedDocuments = documents.map((doc) => manager.get(doc.id)?.document ?? doc);
+  const savedDocuments = documents.map((doc) => {
+    const saved = manager.get(doc.id)?.document ?? doc;
+    return { ...saved, adopted_revision_id: doc.adopted_revision_id };
+  });
   const current = savedDocuments.find((doc) => doc.id === selectedId);
   const draft = current && manager.get(current.id);
   const allSaved = manager.all().every((item) => item.status === "saved");
