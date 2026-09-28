@@ -154,3 +154,42 @@ async def test_text_record_creation_for_each_type_and_cross_project_uuid_rejecte
         assert not (await other_service.list())[0]["asset_missing"]
     finally:
         await other.close()
+
+
+@pytest.mark.parametrize("before,after", [
+    ("## Alice\n\n## Alice", "## Alice"),
+    ("## Alice\n\n## Bob", "## Charlie"),
+    ("## Alice\n\n## Bob", "## Charlie\n\n## David"),
+    ("## Alice\n\n## Bob", "## Alice\n\n## Alice"),
+])
+async def test_ambiguous_block_edits_cannot_transfer_existing_entity(setup, before, after):
+    store, service, _ = setup
+    doc = await store.create(kind="people", title="people", markdown=before, client_mutation_id="document")
+    block = doc.revision.blocks[0]
+    original = await service.put(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=block.id, name="Alice", client_mutation_id="original", create_text={"name": "Alice"})
+    saved = await store.save(doc.id, base_revision_id=doc.current_revision_id, markdown=after, client_mutation_id="edit")
+    assert (await service.list(doc.id))[0]["entry_missing"]
+    with pytest.raises(DocumentValidation):
+        await service.put(entity_id=original["entity_id"], document_id=doc.id, base_revision_id=saved.current_revision_id,
+            block_id=block.id, name="Alice", client_mutation_id="confirm")
+    with pytest.raises(DocumentValidation):
+        await service.put(entity_id=original["entity_id"], document_id=doc.id, base_revision_id=saved.current_revision_id,
+            block_id=saved.revision.blocks[0].id, name="Alice", client_mutation_id="reassign")
+    new = await service.put(document_id=doc.id, base_revision_id=saved.current_revision_id,
+        block_id=saved.revision.blocks[0].id, name="new entry", asset_id=original["asset_id"], client_mutation_id="explicit-new")
+    assert new["entity_id"] != original["entity_id"]
+    assert new["asset_id"] == original["asset_id"]
+
+
+async def test_unambiguous_heading_rename_preserves_identity(setup):
+    store, service, _ = setup
+    doc = await store.create(kind="people", title="people", markdown="## Alice\n\n## Bob", client_mutation_id="document")
+    original = await service.put(document_id=doc.id, base_revision_id=doc.current_revision_id,
+        block_id=doc.revision.blocks[0].id, name="Alice", client_mutation_id="original")
+    saved = await store.save(doc.id, base_revision_id=doc.current_revision_id, markdown="## Alicia\n\n## Bob", client_mutation_id="edit")
+    assert saved.revision.blocks[0].id == original["block_id"]
+    assert not (await service.list(doc.id))[0]["entry_missing"]
+    confirmed = await service.put(entity_id=original["entity_id"], document_id=doc.id, base_revision_id=saved.current_revision_id,
+        block_id=original["block_id"], name="Alicia", client_mutation_id="confirm")
+    assert confirmed["entity_id"] == original["entity_id"]

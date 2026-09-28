@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from difflib import SequenceMatcher
 import json
 from contextlib import asynccontextmanager
@@ -57,20 +58,26 @@ def _blocks(markdown, supplied=None, previous=(), *, allow_client_ids=False):
         parts = _parts(markdown)
         previous_text = [block.markdown.rstrip("\n") for block in previous]
         current_text = [part.rstrip("\n") for part in parts]
-        matched = {}
-        for a, b, size in SequenceMatcher(None, previous_text, current_text, autojunk=False).get_matching_blocks():
-            for offset in range(size):
-                matched[b + offset] = previous[a + offset].id
-        used = set(matched.values())
-        result = []
-        for index, part in enumerate(parts):
-            block_id = matched.get(index)
-            if block_id is None and index < len(previous) and previous[index].id not in used:
-                block_id = previous[index].id
-            block_id = block_id or _id()
-            used.add(block_id)
-            result.append(Block(block_id, part))
-        return tuple(result)
+        # Text-only edits cannot disambiguate identical entries. Never let the
+        # matcher's arbitrary duplicate choice transfer an entity's identity.
+        if previous_text == current_text:
+            return tuple(Block(old.id, part) for old, part in zip(previous, parts))
+        old_counts, new_counts = Counter(previous_text), Counter(current_text)
+        unique_old = {text: previous[index].id for index, text in enumerate(previous_text)
+                      if old_counts[text] == 1}
+        matched = {index: unique_old[text] for index, text in enumerate(current_text)
+                   if new_counts[text] == 1 and text in unique_old}
+        matcher = SequenceMatcher(None, previous_text, current_text, autojunk=False)
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            # Only a single isolated, unique replacement is an unambiguous
+            # rename/edit. Cardinality changes and multi-entry rewrites get IDs
+            # of their own; explicit block edits can retain known identities.
+            if tag == "replace" and old_end - old_start == new_end - new_start == 1:
+                old_text, new_text = previous_text[old_start], current_text[new_start]
+                if (old_counts[old_text] == new_counts[new_text] == 1
+                        and new_counts[old_text] == old_counts[new_text] == 0):
+                    matched[new_start] = previous[old_start].id
+        return tuple(Block(matched.get(index) or _id(), part) for index, part in enumerate(parts))
     known = {block.id for block in previous}
     seen = set()
     result = []

@@ -67,3 +67,15 @@ it("retries a text creation with the same mutation and distinguishes planned fro
     { status: "planned", episode_number: 1 }, { status: "written", document_id: "episode", revision_id: "episode-r1" },
   ] });
 });
+
+
+it("labels missing relation targets and prevents selecting deleted entries", async () => {
+  const prop: NarrativeEntity = { ...ent, entity_id: "prop", document_id: "props", name: "钥匙", asset_type: "prop", entry_missing: true };
+  vi.mocked(scriptCreationApi.listEntities).mockResolvedValue([{ ...ent, relations: [{ kind: "holding", entity_id: "prop", missing: true, stale: true }] }, prop]);
+  const user = userEvent.setup();
+  render(<EntityPanel project="demo" document={doc} documents={[doc]} allSaved />);
+  expect(await screen.findByText("持有道具：条目缺失（钥匙）")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "关联 / 确认 Alice" }));
+  expect(screen.getByRole("checkbox", { name: "持有 · 钥匙（条目缺失）" })).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "持有 · 钥匙（条目缺失）" })).toBeChecked();
+});
