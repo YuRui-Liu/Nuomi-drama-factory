@@ -131,6 +131,9 @@ class DramaticBeat(FrozenModel):
     director_interpretation: tuple[str, ...] = ()
     stale: bool = False
     stale_reason: str | None = None
+    evidence_source_revision: int | None = None
+    evidence_source_hash: str | None = None
+    evidence_scene_id: str | None = None
 
     @field_validator("source_ranges", mode="after")
     @classmethod
@@ -175,6 +178,7 @@ class ScreenplaySemanticRevision(FrozenModel):
     episode: int = Field(gt=0)
     source_revision: int = Field(gt=0)
     source_hash: str = Field(min_length=1)
+    reference_context_hash: str | None = None
     version: int = Field(default=1, gt=0)
     status: ScreenplaySemanticStatus = "draft"
     scenes: tuple[Scene, ...]
@@ -226,6 +230,11 @@ class ScreenplaySemanticRevision(FrozenModel):
             owning_scene = scenes_by_id.get(item.scene_id)
             if owning_scene is None:
                 raise ValueError("beat must reference an existing scene")
+            if item.stale:
+                if not (item.stale_reason and item.evidence_source_revision
+                        and item.evidence_source_hash and item.evidence_scene_id):
+                    raise ValueError("stale beat requires old source provenance")
+                continue  # Its evidence ranges belong to the archived source, not this scene.
             for source_range in item.source_ranges:
                 if (
                     source_range.start_line < owning_scene.source_range.start_line
@@ -257,6 +266,7 @@ class ScreenplaySemanticRevision(FrozenModel):
         episode: int,
         source_revision: int,
         source_hash: str,
+        reference_context_hash: str | None = None,
         scenes: tuple[Scene, ...],
         beats: tuple[DramaticBeat, ...],
         metadata_blocks: tuple[SourceBlock, ...] = (),
@@ -269,6 +279,7 @@ class ScreenplaySemanticRevision(FrozenModel):
             episode=episode,
             source_revision=source_revision,
             source_hash=source_hash,
+            reference_context_hash=reference_context_hash,
             status="draft",
             scenes=scenes,
             beats=beats,

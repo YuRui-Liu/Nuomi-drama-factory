@@ -79,6 +79,7 @@ export default withMermaid(
         {
           text: "生产管线",
           items: [
+            { text: "00 业务上下文流转", link: "/pipelines/00-business-context-flow" },
             { text: "01 小说导入", link: "/pipelines/01-ingest" },
             { text: "02 剧集图谱", link: "/pipelines/02-episode-graph" },
             { text: "03 生产资产", link: "/pipelines/03-production-assets" },

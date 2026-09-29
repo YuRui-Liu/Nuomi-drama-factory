@@ -89,3 +89,15 @@ async def test_one_scene_failure_does_not_cancel_successful_scenes():
 
     assert [result.scene_id for result in results] == ["scene-1", "scene-2", "scene-3"]
     assert results[1].error == "provider unavailable"
+
+
+def test_selected_design_context_is_background_only_in_scene_prompt():
+    context = {"documents": [{"document_id": "people-1", "revision_id": "rev-1",
+                               "kind": "people", "markdown": "林默过去曾受伤"}],
+               "entities": [{"entity_id": "entity-1", "name": "林默", "asset_id": None}]}
+    prompt = build_scene_prompt(make_scene(1), reference_context=context)
+    assert "BEGIN_SELECTED_DESIGN_REFERENCES_JSON" in prompt
+    assert "林默过去曾受伤" in prompt
+    assert "background context" in prompt
+    assert "not evidence" in prompt
+    assert "exact source ranges" in prompt

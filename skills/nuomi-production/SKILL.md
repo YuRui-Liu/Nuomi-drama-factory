@@ -98,3 +98,9 @@ CLI 自动完成：
 - `src/novelvideo/api/routes/narrative_groups.py`：引用预览、视频设置和版本约束。
 
 完成时报告成功集、下载地址和仍受阻的集及原因；无需逐个复述成功的中间步骤。
+
+## 从创作工作台准备剧本
+
+用户要从空白创作简报写故事、逐集续写、审阅候选、做关联检查或把定稿剧本交给制作时，使用 `nuomi --project PROJECT script`。完整命令与 JSON 示例见[剧本创作 CLI 指南](../../docs/cookbook/creation/10-script-creation-cli.md)。先保存简报和创作设置；`generations start` 的 `bootstrap` 只生成故事框架与首集草稿，新建或空白目标文档会直接保存，已有正文才产生候选。后续集须在已保存的分集梗概和前集剧本上显式 `continue`。候选经 `generations review` 转成提案后才可按当前修订显式 `proposals accept`；检查和定向改写也只产生待审结果。
+
+交接使用 `handoffs prepare` 查看差异、范围、来源版本和事实确认，再以返回的 `expected_source_project_revision` 显式 `handoffs confirm`。响应不明时先查 `handoffs get/list`；派发失败只在原交接 ID 上 `handoffs retry`。文字交接完成后才进入上面的叙事组出图、整组视频和合成流程；创作 CLI 不替代生产资产与媒体检查。

@@ -18,6 +18,7 @@ import type { ProjectSection } from "@/components/layout/project-navigation-rout
 const REMEMBERED_SECTIONS = new Set<ProjectSection>([
   "freezone",
   "ingest",
+  "creation",
   "characters",
   "episodes",
   "assistant",

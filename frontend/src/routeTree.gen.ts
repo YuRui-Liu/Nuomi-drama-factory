@@ -16,6 +16,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as WatchWorkRouteImport } from './routes/watch.$work'
 import { Route as AppProjectsProjectAssistantRouteImport } from './routes/_app/projects.$project/assistant'
+import { Route as AppProjectsProjectCreationRouteImport } from './routes/_app/projects.$project/creation'
 import { Route as AppProjectsProjectEpisodesRouteImport } from './routes/_app/projects.$project/episodes'
 import { Route as AppProjectsProjectIngestRouteImport } from './routes/_app/projects.$project/ingest'
 import { Route as AppProjectsProjectStylesRouteImport } from './routes/_app/projects.$project/styles'
@@ -99,6 +100,12 @@ const AppProjectsProjectCostsLazyRoute =
   } as any).lazy(() =>
     import('./routes/_app/projects.$project/costs.lazy').then((d) => d.Route),
   )
+const AppProjectsProjectCreationRoute =
+  AppProjectsProjectCreationRouteImport.update({
+    id: '/projects/$project/creation',
+    path: '/projects/$project/creation',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppProjectsProjectEpisodesRoute =
   AppProjectsProjectEpisodesRouteImport.update({
     id: '/projects/$project/episodes',
@@ -228,6 +235,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/watch/$work': typeof WatchWorkRoute
   '/projects/$project/assistant': typeof AppProjectsProjectAssistantRoute
+  '/projects/$project/creation': typeof AppProjectsProjectCreationRoute
   '/projects/$project/episodes': typeof AppProjectsProjectEpisodesRouteWithChildren
   '/projects/$project/ingest': typeof AppProjectsProjectIngestRoute
   '/projects/$project/styles': typeof AppProjectsProjectStylesRoute
@@ -250,6 +258,7 @@ export interface FileRoutesByTo {
   '/watch/$work': typeof WatchWorkRoute
   '/': typeof AppIndexRoute
   '/projects/$project/assistant': typeof AppProjectsProjectAssistantRoute
+  '/projects/$project/creation': typeof AppProjectsProjectCreationRoute
   '/projects/$project/episodes': typeof AppProjectsProjectEpisodesRouteWithChildren
   '/projects/$project/ingest': typeof AppProjectsProjectIngestRoute
   '/projects/$project/styles': typeof AppProjectsProjectStylesRoute
@@ -274,6 +283,7 @@ export interface FileRoutesById {
   '/watch/$work': typeof WatchWorkRoute
   '/_app/': typeof AppIndexRoute
   '/_app/projects/$project/assistant': typeof AppProjectsProjectAssistantRoute
+  '/_app/projects/$project/creation': typeof AppProjectsProjectCreationRoute
   '/_app/projects/$project/episodes': typeof AppProjectsProjectEpisodesRouteWithChildren
   '/_app/projects/$project/ingest': typeof AppProjectsProjectIngestRoute
   '/_app/projects/$project/styles': typeof AppProjectsProjectStylesRoute
@@ -298,6 +308,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/watch/$work'
     | '/projects/$project/assistant'
+    | '/projects/$project/creation'
     | '/projects/$project/episodes'
     | '/projects/$project/ingest'
     | '/projects/$project/styles'
@@ -320,6 +331,7 @@ export interface FileRouteTypes {
     | '/watch/$work'
     | '/'
     | '/projects/$project/assistant'
+    | '/projects/$project/creation'
     | '/projects/$project/episodes'
     | '/projects/$project/ingest'
     | '/projects/$project/styles'
@@ -343,6 +355,7 @@ export interface FileRouteTypes {
     | '/watch/$work'
     | '/_app/'
     | '/_app/projects/$project/assistant'
+    | '/_app/projects/$project/creation'
     | '/_app/projects/$project/episodes'
     | '/_app/projects/$project/ingest'
     | '/_app/projects/$project/styles'
@@ -416,6 +429,13 @@ declare module '@tanstack/react-router' {
       path: '/projects/$project/costs'
       fullPath: '/projects/$project/costs'
       preLoaderRoute: typeof AppProjectsProjectCostsLazyRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/creation': {
+      id: '/_app/projects/$project/creation'
+      path: '/projects/$project/creation'
+      fullPath: '/projects/$project/creation'
+      preLoaderRoute: typeof AppProjectsProjectCreationRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/projects/$project/episodes': {
@@ -558,6 +578,7 @@ const AppProjectsProjectEpisodesRouteWithChildren =
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppProjectsProjectAssistantRoute: typeof AppProjectsProjectAssistantRoute
+  AppProjectsProjectCreationRoute: typeof AppProjectsProjectCreationRoute
   AppProjectsProjectEpisodesRoute: typeof AppProjectsProjectEpisodesRouteWithChildren
   AppProjectsProjectIngestRoute: typeof AppProjectsProjectIngestRoute
   AppProjectsProjectStylesRoute: typeof AppProjectsProjectStylesRoute
@@ -571,6 +592,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppProjectsProjectAssistantRoute: AppProjectsProjectAssistantRoute,
+  AppProjectsProjectCreationRoute: AppProjectsProjectCreationRoute,
   AppProjectsProjectEpisodesRoute: AppProjectsProjectEpisodesRouteWithChildren,
   AppProjectsProjectIngestRoute: AppProjectsProjectIngestRoute,
   AppProjectsProjectStylesRoute: AppProjectsProjectStylesRoute,

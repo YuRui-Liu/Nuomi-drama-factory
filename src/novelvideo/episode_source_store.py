@@ -33,6 +33,10 @@ class EpisodeImportPreviewNotFound(LookupError):
     """A preview does not exist or is no longer usable."""
 
 
+class _ExpiredEpisodeImportPreview(EpisodeImportPreviewNotFound):
+    """An expired preview needs public-boundary cleanup after rollback."""
+
+
 @dataclass(frozen=True, slots=True)
 class EpisodeSource:
     episode_number: int
@@ -241,6 +245,158 @@ class EpisodeSourceStore:
             preview_id=preview_id,
         )
 
+    async def _upsert_sources_in_transaction(
+        self,
+        db: Any,
+        items: Sequence[EpisodeCandidate],
+        *,
+        expected_revision: int,
+        skipped: tuple[int, ...] = (),
+        migrated_at: str | None = None,
+        preview_id: str | None = None,
+        validate_preview_expiry: bool = True,
+        audit_id: str | None = None,
+        audit_episodes: tuple[dict[str, Any], ...] = (),
+    ) -> EpisodeSourceWriteResult:
+        """Write source state using a transaction owned by the caller."""
+        row = await (
+            await db.execute(
+                "SELECT project_revision FROM episode_source_state WHERE id=1"
+            )
+        ).fetchone()
+        actual_revision = int(row[0]) if row else 0
+        if preview_id is not None:
+            preview_row = await (
+                await db.execute(
+                    "SELECT expires_at FROM episode_import_previews WHERE preview_id=?",
+                    (preview_id,),
+                )
+            ).fetchone()
+            if preview_row is None:
+                raise EpisodeImportPreviewNotFound(preview_id)
+            try:
+                expires_at = datetime.fromisoformat(preview_row[0])
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                expires_at = datetime.min.replace(tzinfo=timezone.utc)
+            if validate_preview_expiry and expires_at <= datetime.now(timezone.utc):
+                raise _ExpiredEpisodeImportPreview(preview_id)
+        if actual_revision != expected_revision:
+            raise EpisodeSourceRevisionConflict(
+                f"expected revision {expected_revision}, found {actual_revision}"
+            )
+
+        target_revision = actual_revision + (1 if items else 0)
+        added: list[int] = []
+        overwritten: list[int] = []
+        previously_consumed: dict[int, int] = {}
+        now = datetime.now(timezone.utc).isoformat()
+        for item in items:
+            if item.episode_number is None:
+                raise ValueError("episode number is required")
+            previous = await (
+                await db.execute(
+                    "SELECT source_revision, imported_at FROM episode_sources "
+                    "WHERE episode_number=?",
+                    (item.episode_number,),
+                )
+            ).fetchone()
+            source_revision = int(previous[0]) + 1 if previous else 1
+            if previous:
+                previously_consumed[item.episode_number] = int(previous[0])
+            imported_at = previous[1] if previous else now
+            stale = 1 if previous else 0
+            await db.execute(
+                """
+                INSERT INTO episode_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(episode_number) DO UPDATE SET
+                  title=excluded.title, raw_content=excluded.raw_content,
+                  content_hash=excluded.content_hash,
+                  source_filename=excluded.source_filename,
+                  source_revision=excluded.source_revision,
+                  downstream_stale=excluded.downstream_stale,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    item.episode_number,
+                    item.title,
+                    item.content,
+                    item.content_hash or content_sha256(item.content),
+                    item.source_filename,
+                    source_revision,
+                    stale,
+                    imported_at,
+                    now,
+                ),
+            )
+            # Deliberately update only the compatibility mirror. Planning fields survive.
+            await db.execute(
+                """
+                INSERT INTO episodes(number, raw_content) VALUES (?, ?)
+                ON CONFLICT(number) DO UPDATE SET raw_content=excluded.raw_content,
+                  updated_at=datetime('now')
+                """,
+                (item.episode_number, item.content),
+            )
+            (overwritten if previous else added).append(item.episode_number)
+
+        if items:
+            await db.execute(
+                """
+                INSERT INTO episode_source_state(id, project_revision, migrated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET project_revision=excluded.project_revision,
+                  migrated_at=COALESCE(excluded.migrated_at, episode_source_state.migrated_at)
+                """,
+                (target_revision, migrated_at),
+            )
+            await db.execute(
+                """INSERT INTO episode_graph_outbox VALUES (?, ?, ?)
+                ON CONFLICT(target_revision) DO UPDATE SET
+                  changed_episode_numbers_json=excluded.changed_episode_numbers_json""",
+                (target_revision, json.dumps(sorted(item.episode_number for item in items)), now),
+            )
+        if preview_id is not None:
+            await db.execute(
+                "DELETE FROM episode_import_previews WHERE preview_id=?",
+                (preview_id,),
+            )
+        if audit_id is not None:
+            await db.execute(
+                """INSERT INTO episode_import_records VALUES (?, ?, ?, ?)
+                ON CONFLICT(import_id) DO UPDATE SET
+                  target_revision=excluded.target_revision,
+                  episodes_json=excluded.episodes_json""",
+                (
+                    audit_id,
+                    target_revision,
+                    json.dumps(audit_episodes, ensure_ascii=False),
+                    now,
+                ),
+            )
+            for episode in audit_episodes:
+                if episode.get("status") != "overwritten":
+                    continue
+                number = int(episode["episode_number"])
+                consumed_revision = previously_consumed[number]
+                await db.executemany(
+                    """INSERT INTO episode_stage_revisions VALUES (?, ?, ?, 1, ?)
+                    ON CONFLICT(episode_number, stage) DO UPDATE SET
+                      stale=1,
+                      updated_at=excluded.updated_at""",
+                    [
+                        (number, stage, consumed_revision, now)
+                        for stage in ("characters", "scenes", "beats", "media")
+                    ],
+                )
+        return EpisodeSourceWriteResult(
+            target_revision=target_revision,
+            added=tuple(sorted(added)),
+            overwritten=tuple(sorted(overwritten)),
+            skipped=tuple(sorted(skipped)),
+        )
+
     async def upsert_sources(
         self,
         items: Sequence[EpisodeCandidate],
@@ -270,147 +426,22 @@ class EpisodeSourceStore:
                 os.fsync(stream.fileno())
         await db.execute("BEGIN IMMEDIATE")
         try:
-            row = await (
-                await db.execute(
-                    "SELECT project_revision FROM episode_source_state WHERE id=1"
-                )
-            ).fetchone()
-            actual_revision = int(row[0]) if row else 0
             old_novel = novel_path.read_bytes() if novel_path.is_file() else None
-            if preview_id is not None:
-                preview_row = await (
-                    await db.execute(
-                        "SELECT expires_at FROM episode_import_previews WHERE preview_id=?",
-                        (preview_id,),
-                    )
-                ).fetchone()
-                if preview_row is None:
-                    raise EpisodeImportPreviewNotFound(preview_id)
-                try:
-                    expires_at = datetime.fromisoformat(preview_row[0])
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-                except (TypeError, ValueError):
-                    expires_at = datetime.min.replace(tzinfo=timezone.utc)
-                if validate_preview_expiry and expires_at <= datetime.now(timezone.utc):
-                    await db.execute(
-                        "DELETE FROM episode_import_previews WHERE preview_id=?",
-                        (preview_id,),
-                    )
-                    await db.commit()
-                    raise EpisodeImportPreviewNotFound(preview_id)
-            if actual_revision != expected_revision:
-                raise EpisodeSourceRevisionConflict(
-                    f"expected revision {expected_revision}, found {actual_revision}"
-                )
-
-            target_revision = actual_revision + (1 if items else 0)
-            added: list[int] = []
-            overwritten: list[int] = []
-            previously_consumed: dict[int, int] = {}
-            now = datetime.now(timezone.utc).isoformat()
-            for item in items:
-                if item.episode_number is None:
-                    raise ValueError("episode number is required")
-                previous = await (
-                    await db.execute(
-                        "SELECT source_revision, imported_at FROM episode_sources "
-                        "WHERE episode_number=?",
-                        (item.episode_number,),
-                    )
-                ).fetchone()
-                source_revision = int(previous[0]) + 1 if previous else 1
-                if previous:
-                    previously_consumed[item.episode_number] = int(previous[0])
-                imported_at = previous[1] if previous else now
-                stale = 1 if previous else 0
-                await db.execute(
-                    """
-                    INSERT INTO episode_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(episode_number) DO UPDATE SET
-                      title=excluded.title, raw_content=excluded.raw_content,
-                      content_hash=excluded.content_hash,
-                      source_filename=excluded.source_filename,
-                      source_revision=excluded.source_revision,
-                      downstream_stale=excluded.downstream_stale,
-                      updated_at=excluded.updated_at
-                    """,
-                    (
-                        item.episode_number,
-                        item.title,
-                        item.content,
-                        item.content_hash or content_sha256(item.content),
-                        item.source_filename,
-                        source_revision,
-                        stale,
-                        imported_at,
-                        now,
-                    ),
-                )
-                # Deliberately update only the compatibility mirror. Planning fields survive.
-                await db.execute(
-                    """
-                    INSERT INTO episodes(number, raw_content) VALUES (?, ?)
-                    ON CONFLICT(number) DO UPDATE SET raw_content=excluded.raw_content,
-                      updated_at=datetime('now')
-                    """,
-                    (item.episode_number, item.content),
-                )
-                (overwritten if previous else added).append(item.episode_number)
-
-            if items:
-                await db.execute(
-                    """
-                    INSERT INTO episode_source_state(id, project_revision, migrated_at)
-                    VALUES (1, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET project_revision=excluded.project_revision,
-                      migrated_at=COALESCE(excluded.migrated_at, episode_source_state.migrated_at)
-                    """,
-                    (target_revision, migrated_at),
-                )
-                await db.execute(
-                    """INSERT INTO episode_graph_outbox VALUES (?, ?, ?)
-                    ON CONFLICT(target_revision) DO UPDATE SET
-                      changed_episode_numbers_json=excluded.changed_episode_numbers_json""",
-                    (target_revision, json.dumps(sorted(item.episode_number for item in items)), now),
-                )
-            if preview_id is not None:
-                await db.execute(
-                    "DELETE FROM episode_import_previews WHERE preview_id=?",
-                    (preview_id,),
-                )
-            if audit_id is not None:
-                await db.execute(
-                    """INSERT INTO episode_import_records VALUES (?, ?, ?, ?)
-                    ON CONFLICT(import_id) DO UPDATE SET
-                      target_revision=excluded.target_revision,
-                      episodes_json=excluded.episodes_json""",
-                    (
-                        audit_id,
-                        target_revision,
-                        json.dumps(audit_episodes, ensure_ascii=False),
-                        now,
-                    ),
-                )
-                for episode in audit_episodes:
-                    if episode.get("status") != "overwritten":
-                        continue
-                    number = int(episode["episode_number"])
-                    consumed_revision = previously_consumed[number]
-                    await db.executemany(
-                        """INSERT INTO episode_stage_revisions VALUES (?, ?, ?, 1, ?)
-                        ON CONFLICT(episode_number, stage) DO UPDATE SET
-                          stale=1,
-                          updated_at=excluded.updated_at""",
-                        [
-                            (number, stage, consumed_revision, now)
-                            for stage in ("characters", "scenes", "beats", "media")
-                        ],
-                    )
+            result = await self._upsert_sources_in_transaction(
+                db,
+                items,
+                expected_revision=expected_revision,
+                skipped=skipped,
+                migrated_at=migrated_at,
+                preview_id=preview_id,
+                validate_preview_expiry=validate_preview_expiry,
+                audit_id=audit_id,
+                audit_episodes=audit_episodes,
+            )
             if novel_temporary is not None:
                 self._write_journal(
-                    old_revision=actual_revision,
-                    new_revision=target_revision,
+                    old_revision=expected_revision,
+                    new_revision=result.target_revision,
                     old_novel=old_novel,
                     new_novel=canonical_novel.encode("utf-8"),
                     phase="prepared",
@@ -418,6 +449,12 @@ class EpisodeSourceStore:
                 os.replace(novel_temporary, novel_path)
                 novel_replaced = True
             await db.commit()
+        except _ExpiredEpisodeImportPreview:
+            await db.execute(
+                "DELETE FROM episode_import_previews WHERE preview_id=?", (preview_id,)
+            )
+            await db.commit()
+            raise
         except Exception:
             await db.rollback()
             if novel_replaced:
@@ -440,12 +477,7 @@ class EpisodeSourceStore:
             except Exception:
                 self._recovery_complete = False
                 logger.exception("episode sources committed; journal cleanup failed")
-        return EpisodeSourceWriteResult(
-            target_revision=target_revision,
-            added=tuple(sorted(added)),
-            overwritten=tuple(sorted(overwritten)),
-            skipped=tuple(sorted(skipped)),
-        )
+        return result
 
     async def list_graph_outbox(self) -> list[dict[str, Any]]:
         db = await self._db()
