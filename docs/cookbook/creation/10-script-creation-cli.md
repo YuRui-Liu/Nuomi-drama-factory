@@ -121,7 +121,7 @@ nuomi --project PROJECT script handoffs confirm HANDOFF_ID --json '{"expected_so
 nuomi --project PROJECT script handoffs get HANDOFF_ID
 ```
 
-`prepare` 只生成差异预览与冻结快照；确认前核对 `diff`、`update_scope`、`expected_source_project_revision`，将示例中的 `0` 换成**本次 prepare 返回的值**。范围可为 `none`、`all`、`selected`；`selected` 必须携带预览中有效且非空的 `scene_ids`。`confirm` 才改制作来源并可能派发场次解析任务。若返回任务 ID，使用 `wait`，再 `handoffs get` 看最终状态。派发失败时在**原 `HANDOFF_ID`** 上用 `handoffs retry HANDOFF_ID`；不要新建交接猜测是否成功。`handoffs list --episode-number 1` 可找回记录。文字交接不会自动生成画面、音频或视频；后续制作遵循 [Nuomi 生产流程](../../../skills/nuomi-production/SKILL.md)。
+`prepare` 只生成差异预览与冻结快照；确认前核对 `diff`、`update_scope`、`expected_source_project_revision`，将示例中的 `0` 换成**本次 prepare 返回的值**。范围可为 `none`、`all`、`selected`；`selected` 必须携带预览中有效且非空的 `scene_ids`。`confirm` 才改制作来源并可能派发场次解析任务。若返回任务 ID，使用 `wait`，再 `handoffs get` 看最终状态。派发失败时在**原 `HANDOFF_ID`** 上用 `handoffs retry HANDOFF_ID`；不要新建交接猜测是否成功。`handoffs list --episode-number 1` 可找回记录。文字交接不会自动生成画面、音频或视频；后续制作遵循仓库中的 `skills/nuomi-production/SKILL.md`。
 
 ## 命令索引
 
