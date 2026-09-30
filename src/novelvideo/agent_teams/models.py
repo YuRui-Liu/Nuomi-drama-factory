@@ -23,7 +23,7 @@ class ResourceRef(Contract):
 
 
 class ResourceVersion(ResourceRef):
-    kind: Literal["skill", "reference"]
+    kind: Literal["prompt", "skill", "reference"]
     owner: Identifier
     content: str = Field(strict=True)
     content_hash: Identifier

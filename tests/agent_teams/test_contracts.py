@@ -43,6 +43,12 @@ def test_resources_and_versions_reject_assignment_and_copy_inputs():
     assert TeamVersion.model_validate_json(team.model_dump_json()) == team
 
 
+def test_prompt_resource_is_versioned():
+    resource = ResourceVersion(id="prompt", kind="prompt", revision=1, owner="local",
+                               content="Write", content_hash="sha")
+    assert resource.kind == "prompt"
+
+
 def test_draft_validates_fields_and_does_not_share_overrides():
     source = {"writer": {"script_creation_generation": {"skills": []}}}
     draft = ProjectDraft(project_id="p", template_id="t", template_revision=1, overrides=source)
