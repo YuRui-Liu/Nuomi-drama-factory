@@ -26,6 +26,7 @@ def test_field_override_inherits_and_explicit_empty_replaces():
     {"skills": ["unpinned"]}, {"references": [{"id": "x"}]},
     {"skills": [{"id": "p", "revision": 0}]}, {"api_key": "secret"},
     {"director_preferences": {"unknown": "x"}},
+    {"director_preferences": {"pace": b"fast"}},
 ])
 def test_rejects_invalid_overrides(override):
     with pytest.raises((ValidationError, ValueError)):
@@ -37,7 +38,7 @@ def test_resources_and_versions_reject_assignment_and_copy_inputs():
     with pytest.raises(ValidationError):
         resource.revision = 2
     source = {"writer": {"script_creation_generation": method()}}
-    team = TeamVersion(id="t", revision=1, name="Team", roles=source)
+    team = TeamVersion(id="t", revision=1, name="Team", owner="local", roles=source)
     source["writer"]["script_creation_generation"]["prompt"] = "changed"
     assert team.roles["writer"]["script_creation_generation"].prompt == "Create a story"
     assert TeamVersion.model_validate_json(team.model_dump_json()) == team
@@ -70,10 +71,26 @@ def test_catalog_is_fixed_and_honest_about_connection():
 def test_snapshot_is_pinned_and_forbids_credentials():
     values = dict(id="run", project_id="p", template_id="t", template_revision=1, active_revision=1,
                   role_id="writer", subtask_id="script_creation_generation", input_revision="1", input_hash="sha",
-                  resolved_method=method(), resolved_model={"runtime": "codex", "model": "gpt-5.5"}, resource_snapshots=[])
+                  resolved_method=method(), resolved_model={"runtime": "codex", "model": "gpt-5.5"},
+                  resource_snapshots=[dict(id="skill", revision=2, kind="skill", owner="local", content="Guide", content_hash="sha")])
     snapshot = ExecutionSnapshot(**values)
     assert snapshot.resolved_model.runtime == "codex"
     with pytest.raises(ValidationError):
         ExecutionSnapshot(**values, api_key="secret")
     with pytest.raises(ValidationError):
         snapshot.input_hash = "changed"
+    assert ExecutionSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
+    for resources in ([], [dict(values["resource_snapshots"][0], revision=1)],
+                      [dict(values["resource_snapshots"][0], kind="reference")],
+                      values["resource_snapshots"] * 2,
+                      values["resource_snapshots"] + [dict(values["resource_snapshots"][0], id="other")]):
+        with pytest.raises(ValidationError):
+            ExecutionSnapshot(**dict(values, resource_snapshots=resources))
+    with pytest.raises(ValidationError, match="conflicting resource pins"):
+        ExecutionSnapshot(**dict(values, resolved_method=dict(method(), skills=[
+            {"id": "skill", "revision": 2}, {"id": "skill", "revision": 3}])))
+
+
+def test_template_owner_is_required():
+    with pytest.raises(ValidationError):
+        TeamVersion(id="t", revision=1, name="Team")

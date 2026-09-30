@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from novelvideo.text_task_runtime.models import AgentTaskRoute
 
@@ -35,7 +35,7 @@ class MethodConfig(Contract):
     prompt: str = Field(default="", strict=True)
     skills: tuple[ResourceRef, ...] = ()
     references: tuple[ResourceRef, ...] = ()
-    director_preferences: dict[PreferenceKey, str] = Field(default_factory=dict)
+    director_preferences: dict[PreferenceKey, Annotated[str, Field(strict=True)]] = Field(default_factory=dict)
 
 
 class RoleDefinition(Contract):
@@ -50,6 +50,7 @@ class TeamVersion(Contract):
     id: Identifier
     revision: Revision
     name: Identifier
+    owner: Identifier
     roles: dict[str, dict[str, MethodConfig]] = Field(default_factory=dict)
 
 
@@ -90,3 +91,21 @@ class ExecutionSnapshot(Contract):
     resolved_method: MethodConfig
     resolved_model: AgentTaskRoute
     resource_snapshots: tuple[ResourceVersion, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_resource_coverage(self):
+        expected = set()
+        identities = {}
+        for kind, refs in (("skill", self.resolved_method.skills),
+                           ("reference", self.resolved_method.references)):
+            for ref in refs:
+                identity = (kind, ref.revision)
+                if ref.id in identities and identities[ref.id] != identity:
+                    raise ValueError("conflicting resource pins")
+                identities[ref.id] = identity
+                expected.add((ref.id, ref.revision, kind))
+        actual = [(resource.id, resource.revision, resource.kind)
+                  for resource in self.resource_snapshots]
+        if len(actual) != len(set(actual)) or set(actual) != expected:
+            raise ValueError("resource snapshots must exactly cover resolved method pins")
+        return self
