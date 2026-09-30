@@ -45,9 +45,14 @@ describe("video director draft", () => {
 
   it("duplicates node data with independent draft and no active attempt or result", () => {
     const data = {
-      draft: updateSegment(createDirectorDraft("first"), "first", {
+      draft: updateSegment(updateDraft(createDirectorDraft("first"), {
+        references: [{ imageId: "reference", url: "/reference.png" }],
+      }), "first", {
+        firstFrame: { imageId: "start", url: "/start.png" },
         lastFrame: { imageId: "image", url: "/last.png" },
       }),
+      activeInputMode: "frames" as const,
+      visibleSegmentId: "first",
       activeAttemptId: "attempt-1",
       videoUrl: "/result.mp4",
       resultRevision: 1,
@@ -56,6 +61,9 @@ describe("video director draft", () => {
     expect(clone).toMatchObject({ activeAttemptId: null, videoUrl: null, resultRevision: null });
     expect(clone.draft).toEqual(data.draft);
     expect(clone.draft).not.toBe(data.draft);
+    expect(clone).toMatchObject({ activeInputMode: "frames", visibleSegmentId: "first" });
+    expect(clone.draft.references[0]).not.toBe(data.draft.references[0]);
+    expect(clone.draft.segments[0].firstFrame).not.toBe(data.draft.segments[0].firstFrame);
     expect(clone.draft.segments[0].lastFrame).not.toBe(data.draft.segments[0].lastFrame);
   });
 

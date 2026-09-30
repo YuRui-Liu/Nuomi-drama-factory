@@ -268,6 +268,9 @@ export interface DirectorAttempt {
 
 export interface VideoDirectorNodeData extends NodeDisplayData {
   draft: DirectorDraft;
+  /** Active image input route; absent on nodes saved before input modes existed. */
+  activeInputMode?: 'ref' | 'frames';
+  visibleSegmentId?: string | null;
   pendingSubmission?: { requestId: string; frozenDraftSnapshot: DirectorDraft } | null;
   activeAttemptId: string | null;
   videoUrl: string | null;
