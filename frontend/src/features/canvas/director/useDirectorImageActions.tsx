@@ -11,6 +11,20 @@ export type DirectorImageTarget = { kind: 'references' } | { kind: 'reference'; 
   kind: 'frame'; segmentId: string; field: 'firstFrame' | 'lastFrame';
 };
 
+// Card and panel mount separate hooks. A shared slot version prevents a pending upload
+// in one editor from overwriting a newer choice made in the other editor.
+const slotVersions = new Map<string, number>();
+function sharedSlotVersionKey(nodeId: string, target: DirectorImageTarget): string {
+  const location = readUrl();
+  const slot = target.kind === 'frame' ? `${target.segmentId}.${target.field}` : 'references';
+  return JSON.stringify([location.project, location.canvas, useCanvasStore.getState().canvasHydrationEpoch, nodeId, slot]);
+}
+function advanceSlotVersion(key: string): number {
+  const version = (slotVersions.get(key) ?? 0) + 1;
+  slotVersions.set(key, version);
+  return version;
+}
+
 export function directorSelectionToImage(selection: AssetLibrarySelection): DirectorImage {
   return { imageId: selection.imageId ?? selection.assetId ?? selection.url, url: selection.url,
     assetId: selection.assetId ?? null, characterId: selection.characterId ?? null,
@@ -61,6 +75,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
   const commitDirectorSlot = useCallback((target: DirectorImageTarget, images: DirectorImage[], removeId?: string,
     sourceUpload?: number) => {
     if (sourceUpload === undefined) invalidatePending(target);
+    advanceSlotVersion(sharedSlotVersionKey(nodeId, target));
     const current = nodeData(nodeId);
     if (!current) return false;
     const draft = current.draft;
@@ -124,6 +139,8 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
       return;
     }
     if (!project) { setErrors((current) => ({ ...current, [key]: t('node.videoDirector.errors.projectMissing') })); return; }
+    const sharedKey = sharedSlotVersionKey(nodeId, target);
+    const sharedVersion = advanceSlotVersion(sharedKey);
     setErrors((current) => ({ ...current, [key]: '' }));
     setUploading((current) => ({ ...current, [key]: true }));
     let nodePresent = true;
@@ -131,6 +148,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
       if (!state.nodes.some((node) => node.id === nodeId)) nodePresent = false;
     });
     const currentRequest = () => mounted.current && latestUpload.current[key] === sequence &&
+      slotVersions.get(sharedKey) === sharedVersion &&
       nodePresent && useCanvasStore.getState().canvasHydrationEpoch === epoch && !!directorNode(nodeId) &&
       readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route;
     try {

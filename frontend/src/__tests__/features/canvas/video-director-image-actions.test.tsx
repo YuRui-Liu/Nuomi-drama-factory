@@ -29,6 +29,13 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 const frame: DirectorImageTarget = { kind: 'frame', segmentId: 's1', field: 'firstFrame' };
 const refs: DirectorImageTarget = { kind: 'references' };
 let actions: ReturnType<typeof useDirectorImageActions>;
+let cardActions: ReturnType<typeof useDirectorImageActions>;
+let panelActions: ReturnType<typeof useDirectorImageActions>;
+function TwoEditors() {
+  cardActions = useDirectorImageActions('director', 2);
+  panelActions = useDirectorImageActions('director', 2);
+  return null;
+}
 function Harness({ target = frame }: { target?: DirectorImageTarget }) {
   actions = useDirectorImageActions('director', 2);
   const data = useCanvasStore((state) => state.nodes.find((node) => node.id === 'director')?.data as VideoDirectorNodeData);
@@ -57,6 +64,50 @@ describe('director image actions', () => {
     window.history.replaceState({}, '', '/projects/demo/freezone');
     useCanvasStore.getState().setCanvasData([{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
       position: { x: 0, y: 0 }, data: data() }], []);
+  });
+
+  it('keeps a newer panel selection when an older card upload finishes later', async () => {
+    let finish!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<TwoEditors />);
+    let upload!: Promise<void>;
+    act(() => { upload = cardActions.uploadFile(frame, new File(['old'], 'old.png', { type: 'image/png' })); });
+    act(() => panelActions.commitDirectorSlot(frame, [{ imageId: 'new', url: '/new.png' }]));
+    await act(async () => { finish({ url: '/old.png' }); await upload; });
+    expect(current().draft.segments[0].firstFrame).toEqual({ imageId: 'new', url: '/new.png' });
+    expect(current().draft.revision).toBe(1);
+  });
+
+  it('keeps a newer panel upload when an older card upload finishes later', async () => {
+    let finishOld!: (value: { url: string }) => void;
+    let finishNew!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockImplementation((_project, file: File) => new Promise((resolve) => {
+      if (file.name === 'old.png') finishOld = resolve;
+      else finishNew = resolve;
+    }));
+    render(<TwoEditors />);
+    let oldUpload!: Promise<void>;
+    let newUpload!: Promise<void>;
+    act(() => {
+      oldUpload = cardActions.uploadFile(frame, new File(['old'], 'old.png', { type: 'image/png' }));
+      newUpload = panelActions.uploadFile(frame, new File(['new'], 'new.png', { type: 'image/png' }));
+    });
+    await act(async () => { finishNew({ url: '/new.png' }); await newUpload; });
+    await act(async () => { finishOld({ url: '/old.png' }); await oldUpload; });
+    expect(current().draft.segments[0].firstFrame).toEqual({ imageId: '/new.png', url: '/new.png' });
+    expect(current().draft.revision).toBe(1);
+  });
+
+  it('keeps a panel removal when an older card upload finishes later', async () => {
+    let finish!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<TwoEditors />);
+    let upload!: Promise<void>;
+    act(() => { upload = cardActions.uploadFile(frame, new File(['old'], 'old.png', { type: 'image/png' })); });
+    act(() => panelActions.removeImage(frame));
+    await act(async () => { finish({ url: '/old.png' }); await upload; });
+    expect(current().draft.segments[0].firstFrame).toBeNull();
+    expect(current().draft.revision).toBe(1);
   });
 
   it('keeps old frame until dropped image upload succeeds, then stores persistent URL', async () => {

@@ -68,7 +68,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const dropCard = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'));
-    if (!file || !segment) return;
+    if (!file || mode === 'frames' && !segment) return;
     if (mode === 'ref' && effective.references.length === 0) void images.uploadFile({ kind: 'references' }, file);
     else if (mode === 'frames' && !frameIsBound('firstFrame') && !visible?.firstFrame) void images.uploadFile(frameTarget('firstFrame'), file);
     else setDroppedFile(file);

@@ -129,6 +129,24 @@ describe('video director with real locale resources', () => {
       { target: { files: [new File(['image'], 'source.png', { type: 'image/png' })] } });
     expect(screen.getByRole('alert')).toHaveTextContent('Cannot upload image without a project');
   });
+  it('routes a blank Ref card drop to references even when there are no segments', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    window.history.replaceState({}, '', '/freezone');
+    const draft = createDirectorDraft('s1');
+    draft.segments = [];
+    const data: VideoDirectorNodeData = { draft, activeInputMode: 'ref', activeAttemptId: null,
+      videoUrl: null, resultRevision: null };
+    useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
+      position: { x: 0, y: 0 }, data }], edges: [] } as never);
+    useTask.mockReturnValue({ capabilities: null, attempts: [], error: '', fieldErrors: {},
+      generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} /></I18nextProvider>);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), { dataTransfer: { files: [new File(['image'], 'ref.png', { type: 'image/png' })] } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Cannot upload image without a project');
+  });
   it.each([
     { language: 'zh', empty: 'Ref 引导，待输入', segments: '1 段', duration: '5.0 秒', edit: '编辑', stage: '优化中', title: '视频导演 · director', model: '模型' },
     { language: 'en', empty: 'Ref guided, awaiting input', segments: '1 segments', duration: '5.0 s', edit: 'Edit', stage: 'Optimizing', title: 'Video Director · director', model: 'Model' },
@@ -156,6 +174,7 @@ describe('video director with real locale resources', () => {
     fireEvent.click(screen.getByRole('button', { name: edit }));
     expect(await screen.findByText(title)).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: model })).toBeInTheDocument();
+    if (language === 'en') expect(screen.getByText('Active route: MiniMax H3 Ref')).toBeInTheDocument();
     expect(screen.getAllByText(stage).length).toBeGreaterThan(1);
   });
 });

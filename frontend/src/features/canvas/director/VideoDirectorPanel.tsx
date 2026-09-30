@@ -67,7 +67,9 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
-        <p className="mb-3 text-sm">{t('node.videoDirector.editor.activeRoute')}：{mode === 'ref' ? t('node.videoDirector.editor.refRoute') : t('node.videoDirector.editor.framesRoute')}</p>
+        <p className="mb-3 text-sm">{t('node.videoDirector.activeRouteLabel', {
+          route: mode === 'ref' ? t('node.videoDirector.editor.refRoute') : t('node.videoDirector.editor.framesRoute'),
+        })}</p>
         {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-sm text-red-300">{directorErrorText(error, t)}</p>)}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="text-xs">{tr('model', '模型')}<select aria-label={tr('model', '模型')} className="mt-1 block w-full rounded bg-black/30 p-2" value={draft.modelId}
