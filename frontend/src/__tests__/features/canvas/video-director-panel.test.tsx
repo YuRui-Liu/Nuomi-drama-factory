@@ -20,7 +20,7 @@ function task(overrides: Partial<ReturnType<typeof useVideoDirectorTask>> = {}):
 }
 
 describe('video director panel', () => {
-  it('requires a valid two-segment reference-only draft before generation', () => {
+  it('delegates generation after two-segment draft edits without passing a stale draft', () => {
     const data = makeData();
     data.draft.references = [{ imageId: 'reference', url: '/reference.png' }];
     data.draft = addSegment(data.draft, 'two');
@@ -28,19 +28,19 @@ describe('video director panel', () => {
     const controller = task();
     const { rerender } = render(<VideoDirectorPanel nodeId="n1" data={data} task={controller} onDraftChange={onDraftChange} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
-    expect(controller.generate).not.toHaveBeenCalled();
-    expect(screen.getAllByText('请输入分段提示词')).toHaveLength(2);
+    expect(controller.generate).toHaveBeenCalledTimes(1);
+    expect(controller.generate).toHaveBeenCalledWith();
     const prompts = screen.getAllByRole('textbox');
     fireEvent.change(prompts[0], { target: { value: 'Opening shot' } });
     fireEvent.change(prompts[1], { target: { value: 'Closing shot' } });
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
-    expect(controller.generate).toHaveBeenCalledWith(expect.objectContaining({ segments: [
-      expect.objectContaining({ prompt: 'Opening shot' }), expect.objectContaining({ prompt: 'Closing shot' }),
-    ] }));
+    expect(data.draft.segments.map((segment) => segment.prompt)).toEqual(['Opening shot', 'Closing shot']);
+    expect(controller.generate).toHaveBeenCalledTimes(2);
+    expect(controller.generate).toHaveBeenLastCalledWith();
     expect(screen.queryByRole('button', { name: /批准|审核|确认优化/ })).not.toBeInTheDocument();
   });
 
-  it('keeps a retired model visible and blocks generation until changed', () => {
+  it('keeps a retired model visible while delegating validation to the task', () => {
     const data = makeData();
     data.draft.modelId = 'retired';
     data.draft.references = [{ imageId: 'r', url: '/r.png' }];
@@ -49,8 +49,7 @@ describe('video director panel', () => {
     render(<VideoDirectorPanel nodeId="n2" data={data} task={controller} onDraftChange={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByRole('option', { name: 'retired（不可用）' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
-    expect(controller.generate).not.toHaveBeenCalled();
-    expect(screen.getByText('当前模型不可用，请选择可用模型')).toBeInTheDocument();
+    expect(controller.generate).toHaveBeenCalledWith();
   });
 
   it('keeps draft edits after the expanded panel closes and reopens', () => {

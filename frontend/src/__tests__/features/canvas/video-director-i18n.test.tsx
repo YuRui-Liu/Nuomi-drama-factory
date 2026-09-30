@@ -46,7 +46,7 @@ describe('video director with real locale resources', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View video' }));
     expect(document.querySelector('video')).toHaveAttribute('controls');
   });
-  it('blocks generation for an unavailable connected reference even when a manual reference is valid', async () => {
+  it('shows a localized connected reference error and delegates generation to the task', async () => {
     const i18n = i18next.createInstance();
     await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
     const draft = createDirectorDraft('s1');
@@ -64,7 +64,7 @@ describe('video director with real locale resources', () => {
       positionAbsoluteX={0} positionAbsoluteY={0} onOpenEditor={vi.fn()} /></I18nextProvider>);
     expect(screen.getByRole('alert')).toHaveTextContent('Connected reference image is unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
-    expect(generate).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledWith();
   });
   it('renders a connected reference without manual image actions', async () => {
     const i18n = i18next.createInstance();

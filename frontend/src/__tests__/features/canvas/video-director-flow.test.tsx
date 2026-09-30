@@ -63,7 +63,7 @@ describe('Director real component flow', () => {
   beforeEach(() => {
     localStorage.clear();
     window.history.replaceState({}, '', '/projects/demo/freezone?canvas=canvas');
-    useCanvasStore.setState({ userEditsSinceHydrate: 0, nodes: [{ id: 'director',
+    useCanvasStore.setState({ userEditsSinceHydrate: 0, edges: [], nodes: [{ id: 'director',
       type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
       data: { displayName: 'Director', draft: createDirectorDraft('opening'), activeAttemptId: null,
         videoUrl: null, resultRevision: null, pendingSubmission: null } }] as never });
@@ -91,6 +91,47 @@ describe('Director real component flow', () => {
     await act(async () => { await Promise.resolve(); });
     fireEvent.click(screen.getByRole('button', { name: '生成' }));
     expect(await screen.findByText('没有参考图时必须选择首帧')).toBeInTheDocument();
+  });
+
+  it('posts bound references in wire JSON while omitting the inactive saved frame', async () => {
+    const draft = createDirectorDraft('opening');
+    draft.references = [{ imageId: 'manual', url: '/manual.png' }];
+    draft.segments[0].prompt = 'Opening shot';
+    draft.segments[0].firstFrame = { imageId: 'saved-frame', url: '/saved-frame.png' };
+    useCanvasStore.setState((state) => ({
+      nodes: [{ ...state.nodes[0], data: { ...state.nodes[0].data, draft, activeInputMode: 'ref' } },
+        { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/connected.png' } }],
+      edges: [{ id: 'connected-reference', source: 'source', target: 'director',
+        data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }],
+    } as never));
+    let capabilitiesLoaded = false;
+    let posted: Record<string, any> | null = null;
+    const response = (data: unknown) => HttpResponse.json({ ok: true, data });
+    server.use(
+      http.get(`${endpoint}/capabilities`, () => { capabilitiesLoaded = true; return response(capabilities); }),
+      http.get(`${endpoint}/attempts`, () => response({ attempts: [] })),
+      http.post(`${endpoint}/attempts`, async ({ request }) => {
+        posted = await request.json() as Record<string, any>;
+        return response({ attempt: { id: 'wire-attempt', project_id: 'demo', canvas_id: 'canvas', node_id: 'director',
+          request_id: posted.request_id, parent_attempt_id: null, revision: posted.draft.revision,
+          snapshot: posted.draft, stage: 'optimizing', optimized: null, rules_hash: null, reference_limit: 5,
+          workflow_id: null, workflow_profile_id: null, workflow_profile_version: null,
+          actual_parameters: null, task_id: null, provider_task_id: null, result_url: null, error: null,
+          failed_stage: null, created_at: null, updated_at: null } });
+      }),
+    );
+    render(<CurrentNode />);
+    await waitFor(() => expect(capabilitiesLoaded).toBe(true));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(posted).not.toBeNull());
+    expect(posted!.draft.references).toEqual([
+      expect.objectContaining({ image_id: 'manual', url: '/manual.png' }),
+      expect.objectContaining({ image_id: expect.stringContaining('source'), url: expect.stringContaining('connected.png') }),
+    ]);
+    expect(posted!.draft.segments[0].first_frame).toBeNull();
+    expect(posted!.draft.segments[0].last_frame).toBeNull();
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('wire-attempt'));
   });
 
   it('switches card segment without rewriting another prompt', () => {

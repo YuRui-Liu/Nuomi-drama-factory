@@ -42,6 +42,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const [attempts, setAttempts] = useState<DirectorAttempt[]>([]);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const bindingFieldErrors = useRef<Record<string, string>>({});
   const submitting = useRef(false);
   const mounted = useRef(true);
   const latestStages = useRef(new Map<string, string>());
@@ -50,11 +51,35 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const publicationSequence = useRef(0);
   const published = useRef(new Map<string, { epoch: number; sequence: number; updatedAt: string | null }>());
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
+  const liveNodes = useCanvasStore((state) => state.nodes);
+  const liveEdges = useCanvasStore((state) => state.edges);
 
   const issueToken = useCallback(() => ({ epoch: publicationEpoch.current, sequence: ++publicationSequence.current }), []);
   const advanceToken = useCallback(() => ({ epoch: ++publicationEpoch.current, sequence: ++publicationSequence.current }), []);
 
-  useEffect(() => setFieldErrors({}), [data.draft.revision]);
+  useEffect(() => {
+    bindingFieldErrors.current = {};
+    setFieldErrors({});
+  }, [data.draft.revision]);
+
+  useEffect(() => {
+    if (!project || !mounted.current || !sameLocation(project, canvasId) || !Object.keys(bindingFieldErrors.current).length) return;
+    const node = liveNodes.find((item) => item.id === nodeId);
+    if (node?.type !== CANVAS_NODE_TYPES.videoDirector) return;
+    const current = node.data as VideoDirectorNodeData;
+    const mode = resolveDirectorInputMode(current);
+    const incoming = liveEdges.filter((edge) => edge.target === nodeId);
+    const next = resolveDirectorBindings(current.draft, liveNodes, incoming, mode).errors;
+    const stale = Object.entries(bindingFieldErrors.current)
+      .filter(([field, message]) => next[field] !== message);
+    if (!stale.length) return;
+    bindingFieldErrors.current = next;
+    setFieldErrors((errors) => {
+      const remaining = { ...errors };
+      for (const [field, message] of stale) if (remaining[field] === message) delete remaining[field];
+      return remaining;
+    });
+  }, [project, canvasId, nodeId, liveNodes, liveEdges]);
 
   const applies = useCallback((attempt: DirectorAttempt, token: { epoch: number; sequence: number }): boolean => {
     if (!mounted.current || !project || !sameLocation(project, canvasId) ||
@@ -133,6 +158,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   }, [project, canvasId, nodeId, applies, advanceToken, updateNodeData]);
 
   const generate = useCallback(() => {
+    if (!project || !mounted.current || !sameLocation(project, canvasId)) return;
     const state = useCanvasStore.getState();
     const node = state.nodes.find((item) => item.id === nodeId);
     const current = node?.type === CANVAS_NODE_TYPES.videoDirector ? node.data as VideoDirectorNodeData : null;
@@ -143,9 +169,11 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     const directorIncomingEdges = state.edges.filter((edge) => edge.target === nodeId);
     const binding = resolveDirectorBindings(current.draft, state.nodes, directorIncomingEdges, mode);
     if (Object.keys(binding.errors).length) {
+      bindingFieldErrors.current = binding.errors;
       setFieldErrors(binding.errors);
       return;
     }
+    bindingFieldErrors.current = {};
     const effective = projectDirectorDraft(binding.draft, mode);
     const errors = validateDirectorDraft(effective, capabilities);
     setFieldErrors(errors);
@@ -153,10 +181,19 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     setError('');
     const frozenDraftSnapshot = structuredClone(effective);
     const pendingSubmission = { requestId: crypto.randomUUID(), frozenDraftSnapshot };
+    if (!mounted.current || !sameLocation(project, canvasId) || currentData(nodeId) !== current) return;
     try {
       writeDirectorJournal(pendingJournal(project, canvasId, nodeId, pendingSubmission, current.activeAttemptId));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法保存待提交请求');
+      if (mounted.current && sameLocation(project, canvasId)) setError(cause instanceof Error ? cause.message : '无法保存待提交请求');
+      return;
+    }
+    if (!mounted.current || !sameLocation(project, canvasId) || currentData(nodeId) !== current) {
+      try {
+        if (readDirectorJournal(project, canvasId, nodeId)?.requestId === pendingSubmission.requestId) {
+          clearDirectorJournal(project, canvasId, nodeId);
+        }
+      } catch { /* a later visit can discard the stale journal */ }
       return;
     }
     updateNodeData(nodeId, { pendingSubmission });

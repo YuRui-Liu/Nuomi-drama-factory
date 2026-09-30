@@ -117,6 +117,54 @@ describe('video director task lifecycle', () => {
     expect(api.createDirectorAttempt).not.toHaveBeenCalled();
   });
 
+  it('does not let a stale hook submit into a new canvas with the same node ID', async () => {
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    const oldGenerate = result.current.generate;
+    window.history.replaceState({}, '', '/projects/demo/freezone?canvas=another-canvas');
+    setNode();
+    act(() => oldGenerate());
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not write a journal or pending state when canvas changes during snapshot creation', async () => {
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    vi.spyOn(crypto, 'randomUUID').mockImplementationOnce(() => {
+      window.history.replaceState({}, '', '/projects/demo/freezone?canvas=another-canvas');
+      setNode();
+      return '00000000-0000-4000-8000-000000000001';
+    });
+    act(() => result.current.generate());
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('clears an old binding field error when its source is repaired without a draft revision', async () => {
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors.references).toBe('Connected reference image is unavailable');
+    const revision = nodeData().draft.revision;
+    act(() => connectSource('/repaired.png', { kind: 'reference' }));
+    await waitFor(() => expect(result.current.fieldErrors).toEqual({}));
+    expect(nodeData().draft.revision).toBe(revision);
+  });
+
+  it('clears an old binding field error when its edge is removed', async () => {
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors.references).toBe('Connected reference image is unavailable');
+    act(() => useCanvasStore.setState({ edges: [] }));
+    await waitFor(() => expect(result.current.fieldErrors).toEqual({}));
+  });
+
   it('ignores a missing connected source on the inactive route', async () => {
     connectSource(null, { kind: 'firstFrame', segmentId: 's1' });
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
