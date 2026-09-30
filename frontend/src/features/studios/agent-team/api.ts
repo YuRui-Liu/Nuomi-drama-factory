@@ -1,0 +1,11 @@
+import { api } from '@/lib/api';
+import { p } from '@/lib/api-path';
+import { jsonWithBackendError } from '@/lib/api-errors';
+import type { DraftData, TeamOverview, TeamDraft, TeamBinding, TeamDiff, ResourceVersion } from './types';
+export const getTeam = (project: string, signal?: AbortSignal) => jsonWithBackendError<TeamOverview>(api.get(p`api/v1/projects/${project}/agent-team`, { signal, throwHttpErrors: false }));
+export const saveTeamDraft = (project: string, data: DraftData, expected_revision: number) => jsonWithBackendError<TeamDraft>(api.put(p`api/v1/projects/${project}/agent-team/draft`, { json: { data, expected_revision }, retry: 0, throwHttpErrors: false }));
+export const getTeamDiff = (project: string) => jsonWithBackendError<TeamDiff[]>(api.get(p`api/v1/projects/${project}/agent-team/diff`, { throwHttpErrors: false }));
+export const getTeamVersions = (project: string) => jsonWithBackendError<TeamBinding[]>(api.get(p`api/v1/projects/${project}/agent-team/versions`, { throwHttpErrors: false }));
+export const getTeamResources = () => jsonWithBackendError<ResourceVersion[]>(api.get('api/v1/agent-team-resources', { throwHttpErrors: false }));
+export const activateTeam = (project: string, draft_revision: number, expected_active_revision: number) => jsonWithBackendError<TeamBinding>(api.post(p`api/v1/projects/${project}/agent-team/activate`, { json: { draft_revision, expected_active_revision }, retry: 0, throwHttpErrors: false }));
+export const rollbackTeam = (project: string, active_revision: number, draft_revision: number, expected_active_revision: number) => jsonWithBackendError<TeamBinding>(api.post(p`api/v1/projects/${project}/agent-team/rollback`, { json: { active_revision, draft_revision, expected_active_revision }, retry: 0, throwHttpErrors: false }));
