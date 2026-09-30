@@ -49,6 +49,7 @@ import {
 } from '@/features/canvas/domain/nodeRegistry';
 import { EXPORT_RESULT_DISPLAY_NAME } from '@/features/canvas/domain/nodeDisplay';
 import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
+import { readDirectorBinding, sameDirectorFrameSlot } from '@/features/canvas/domain/videoDirectorBindings';
 import {
   type ViewportBookmark,
   type ViewportBookmarks,
@@ -1383,6 +1384,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       // 3D 世界节点只用一张上游图生成，因此入边唯一：已有其它上游时拒绝新连接。
       // 这是所有连线路径(手动拖线 / 拖到空白生成节点)的共同收口处。
       const targetNode = state.nodes.find((node) => node.id === connection.target);
+      if (targetNode?.type === CANVAS_NODE_TYPES.videoDirector) return {};
       if (
         targetNode?.type === CANVAS_NODE_TYPES.threeDWorld &&
         state.edges.some(
@@ -1943,6 +1945,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     if (!sourceNode || !targetNode) {
       return null;
     }
+    if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) return null;
     if (!nodeHasSourceHandle(sourceNode.type) || !nodeHasTargetHandle(targetNode.type)) {
       return null;
     }
@@ -1987,6 +1990,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 上游类型规则收口（如音频←非文本）。
     if (!isUpstreamConnectionAllowed(sourceNode.type, targetNode.type)) {
       return null;
+    }
+
+    if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
+      const candidate = { source, target, data } as CanvasEdge;
+      const slot = readDirectorBinding(candidate);
+      if (!slot) return null;
+      if (slot.kind !== 'reference') {
+        const draft = (targetNode.data as VideoDirectorNodeData).draft;
+        if (!draft?.segments.some((segment) => segment.id === slot.segmentId)) return null;
+        if (state.edges.some((edge) => sameDirectorFrameSlot(edge, candidate))) return null;
+      }
     }
 
     const edgeId = options?.id || `e-${source}-${target}-${String(data.edgeKind || 'data')}`;

@@ -683,6 +683,12 @@ export function nodeHasTargetHandle(type: CanvasNodeType): boolean {
 const UPSTREAM_SOURCE_WHITELIST: Partial<Record<CanvasNodeType, readonly CanvasNodeType[]>> = {
   // 音频节点的上游只能是文本节点。
   [CANVAS_NODE_TYPES.audio]: [CANVAS_NODE_TYPES.textAnnotation],
+  [CANVAS_NODE_TYPES.videoDirector]: [
+    CANVAS_NODE_TYPES.upload,
+    CANVAS_NODE_TYPES.imageEdit,
+    CANVAS_NODE_TYPES.imageGen,
+    CANVAS_NODE_TYPES.exportImage,
+  ],
 };
 
 // 返回某目标类型允许的上游源类型；返回 null 表示该类型不施加额外类型限制。
