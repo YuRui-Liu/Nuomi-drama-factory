@@ -2,6 +2,7 @@ import type { DirectorSegment } from '../domain/canvasNodes';
 import type { DirectorCapabilities } from '@/api/videoDirector';
 import { alignDirectorDuration, type DirectorErrors } from './directorValidation';
 import { useTranslation } from 'react-i18next';
+import { DirectorImageSlot } from './DirectorImageSlot';
 
 interface Props {
   segment: DirectorSegment;
@@ -11,12 +12,16 @@ interface Props {
   errors: DirectorErrors;
   onPatch: (patch: Partial<DirectorSegment>) => void;
   onPick: (field: 'firstFrame' | 'lastFrame') => void;
+  onUpload: (field: 'firstFrame' | 'lastFrame', file: File) => void;
+  onRemove: (field: 'firstFrame' | 'lastFrame') => void;
+  imageErrors: Record<string, string>;
+  uploading: Record<string, boolean>;
   onCopy: () => void;
   onDelete: () => void;
   onMove: (offset: number) => void;
 }
 
-export function DirectorSegmentEditor({ segment, index, count, capabilities, errors, onPatch, onPick, onCopy, onDelete, onMove }: Props) {
+export function DirectorSegmentEditor({ segment, index, count, capabilities, errors, onPatch, onPick, onUpload, onRemove, imageErrors, uploading, onCopy, onDelete, onMove }: Props) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   const prefix = `segments[${index}]`;
@@ -42,11 +47,11 @@ export function DirectorSegmentEditor({ segment, index, count, capabilities, err
     {aligned && aligned.frames > 0 && <p className="text-xs text-text-muted">{tr('aligned', 'H3 对齐')}：{aligned.frames} {tr('frames', '帧')} / {aligned.seconds.toFixed(2)} {tr('seconds', '秒')}</p>}
     {errors[`${prefix}.duration_seconds`] && <p className="text-xs text-red-300">{errors[`${prefix}.duration_seconds`]}</p>}
     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-      {(['firstFrame', 'lastFrame'] as const).map((field) => <div key={field} className="rounded border border-white/10 p-2">
-        <span>{field === 'firstFrame' ? tr('firstFrame', '首帧') : tr('lastFrame', '尾帧')}</span>
-        {segment[field] && <img src={segment[field]!.url} alt={field === 'firstFrame' ? tr('firstPreview', '首帧预览') : tr('lastPreview', '尾帧预览')} className="mt-1 h-20 w-full object-contain" />}
-        <div className="mt-1 flex gap-2"><button type="button" onClick={() => onPick(field)}>{tr('selectImage', '选择图片')}</button>
-          {segment[field] && <button type="button" onClick={() => onPatch({ [field]: null })}>{tr('remove', '移除')}</button>}</div>
+      {(['firstFrame', 'lastFrame'] as const).map((field) => <div key={field}>
+        <DirectorImageSlot label={field === 'firstFrame' ? tr('firstFrame', '首帧') : tr('lastFrame', '尾帧')}
+          image={segment[field]} error={imageErrors[`${segment.id}.${field}`]}
+          uploading={uploading[`${segment.id}.${field}`]}
+          onPick={() => onPick(field)} onUpload={(file) => onUpload(field, file)} onRemove={() => onRemove(field)} />
         {errors[`${prefix}.${field === 'firstFrame' ? 'first_frame' : 'last_frame'}`] &&
           <p className="text-red-300">{errors[`${prefix}.${field === 'firstFrame' ? 'first_frame' : 'last_frame'}`]}</p>}
       </div>)}
