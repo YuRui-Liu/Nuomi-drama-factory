@@ -326,4 +326,3 @@ const retryableSides = results.filter(side => side.status === "failed");
 | 可访问性、冲突、权限、集成验收 | 3、7、9 |
 
 本计划保留已有执行工具与接口，不新增任意代码 Skill 执行。各阶段为同一功能的依赖任务，不将未接入状态作为替代真实运行接入的交付捷径。
-
