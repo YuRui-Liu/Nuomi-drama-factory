@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CANVAS_NODE_TYPES, type CanvasEdge, type CanvasNode } from '@/features/canvas/domain/canvasNodes';
-import { createDirectorDraft, updateDraft, updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
+import { addSegment, createDirectorDraft, updateDraft, updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
 import { readDirectorBinding, resolveDirectorBindings, sameDirectorFrameSlot } from '@/features/canvas/domain/videoDirectorBindings';
 import { getAllowedUpstreamSourceTypes } from '@/features/canvas/domain/nodeRegistry';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -21,6 +21,8 @@ describe('video director image bindings', () => {
     expect(readDirectorBinding(edge('r', 'one', { kind: 'reference' }))).toEqual({ kind: 'reference' });
     expect(readDirectorBinding(edge('f', 'one', { kind: 'firstFrame', segmentId: 's1' }))).toEqual({ kind: 'firstFrame', segmentId: 's1' });
     expect(readDirectorBinding(edge('bad', 'one', { kind: 'firstFrame' }))).toBeNull();
+    expect(readDirectorBinding(edge('bad-ref', 'one', { kind: 'reference', segmentId: 's1' }))).toBeNull();
+    expect(readDirectorBinding(edge('blank-frame', 'one', { kind: 'lastFrame', segmentId: '   ' }))).toBeNull();
     expect(readDirectorBinding({ ...edge('other', 'one', { kind: 'reference' }), data: { edgeKind: 'other', slot: { kind: 'reference' } } })).toBeNull();
     expect(sameDirectorFrameSlot(edge('a', 'one', { kind: 'firstFrame', segmentId: 's1' }), edge('b', 'two', { kind: 'firstFrame', segmentId: 's1' }))).toBe(true);
     expect(sameDirectorFrameSlot(edge('a', 'one', { kind: 'reference' }), edge('b', 'two', { kind: 'reference' }))).toBe(false);
@@ -54,6 +56,18 @@ describe('video director image bindings', () => {
     expect(result.draft.references.map((image) => image.url)).toEqual(['/manual.png', expect.stringContaining('/a.png'), expect.stringContaining('/b.png')]);
   });
 
+  it('resolves both source nodes when their image URLs are identical', () => {
+    const draft = createDirectorDraft('s1');
+    const result = resolveDirectorBindings(draft, [imageNode('a', '/shared.png'), imageNode('b', '/shared.png')], [
+      edge('first', 'a', { kind: 'firstFrame', segmentId: 's1' }),
+      edge('last', 'b', { kind: 'lastFrame', segmentId: 's1' }),
+    ], 'frames');
+    expect(result.errors).toEqual({});
+    expect(result.draft.segments[0].firstFrame?.url).toContain('/shared.png');
+    expect(result.draft.segments[0].lastFrame?.url).toContain('/shared.png');
+    expect(result.draft.segments[0].firstFrame?.imageId).not.toBe(result.draft.segments[0].lastFrame?.imageId);
+  });
+
   it('requires explicit slots, an image source, a real segment, and one edge per frame slot', () => {
     useCanvasStore.getState().setCanvasData([imageNode('a', '/a.png'), imageNode('b', '/b.png'), directorNode()], []);
     const store = useCanvasStore.getState();
@@ -75,5 +89,17 @@ describe('video director image bindings', () => {
       directorNode(),
     ], []);
     expect(useCanvasStore.getState().addEdgeWithData('video', 'director', { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } })).toBeNull();
+  });
+
+  it('allows the same image node to bind first and last frames across segments', () => {
+    const director = { ...directorNode(), data: { ...directorNode().data, draft: addSegment(createDirectorDraft('s1'), 's2') } } as CanvasNode;
+    useCanvasStore.getState().setCanvasData([imageNode('a', '/a.png'), director], []);
+    const store = useCanvasStore.getState();
+    const first = store.addEdgeWithData('a', 'director', { edgeKind: 'videoDirectorImage', slot: { kind: 'firstFrame', segmentId: 's1' } });
+    const last = store.addEdgeWithData('a', 'director', { edgeKind: 'videoDirectorImage', slot: { kind: 'lastFrame', segmentId: 's1' } });
+    const second = store.addEdgeWithData('a', 'director', { edgeKind: 'videoDirectorImage', slot: { kind: 'firstFrame', segmentId: 's2' } });
+    expect([first, last, second].every(Boolean)).toBe(true);
+    expect(new Set([first, last, second]).size).toBe(3);
+    expect(useCanvasStore.getState().edges).toHaveLength(3);
   });
 });

@@ -7,8 +7,9 @@ export function readDirectorBinding(edge: CanvasEdge): DirectorBinding | null {
   const data = edge.data;
   if (!data || data.edgeKind !== 'videoDirectorImage' || !data.slot || typeof data.slot !== 'object') return null;
   const slot = data.slot as Record<string, unknown>;
-  if (slot.kind === 'reference') return { kind: 'reference' };
-  if ((slot.kind === 'firstFrame' || slot.kind === 'lastFrame') && typeof slot.segmentId === 'string' && slot.segmentId.length > 0) {
+  if (slot.kind === 'reference' && Object.keys(slot).length === 1) return { kind: 'reference' };
+  if ((slot.kind === 'firstFrame' || slot.kind === 'lastFrame') && Object.keys(slot).length === 2 &&
+    typeof slot.segmentId === 'string' && slot.segmentId.trim().length > 0) {
     return { kind: slot.kind, segmentId: slot.segmentId };
   }
   return null;
@@ -32,7 +33,9 @@ export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[
     })),
   };
   const errors: Record<string, string> = {};
-  const images = new Map(extractCanvasAssets(nodes).image.map((asset) => [asset.nodeId, asset]));
+  // The extractor deduplicates URLs within one call. Read each node separately so
+  // two distinct source nodes sharing a URL remain addressable by nodeId.
+  const images = new Map(nodes.flatMap((node) => extractCanvasAssets([node]).image.map((asset) => [asset.nodeId, asset] as const)));
   const seenReferences = new Set(projected.references.map((image) => image.imageId));
   const occupiedFrames = new Set<string>();
   for (const edge of directorIncomingEdges) {

@@ -1992,18 +1992,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return null;
     }
 
+    let directorSlot: ReturnType<typeof readDirectorBinding> = null;
     if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
       const candidate = { source, target, data } as CanvasEdge;
-      const slot = readDirectorBinding(candidate);
-      if (!slot) return null;
-      if (slot.kind !== 'reference') {
+      directorSlot = readDirectorBinding(candidate);
+      if (!directorSlot) return null;
+      if (directorSlot.kind !== 'reference') {
         const draft = (targetNode.data as VideoDirectorNodeData).draft;
-        if (!draft?.segments.some((segment) => segment.id === slot.segmentId)) return null;
+        const segmentId = directorSlot.segmentId;
+        if (!draft?.segments.some((segment) => segment.id === segmentId)) return null;
         if (state.edges.some((edge) => sameDirectorFrameSlot(edge, candidate))) return null;
       }
     }
 
-    const edgeId = options?.id || `e-${source}-${target}-${String(data.edgeKind || 'data')}`;
+    const edgeId = options?.id || (directorSlot
+      ? `e-${source}-${target}-videoDirectorImage-${directorSlot.kind}${directorSlot.kind === 'reference' ? '' : `-${directorSlot.segmentId}`}`
+      : `e-${source}-${target}-${String(data.edgeKind || 'data')}`);
     const existing = state.edges.find((edge) => edge.id === edgeId);
     if (existing) {
       return edgeId;
