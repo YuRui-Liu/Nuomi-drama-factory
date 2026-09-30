@@ -67,7 +67,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
-        <p className="mb-3 text-sm">{tr('activeRoute', '活动路线')}：{mode === 'ref' ? tr('refRoute', 'MiniMax H3 Ref') : tr('framesRoute', 'MiniMax H3')}</p>
+        <p className="mb-3 text-sm">{t('node.videoDirector.editor.activeRoute')}：{mode === 'ref' ? t('node.videoDirector.editor.refRoute') : t('node.videoDirector.editor.framesRoute')}</p>
         {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-sm text-red-300">{directorErrorText(error, t)}</p>)}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="text-xs">{tr('model', '模型')}<select aria-label={tr('model', '模型')} className="mt-1 block w-full rounded bg-black/30 p-2" value={draft.modelId}
@@ -102,11 +102,11 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
             onPick={() => images.openPicker({ kind: 'references' })}
             onUpload={(file) => void images.uploadFile({ kind: 'references' }, file)} onRemove={() => {}} /></div></div>
           {errors.references && <p className="text-xs text-red-300">{errors.references}</p>}
-          {mode !== 'ref' && draft.references.length > 0 && <p className="text-xs text-text-muted">{tr('retainedInactive', '已保留，当前不参与生成')}</p>}
+          {mode !== 'ref' && draft.references.length > 0 && <p className="text-xs text-text-muted">{t('node.videoDirector.editor.retainedInactive')}</p>}
           {effective.references.some((image) => !draft.references.some((manual) => manual.imageId === image.imageId)) &&
-            <div className="mt-2"><p className="text-xs">{tr('connectedReferences', '当前连线参考图')}</p>
+            <div className="mt-2"><p className="text-xs">{t('node.videoDirector.editor.connectedReferences')}</p>
               <div className="mt-1 flex gap-2">{effective.references.filter((image) => !draft.references.some((manual) => manual.imageId === image.imageId))
-                .map((image) => <img key={image.imageId} src={image.url} alt={tr('connectedReferences', '当前连线参考图')}
+                .map((image) => <img key={image.imageId} src={image.url} alt={t('node.videoDirector.editor.connectedReferences')}
                   className="h-20 w-20 rounded object-contain" />)}</div></div>}
         </section>
         <div className="space-y-3">{draft.segments.map((segment, index) => <DirectorSegmentEditor key={segment.id}
@@ -120,9 +120,9 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
           onDelete={() => setDraft(deleteSegment(draft, segment.id))}
           onMove={(offset) => setDraft(reorderSegments(draft, index, index + offset))} />)}</div>
         {mode === 'ref' && draft.segments.some((segment) => segment.firstFrame || segment.lastFrame) &&
-          <p className="text-xs text-text-muted">{tr('retainedInactive', '已保留，当前不参与生成')}</p>}
+          <p className="text-xs text-text-muted">{t('node.videoDirector.editor.retainedInactive')}</p>}
         {mode === 'frames' && effective.segments.some((segment, index) => segment.firstFrame?.imageId !== draft.segments[index]?.firstFrame?.imageId || segment.lastFrame?.imageId !== draft.segments[index]?.lastFrame?.imageId) &&
-          <div className="mt-2"><p className="text-xs">{tr('connectedFrames', '当前连线帧')}</p>
+          <div className="mt-2"><p className="text-xs">{t('node.videoDirector.editor.connectedFrames')}</p>
             <div className="mt-1 flex gap-2">{effective.segments.flatMap((segment, index) => (['firstFrame', 'lastFrame'] as const).flatMap((field) => {
               const image = segment[field];
               return image && image.imageId !== draft.segments[index]?.[field]?.imageId ?

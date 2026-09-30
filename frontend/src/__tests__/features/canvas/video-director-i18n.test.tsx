@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import i18next from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoDirectorNode } from '@/features/canvas/nodes/VideoDirectorNode';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
@@ -84,6 +84,33 @@ describe('video director with real locale resources', () => {
     const group = linkedImage?.closest('[role="group"]') as HTMLElement;
     expect(within(group).queryByRole('button')).not.toBeInTheDocument();
     expect(within(group).getByText('Connected image')).toBeInTheDocument();
+  });
+  it('shows a bound first frame as read-only and restores the manual frame after disconnect', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    const draft = createDirectorDraft('s1');
+    draft.segments[0].firstFrame = { imageId: 'manual', url: '/manual.png' };
+    const data: VideoDirectorNodeData = { draft, activeInputMode: 'frames', activeAttemptId: null, videoUrl: null, resultRevision: null };
+    useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data },
+      { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/linked-frame.png' } }],
+      edges: [{ id: 'link', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage',
+        slot: { kind: 'firstFrame', segmentId: 's1' } } }] } as never);
+    useTask.mockReturnValue({ capabilities: null, attempts: [], error: '', fieldErrors: {},
+      generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} /></I18nextProvider>);
+    const first = screen.getByRole('group', { name: 'First frame' });
+    expect(within(first).getByRole('img')).toHaveAttribute('src', expect.stringContaining('/linked-frame.png'));
+    expect(within(first).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(first).getByText('Connected image')).toBeInTheDocument();
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.filter((node) => node.id === 'director') }));
+    expect(within(screen.getByRole('group', { name: 'First frame' })).queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Connected frame image is unavailable');
+    act(() => useCanvasStore.setState({ edges: [] }));
+    const manual = screen.getByRole('group', { name: 'First frame' });
+    expect(within(manual).getByRole('img')).toHaveAttribute('src', '/manual.png');
+    expect(within(manual).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
   });
   it('translates image action errors in English', async () => {
     const i18n = i18next.createInstance();

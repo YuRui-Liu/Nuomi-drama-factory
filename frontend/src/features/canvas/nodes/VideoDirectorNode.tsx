@@ -18,7 +18,7 @@ import { DirectorImageSlot } from '@/features/canvas/director/DirectorImageSlot'
 import { useDirectorImageActions, type DirectorImageTarget } from '@/features/canvas/director/useDirectorImageActions';
 import { AssetLibraryModal } from '@/features/canvas/ui/AssetLibraryModal';
 import { directorSubmissionFingerprint, projectDirectorDraft, resolveDirectorInputMode, setDirectorInputMode } from '@/features/canvas/domain/videoDirectorInputs';
-import { resolveDirectorBindings } from '@/features/canvas/domain/videoDirectorBindings';
+import { readDirectorBinding, resolveDirectorBindings } from '@/features/canvas/domain/videoDirectorBindings';
 import { updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
 import { directorErrorText } from '@/features/canvas/director/directorValidation';
 
@@ -56,6 +56,11 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
   const inputChanged = !!active && directorSubmissionFingerprint(active.snapshot) !== directorSubmissionFingerprint(effective);
   const frameTarget = (field: 'firstFrame' | 'lastFrame'): DirectorImageTarget => ({ kind: 'frame', segmentId: segment.id, field });
+  const frameIsBound = (field: 'firstFrame' | 'lastFrame') => mode === 'frames' && !!segment && edges.some((edge) => {
+    if (edge.target !== id) return false;
+    const target = readDirectorBinding(edge);
+    return target?.kind === field && target.segmentId === segment.id;
+  });
   const setMode = (next: 'ref' | 'frames') => {
     const updated = setDirectorInputMode(data, next);
     updateNodeData(id, { activeInputMode: updated.activeInputMode, draft: updated.draft });
@@ -65,7 +70,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
     const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'));
     if (!file || !segment) return;
     if (mode === 'ref' && effective.references.length === 0) void images.uploadFile({ kind: 'references' }, file);
-    else if (mode === 'frames' && !visible?.firstFrame) void images.uploadFile(frameTarget('firstFrame'), file);
+    else if (mode === 'frames' && !frameIsBound('firstFrame') && !visible?.firstFrame) void images.uploadFile(frameTarget('firstFrame'), file);
     else setDroppedFile(file);
   };
   const slot = (label: string, image: typeof segment.firstFrame, target: DirectorImageTarget) => <DirectorImageSlot
@@ -73,6 +78,11 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
     uploading={images.uploading[images.slotKey(target)]}
     onPick={() => images.openPicker(target)} onUpload={(file) => void images.uploadFile(target, file)}
     onRemove={() => images.removeImage(target)} />;
+  const connectedSlot = (label: string, image: typeof segment.firstFrame) => <div role="group" aria-label={label}
+    className="rounded border border-white/10 p-2 text-xs">
+    <span>{label}</span>{image && <img src={image.url} alt={tr('connectedImage')} className="mt-1 h-20 w-full object-contain" />}
+    <p className="mt-1 text-text-muted">{tr('connectedImage')}</p>
+  </div>;
 
   useEffect(() => updateNodeInternals(id), [id, updateNodeInternals]);
 
@@ -101,9 +111,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             <div className="mb-2 flex gap-2 overflow-auto">{(mode === 'ref' ? effective.references : data.draft.references).map((image) =>
               <div key={image.imageId} className="w-28 shrink-0">{data.draft.references.some((manual) => manual.imageId === image.imageId)
                 ? slot(tr('reference'), image, { kind: 'reference', imageId: image.imageId })
-                : <div role="group" aria-label={tr('reference')} className="rounded border border-white/10 p-2 text-xs">
-                  <span>{tr('reference')}</span><img src={image.url} alt={tr('connectedImage')} className="mt-1 h-20 w-full object-contain" />
-                  <p className="mt-1 text-text-muted">{tr('connectedImage')}</p></div>}</div>)}
+                : connectedSlot(tr('reference'), image)}</div>)}
               <div className="w-28 shrink-0">{slot(tr('reference'), null, { kind: 'references' })}</div></div>
             {mode === 'frames' && data.draft.references.length > 0 && <p className="text-xs text-text-muted">{tr('retainedInactive')}</p>}
             {segments.length > 1 && <div className="mb-2 flex gap-2 overflow-auto">{segments.map((item, index) =>
@@ -111,8 +119,10 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
                 aria-pressed={item.id === segment?.id} onClick={() => updateNodeData(id, { visibleSegmentId: item.id })}>
                 {tr('segmentIndex', { index: index + 1 })}</button>)}</div>}
             {segment && <><div className="grid grid-cols-2 gap-2">
-              {slot(tr('firstFrame'), mode === 'frames' ? visible?.firstFrame ?? null : segment.firstFrame, frameTarget('firstFrame'))}
-              {slot(tr('lastFrame'), mode === 'frames' ? visible?.lastFrame ?? null : segment.lastFrame, frameTarget('lastFrame'))}</div>
+              {frameIsBound('firstFrame') ? connectedSlot(tr('firstFrame'), binding.errors[`segments[${segments.indexOf(segment)}].first_frame`] ? null : visible?.firstFrame ?? null)
+                : slot(tr('firstFrame'), mode === 'frames' ? visible?.firstFrame ?? null : segment.firstFrame, frameTarget('firstFrame'))}
+              {frameIsBound('lastFrame') ? connectedSlot(tr('lastFrame'), binding.errors[`segments[${segments.indexOf(segment)}].last_frame`] ? null : visible?.lastFrame ?? null)
+                : slot(tr('lastFrame'), mode === 'frames' ? visible?.lastFrame ?? null : segment.lastFrame, frameTarget('lastFrame'))}</div>
               {mode === 'ref' && (segment.firstFrame || segment.lastFrame) && <p className="mt-1 text-xs text-text-muted">{tr('retainedInactive')}</p>}
               <label className="mt-2 block text-xs">{tr('currentPrompt')}
                 <textarea className="nodrag mt-1 w-full rounded border border-white/20 bg-black/20 p-2" value={segment.prompt}
@@ -138,7 +148,8 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
       {droppedFile && <div role="dialog" aria-label={tr('chooseDropTarget')} className="nodrag absolute inset-3 z-20 rounded bg-zinc-900 p-3 text-xs shadow-xl">
         <p>{tr('chooseDropTarget')}</p>
         {[{ label: tr('reference'), target: { kind: 'references' } as DirectorImageTarget },
-          ...(segment ? [{ label: tr('firstFrame'), target: frameTarget('firstFrame') }, { label: tr('lastFrame'), target: frameTarget('lastFrame') }] : [])]
+          ...(segment ? ([{ label: tr('firstFrame'), field: 'firstFrame' }, { label: tr('lastFrame'), field: 'lastFrame' }] as const)
+            .filter(({ field }) => !frameIsBound(field)).map(({ label, field }) => ({ label, target: frameTarget(field) })) : [])]
           .map(({ label, target }) => <button key={label} type="button" className="mr-2 mt-2 rounded border p-2" onClick={() => {
             void images.uploadFile(target, droppedFile); setDroppedFile(null);
           }}>{label}</button>)}
