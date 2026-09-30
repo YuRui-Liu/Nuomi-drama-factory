@@ -146,3 +146,45 @@ def test_durable_run_binding_first_submission_wins(tmp_path):
     assert load_generation_methods(ctx, 'r') == original
     assert load_generation_methods(SimpleNamespace(state_dir=tmp_path, project_id='other'), 'r') is None
     assert not (tmp_path / 'agent-team.db').exists()
+
+
+def test_durable_binding_closes_connections(monkeypatch, tmp_path):
+    import sqlite3
+    from novelvideo.agent_teams import runtime
+    connections = []
+    connect = sqlite3.connect
+    class Connection(sqlite3.Connection):
+        closed = False
+        def close(self):
+            self.closed = True
+            super().close()
+    def tracked(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=Connection)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(runtime.sqlite3, 'connect', tracked)
+    ctx = SimpleNamespace(state_dir=tmp_path, project_id='p')
+    runtime.bind_generation_methods(ctx, 'r', {})
+    runtime.load_generation_methods(ctx, 'r')
+    assert all(connection.closed for connection in connections)
+
+
+def test_batch_freeze_reads_active_binding_once(monkeypatch, tmp_path):
+    from novelvideo.agent_teams.runtime import freeze_task_methods, connected_subtasks
+    from novelvideo.agent_teams.service import AgentTeamService
+    from novelvideo.agent_teams.store import AgentTeamStore
+    store = AgentTeamStore(tmp_path / 'agent-team.db')
+    service = AgentTeamService(store, None, 'u', connected_subtasks)
+    draft = service.save_draft('p', {}, 0)
+    service.activate('p', draft['draft_revision'], 0)
+    original = AgentTeamStore.get_binding
+    reads = []
+    def once(self, project):
+        reads.append(project)
+        assert len(reads) == 1, 'activation could change between method reads'
+        return original(self, project)
+    monkeypatch.setattr(AgentTeamStore, 'get_binding', once)
+    result = freeze_task_methods(SimpleNamespace(state_dir=tmp_path, project_id='p'),
+                                 'script_creation_generation', {}, AgentTaskRoute())
+    assert len(result) == 7
+    assert {value['active_revision'] for value in result} == {1}

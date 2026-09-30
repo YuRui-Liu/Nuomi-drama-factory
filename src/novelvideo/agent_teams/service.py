@@ -213,6 +213,10 @@ class AgentTeamService:
 
     def freeze(self, project_id, role_id, subtask_id, input_revision, input_hash, resolved_route):
         active = self.store.get_binding(project_id)
+        return self.freeze_binding(active, project_id, role_id, subtask_id, input_revision, input_hash, resolved_route)
+
+    def freeze_binding(self, active, project_id, role_id, subtask_id, input_revision, input_hash, resolved_route):
+        """Freeze from one already-read binding for consistent multi-method jobs."""
         if active is None:
             return None
         data = StoredData.model_validate(active['snapshot'])

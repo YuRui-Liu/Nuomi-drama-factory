@@ -40,8 +40,8 @@ def method_runtime(role, subtask, legacy=None):
         return legacy
     task_role = getattr(getattr(legacy, 'snapshot', None), 'task_role', None)
     if not task_role:
-        task_role = {'writer': 'script_creation', 'script_parser': 'screenplay_semantics',
-                     'director': 'director_plan', 'video_director': 'video_director'}[role]
+        task_role = {'writer': 'script_creation', 'script_parser': 'episode_normalization',
+                     'director': 'director_plan', 'video_director': subtask}[role]
     route = AgentTaskRouteSnapshot(**method.resolved_model.model_dump(), task_role=task_role, source='task')
     runtime = build_text_task_runtime(route)
     return MethodRuntime(runtime, method)

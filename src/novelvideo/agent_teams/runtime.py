@@ -1,5 +1,5 @@
 """Frozen project methods propagated through a task's context, never a library."""
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from contextvars import ContextVar
 import hashlib
 import json
@@ -17,7 +17,7 @@ def load_generation_methods(ctx, run_id):
     path = Path(ctx.state_dir) / 'data.db'
     if not path.is_file():
         return None
-    with sqlite3.connect(path, timeout=30) as db:
+    with closing(sqlite3.connect(path, timeout=30)) as db:
         exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_team_generation_bindings'").fetchone()
         if not exists:
             return None
@@ -29,7 +29,7 @@ def bind_generation_methods(ctx, run_id, metadata):
     """First submission wins atomically, including the explicit no-team [] state."""
     path = Path(ctx.state_dir) / 'data.db'
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path, timeout=30) as db:
+    with closing(sqlite3.connect(path, timeout=30)) as db, db:
         db.execute('CREATE TABLE IF NOT EXISTS agent_team_generation_bindings (project_id TEXT NOT NULL, run_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(project_id, run_id))')
         db.execute('INSERT OR IGNORE INTO agent_team_generation_bindings VALUES (?, ?, ?)',
                    (ctx.project_id, run_id, json.dumps(metadata, ensure_ascii=False)))
@@ -105,6 +105,9 @@ def freeze_task_methods(ctx, task_type, payload, route):
     if not needed or not path.is_file():
         return []
     service = AgentTeamService(AgentTeamStore(path), None, '', connected_subtasks)
+    active = service.store.get_binding(ctx.project_id)
+    if active is None:
+        return []
     # Payload fingerprints identify submitted references, not the mutable content
     # behind an ID. Individual runners retain their existing revision guards.
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -113,7 +116,7 @@ def freeze_task_methods(ctx, task_type, payload, route):
     clean_route = AgentTaskRoute.model_validate({k: v for k, v in route.model_dump().items() if k in AgentTaskRoute.model_fields})
     result = []
     for role, subtask in needed:
-        frozen = service.freeze(ctx.project_id, role, subtask, revision, digest, clean_route)
+        frozen = service.freeze_binding(active, ctx.project_id, role, subtask, revision, digest, clean_route)
         if frozen:
             result.append(frozen.model_dump(mode='json'))
     return result
