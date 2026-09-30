@@ -128,10 +128,11 @@ class AgentTeamService:
         return StoredData.model_validate(draft['data']) if draft else StoredData(template=builtin_template())
 
     def read(self, project):
-        data = self._current(project)
+        draft = self.store.get_draft(project)
+        data = StoredData.model_validate(draft['data']) if draft else StoredData(template=builtin_template())
         connected = self.connected()
         return {'catalog': [{**r.model_dump(mode='json'), 'connected': any((r.id, t) in connected for t in r.subtasks)} for r in ROLE_CATALOG],
-                'template': data.template.model_dump(mode='json'), 'draft': self.store.get_draft(project),
+                'template': data.template.model_dump(mode='json'), 'draft': draft,
                 'active': self.store.get_binding(project), 'effective': self._effective(data),
                 'connectivity': {r.id: {t: (r.id, t) in connected for t in r.subtasks} for r in ROLE_CATALOG}}
 
@@ -205,7 +206,10 @@ class AgentTeamService:
             raise TeamError('VERSION_NOT_FOUND', 'active_revision')
         data = StoredData.model_validate(previous['snapshot'])
         self._validate_activation(data)
-        return self.store.activate(project, data.model_dump(mode='json'), expected_active_revision, draft_revision)
+        binding = self.store.activate(project, data.model_dump(mode='json'), expected_active_revision, draft_revision)
+        for resource in data.resources:
+            self.store.record_resource_usage(resource.id, resource.revision, 'project', project, binding['active_revision'])
+        return binding
 
     def freeze(self, project_id, role_id, subtask_id, input_revision, input_hash, resolved_route):
         active = self.store.get_binding(project_id)

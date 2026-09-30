@@ -55,6 +55,40 @@ def test_disconnected_rejected(tmp_path):
         service.activate('one', 1, 0)
 
 
+def test_read_revision_and_effective_share_one_draft_read(tmp_path, monkeypatch):
+    service = AgentTeamService(AgentTeamStore(tmp_path / 'project.db'), None, 'alice')
+    service.save_draft('one', {'overrides': {'writer': {'brief': {'prompt': 'first'}}}}, 0)
+    original = service.store.get_draft
+    reads = []
+
+    def racing_read(project):
+        row = original(project)
+        reads.append(row)
+        if len(reads) == 1:
+            changed = {**row['data'], 'overrides': {'writer': {'brief': {'prompt': 'second'}}}}
+            service.store.save_draft(project, changed, row['draft_revision'])
+        return row
+
+    monkeypatch.setattr(service.store, 'get_draft', racing_read)
+    result = service.read('one')
+    assert len(reads) == 1
+    assert result['draft']['draft_revision'] == 1
+    assert result['effective']['writer']['brief']['config']['prompt'] == 'first'
+    assert original('one')['draft_revision'] == 2
+
+
+def test_rollback_records_resource_usage_for_new_binding(tmp_path):
+    service = AgentTeamService(AgentTeamStore(tmp_path / 'project.db'),
+        AgentTeamStore(tmp_path / 'library.db'), 'alice', lambda: {('writer', 'brief')})
+    service.publish_resource({'id': 'skill', 'revision': 1, 'kind': 'skill', 'content': 'hello'}, 0)
+    service.save_draft('one', {'overrides': {'writer': {'brief': {'skills': [{'id': 'skill', 'revision': 1}]}}}}, 0)
+    service.activate('one', 1, 0)
+    service.save_draft('one', {}, 1)
+    service.activate('one', 2, 1)
+    service.rollback('one', 1, 2, 2)
+    assert [entry['consumer_revision'] for entry in service.store.list_resource_usage('skill')] == [1, 3]
+
+
 def test_publish_uses_authenticated_owner_and_upgrade_preserves_override(tmp_path):
     service = AgentTeamService(AgentTeamStore(tmp_path / 'project.db'), AgentTeamStore(tmp_path / 'library.db'), 'alice')
     template = service.publish_template({'id': 'mine', 'revision': 1, 'name': 'Mine', 'owner': 'mallory', 'roles': {}}, 0)
