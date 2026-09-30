@@ -14,6 +14,40 @@ function mount() { const client = new QueryClient({ defaultOptions: { queries: {
 beforeEach(() => { vi.resetAllMocks(); overview = fixture(); mock.getTeam.mockImplementation(async () => structuredClone(overview)); mock.getTeamResources.mockResolvedValue([]); mock.getTeamDiff.mockResolvedValue([]); mock.getTeamVersions.mockResolvedValue([]); mock.saveTeamDraft.mockImplementation(async (_project, data, revision) => { const draft = { draft_revision: revision + 1, data: { ...data, template: overview.template } }; overview = { ...overview, draft }; return draft; }); });
 afterEach(cleanup);
 describe('Agent Team editing', () => {
+  it('allows valid historical rollback when saved draft customizes a disconnected subtask', async () => {
+    const snapshot = { template_id: 'builtin', template_revision: 1, template: overview.template, overrides: {} };
+    overview.draft = { draft_revision: 3, data: { ...snapshot, overrides: { writer: { outline: { prompt: '尚未接入的方法' } } } } };
+    overview.active = { active_revision: 2, snapshot };
+    mock.getTeamVersions.mockResolvedValue([{ active_revision: 1, snapshot }, overview.active]);
+    mock.rollbackTeam.mockResolvedValue({ active_revision: 3, snapshot });
+    mount();
+    const rollback = await screen.findByRole('button', { name: '回滚至 v1' });
+    await waitFor(() => expect(rollback).toBeEnabled());
+    expect(screen.getByRole('button', { name: '启用已保存草稿' })).toBeDisabled();
+    fireEvent.click(rollback);
+    fireEvent.click(await screen.findByRole('button', { name: '确认' }));
+    await waitFor(() => expect(mock.rollbackTeam).toHaveBeenCalledWith('p', 1, 3, 2));
+    expect(mock.activateTeam).not.toHaveBeenCalled();
+  });
+  it('saves empty director preferences explicitly and separately restores inheritance', async () => {
+    overview.catalog.push({ id: 'director', name: '分镜导演', subtasks: ['director_plan'], connected: true });
+    overview.template.roles.director = { director_plan: { ...defaultMethod, director_preferences: { pace: '舒缓' } } };
+    overview.connectivity.director = { director_plan: true };
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: /分镜规划/ }));
+    expect(screen.getByLabelText('节奏')).toHaveValue('舒缓');
+    fireEvent.click(screen.getByRole('button', { name: '明确不使用导演偏好' }));
+    expect(screen.getByLabelText('节奏')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(mock.saveTeamDraft).toHaveBeenCalledOnce());
+    expect(mock.saveTeamDraft.mock.calls[0][1].overrides.director.director_plan).toEqual({ director_preferences: {} });
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: '恢复继承' }));
+    expect(screen.getByLabelText('节奏')).toHaveValue('舒缓');
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(mock.saveTeamDraft).toHaveBeenCalledTimes(2));
+    expect(mock.saveTeamDraft.mock.calls[1][1].overrides.director.director_plan).toEqual({});
+  });
   it('saves only a draft and restores field inheritance', async () => { mount(); const prompt = await screen.findByLabelText('工作提示词'); expect(prompt).toHaveValue('模板提示'); fireEvent.change(prompt, { target: { value: '项目方法' } }); fireEvent.click(screen.getByRole('button', { name: '保存草稿' })); await waitFor(() => expect(mock.saveTeamDraft).toHaveBeenCalledOnce()); expect(mock.saveTeamDraft.mock.calls[0][1]).toEqual({ template_id: 'builtin', template_revision: 1, overrides: { writer: { brief: { prompt: '项目方法' } } } }); expect(mock.activateTeam).not.toHaveBeenCalled(); expect(screen.getByText(/尚未启用 · 沿用现有方法/)).toBeInTheDocument(); await waitFor(() => expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()); fireEvent.click(screen.getByRole('button', { name: '恢复继承' })); expect(prompt).toHaveValue('模板提示'); });
   it('keeps changes when switching subtasks and blocks disconnected customization', async () => { mount(); const prompt = await screen.findByLabelText('工作提示词'); fireEvent.change(prompt, { target: { value: '保留文字' } }); fireEvent.click(screen.getByRole('button', { name: /故事大纲/ })); fireEvent.change(screen.getByLabelText('工作提示词'), { target: { value: '未接入自定义' } }); fireEvent.click(screen.getByRole('button', { name: /创作简报/ })); expect(screen.getByLabelText('工作提示词')).toHaveValue('保留文字'); expect(screen.getByText('未接入子任务含自定义配置，暂不能启用团队。')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '启用已保存草稿' })).toBeDisabled(); });
   it('does not clear edits entered while saving or during refetch', async () => { let finish!: (value: TeamDraft) => void; mock.saveTeamDraft.mockImplementation(() => new Promise(resolve => { finish = resolve; })); mount(); const prompt = await screen.findByLabelText('工作提示词'); fireEvent.change(prompt, { target: { value: '保存版本' } }); fireEvent.click(screen.getByRole('button', { name: '保存草稿' })); fireEvent.change(prompt, { target: { value: '更新文字' } }); await act(async () => finish({ draft_revision: 1, data: { template: overview.template, template_id: 'builtin', template_revision: 1, overrides: { writer: { brief: { prompt: '保存版本' } } } } })); await waitFor(() => expect(screen.getByRole('button', { name: '保存草稿' })).toBeEnabled()); expect(prompt).toHaveValue('更新文字'); });
