@@ -35,6 +35,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, opti
   'node.videoDirector.connectionTarget.occupied': `${options?.label}已被连线占用`,
   'node.videoDirector.connectionTarget.manualFallback': '连接期间将使用上游图，断线后恢复已选图片',
   'node.videoDirector.connectionTarget.cancel': '取消',
+  'node.videoDirector.connectionTarget.connectionFailed': 'Could not connect to the selected slot. Check that it is still available.',
 } as Record<string, string>)[key] ?? options?.defaultValue ?? key }) }));
 vi.mock('@/api/skills', () => ({ getSkillRegistry: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/api/videoDirector', () => ({ getDirectorCapabilities: vi.fn().mockResolvedValue({ effectiveReferenceLimit: 1 }) }));
@@ -199,6 +200,16 @@ describe('director image connection target', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '主体参考图' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: '主体参考图' }));
     expect(useCanvasStore.getState().edges.map((edge) => edge.source)).toEqual(['image', secondId]);
+  });
+
+  it('shows a localized error when the chosen slot becomes unavailable', async () => {
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    dragImageToDirector();
+    const addEdge = vi.spyOn(useCanvasStore.getState(), 'addEdgeWithData').mockReturnValue(null);
+    fireEvent.click(screen.getByRole('button', { name: '第 1 段首帧' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not connect to the selected slot. Check that it is still available.');
+    addEdge.mockRestore();
   });
 
   it('clears the previous project reference limit while loading the new project', async () => {

@@ -35,6 +35,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const [editorOpen, setEditorOpen] = useState(false);
   const [showResult, setShowResult] = useState(true);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
+  const [dropError, setDropError] = useState('');
   const task = useVideoDirectorTask(id, data);
   const images = useDirectorImageActions(id, task.capabilities?.effectiveReferenceLimit);
   const { t } = useTranslation();
@@ -67,8 +68,14 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const dropCard = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'));
-    if (!file || mode === 'frames' && !segment) return;
+    const file = Array.from(event.dataTransfer.files)[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setDropError(t('node.videoDirector.imageSlot.invalidFile'));
+      return;
+    }
+    setDropError('');
+    if (mode === 'frames' && !segment) return;
     if (mode === 'ref' && effective.references.length === 0) void images.uploadFile({ kind: 'references' }, file);
     else if (mode === 'frames' && !frameIsBound('firstFrame') && !visible?.firstFrame) void images.uploadFile(frameTarget('firstFrame'), file);
     else setDroppedFile(file);
@@ -134,6 +141,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-xs text-red-300">{directorErrorText(error, t)}</p>)}
           </div>
         </>}
+        {dropError && <p role="alert" className="nodrag px-3 text-xs text-red-300">{dropError}</p>}
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
           <span>{t('node.videoDirector.node.segments', { count: segments.length })}</span>
           <span>{t('node.videoDirector.node.duration', { seconds: (data.durationMs ? data.durationMs / 1000 : durationSeconds).toFixed(1) })}</span>

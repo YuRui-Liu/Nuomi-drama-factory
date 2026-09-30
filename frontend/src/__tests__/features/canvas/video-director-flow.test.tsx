@@ -190,6 +190,16 @@ describe('Director real component flow', () => {
     expect(parentDrop).not.toHaveBeenCalled();
   });
 
+  it('shows a local error for a non-image dropped on blank card space', () => {
+    const parentDrop = vi.fn();
+    render(<div onDrop={parentDrop}><CurrentNode /></div>);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), {
+      dataTransfer: { files: [new File(['text'], 'notes.txt', { type: 'text/plain' })] },
+    });
+    expect(parentDrop).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('请选择图片文件');
+  });
+
   it('selects character variants, submits ordered raw segments, then shows optimized history and video', async () => {
     let postedDraft: Record<string, any> | undefined;
     let storedAttempt: Record<string, any> | undefined;

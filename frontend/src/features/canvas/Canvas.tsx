@@ -1757,12 +1757,12 @@ export function Canvas({
     }
     if (slot.kind === 'reference' && current.edges.some((edge) => edge.source === source && edge.target === target &&
       readDirectorBinding(edge)?.kind === 'reference')) {
-      setDirectorConnectionError('该图片已连接为主体参考图');
+      setDirectorConnectionError(t('node.videoDirector.connectionTarget.alreadyBound'));
       return;
     }
     const edgeId = current.addEdgeWithData(source, target, { edgeKind: 'videoDirectorImage', slot }, { id: crypto.randomUUID() });
     if (!edgeId) {
-      setDirectorConnectionError('无法连接到所选位置，请检查该位置是否仍可用。');
+      setDirectorConnectionError(t('node.videoDirector.connectionTarget.connectionFailed'));
       return;
     }
     const latest = useCanvasStore.getState().nodes.find((node) => node.id === target);
@@ -1773,7 +1773,7 @@ export function Canvas({
     setPendingDirectorConnections((queued) => queued.slice(1));
     setDirectorConnectionError('');
     scheduleCanvasPersist(0);
-  }, [pendingDirectorConnection, scheduleCanvasPersist]);
+  }, [pendingDirectorConnection, scheduleCanvasPersist, t]);
 
   useEffect(() => {
     if (pendingDirectorConnection && (!nodes.some((node) => node.id === pendingDirectorConnection.source) ||
