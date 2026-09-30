@@ -49,7 +49,7 @@ import {
 } from '@/features/canvas/domain/nodeRegistry';
 import { EXPORT_RESULT_DISPLAY_NAME } from '@/features/canvas/domain/nodeDisplay';
 import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
-import { readDirectorBinding, sameDirectorFrameSlot } from '@/features/canvas/domain/videoDirectorBindings';
+import { readDirectorBinding, sameDirectorFrameSlot, type DirectorBinding } from '@/features/canvas/domain/videoDirectorBindings';
 import {
   type ViewportBookmark,
   type ViewportBookmarks,
@@ -557,8 +557,23 @@ function dedupeReferenceInputEdges(edges: CanvasEdge[], nodeMap: ReadonlyMap<str
   return edges.filter((_edge, index) => !droppedIndexes.has(index));
 }
 
+function validateDirectorEdgeCandidate(
+  candidate: CanvasEdge,
+  targetNode: CanvasNode,
+  acceptedEdges: CanvasEdge[],
+): { slot: DirectorBinding; conflict: CanvasEdge | null } | null {
+  const slot = readDirectorBinding(candidate);
+  if (!slot) return null;
+  if (slot.kind !== 'reference') {
+    const draft = (targetNode.data as VideoDirectorNodeData).draft;
+    if (!draft?.segments.some((segment) => segment.id === slot.segmentId)) return null;
+  }
+  return { slot, conflict: acceptedEdges.find((edge) => sameDirectorFrameSlot(edge, candidate)) ?? null };
+}
+
 function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): CanvasEdge[] {
   const nodeMap = new Map(nodes.map((node) => [node.id, node] as const));
+  const acceptedDirectorEdges: CanvasEdge[] = [];
 
   const normalizedEdges = rawEdges
     .filter((edge) => {
@@ -574,7 +589,13 @@ function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): C
         return false;
       }
       // 丢弃违反上游类型规则的历史遗留边（如音频←非文本）。
-      return isUpstreamConnectionAllowed(sourceNode.type, targetNode.type);
+      if (!isUpstreamConnectionAllowed(sourceNode.type, targetNode.type)) return false;
+      if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
+        const validation = validateDirectorEdgeCandidate(edge, targetNode, acceptedDirectorEdges);
+        if (!validation || validation.conflict) return false;
+        acceptedDirectorEdges.push(edge);
+      }
+      return true;
     })
     .map((edge) => ({
       ...edge,
@@ -597,6 +618,8 @@ function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): C
       dedupedEdges.push(edge);
       continue;
     }
+    if (nodeMap.get(edge.target)?.type === CANVAS_NODE_TYPES.videoDirector ||
+      nodeMap.get(dedupedEdges[existingIndex].target)?.type === CANVAS_NODE_TYPES.videoDirector) continue;
     dedupedEdges[existingIndex] = edge;
   }
   return dedupedEdges;
@@ -1992,16 +2015,21 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return null;
     }
 
-    let directorSlot: ReturnType<typeof readDirectorBinding> = null;
+    const requestedSourceHandle = normalizeHandleId(options?.sourceHandle) ?? 'source';
+    const requestedTargetHandle = normalizeHandleId(options?.targetHandle) ?? 'target';
+    const isSameDirectorRequest = (edge: CanvasEdge) => edge.source === source && edge.target === target &&
+      JSON.stringify(edge.data) === JSON.stringify(data) &&
+      (options?.id === undefined || options.id === edge.id) &&
+      (edge.sourceHandle ?? 'source') === requestedSourceHandle &&
+      (edge.targetHandle ?? 'target') === requestedTargetHandle;
+    let directorSlot: DirectorBinding | null = null;
     if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
       const candidate = { source, target, data } as CanvasEdge;
-      directorSlot = readDirectorBinding(candidate);
-      if (!directorSlot) return null;
-      if (directorSlot.kind !== 'reference') {
-        const draft = (targetNode.data as VideoDirectorNodeData).draft;
-        const segmentId = directorSlot.segmentId;
-        if (!draft?.segments.some((segment) => segment.id === segmentId)) return null;
-        if (state.edges.some((edge) => sameDirectorFrameSlot(edge, candidate))) return null;
+      const validation = validateDirectorEdgeCandidate(candidate, targetNode, state.edges);
+      if (!validation) return null;
+      directorSlot = validation.slot;
+      if (validation.conflict) {
+        return isSameDirectorRequest(validation.conflict) ? validation.conflict.id : null;
       }
     }
 
@@ -2010,15 +2038,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       : `e-${source}-${target}-${String(data.edgeKind || 'data')}`);
     const existing = state.edges.find((edge) => edge.id === edgeId);
     if (existing) {
-      return edgeId;
+      return directorSlot && !isSameDirectorRequest(existing) ? null : edgeId;
     }
 
     const newEdge: CanvasEdge = {
       id: edgeId,
       source,
       target,
-      sourceHandle: normalizeHandleId(options?.sourceHandle) ?? 'source',
-      targetHandle: normalizeHandleId(options?.targetHandle) ?? 'target',
+      sourceHandle: requestedSourceHandle,
+      targetHandle: requestedTargetHandle,
       type: 'disconnectableEdge',
       data,
     };

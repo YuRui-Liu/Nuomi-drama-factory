@@ -102,4 +102,40 @@ describe('video director image bindings', () => {
     expect(new Set([first, last, second]).size).toBe(3);
     expect(useCanvasStore.getState().edges).toHaveLength(3);
   });
+
+  it('keeps the first valid director frame binding when loading an invalid saved graph', () => {
+    const nodes = [imageNode('a', '/a.png'), imageNode('b', '/b.png'), directorNode()];
+    const savedEdges = [
+      { ...edge('plain', 'a', { kind: 'firstFrame', segmentId: 's1' }), data: undefined },
+      edge('missing-segment', 'a', { kind: 'firstFrame', segmentId: 'gone' }),
+      edge('first', 'a', { kind: 'firstFrame', segmentId: 's1' }),
+      edge('duplicate', 'b', { kind: 'firstFrame', segmentId: 's1' }),
+      edge('reference', 'b', { kind: 'reference' }),
+    ];
+    useCanvasStore.getState().setCanvasData(nodes, savedEdges);
+    expect(useCanvasStore.getState().edges.map((item) => item.id)).toEqual(['first', 'reference']);
+  });
+
+  it('normalizes director bindings in history before undo restores them', () => {
+    const nodes = [imageNode('a', '/a.png'), imageNode('b', '/b.png'), directorNode()];
+    const savedEdges = [
+      edge('first', 'a', { kind: 'firstFrame', segmentId: 's1' }),
+      edge('duplicate', 'b', { kind: 'firstFrame', segmentId: 's1' }),
+      edge('invalid', 'b', { kind: 'reference', segmentId: 's1' }),
+    ];
+    useCanvasStore.getState().setCanvasData(nodes, [], { past: [{ nodes, edges: savedEdges }], future: [] });
+    expect(useCanvasStore.getState().undo()).toBe(true);
+    expect(useCanvasStore.getState().edges.map((item) => item.id)).toEqual(['first']);
+  });
+
+  it('returns the existing ID when the same director binding is retried', () => {
+    useCanvasStore.getState().setCanvasData([imageNode('a', '/a.png'), imageNode('b', '/b.png'), directorNode()], []);
+    const store = useCanvasStore.getState();
+    const binding = { edgeKind: 'videoDirectorImage', slot: { kind: 'firstFrame', segmentId: 's1' } };
+    const firstId = store.addEdgeWithData('a', 'director', binding);
+    expect(firstId).toBeTruthy();
+    expect(store.addEdgeWithData('a', 'director', binding)).toBe(firstId);
+    expect(store.addEdgeWithData('b', 'director', binding)).toBeNull();
+    expect(useCanvasStore.getState().edges).toHaveLength(1);
+  });
 });
