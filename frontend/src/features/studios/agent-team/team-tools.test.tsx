@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { TemplatePanel } from './template-panel';
 import { ResourceLibrary } from './resource-library';
-import { TrialPanel } from './trial-panel';
+import { TrialCandidate, TrialPanel } from './trial-panel';
 import { MethodTrace } from './method-trace';
-import { defaultMethod, type TeamOverview, type ResourceVersion } from './types';
+import { defaultMethod, type TeamOverview, type ResourceVersion, type TeamTemplate } from './types';
 import * as tools from './tools-api';
 import * as api from './api';
 vi.mock('./tools-api', async original => ({ ...await original<typeof import('./tools-api')>(), read: vi.fn(), post: vi.fn(), publish: vi.fn(), templates: vi.fn(), upgrade: vi.fn() }));
@@ -78,4 +78,29 @@ it('retains the request id on uncertain submission and rejects stale episode sel
   fireEvent.click(screen.getByRole('button', { name: '按原请求重试提交（不会重复创建）' }));
   await waitFor(() => expect(tools.post).toHaveBeenCalledTimes(2));
   expect(vi.mocked(tools.post).mock.calls[1][1]).toEqual(first);
+});
+it('locks template editors during publish and normalizes saved JSON without a false dirty state', async () => {
+  const personal = { ...template, id: 'personal' };
+  vi.mocked(tools.templates).mockResolvedValue([personal]);
+  let finish!: (result: TeamTemplate) => void;
+  vi.mocked(tools.publish).mockImplementation(() => new Promise(resolve => { finish = resolve as typeof finish; }));
+  mount(<TemplatePanel {...props} />);
+  await screen.findByRole('option', { name: '默认 · v1' });
+  fireEvent.change(screen.getByLabelText('选择模板'), { target: { value: 'personal' } });
+  fireEvent.click(screen.getByText('编辑并发布新修订'));
+  fireEvent.change(screen.getByLabelText('模板方法 JSON'), { target: { value: JSON.stringify(personal.roles) } });
+  fireEvent.click(screen.getByRole('button', { name: '发布新修订 v2' }));
+  expect(screen.getByLabelText('模板名称')).toBeDisabled();
+  expect(screen.getByLabelText('模板方法 JSON')).toBeDisabled();
+  await act(async () => finish({ ...personal, revision: 2 }));
+  await waitFor(() => expect(screen.getByLabelText('选择模板')).toBeEnabled());
+  expect(screen.getByLabelText('模板方法 JSON')).toHaveValue(JSON.stringify(personal.roles, null, 2));
+  expect(screen.queryByRole('button', { name: '放弃模板编辑' })).not.toBeInTheDocument();
+});
+it('renders candidate Markdown and keeps structured validation details collapsed', () => {
+  render(<TrialCandidate candidate={{ markdown: '# 正文标题\n\n角色对白。', validation_report: { passed: true } }} />);
+  expect(screen.getByRole('heading', { name: '正文标题' })).toBeInTheDocument();
+  expect(screen.getByText('角色对白。')).toBeInTheDocument();
+  expect(screen.getByText('校验结果：通过')).toBeInTheDocument();
+  expect(screen.getByText('结构化候选与校验详情').closest('details')).not.toHaveAttribute('open');
 });

@@ -4,7 +4,8 @@ from novelvideo.agent_teams.builtin_methods import builtin_methods
 
 
 def test_actual_sources_and_protocol_are_read_only():
-    from novelvideo.script_creation.prompts import CRAFT_BY_KIND, craft_guidance
+    from novelvideo.script_creation.prompts import CRAFT_BY_KIND, craft_guidance, build_prompt
+    from novelvideo.script_creation.generation import GENERATION_SYSTEM_PROMPT
     from novelvideo.screenplay_semantics.prompts import SYSTEM_PROMPT
     from novelvideo.media_capabilities.video.h3_prompt_profile import H3_DIRECTOR_SYSTEM_PROMPT
     items = builtin_methods()
@@ -16,6 +17,12 @@ def test_actual_sources_and_protocol_are_read_only():
         assert item['content_hash'] == sha256(item['content'].encode()).hexdigest()
         if item['kind'] == 'protocol':
             assert not item['replaceable']
+            if item['role_id'] == 'writer':
+                assert item['content'] == GENERATION_SYSTEM_PROMPT + '\n\n' + build_prompt(
+                    kind=item['subtask_id'], script_mode='single', episode_number=1,
+                    episode_count=1, instruction='', references=[])
+                assert '已写正文事实只能依据' in item['content']
+                assert '输出连贯的 Markdown 正文' in item['content']
         else:
             assert item['content'] == craft_guidance(item['subtask_id'])
             assert item['replaceable']

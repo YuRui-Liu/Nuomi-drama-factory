@@ -3,9 +3,10 @@ import { useEffect, useState } from 'react';
 import { TemplatePanel } from './template-panel';
 import { ResourceLibrary } from './resource-library';
 import { TrialPanel } from './trial-panel';
-export interface TeamToolsProps { project: string; overview: TeamOverview; disabled: boolean; selectedRole: string; selectedSubtask: string; onChanged: () => void; onEditingChange?: (editing: boolean) => void }
+export interface TeamToolsProps { project: string; overview: TeamOverview; disabled: boolean; selectedRole: string; selectedSubtask: string; onChanged: () => void; onEditingChange?: (editing: boolean) => void; resourceViewRequest?: number }
 export function TeamTools(props: TeamToolsProps) {
   const [tab, setTab] = useState('resources');
+  useEffect(() => { setTab('resources'); }, [props.resourceViewRequest]);
   const [resourceEditing, setResourceEditing] = useState(false);
   const [templateEditing, setTemplateEditing] = useState(false);
   const [trialEditing, setTrialEditing] = useState(false);

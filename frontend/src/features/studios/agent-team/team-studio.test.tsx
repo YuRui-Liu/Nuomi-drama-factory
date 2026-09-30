@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendStatusError } from '@/lib/api-errors';
 import { TeamStudio } from './team-studio';
 import * as api from './api';
+import * as tools from './tools-api';
 import { defaultMethod, type TeamOverview, type TeamDraft } from './types';
 import { readStudioContext, studioLocation } from '../studio-context';
 vi.mock('./api');
+vi.mock('./tools-api', async original => ({ ...await original<typeof import('./tools-api')>(), read: vi.fn(async () => []), templates: vi.fn(async () => []) }));
 const mock = vi.mocked(api);
 let overview: TeamOverview;
 function fixture(): TeamOverview { return { catalog: [{ id: 'writer', name: '编剧', subtasks: ['brief', 'outline'], connected: true }], template: { id: 'builtin', revision: 1, name: '默认团队', owner: 'builtin', roles: { writer: { brief: { ...defaultMethod, prompt: '模板提示' }, outline: defaultMethod } } }, draft: null, active: null, effective: {}, connectivity: { writer: { brief: true, outline: false } } }; }
@@ -14,6 +16,38 @@ function mount() { const client = new QueryClient({ defaultOptions: { queries: {
 beforeEach(() => { vi.resetAllMocks(); overview = fixture(); mock.getTeam.mockImplementation(async () => structuredClone(overview)); mock.getTeamResources.mockResolvedValue([]); mock.getTeamDiff.mockResolvedValue([]); mock.getTeamVersions.mockResolvedValue([]); mock.saveTeamDraft.mockImplementation(async (_project, data, revision) => { const draft = { draft_revision: revision + 1, data: { ...data, template: overview.template } }; overview = { ...overview, draft }; return draft; }); });
 afterEach(cleanup);
 describe('Agent Team editing', () => {
+  it('keeps tool edits mounted and guards role switching and save-before-leave', async () => {
+    vi.mocked(tools.read).mockResolvedValue([]);
+    vi.mocked(tools.templates).mockResolvedValue([]);
+    const failed = vi.fn();
+    const dirtied = vi.fn();
+    window.addEventListener('studio-save-failed-agent-team', failed);
+    window.addEventListener('studio-dirty', dirtied);
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: '查看当前内置方法与来源' }));
+    fireEvent.click(screen.getByRole('tab', { name: '团队模板' }));
+    fireEvent.click(screen.getByRole('tab', { name: '方法编辑' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看当前内置方法与来源' }));
+    expect(screen.getByRole('tab', { name: '内置方法与资源' })).toHaveAttribute('aria-selected', 'true');
+    const content = screen.getByLabelText('资源正文');
+    fireEvent.change(content, { target: { value: '未发布技法' } });
+    await waitFor(() => expect(dirtied.mock.calls.some(([event]) => event.detail.dirty)).toBe(true));
+    fireEvent.click(screen.getByRole('tab', { name: '方法编辑' }));
+    expect(screen.getByLabelText('工作提示词')).toBeDisabled();
+    expect(screen.getByRole('button', { name: '启用已保存草稿' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /故事大纲/ }));
+    expect(screen.getByRole('heading', { name: '创作简报' })).toBeInTheDocument();
+    expect(screen.getByText('请先完成或放弃工具面板中的编辑，再切换子任务。')).toBeInTheDocument();
+    act(() => window.dispatchEvent(new Event('studio-save-agent-team')));
+    await waitFor(() => expect(failed).toHaveBeenCalledOnce());
+    expect(api.saveTeamDraft).not.toHaveBeenCalled();
+    expect(content).toHaveValue('未发布技法');
+    fireEvent.click(screen.getByRole('button', { name: '放弃资源编辑' }));
+    fireEvent.click(screen.getByRole('button', { name: /故事大纲/ }));
+    expect(screen.getByRole('heading', { name: '故事大纲' })).toBeInTheDocument();
+    window.removeEventListener('studio-save-failed-agent-team', failed);
+    window.removeEventListener('studio-dirty', dirtied);
+  });
   it('allows valid historical rollback when saved draft customizes a disconnected subtask', async () => {
     const snapshot = { template_id: 'builtin', template_revision: 1, template: overview.template, overrides: {} };
     overview.draft = { draft_revision: 3, data: { ...snapshot, overrides: { writer: { outline: { prompt: '尚未接入的方法' } } } } };
