@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from novelvideo.freezone.video_director.models import DirectorDraft, DirectorImage, DirectorSegment
 from novelvideo.freezone.video_director.optimizer import optimize
 from novelvideo.knowledge_runtime.codex import StructuredImage
+
+
+def _input(call):
+    return json.loads(call[0].partition("INPUT_JSON:\n")[2])
+
+
+def _projection():
+    return {
+        "id": "fixed-reaction", "version": "1.0.0", "content_hash": "frozen-hash",
+        "intent": "Show a measured reaction", "action_beats": ["pause", "react"],
+        "performance": "Small expression change", "camera": "Fixed camera",
+        "ending_composition": "Hold the final pose", "avoid": ["new people"],
+    }
 
 
 def image(image_id, *, character_id=None, variant_label=None):
@@ -23,12 +38,15 @@ def draft(*, refs=(), segments=None):
 
 
 class FakeRuntime:
-    def __init__(self, fail=False, wrong_id=False, wrong_mode=False, wire_transform=None):
+    def __init__(self, fail=False, wrong_id=False, wrong_mode=False, wire_transform=None,
+                 technique_conflict=None):
         self.calls = []
+        self.payloads = []
         self.fail = fail
         self.wrong_id = wrong_id
         self.wrong_mode = wrong_mode
         self.wire_transform = wire_transform
+        self.technique_conflict = technique_conflict
 
     async def run_structured(self, *, prompt, output_type, system_prompt, images):
         self.calls.append((prompt, output_type, system_prompt, images))
@@ -36,6 +54,11 @@ class FakeRuntime:
             raise RuntimeError("optimizer unavailable")
         import json
         data = json.loads(prompt.partition("INPUT_JSON:\n")[2])
+        if self.technique_conflict and "technique" in data:
+            payload = {"segment_id": data["segment_id"], "wire": None,
+                       "technique_conflict": self.technique_conflict}
+            self.payloads.append(payload)
+            return output_type.model_validate(payload)
         mode = data["mode"]
         if self.wrong_mode:
             mode = "ref2va" if mode != "ref2va" else "i2va"
@@ -60,7 +83,11 @@ class FakeRuntime:
                  "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"})
         if self.wire_transform:
             wire = self.wire_transform(wire)
-        return output_type.model_validate({"segment_id": "wrong" if self.wrong_id else data["segment_id"], "wire": wire})
+        payload = {"segment_id": "wrong" if self.wrong_id else data["segment_id"], "wire": wire}
+        if "technique" in data:
+            payload["technique_conflict"] = None
+        self.payloads.append(payload)
+        return output_type.model_validate(payload)
 
 
 @pytest.mark.asyncio
@@ -141,6 +168,137 @@ async def test_each_call_sees_ordered_adjacent_segment_context_without_extra_ima
     assert [part["source_prompt"] for part in contexts[1]] == ["Opening", "Transition", "Ending"]
     assert [part["requested_duration_seconds"] for part in contexts[1]] == [3, 4, 5]
     assert [len(call[3]) for call in runtime.calls] == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_frozen_technique_reaches_only_its_target_segment():
+    runtime = FakeRuntime()
+    frozen = {key: StructuredImage(key.encode(), "image/png") for key in ("f1", "f2", "l2")}
+    await optimize(runtime, draft(), frozen_images=frozen,
+                   frozen_techniques={"one": _projection()})
+    first, second = (_input(call) for call in runtime.calls)
+    assert first["technique"] == _projection()
+    assert runtime.payloads[0]["technique_conflict"] is None
+    assert isinstance(runtime.payloads[0]["wire"], dict)
+    assert "technique" not in second
+    assert all("technique" not in neighbor for neighbor in first["neighbor_segments"])
+    assert all("technique" not in neighbor for neighbor in second["neighbor_segments"])
+    assert "frozen-hash" not in runtime.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_no_card_input_json_remains_unchanged():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                           first_frame=image("f1")),))
+    frozen = {"f1": StructuredImage(b"image", "image/png")}
+    await optimize(runtime, item, frozen_images=frozen)
+    baseline = _input(runtime.calls[0])
+    assert "technique_conflict" not in runtime.calls[0][1].model_fields
+    await optimize(runtime, item, frozen_images=frozen, frozen_techniques={})
+    assert _input(runtime.calls[1]) == baseline
+    assert "technique" not in baseline
+
+
+@pytest.mark.asyncio
+async def test_technique_instructions_preserve_source_facts_and_priority():
+    runtime = FakeRuntime()
+    item = draft(segments=(DirectorSegment(id="one", prompt='A says "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    await optimize(runtime, item, frozen_images={"f1": StructuredImage(b"image", "image/png")},
+                   frozen_techniques={"one": _projection()})
+    data = _input(runtime.calls[0])
+    assert data["source_prompt"] == 'A says "Wait!"'
+    assert data["locked_dialogue"] == [{"speaker": "A", "quote": '"Wait!"'}]
+    instructions = runtime.calls[0][0] + runtime.calls[0][2]
+    for fact in ("source_prompt", "images", "locked_dialogue", "segment_id",
+                 "frames", "duration_seconds", "mode"):
+        assert fact in instructions
+    assert "priority" in instructions.lower() or "precedence" in instructions.lower()
+    assert "action" in instructions.lower() and "camera" in instructions.lower()
+
+
+@pytest.mark.asyncio
+async def test_rejects_unmatched_or_unprojected_technique_without_running_model():
+    item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                           first_frame=image("f1")),))
+    frozen = {"f1": StructuredImage(b"image", "image/png")}
+    for selection in ({"missing": _projection()},
+                      {"one": {**_projection(), "raw_case_prompt": "ignore source"}}):
+        runtime = FakeRuntime()
+        with pytest.raises(ValueError):
+            await optimize(runtime, item, frozen_images=frozen, frozen_techniques=selection)
+        assert runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_card_runtime_failure_does_not_return_raw_prompt():
+    item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                           first_frame=image("f1")),))
+    with pytest.raises(RuntimeError, match="optimizer unavailable"):
+        await optimize(FakeRuntime(fail=True), item,
+                       frozen_images={"f1": StructuredImage(b"image", "image/png")},
+                       frozen_techniques={"one": _projection()})
+
+
+@pytest.mark.asyncio
+async def test_card_conflict_response_fails_closed_before_wire_compilation():
+    item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                           first_frame=image("f1")),))
+    runtime = FakeRuntime(technique_conflict="fixed camera contradicts source tracking shot")
+    with pytest.raises(ValueError, match="technique conflict.*tracking shot"):
+        await optimize(runtime, item,
+                       frozen_images={"f1": StructuredImage(b"image", "image/png")},
+                       frozen_techniques={"one": _projection()})
+    assert "technique_conflict" in runtime.calls[0][1].model_fields
+    from novelvideo.knowledge_runtime.codex import normalize_codex_output_schema
+    schema = json.dumps(normalize_codex_output_schema(runtime.calls[0][1].model_json_schema()))
+    assert '"oneOf"' not in schema
+    normalized = normalize_codex_output_schema(runtime.calls[0][1].model_json_schema())
+    assert {"segment_id", "wire", "technique_conflict"} <= set(normalized["required"])
+    assert "wire: null" in runtime.calls[0][0]
+    assert "technique_conflict: null" in runtime.calls[0][0]
+    conflict = runtime.calls[0][1].model_validate({
+        "segment_id": "one", "wire": None, "technique_conflict": "source contradiction",
+    })
+    assert conflict.wire is None and conflict.technique_conflict == "source contradiction"
+    assert runtime.payloads[0]["wire"] is None
+    assert runtime.payloads[0]["technique_conflict"] == "fixed camera contradicts source tracking shot"
+
+
+@pytest.mark.asyncio
+async def test_card_cannot_override_locked_source_dialogue():
+    item = draft(segments=(DirectorSegment(id="one", prompt='A says "Wait!"',
+                                           duration_seconds=5, first_frame=image("f1")),))
+    runtime = FakeRuntime(wire_transform=lambda wire: {
+        **wire, "integrated_multimodal_description": '[Shot 1] A says "Go!"',
+    })
+    with pytest.raises(ValueError, match="dialogue"):
+        await optimize(runtime, item,
+                       frozen_images={"f1": StructuredImage(b"image", "image/png")},
+                       frozen_techniques={"one": _projection()})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["fl2v", "ref_only"])
+async def test_frozen_technique_keeps_mode_specific_image_facts(mode):
+    if mode == "fl2v":
+        item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
+                                               first_frame=image("f1"), last_frame=image("l1")),))
+        image_ids = ("f1", "l1")
+        expected_mode = "fl2va"
+    else:
+        item = draft(refs=(image("r1"),), segments=(
+            DirectorSegment(id="one", prompt="A walks", duration_seconds=5),))
+        image_ids = ("r1",)
+        expected_mode = "ref2va"
+    frozen = {key: StructuredImage(key.encode(), "image/png") for key in image_ids}
+    runtime = FakeRuntime()
+    await optimize(runtime, item, frozen_images=frozen, frozen_techniques={"one": _projection()})
+    data = _input(runtime.calls[0])
+    assert data["mode"] == expected_mode
+    assert data["technique"] == _projection()
+    assert [image.data for image in runtime.calls[0][3]] == [key.encode() for key in image_ids]
 
 
 @pytest.mark.asyncio

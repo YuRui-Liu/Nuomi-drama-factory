@@ -25,7 +25,7 @@ from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubEr
 
 from .capabilities import DirectorCapabilityError, validate_generation
 from .models import DirectorDraft, DirectorImage, FrozenTechnique, OptimizedDirector
-from .optimizer import optimize
+from .optimizer import TechniqueConflictError, optimize
 from .store import DirectorAttemptStore
 from . import techniques
 
@@ -309,11 +309,15 @@ class DirectorService:
                     error = "Director optimization failed"
                     if isinstance(exc, KnowledgeRuntimeError) and exc.code == "DSH_VISION_KEY_MISSING":
                         error = "DeepSeek 图片改写需要配置 DEEPSEEK_API_KEY；配置后可重试。"
+                    elif isinstance(exc, TechniqueConflictError):
+                        error = "Selected technique conflicts with source facts; change or remove the card."
                     return self.store.update(attempt_id, stage="failed", failed_stage="optimizing",
                                              error=error,
                                              optimization_validation_errors=_validation_locations(exc),
                                              optimization_error_type=type(exc).__name__,
-                                             optimization_error_code=(exc.code if isinstance(exc, KnowledgeRuntimeError)
+                                             optimization_error_code=("TECHNIQUE_CONFLICT"
+                                                 if isinstance(exc, TechniqueConflictError)
+                                                 else exc.code if isinstance(exc, KnowledgeRuntimeError)
                                                  and exc.code in {"DSH_VISION_KEY_MISSING", "CODEX_STRUCTURED_OUTPUT_INVALID",
                                                                   "CODEX_NOT_INSTALLED", "CODEX_EXEC_FAILED",
                                                                   "CODEX_NOT_AUTHENTICATED", "CODEX_SCHEMA_INVALID"}

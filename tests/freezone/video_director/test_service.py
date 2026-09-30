@@ -74,6 +74,35 @@ def test_selected_attempt_freezes_card_and_sources(setup):
     assert _public(item)["frozen_techniques"] == item["frozen_techniques"]
 
 
+@pytest.mark.asyncio
+async def test_reported_technique_conflict_prevents_paid_submission(setup):
+    import json
+    from novelvideo.freezone.video_director.optimizer import optimize
+
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", selected_draft("frame.png"))
+
+    class ConflictRuntime:
+        async def run_structured(self, *, prompt, output_type, system_prompt, images):
+            source = json.loads(prompt.partition("INPUT_JSON:\n")[2])
+            return output_type.model_validate({
+                "segment_id": source["segment_id"],
+                "wire": None,
+                "technique_conflict": "private-prompt-sentinel",
+            })
+
+    service.runtime = ConflictRuntime()
+    service.optimizer = optimize
+    failed = await service.resume(item["id"])
+    assert failed["failed_stage"] == "optimizing"
+    assert failed["optimization_error_type"] == "TechniqueConflictError"
+    assert failed["error"] == "Selected technique conflicts with source facts; change or remove the card."
+    assert failed["optimization_error_code"] == "TECHNIQUE_CONFLICT"
+    assert provider.submit_calls == 0
+    assert "private-prompt-sentinel" not in json.dumps(failed)
+
+
 def test_retired_selection_is_rejected_with_segment_field(setup, monkeypatch):
     from novelvideo.freezone.video_director import techniques
 

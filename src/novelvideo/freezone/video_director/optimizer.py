@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Mapping
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from novelvideo.knowledge_runtime.codex import StructuredImage, validate_structured_images
 from novelvideo.media_capabilities.video.h3_prompt_profile import (
@@ -19,7 +19,7 @@ from novelvideo.text_task_runtime.runtime import StructuredTextRuntime
 
 from .capabilities import validate_generation
 from .models import (
-    CanvasBaseWire, CanvasReferenceWire, DirectorDraft, OptimizedDirector,
+    CanvasBaseWire, CanvasReferenceWire, DirectorDraft, FrozenTechniqueProjection, OptimizedDirector,
     OptimizedSegment,
 )
 
@@ -34,6 +34,24 @@ class _OptimizedReferenceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     segment_id: str
     wire: CanvasReferenceWire
+
+
+class _OptimizedTechniqueBaseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    segment_id: str
+    wire: CanvasBaseWire | None = None
+    technique_conflict: str | None = Field(default=None, min_length=1)
+
+
+class _OptimizedTechniqueReferenceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    segment_id: str
+    wire: CanvasReferenceWire | None = None
+    technique_conflict: str | None = Field(default=None, min_length=1)
+
+
+class TechniqueConflictError(ValueError):
+    """A selected card cannot be reconciled with frozen source facts."""
 
 
 _EXPLICIT_DIALOGUE = re.compile(
@@ -142,6 +160,7 @@ async def optimize(
     draft: DirectorDraft,
     *,
     frozen_images: Mapping[str, StructuredImage],
+    frozen_techniques: Mapping[str, FrozenTechniqueProjection | Mapping[str, object]] | None = None,
     system_prompt: str | None = None,
     reference_limit: int = 5,
 ) -> OptimizedDirector:
@@ -151,8 +170,15 @@ async def optimize(
     never treated as a provider prompt.
     """
     validation = validate_generation(draft, reference_limit=reference_limit)
-    response_type = (_OptimizedReferenceResponse if validation.route == "h3_ref"
-                     else _OptimizedBaseResponse)
+    known_segment_ids = {segment.id for segment in draft.segments}
+    selected = frozen_techniques or {}
+    unknown_segment_ids = set(selected) - known_segment_ids
+    if unknown_segment_ids:
+        raise ValueError(f"frozen technique has unknown segment ID: {sorted(unknown_segment_ids)[0]}")
+    projections = {
+        segment_id: FrozenTechniqueProjection.model_validate(projection).model_dump(mode="json")
+        for segment_id, projection in selected.items()
+    }
     reference_facts = _reference_facts(draft)
     reference_ids = [str(fact["image_id"]) for fact in reference_facts]
     result: list[OptimizedSegment] = []
@@ -190,12 +216,35 @@ async def optimize(
                 for index, image_id in enumerate(image_ids)
             ],
         }
+        technique = projections.get(source.id)
+        if technique is not None:
+            source_data["technique"] = technique
+        response_type = (
+            _OptimizedTechniqueReferenceResponse if validation.route == "h3_ref"
+            else _OptimizedTechniqueBaseResponse
+        ) if technique is not None else (
+            _OptimizedReferenceResponse if validation.route == "h3_ref"
+            else _OptimizedBaseResponse
+        )
         prompt = ("Return a structured H3 wire for this one target segment. Copy segment_id exactly. "
                   "Neighbor segments are continuity context, not extra outputs or images. "
                   "Use the images in the exact order listed. Copy locked_dialogue speaker and quote "
                   "into the wire together exactly, including the original quote marks. "
-                  "Do not treat other quoted source text as dialogue.\n"
-                  "INPUT_JSON:\n" + json.dumps(source_data, ensure_ascii=False))
+                  "Do not treat other quoted source text as dialogue.\n")
+        if technique is not None:
+            prompt += (
+                "Priority and precedence: source_prompt, attached images and their order/identity, "
+                "locked_dialogue, segment_id, mode, aligned duration_seconds, frames, and other "
+                "source facts override technique. Use technique only to guide compatible action "
+                "beats and pacing, performance, camera movement, and ending composition for this "
+                "target segment. Do not copy an external case prompt or invent characters, images, "
+                "events, or actions to satisfy the technique. If technique conflicts with those "
+                "facts, return wire: null and technique_conflict: a brief reason. "
+                "On success, return wire: a structured object and technique_conflict: null. "
+                "Both keys are required by the response schema. Never return both a conflict "
+                "reason and a non-null wire.\n"
+            )
+        prompt += "INPUT_JSON:\n" + json.dumps(source_data, ensure_ascii=False)
         final_system_prompt = H3_CANVAS_WRITING_RULES
         if system_prompt:
             final_system_prompt += "\nAdditional caller context (source facts only):\n" + system_prompt
@@ -206,7 +255,11 @@ async def optimize(
         response = response_type.model_validate(response)
         if response.segment_id != source.id:
             raise ValueError(f"optimized segment ID mismatch: {source.id}")
+        if technique is not None and response.technique_conflict:
+            raise TechniqueConflictError(f"technique conflict: {response.technique_conflict}")
         wire = response.wire
+        if wire is None:
+            raise ValueError(f"optimized segment wire is missing: {source.id}")
         if wire.mode != mode or (isinstance(wire, CanvasReferenceWire) != (mode == "ref2va")):
             raise ValueError(f"optimized segment mode mismatch: {source.id}")
         if abs(wire.duration_seconds - aligned.duration_seconds) > 1e-9:
@@ -227,4 +280,4 @@ async def optimize(
     )
 
 
-__all__ = ["optimize"]
+__all__ = ["TechniqueConflictError", "optimize"]
