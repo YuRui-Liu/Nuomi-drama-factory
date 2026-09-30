@@ -14,8 +14,12 @@ import pytest
 from PIL import Image
 
 from novelvideo.freezone.video_director.h3_adapter import compile_director_payload
-from novelvideo.freezone.video_director.models import DirectorDraft, DirectorImage, DirectorSegment
+from novelvideo.freezone.video_director.models import (
+    DirectorDraft, DirectorImage, DirectorSegment, TechniqueSelection,
+)
 from novelvideo.freezone.video_director.service import DirectorService
+from novelvideo.freezone.video_director.techniques import resolve_technique
+from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 
 
 def png(color: str) -> bytes:
@@ -42,19 +46,25 @@ class StructuredRuntime:
                     "summary": "; ".join(subjects) + " moves",
                     "retention_analysis": [{"subject": subject, "retain": "fully_preserved - identity"}
                                            for subject in subjects],
-                    "detailed_description": "; ".join(subjects) + " moves through a room.",
+                    "detailed_description": "; ".join(subjects) + " moves through a room."
+                    + (" two-person gaze intent" if "technique" in data else ""),
                     "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"}
         else:
             wire = {"mode": data["mode"], "duration_seconds": data["duration_seconds"],
                     "final_shot_number": 1,
-                    "integrated_multimodal_description": "[Shot 1] Directed scene: " + data["source_prompt"],
+                    "integrated_multimodal_description": "[Shot 1] Directed scene: " + data["source_prompt"]
+                    + (" two-person gaze intent" if "technique" in data else ""),
                     "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"}
-        return output_type.model_validate({"segment_id": data["segment_id"], "wire": wire})
+        result = {"segment_id": data["segment_id"], "wire": wire}
+        if "technique" in data:
+            result["technique_conflict"] = None
+        return output_type.model_validate(result)
 
 
 class CompilingProvider:
-    def __init__(self, video: bytes):
+    def __init__(self, video: bytes, *, reject_once: bool = False):
         self.video = video
+        self.reject_once = reject_once
         self.prepared = None
         self.uploaded = {}
         self.submissions = 0
@@ -73,6 +83,9 @@ class CompilingProvider:
         self.submissions += 1
         assert self.prepared is not None
         assert prepared["node_info"]["timeline_data"] == self.prepared.timeline_data
+        if self.reject_once:
+            self.reject_once = False
+            raise RunningHubError("fixture rejection", code="BAD_INPUT", http_status=200)
         return "fake-paid-task"
 
     async def query(self, task_id):
@@ -99,8 +112,10 @@ def video_bytes(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reference_mode", [False, True], ids=["first-last", "pure-reference"])
-async def test_asset_selection_to_durable_two_segment_result(tmp_path, video_bytes, reference_mode):
+@pytest.mark.parametrize("mode", ["i2v", "fl2v", "ref_only"])
+@pytest.mark.parametrize("selected", [False, True], ids=["baseline", "selected-card"])
+async def test_asset_selection_to_durable_two_segment_result(tmp_path, mode, selected):
+    reference_mode = mode == "ref_only"
     output = tmp_path / "output"
     output.mkdir()
     runtime_dir = tmp_path / "runtime"
@@ -115,17 +130,21 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, video_byt
     base = image("base", asset_id="character:hero", character_id="hero", asset_kind="portrait")
     costume = image("costume", asset_id="character:hero", character_id="hero",
                     variant_id="coat", variant_label="红外套", asset_kind="identity_costume")
-    segments = ((DirectorSegment(id="opening", prompt="Original opening", duration_seconds=15),
+    technique = TechniqueSelection(id="two-person-gaze", version="1.0.0") if selected else None
+    segments = ((DirectorSegment(id="opening", prompt="Original opening", duration_seconds=15,
+                                 technique=technique),
                  DirectorSegment(id="closing", prompt="Original closing", duration_seconds=5))
                 if reference_mode else
                 (DirectorSegment(id="opening", prompt="Original opening", duration_seconds=15,
-                                 first_frame=base),
+                                 first_frame=base,
+                                 last_frame=image("last") if mode == "fl2v" else None,
+                                 technique=technique),
                  DirectorSegment(id="closing", prompt="Original closing", duration_seconds=5,
-                                 first_frame=costume, last_frame=image("last"))))
+                                 first_frame=costume)))
     draft = DirectorDraft(revision=3, aspect_ratio="9:16", resolution="720p",
                           references=(base, costume) if reference_mode else (), segments=segments)
     runtime = StructuredRuntime()
-    provider = CompilingProvider(video_bytes)
+    provider = CompilingProvider(b"", reject_once=selected)
     service = DirectorService(ctx, runtime=runtime, provider=provider)
     created, is_new = service.create("canvas", "director", "request", draft)
     assert is_new
@@ -134,16 +153,49 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, video_byt
         ["hero", "hero"] if reference_mode else [])
     for image_id in originals:
         (output / f"{image_id}.png").write_bytes(png("white"))
-    queued = await service.resume(created["id"])
+    attempt_id = created["id"]
+    if selected:
+        rejected = await service.resume(attempt_id)
+        assert rejected["stage"] == "failed"
+        assert rejected["failed_stage"] == "submitting"
+        assert rejected["optimized"]["segments"][0]["prompt"] != "Original opening"
+        restarted = DirectorService(ctx, runtime=runtime, provider=provider)
+        retry, is_new_retry = restarted.retry(attempt_id)
+        assert is_new_retry
+        assert retry["parent_attempt_id"] == attempt_id
+        assert retry["frozen_techniques"] == rejected["frozen_techniques"]
+        assert retry["optimized"] == rejected["optimized"]
+        attempt_id = retry["id"]
+        service = restarted
+    queued = await service.resume(attempt_id)
     assert queued["stage"] == "queued"
-    assert provider.submissions == 1
-    expected_uploads = (dict((key, originals[key]) for key in ("base", "costume"))
-                        if reference_mode else originals)
+    assert provider.submissions == (2 if selected else 1)
+    expected_uploads = (originals if mode == "fl2v" else
+                        {key: originals[key] for key in ("base", "costume")})
     assert provider.uploaded == expected_uploads
     assert [call[0]["segment_id"] for call in runtime.calls] == ["opening", "closing"]
+    assert runtime.calls[0][0]["mode"] == {
+        "i2v": "i2va", "fl2v": "fl2va", "ref_only": "ref2va",
+    }[mode]
+    assert ["technique" in call[0] for call in runtime.calls] == [selected, False]
+    assert all("technique" not in neighbor for call, _ in runtime.calls
+               for neighbor in call["neighbor_segments"])
+    if selected:
+        card = resolve_technique("two-person-gaze", "1.0.0")
+        frozen = queued["frozen_techniques"]
+        assert list(frozen) == ["opening"]
+        assert frozen["opening"]["card"]["id"] == card.id
+        assert frozen["opening"]["card"]["version"] == card.version
+        assert frozen["opening"]["card"]["content_hash"] == card.content_hash
+        assert frozen["opening"]["card"]["sources"] == [
+            source.model_dump(mode="json") for source in card.sources]
+        assert frozen["opening"]["projection"] == runtime.calls[0][0]["technique"]
+    else:
+        assert not queued.get("frozen_techniques")
     assert [call[1] for call in runtime.calls] == (
         [(originals["base"], originals["costume"])] * 2 if reference_mode else
-        [(originals["base"],), (originals["costume"], originals["last"])])
+        [(originals["base"], originals["last"]) if mode == "fl2v"
+         else (originals["base"],), (originals["costume"],)])
     assert [s["prompt"] for s in queued["optimized"]["segments"]] != [s.prompt for s in draft.segments]
     assert [s["frames"] for s in queued["optimized"]["segments"]] == [362, 124]
     timeline = json.loads(provider.prepared.timeline_data)
@@ -155,6 +207,8 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, video_byt
     assert queued["actual_parameters"]["duration_seconds"] == pytest.approx(486 / 24)
     assert [shot["prompt"] for shot in timeline["shots"]] == [
         segment["prompt"] for segment in queued["optimized"]["segments"]]
+    assert ("two-person gaze intent" in timeline["shots"][0]["prompt"]) == selected
+    assert "two-person gaze intent" not in timeline["shots"][1]["prompt"]
     assert all(shot["prompt"] != source.prompt for shot, source in zip(
         timeline["shots"], draft.segments, strict=True))
     if reference_mode:
@@ -166,10 +220,37 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, video_byt
     else:
         assert provider.prepared.route == "h3"
         assert timeline["shots"][0]["startImage"]["imageFile"] == "frozen-base"
-        assert timeline["shots"][1]["endImage"]["imageFile"] == "frozen-last"
+        assert timeline["shots"][0]["endImage"] == (
+            {"imageFile": "frozen-last"} if mode == "fl2v" else None)
+        assert timeline["shots"][1]["endImage"] is None
+    restarted = DirectorService(ctx, runtime=runtime, provider=provider)
+    assert len(restarted.list("canvas", "director")) == (2 if selected else 1)
+    assert restarted.get(attempt_id)["snapshot"]["segments"][1]["prompt"] == "Original closing"
+    assert restarted.get(attempt_id).get("frozen_techniques") == queued.get("frozen_techniques")
+    assert provider.submissions == (2 if selected else 1)
+    assert len(runtime.calls) == 2  # Cached retry needs no second optimization.
+
+
+@pytest.mark.asyncio
+async def test_real_video_completion_probe_is_optional(tmp_path, video_bytes):
+    output = tmp_path / "output"
+    output.mkdir()
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (output / "start.png").write_bytes(png("red"))
+    ctx = SimpleNamespace(project_id="project-1", owner_username="alice", project_name="show",
+                          output_dir=output, runtime_dir=runtime_dir)
+    draft = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p", segments=(
+        DirectorSegment(id="one", prompt="Original scene", duration_seconds=5,
+                        first_frame=DirectorImage(image_id="start", url="start.png")),
+    ))
+    runtime = StructuredRuntime()
+    provider = CompilingProvider(video_bytes)
+    service = DirectorService(ctx, runtime=runtime, provider=provider)
+    created, _ = service.create("canvas", "director", "request", draft)
+    assert (await service.resume(created["id"]))["stage"] == "queued"
     restarted = DirectorService(ctx, runtime=runtime, provider=provider)
     completed = await restarted.resume(created["id"])
-    assert completed["stage"] == "completed" and urlsplit(completed["result_url"]).path.endswith(".mp4")
-    assert len(restarted.list("canvas", "director")) == 1
-    assert restarted.get(created["id"])["snapshot"]["segments"][1]["prompt"] == "Original closing"
+    assert completed["stage"] == "completed"
+    assert urlsplit(completed["result_url"]).path.endswith(".mp4")
     assert provider.submissions == 1

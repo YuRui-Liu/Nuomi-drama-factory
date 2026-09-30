@@ -475,18 +475,26 @@ async def test_runtime_error_propagates_without_raw_prompt_fallback():
 
 
 @pytest.mark.asyncio
-async def test_canvas_optimization_never_invokes_legacy_qc(monkeypatch):
+@pytest.mark.parametrize("selected", [False, True], ids=["baseline", "selected-card"])
+async def test_canvas_optimization_never_invokes_legacy_qc(monkeypatch, selected):
     from novelvideo.media_capabilities.video import h3_prompt_quality
 
+    qc_calls = []
+
     def forbidden(*args, **kwargs):
+        qc_calls.append("inspect_h3_prompt")
         raise AssertionError("legacy QC invoked")
 
     monkeypatch.setattr(h3_prompt_quality, "inspect_h3_prompt", forbidden)
     item = draft(segments=(DirectorSegment(id="one", prompt="A walks", duration_seconds=5,
                                            first_frame=image("f1")),))
-    result = await optimize(FakeRuntime(), item,
-                            frozen_images={"f1": StructuredImage(b"a", "image/png")})
+    runtime = FakeRuntime()
+    result = await optimize(runtime, item,
+                            frozen_images={"f1": StructuredImage(b"a", "image/png")},
+                            frozen_techniques={"one": _projection()} if selected else {})
     assert result.segments[0].prompt
+    assert ("technique" in _input(runtime.calls[0])) is selected
+    assert qc_calls == []
 
 
 @pytest.mark.asyncio
