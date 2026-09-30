@@ -28,6 +28,8 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 
 const frame: DirectorImageTarget = { kind: 'frame', segmentId: 's1', field: 'firstFrame' };
 const refs: DirectorImageTarget = { kind: 'references' };
+const refA: DirectorImageTarget = { kind: 'reference', imageId: 'a' };
+const refB: DirectorImageTarget = { kind: 'reference', imageId: 'b' };
 let actions: ReturnType<typeof useDirectorImageActions>;
 let cardActions: ReturnType<typeof useDirectorImageActions>;
 let panelActions: ReturnType<typeof useDirectorImageActions>;
@@ -64,6 +66,74 @@ describe('director image actions', () => {
     window.history.replaceState({}, '', '/projects/demo/freezone');
     useCanvasStore.getState().setCanvasData([{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
       position: { x: 0, y: 0 }, data: data() }], []);
+  });
+
+  it('completes independent reference A and B uploads from separate editors', async () => {
+    const draft = current().draft;
+    useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, references: [
+      { imageId: 'a', url: '/a.png' }, { imageId: 'b', url: '/b.png' },
+    ] } });
+    let finishA!: (value: { url: string }) => void;
+    let finishB!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockImplementation((_project, file: File) => new Promise((resolve) => {
+      if (file.name === 'a-new.png') finishA = resolve;
+      else finishB = resolve;
+    }));
+    render(<TwoEditors />);
+    let uploadA!: Promise<void>;
+    let uploadB!: Promise<void>;
+    act(() => {
+      uploadA = cardActions.uploadFile(refA, new File(['a'], 'a-new.png', { type: 'image/png' }));
+      uploadB = panelActions.uploadFile(refB, new File(['b'], 'b-new.png', { type: 'image/png' }));
+    });
+    await act(async () => { finishB({ url: '/b-new.png' }); await uploadB; });
+    await act(async () => { finishA({ url: '/a-new.png' }); await uploadA; });
+    expect(current().draft.references.map((image) => image.url)).toEqual(['/a-new.png', '/b-new.png']);
+    expect(current().draft.revision).toBe(2);
+  });
+
+  it('keeps a newer choice for the same reference when an older upload completes', async () => {
+    const draft = current().draft;
+    useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, references: [{ imageId: 'a', url: '/a.png' }] } });
+    let finish!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<TwoEditors />);
+    let upload!: Promise<void>;
+    act(() => { upload = cardActions.uploadFile(refA, new File(['old'], 'old.png', { type: 'image/png' })); });
+    act(() => panelActions.commitDirectorSlot(refA, [{ imageId: 'new', url: '/new.png' }]));
+    await act(async () => { finish({ url: '/old.png' }); await upload; });
+    expect(current().draft.references).toEqual([{ imageId: 'new', url: '/new.png' }]);
+    expect(current().draft.revision).toBe(1);
+  });
+
+  it('allows a whole-list edit that preserves A while its replacement uploads', async () => {
+    const draft = current().draft;
+    useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, references: [
+      { imageId: 'a', url: '/a.png' }, { imageId: 'b', url: '/b.png' },
+    ] } });
+    let finish!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<TwoEditors />);
+    let upload!: Promise<void>;
+    act(() => { upload = cardActions.uploadFile(refA, new File(['a'], 'a-new.png', { type: 'image/png' })); });
+    act(() => panelActions.commitDirectorSlot(refs, [{ imageId: 'a', url: '/a.png' }, { imageId: 'c', url: '/c.png' }]));
+    await act(async () => { finish({ url: '/a-new.png' }); await upload; });
+    expect(current().draft.references.map((image) => image.url)).toEqual(['/a-new.png', '/c.png']);
+    expect(current().draft.revision).toBe(2);
+  });
+
+  it('rejects an older A upload when a whole-list edit changes A itself', async () => {
+    const draft = current().draft;
+    useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, references: [{ imageId: 'a', url: '/a.png' }] } });
+    let finish!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<TwoEditors />);
+    let upload!: Promise<void>;
+    act(() => { upload = cardActions.uploadFile(refA, new File(['old'], 'old.png', { type: 'image/png' })); });
+    act(() => panelActions.commitDirectorSlot(refs, [{ imageId: 'a', url: '/a-selected.png' }]));
+    await act(async () => { finish({ url: '/old.png' }); await upload; });
+    expect(current().draft.references).toEqual([{ imageId: 'a', url: '/a-selected.png' }]);
+    expect(current().draft.revision).toBe(1);
   });
 
   it('keeps a newer panel selection when an older card upload finishes later', async () => {

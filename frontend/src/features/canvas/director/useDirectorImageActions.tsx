@@ -16,7 +16,8 @@ export type DirectorImageTarget = { kind: 'references' } | { kind: 'reference'; 
 const slotVersions = new Map<string, number>();
 function sharedSlotVersionKey(nodeId: string, target: DirectorImageTarget): string {
   const location = readUrl();
-  const slot = target.kind === 'frame' ? `${target.segmentId}.${target.field}` : 'references';
+  const slot = target.kind === 'frame' ? `${target.segmentId}.${target.field}`
+    : target.kind === 'reference' ? `reference:${target.imageId}` : 'references';
   return JSON.stringify([location.project, location.canvas, useCanvasStore.getState().canvasHydrationEpoch, nodeId, slot]);
 }
 function advanceSlotVersion(key: string): number {
@@ -132,6 +133,8 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     latestUpload.current[key] = sequence;
     const startingNode = directorNode(nodeId);
     if (!startingNode) return;
+    const startingReference = target.kind === 'reference' ? JSON.stringify(nodeData(nodeId)?.draft.references.find(
+      (image) => image.imageId === target.imageId) ?? null) : null;
     const epoch = useCanvasStore.getState().canvasHydrationEpoch;
     if (target.kind === 'references' && referenceLimit !== undefined &&
       (nodeData(nodeId)?.draft.references.length ?? 0) >= referenceLimit) {
@@ -149,6 +152,8 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     });
     const currentRequest = () => mounted.current && latestUpload.current[key] === sequence &&
       slotVersions.get(sharedKey) === sharedVersion &&
+      (target.kind !== 'reference' || JSON.stringify(nodeData(nodeId)?.draft.references.find(
+        (image) => image.imageId === target.imageId) ?? null) === startingReference) &&
       nodePresent && useCanvasStore.getState().canvasHydrationEpoch === epoch && !!directorNode(nodeId) &&
       readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route;
     try {
