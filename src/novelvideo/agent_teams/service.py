@@ -128,12 +128,18 @@ class AgentTeamService:
         return StoredData.model_validate(draft['data']) if draft else StoredData(template=builtin_template())
 
     def read(self, project):
+        from .trial_inputs import SUPPORTED
         draft = self.store.get_draft(project)
         data = StoredData.model_validate(draft['data']) if draft else StoredData(template=builtin_template())
         connected = self.connected()
-        return {'catalog': [{**r.model_dump(mode='json'), 'connected': any((r.id, t) in connected for t in r.subtasks)} for r in ROLE_CATALOG],
+        effective = self._effective(data)
+        for role, tasks in effective.items():
+            for subtask, entry in tasks.items():
+                entry['trial_supported'] = (role, subtask) in SUPPORTED
+        return {'catalog': [{**r.model_dump(mode='json'), 'connected': any((r.id, t) in connected for t in r.subtasks),
+                             'trial_supported': {t: (r.id,t) in SUPPORTED for t in r.subtasks}} for r in ROLE_CATALOG],
                 'template': data.template.model_dump(mode='json'), 'draft': draft,
-                'active': self.store.get_binding(project), 'effective': self._effective(data),
+                'active': self.store.get_binding(project), 'effective': effective,
                 'connectivity': {r.id: {t: (r.id, t) in connected for t in r.subtasks} for r in ROLE_CATALOG}}
 
     def save_draft(self, project, data, expected_revision):
