@@ -128,6 +128,8 @@ export type CanvasMutationSource =
 interface CanvasState {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
+  /** In-memory generation for bulk canvas replacement; never serialized. */
+  canvasHydrationEpoch: number;
   /**
    * Counts user-driven mutations since the last hydrate (or canvas switch). A
    * value of 0 means "the user has not touched this canvas yet", which lets
@@ -1256,6 +1258,7 @@ function createDefaultStoryboardExportOptions(): StoryboardExportOptions {
 export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodes: [],
   edges: [],
+  canvasHydrationEpoch: 0,
   userEditsSinceHydrate: 0,
   lastMutationSource: null,
   pendingClearIntent: false,
@@ -1462,9 +1465,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setCanvasData: (nodes, edges, history) => {
     const normalizedCanvas = normalizeCanvasData(nodes, edges);
 
-    set({
+    set((state) => ({
       nodes: normalizedCanvas.nodes,
       edges: normalizedCanvas.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: null,
       activeToolDialog: null,
       history: normalizeHistory(history),
@@ -1474,7 +1478,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       userEditsSinceHydrate: 0,
       lastMutationSource: null,
       pendingClearIntent: false,
-    });
+    }));
   },
 
   applyCanvasDataEdit: (nodes, edges) => {
@@ -1490,6 +1494,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return {
         nodes: normalizedCanvas.nodes,
         edges: normalizedCanvas.edges,
+        canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
         selectedNodeId: null,
         activeToolDialog: null,
         history: {
@@ -1505,9 +1510,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   hydrateCanvasDraft: (draft) => {
     const normalizedCanvas = normalizeCanvasData(draft.nodes, draft.edges);
 
-    set({
+    set((state) => ({
       nodes: normalizedCanvas.nodes,
       edges: normalizedCanvas.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: null,
       activeToolDialog: null,
       history: normalizeHistory(draft.history ?? undefined),
@@ -1515,7 +1521,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       userEditsSinceHydrate: draft.mutation.userEditsSinceHydrate,
       lastMutationSource: draft.mutation.lastMutationSource,
       pendingClearIntent: draft.mutation.pendingClearIntent,
-    });
+    }));
   },
 
   setViewportState: (viewport) => {
@@ -3798,6 +3804,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({
       nodes: target.nodes,
       edges: target.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: resolveSelectedNodeId(state.selectedNodeId, target.nodes),
       activeToolDialog: resolveActiveToolDialog(state.activeToolDialog, target.nodes),
       history: {
@@ -3830,6 +3837,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({
       nodes: target.nodes,
       edges: target.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: resolveSelectedNodeId(state.selectedNodeId, target.nodes),
       activeToolDialog: resolveActiveToolDialog(state.activeToolDialog, target.nodes),
       history: {

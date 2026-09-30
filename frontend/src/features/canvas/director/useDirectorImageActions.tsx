@@ -115,6 +115,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     latestUpload.current[key] = sequence;
     const startingNode = directorNode(nodeId);
     if (!startingNode) return;
+    const epoch = useCanvasStore.getState().canvasHydrationEpoch;
     if (target.kind === 'references' && referenceLimit !== undefined &&
       (nodeData(nodeId)?.draft.references.length ?? 0) >= referenceLimit) {
       setErrors((current) => ({ ...current, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
@@ -123,8 +124,12 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     if (!project) { setErrors((current) => ({ ...current, [key]: '缺少项目，无法上传图片' })); return; }
     setErrors((current) => ({ ...current, [key]: '' }));
     setUploading((current) => ({ ...current, [key]: true }));
+    let nodePresent = true;
+    const unsubscribe = useCanvasStore.subscribe((state) => {
+      if (!state.nodes.some((node) => node.id === nodeId)) nodePresent = false;
+    });
     const currentRequest = () => mounted.current && latestUpload.current[key] === sequence &&
-      directorNode(nodeId) === startingNode &&
+      nodePresent && useCanvasStore.getState().canvasHydrationEpoch === epoch && !!directorNode(nodeId) &&
       readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route;
     try {
       const uploaded = await uploadFreezoneImage(project, file, file.name);
@@ -149,6 +154,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     } catch (error) {
       if (currentRequest()) setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : '图片上传失败' }));
     } finally {
+      unsubscribe();
       if (mounted.current && latestUpload.current[key] === sequence) setUploading((current) => ({ ...current, [key]: false }));
     }
   }, [nodeId, referenceLimit, commitDirectorSlot, slotKey]);

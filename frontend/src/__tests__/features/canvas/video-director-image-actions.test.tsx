@@ -181,6 +181,22 @@ describe('director image actions', () => {
     expect(current().draft.revision).toBe(20);
   });
 
+  it('keeps a normal prompt edit made while a frame upload is pending', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    act(() => useCanvasStore.getState().updateNodeData('director', { draft: {
+      ...current().draft, revision: 1,
+      segments: current().draft.segments.map((segment) => ({ ...segment, prompt: 'Edited while uploading' })),
+    } }));
+    await act(async () => { resolve({ url: '/new.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.url).toBe('/new.png');
+    expect(current().draft.segments[0].prompt).toBe('Edited while uploading');
+    expect(current().draft.revision).toBe(2);
+  });
+
   it('lets only the latest upload for a slot control its result and status', async () => {
     const resolvers: Array<(value: { url: string }) => void> = [];
     uploadFreezoneImage.mockImplementation(() => new Promise((done) => { resolvers.push(done); }));
