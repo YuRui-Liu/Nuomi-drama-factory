@@ -10,6 +10,7 @@ import { VideoDirectorNode } from '@/features/canvas/nodes/VideoDirectorNode';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import { CANVAS_NODE_TYPES, type VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { getNodeDefinition } from '@/features/canvas/domain/nodeRegistry';
 
 // Node's fetch cannot resolve ky's browser-relative prefix under jsdom.
 vi.mock('@/api/client', async (loadActual) => {
@@ -62,10 +63,141 @@ describe('Director real component flow', () => {
   beforeEach(() => {
     localStorage.clear();
     window.history.replaceState({}, '', '/projects/demo/freezone?canvas=canvas');
-    useCanvasStore.setState({ userEditsSinceHydrate: 0, nodes: [{ id: 'director',
+    useCanvasStore.setState({ userEditsSinceHydrate: 0, edges: [], nodes: [{ id: 'director',
       type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
       data: { displayName: 'Director', draft: createDirectorDraft('opening'), activeAttemptId: null,
         videoUrl: null, resultRevision: null, pendingSubmission: null } }] as never });
+  });
+
+  it('starts in Ref mode and exposes image and prompt inputs on the card', async () => {
+    expect(getNodeDefinition(CANVAS_NODE_TYPES.videoDirector).createDefaultData().activeInputMode).toBe('ref');
+    server.use(http.get(`${endpoint}/capabilities`, () => HttpResponse.json({ ok: true, data: capabilities })),
+      http.get(`${endpoint}/attempts`, () => HttpResponse.json({ ok: true, data: { attempts: [] } })));
+    render(<CurrentNode />);
+    expect(screen.getByText('Ref 引导，待输入')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '主体参考图' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '首帧' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '尾帧' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: '当前片段提示词' })).toHaveValue('');
+    expect(screen.getByText('MiniMax H3 Ref')).toBeInTheDocument();
+  });
+
+  it('opens the editor when card generation finds an invalid draft', async () => {
+    let capabilitiesLoaded = false;
+    server.use(http.get(`${endpoint}/capabilities`, () => { capabilitiesLoaded = true; return HttpResponse.json({ ok: true, data: capabilities }); }),
+      http.get(`${endpoint}/attempts`, () => HttpResponse.json({ ok: true, data: { attempts: [] } })));
+    render(<CurrentNode />);
+    await waitFor(() => expect(capabilitiesLoaded).toBe(true));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(await screen.findByText('没有参考图时必须选择首帧')).toBeInTheDocument();
+  });
+
+  it('posts bound references in wire JSON while omitting the inactive saved frame', async () => {
+    const draft = createDirectorDraft('opening');
+    draft.references = [{ imageId: 'manual', url: '/manual.png' }];
+    draft.segments[0].prompt = 'Opening shot';
+    draft.segments[0].firstFrame = { imageId: 'saved-frame', url: '/saved-frame.png' };
+    useCanvasStore.setState((state) => ({
+      nodes: [{ ...state.nodes[0], data: { ...state.nodes[0].data, draft, activeInputMode: 'ref' } },
+        { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/connected.png' } }],
+      edges: [{ id: 'connected-reference', source: 'source', target: 'director',
+        data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }],
+    } as never));
+    let capabilitiesLoaded = false;
+    let posted: Record<string, any> | null = null;
+    const response = (data: unknown) => HttpResponse.json({ ok: true, data });
+    server.use(
+      http.get(`${endpoint}/capabilities`, () => { capabilitiesLoaded = true; return response(capabilities); }),
+      http.get(`${endpoint}/attempts`, () => response({ attempts: [] })),
+      http.post(`${endpoint}/attempts`, async ({ request }) => {
+        posted = await request.json() as Record<string, any>;
+        return response({ attempt: { id: 'wire-attempt', project_id: 'demo', canvas_id: 'canvas', node_id: 'director',
+          request_id: posted.request_id, parent_attempt_id: null, revision: posted.draft.revision,
+          snapshot: posted.draft, stage: 'optimizing', optimized: null, rules_hash: null, reference_limit: 5,
+          workflow_id: null, workflow_profile_id: null, workflow_profile_version: null,
+          actual_parameters: null, task_id: null, provider_task_id: null, result_url: null, error: null,
+          failed_stage: null, created_at: null, updated_at: null } });
+      }),
+    );
+    render(<CurrentNode />);
+    await waitFor(() => expect(capabilitiesLoaded).toBe(true));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(posted).not.toBeNull());
+    expect(posted!.draft.references).toEqual([
+      expect.objectContaining({ image_id: 'manual', url: '/manual.png' }),
+      expect.objectContaining({ image_id: expect.stringContaining('source'), url: expect.stringContaining('connected.png') }),
+    ]);
+    expect(posted!.draft.segments[0].first_frame).toBeNull();
+    expect(posted!.draft.segments[0].last_frame).toBeNull();
+    await waitFor(() => expect(nodeData().activeAttemptId).toBe('wire-attempt'));
+  });
+
+  it('switches card segment without rewriting another prompt', () => {
+    const draft = createDirectorDraft('first');
+    draft.segments.push({ ...draft.segments[0], id: 'second', prompt: 'second prompt' });
+    useCanvasStore.getState().updateNodeData('director', { draft });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: '片段 2' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '当前片段提示词' }), { target: { value: 'revised second' } });
+    expect(nodeData().visibleSegmentId).toBe('second');
+    expect(nodeData().draft.segments.map((segment) => segment.prompt)).toEqual(['', 'revised second']);
+  });
+
+  it('keeps the first frame when switching back to Ref', () => {
+    const draft = createDirectorDraft('first');
+    draft.segments[0].firstFrame = { imageId: 'frame', url: '/frame.png' };
+    useCanvasStore.getState().updateNodeData('director', { draft, activeInputMode: 'frames' });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().activeInputMode).toBe('ref');
+    expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('frame');
+    expect(screen.getByText('已保留，当前不参与生成')).toBeInTheDocument();
+  });
+
+  it('switches to frames when a first frame is selected without references', async () => {
+    const response = (data: unknown) => HttpResponse.json({ ok: true, data });
+    server.use(http.get('*/api/v1/projects/demo/freezone/video/character-library', () => response(library)),
+      http.post('*/api/v1/projects/demo/freezone/video/asset-library/sync-from-mainline', () => response(library)));
+    render(<CurrentNode />);
+    fireEvent.click(within(screen.getByRole('group', { name: '首帧' })).getByRole('button', { name: '选择图片' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看Hero的图片' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Hero 基础图 基础肖像' }));
+    fireEvent.click(screen.getByRole('button', { name: '确定' }));
+    await waitFor(() => expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('base'));
+    expect(nodeData().activeInputMode).toBe('frames');
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('base');
+  });
+
+  it('asks for a target before dropping onto an occupied card', () => {
+    const draft = createDirectorDraft('first');
+    draft.references = [{ imageId: 'reference', url: '/reference.png' }];
+    useCanvasStore.getState().updateNodeData('director', { draft, activeInputMode: 'ref' });
+    render(<CurrentNode />);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), { dataTransfer: { files: [new File(['image'], 'new.png', { type: 'image/png' })] } });
+    expect(screen.getByRole('dialog', { name: '选择图片放置目标' })).toBeInTheDocument();
+    expect(nodeData().draft.references).toHaveLength(1);
+  });
+
+  it('does not pass a blank-card image drop to the canvas parent', () => {
+    const parentDrop = vi.fn();
+    render(<div onDrop={parentDrop}><CurrentNode /></div>);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), {
+      dataTransfer: { files: [new File(['image'], 'ref.png', { type: 'image/png' })] },
+    });
+    expect(parentDrop).not.toHaveBeenCalled();
+  });
+
+  it('shows a local error for a non-image dropped on blank card space', () => {
+    const parentDrop = vi.fn();
+    render(<div onDrop={parentDrop}><CurrentNode /></div>);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), {
+      dataTransfer: { files: [new File(['text'], 'notes.txt', { type: 'text/plain' })] },
+    });
+    expect(parentDrop).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('请选择图片文件');
   });
 
   it('selects character variants, submits ordered raw segments, then shows optimized history and video', async () => {
@@ -124,7 +256,7 @@ describe('Director real component flow', () => {
       ['base', 'hero', null], ['costume', 'hero', 'coat'],
     ]);
     fireEvent.click(screen.getByRole('button', { name: '添加分段' }));
-    const editors = screen.getAllByRole('textbox');
+    const editors = screen.getAllByRole('textbox').slice(-2);
     fireEvent.change(editors[0], { target: { value: 'Opening original' } });
     fireEvent.change(editors[1], { target: { value: 'Closing original' } });
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));

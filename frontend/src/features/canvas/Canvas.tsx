@@ -56,6 +56,8 @@ import {
   isStoryboardGroupNode,
 } from '@/features/canvas/domain/canvasNodes';
 import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
+import { setDirectorInputMode } from '@/features/canvas/domain/videoDirectorInputs';
+import { readDirectorBinding, type DirectorBinding } from '@/features/canvas/domain/videoDirectorBindings';
 import {
   CANVAS_ASSET_DRAG_MIME,
   readAssetDragPayload,
@@ -102,6 +104,7 @@ import { embedStoryboardImageMetadata } from '@/commands/image';
 import { nodeTypes as canvasNodeTypes } from './nodes';
 import { edgeTypes as canvasEdgeTypes } from './edges';
 import { NodeSelectionMenu } from './NodeSelectionMenu';
+import { DirectorConnectionTargetDialog } from './director/DirectorConnectionTargetDialog';
 import { SelectedNodeOverlay } from './ui/SelectedNodeOverlay';
 import { MultiSelectionToolbar } from './ui/MultiSelectionToolbar';
 import {
@@ -973,6 +976,9 @@ export function Canvas({
 
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
+  const [pendingDirectorConnections, setPendingDirectorConnections] = useState<Connection[]>([]);
+  const pendingDirectorConnection = pendingDirectorConnections[0] ?? null;
+  const [directorConnectionError, setDirectorConnectionError] = useState('');
   // 连线可见性：隐藏时只给 ReactFlow 的边打 `hidden`，真实 edges 一动不动（见
   // edgeVisibilityStore）。持久化/自动布局/导出全部照用 store 里的真实连线。
   const edgesHidden = useEdgeVisibilityStore((state) => state.hidden);
@@ -1721,6 +1727,15 @@ export function Canvas({
 
   const connectGraphNodes = useCallback(
     (connection: Connection, explicitSkill?: SkillDefinition | null): void => {
+      const currentNodes = useCanvasStore.getState().nodes;
+      const target = currentNodes.find((node) => node.id === connection.target);
+      const source = currentNodes.find((node) => node.id === connection.source);
+      if (target?.type === CANVAS_NODE_TYPES.videoDirector && source &&
+        isUpstreamConnectionAllowed(source.type, target.type)) {
+        setDirectorConnectionError('');
+        setPendingDirectorConnections((queued) => [...queued, connection]);
+        return;
+      }
       if (connectSkillRoleBinding(connection, explicitSkill)) {
         return;
       }
@@ -1728,6 +1743,45 @@ export function Canvas({
     },
     [connectNodes, connectSkillRoleBinding],
   );
+
+  const confirmDirectorConnection = useCallback((slot: DirectorBinding) => {
+    if (!pendingDirectorConnection?.source || !pendingDirectorConnection.target) return;
+    const { source, target } = pendingDirectorConnection;
+    const current = useCanvasStore.getState();
+    const director = current.nodes.find((node) => node.id === target);
+    const image = current.nodes.find((node) => node.id === source);
+    if (!director || director.type !== CANVAS_NODE_TYPES.videoDirector || !image ||
+      !isUpstreamConnectionAllowed(image.type, director.type)) {
+      setPendingDirectorConnections((queued) => queued.slice(1));
+      return;
+    }
+    if (slot.kind === 'reference' && current.edges.some((edge) => edge.source === source && edge.target === target &&
+      readDirectorBinding(edge)?.kind === 'reference')) {
+      setDirectorConnectionError(t('node.videoDirector.connectionTarget.alreadyBound'));
+      return;
+    }
+    const edgeId = current.addEdgeWithData(source, target, { edgeKind: 'videoDirectorImage', slot }, { id: crypto.randomUUID() });
+    if (!edgeId) {
+      setDirectorConnectionError(t('node.videoDirector.connectionTarget.connectionFailed'));
+      return;
+    }
+    const latest = useCanvasStore.getState().nodes.find((node) => node.id === target);
+    if (latest?.type === CANVAS_NODE_TYPES.videoDirector) {
+      const next = setDirectorInputMode(latest.data as VideoDirectorNodeData, slot.kind === 'reference' ? 'ref' : 'frames');
+      if (next !== latest.data) useCanvasStore.getState().updateNodeData(target, next);
+    }
+    setPendingDirectorConnections((queued) => queued.slice(1));
+    setDirectorConnectionError('');
+    scheduleCanvasPersist(0);
+  }, [pendingDirectorConnection, scheduleCanvasPersist, t]);
+
+  useEffect(() => {
+    if (pendingDirectorConnection && (!nodes.some((node) => node.id === pendingDirectorConnection.source) ||
+      !nodes.some((node) => node.id === pendingDirectorConnection.target))) {
+      setPendingDirectorConnections((queued) => queued.slice(1));
+      setDirectorConnectionError('');
+    }
+  }, [nodes, pendingDirectorConnection]);
 
   const bindSingleBeatContextInput = useCallback(
     (skillNodeId: string, skill: SkillDefinition) => {
@@ -4604,6 +4658,17 @@ export function Canvas({
         />
         <SnapAlignGuides />
       </ReactFlow>
+
+      {pendingDirectorConnection && nodes.find((node) => node.id === pendingDirectorConnection.target)?.type === CANVAS_NODE_TYPES.videoDirector &&
+        <DirectorConnectionTargetDialog
+          sourceId={pendingDirectorConnection.source}
+          target={nodes.find((node) => node.id === pendingDirectorConnection.target)!}
+          nodes={nodes}
+          edges={edges}
+          error={directorConnectionError}
+          onSelect={confirmDirectorConnection}
+          onCancel={() => { setPendingDirectorConnections((queued) => queued.slice(1)); setDirectorConnectionError(''); }}
+        />}
 
       {marqueeSelectionRect && (
         <div

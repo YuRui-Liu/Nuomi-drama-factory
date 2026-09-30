@@ -15,6 +15,7 @@ vi.mock('@/api/videoDirector', () => ({
 
 const draft = createDirectorDraft('s1');
 draft.segments[0].prompt = 'Original';
+draft.references = [{ imageId: 'manual', url: '/manual.png' }];
 const attempt = (id = 'a1'): DirectorAttempt => ({ id, projectId: 'demo', canvasId: 'canvas', nodeId: 'director',
   requestId: 'req', parentAttemptId: null, revision: 0, snapshot: structuredClone(draft), stage: 'optimizing',
   optimized: null, rulesHash: null, referenceLimit: 5, workflowId: null, workflowProfileId: null,
@@ -24,9 +25,16 @@ const attempt = (id = 'a1'): DirectorAttempt => ({ id, projectId: 'demo', canvas
 function setNode(data: Partial<VideoDirectorNodeData> = {}) {
   useCanvasStore.setState({ userEditsSinceHydrate: 0, nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
     data: { displayName: 'Director', draft: structuredClone(draft), activeAttemptId: null,
-      videoUrl: null, resultRevision: null, pendingSubmission: null, ...data } }] as never });
+      videoUrl: null, resultRevision: null, pendingSubmission: null, ...data } }], edges: [] } as never);
 }
 const nodeData = () => useCanvasStore.getState().nodes[0].data as VideoDirectorNodeData;
+function connectSource(url: string | null, slot: { kind: 'reference' } | { kind: 'firstFrame'; segmentId: string }) {
+  useCanvasStore.setState((state) => ({
+    nodes: [...state.nodes.filter((node) => node.id !== 'source'), { id: 'source', type: CANVAS_NODE_TYPES.upload,
+      position: { x: 0, y: 0 }, data: { imageUrl: url } }],
+    edges: [{ id: 'source-director', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage', slot } }],
+  } as never));
+}
 function useTask() {
   const data = useCanvasStore((state) => state.nodes[0].data as VideoDirectorNodeData);
   return useVideoDirectorTask('director', data);
@@ -38,9 +46,9 @@ beforeEach(() => {
   localStorage.clear();
   window.history.replaceState({}, '', '/projects/demo/freezone?canvas=canvas');
   setNode();
-  vi.mocked(api.getDirectorCapabilities).mockResolvedValue({ models: [], referenceLimit: 5, effectiveReferenceLimit: 5,
+  vi.mocked(api.getDirectorCapabilities).mockResolvedValue({ models: [{ id: 'minimax-h3', label: 'MiniMax H3', adapter: 'h3', referenceAdapter: 'h3_ref' }], referenceLimit: 5, effectiveReferenceLimit: 5,
     configuredReferenceLimit: 5, fps: 24, frameStep: 17, frameOffset: 5,
-    params: { resolution: [], aspectRatio: [] }, sizes: [], modes: [] });
+    params: { resolution: ['720p'], aspectRatio: ['9:16'] }, sizes: [], modes: [] });
   vi.mocked(api.listDirectorAttempts).mockResolvedValue([]);
   vi.mocked(api.getDirectorAttempt).mockResolvedValue(attempt());
   vi.mocked(api.createDirectorAttempt).mockReset();
@@ -48,6 +56,124 @@ beforeEach(() => {
 });
 
 describe('video director task lifecycle', () => {
+  it('freezes only the active image route when both routes have saved images', async () => {
+    const mixed = structuredClone(draft);
+    mixed.segments[0].firstFrame = { imageId: 'first', url: '/first.png' };
+    setNode({ draft: mixed, activeInputMode: 'ref' });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result, unmount } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.references).toEqual(mixed.references);
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.segments[0].firstFrame).toBeNull();
+    expect(vi.mocked(api.createDirectorAttempt).mock.calls[0][4].segments[0].firstFrame).toBeNull();
+
+    unmount();
+    localStorage.clear();
+    setNode({ draft: mixed, activeInputMode: 'frames' });
+    const frames = renderHook(useTask);
+    await waitFor(() => expect(frames.result.current.capabilities).not.toBeNull());
+    act(() => frames.result.current.generate());
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.references).toEqual([]);
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.segments[0].firstFrame).toEqual(mixed.segments[0].firstFrame);
+  });
+
+  it('reads the latest connected image at click time and freezes it through later source changes', async () => {
+    connectSource('/old.png', { kind: 'reference' });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => connectSource('/new.png', { kind: 'reference' }));
+    act(() => result.current.generate());
+    const frozen = nodeData().pendingSubmission?.frozenDraftSnapshot;
+    expect(frozen?.references.map((image) => image.url)).toContain('/new.png');
+    expect(frozen?.references.map((image) => image.url)).not.toContain('/old.png');
+    act(() => connectSource('/later.png', { kind: 'reference' }));
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot).toEqual(frozen);
+    expect(vi.mocked(api.createDirectorAttempt).mock.calls[0][4]).toEqual(frozen);
+  });
+
+  it('blocks a missing active connected source even when a manual image is valid', async () => {
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors.references).toBe('Connected reference image is unavailable');
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('reports active binding errors before draft validation errors', async () => {
+    const invalid = structuredClone(draft);
+    invalid.modelId = 'retired-model';
+    invalid.segments[0].prompt = '';
+    setNode({ draft: invalid, activeInputMode: 'ref' });
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors).toEqual({ references: 'Connected reference image is unavailable' });
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not let a stale hook submit into a new canvas with the same node ID', async () => {
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    const oldGenerate = result.current.generate;
+    window.history.replaceState({}, '', '/projects/demo/freezone?canvas=another-canvas');
+    setNode();
+    act(() => oldGenerate());
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not write a journal or pending state when canvas changes during snapshot creation', async () => {
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    vi.spyOn(crypto, 'randomUUID').mockImplementationOnce(() => {
+      window.history.replaceState({}, '', '/projects/demo/freezone?canvas=another-canvas');
+      setNode();
+      return '00000000-0000-4000-8000-000000000001';
+    });
+    act(() => result.current.generate());
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('clears an old binding field error when its source is repaired without a draft revision', async () => {
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors.references).toBe('Connected reference image is unavailable');
+    const revision = nodeData().draft.revision;
+    act(() => connectSource('/repaired.png', { kind: 'reference' }));
+    await waitFor(() => expect(result.current.fieldErrors).toEqual({}));
+    expect(nodeData().draft.revision).toBe(revision);
+  });
+
+  it('clears an old binding field error when its edge is removed', async () => {
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors.references).toBe('Connected reference image is unavailable');
+    act(() => useCanvasStore.setState({ edges: [] }));
+    await waitFor(() => expect(result.current.fieldErrors).toEqual({}));
+  });
+
+  it('ignores a missing connected source on the inactive route', async () => {
+    connectSource(null, { kind: 'firstFrame', segmentId: 's1' });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(nodeData().pendingSubmission).not.toBeNull();
+    expect(result.current.fieldErrors).toEqual({});
+  });
   it('ignores an old history response after switching projects with the same node ID', async () => {
     let resolveOldList!: (value: DirectorAttempt[]) => void;
     vi.mocked(api.listDirectorAttempts).mockImplementationOnce(() => new Promise((resolve) => { resolveOldList = resolve; }));
@@ -83,7 +209,8 @@ describe('video director task lifecycle', () => {
     let rejectOld!: (reason: Error) => void;
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((_, reject) => { rejectOld = reject; }));
     const { result } = renderHook(useTask);
-    act(() => result.current.generate(draft));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
     act(() => useCanvasStore.getState().updateNodeData('director', { pendingSubmission: {
       requestId: 'newer-request', frozenDraftSnapshot: structuredClone(draft),
     } }));
@@ -98,7 +225,8 @@ describe('video director task lifecycle', () => {
     let rejectOld!: (reason: Error) => void;
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((_, reject) => { rejectOld = reject; }));
     const { result } = renderHook(useTask);
-    act(() => result.current.generate(draft));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
     act(() => useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, revision: 2 } }));
     await act(async () => rejectOld(new ApiError('old error', 422,
       { detail: { field: 'segments[0].prompt', message: 'old error' } })));
@@ -122,7 +250,8 @@ describe('video director task lifecycle', () => {
     });
     vi.mocked(api.createDirectorAttempt).mockImplementation(async () => { events.push('post'); return attempt(); });
     const { result } = renderHook(useTask);
-    act(() => result.current.generate(draft));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
     await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
     unsubscribe();
     expect(events).toEqual(['pendingPersist', 'post', 'acceptedPersist', 'activePatch']);
@@ -131,7 +260,8 @@ describe('video director task lifecycle', () => {
   it('recovers a journaled request when canvas autosave missed the pending patch', async () => {
     vi.mocked(api.createDirectorAttempt).mockImplementationOnce(() => new Promise(() => undefined));
     const first = renderHook(useTask);
-    act(() => first.result.current.generate(draft));
+    await waitFor(() => expect(first.result.current.capabilities).not.toBeNull());
+    act(() => first.result.current.generate());
     const originalId = nodeData().pendingSubmission?.requestId;
     expect(originalId).toBeTruthy();
     first.unmount();
@@ -146,7 +276,8 @@ describe('video director task lifecycle', () => {
   it('recovers an accepted attempt ID when reload happens before canvas autosave', async () => {
     vi.mocked(api.createDirectorAttempt).mockResolvedValue(attempt());
     const first = renderHook(useTask);
-    act(() => first.result.current.generate(draft));
+    await waitFor(() => expect(first.result.current.capabilities).not.toBeNull());
+    act(() => first.result.current.generate());
     await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
     first.unmount();
     setNode();
@@ -179,7 +310,8 @@ describe('video director task lifecycle', () => {
   it('keeps an accepted journal through a local remount before canvas autosave', async () => {
     vi.mocked(api.createDirectorAttempt).mockResolvedValue(attempt());
     const first = renderHook(useTask);
-    act(() => first.result.current.generate(draft));
+    await waitFor(() => expect(first.result.current.capabilities).not.toBeNull());
+    act(() => first.result.current.generate());
     await waitFor(() => expect(nodeData().activeAttemptId).toBe('a1'));
     first.unmount();
     const remounted = renderHook(useTask);
@@ -195,7 +327,8 @@ describe('video director task lifecycle', () => {
     const storageOwner = Object.prototype.hasOwnProperty.call(localStorage, 'setItem') ? localStorage : Object.getPrototypeOf(localStorage) as Storage;
     vi.spyOn(storageOwner, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
     const { result } = renderHook(useTask);
-    act(() => result.current.generate(draft));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
     expect(api.createDirectorAttempt).not.toHaveBeenCalled();
     expect(nodeData().pendingSubmission).toBeNull();
     await waitFor(() => expect(result.current.error).toContain('storage unavailable'));
@@ -239,7 +372,8 @@ describe('video director task lifecycle', () => {
     let resolve!: (value: DirectorAttempt) => void;
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise((done) => { resolve = done; }));
     const { result } = renderHook(useTask);
-    act(() => { result.current.generate(draft); result.current.generate(draft); });
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => { result.current.generate(); result.current.generate(); });
     const pending = nodeData().pendingSubmission;
     expect(pending?.frozenDraftSnapshot.segments[0].prompt).toBe('Original');
     expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
@@ -352,7 +486,7 @@ describe('video director task lifecycle', () => {
     vi.mocked(api.getDirectorAttempt).mockResolvedValue(unknown);
     const { result } = renderHook(useTask);
     await waitFor(() => expect(api.getDirectorAttempt).toHaveBeenCalledWith('demo', 'unknown'));
-    act(() => result.current.generate(draft));
+    act(() => result.current.generate());
     expect(api.resumeDirectorAttempt).not.toHaveBeenCalled();
     expect(api.retryDirectorAttempt).not.toHaveBeenCalled();
     expect(api.createDirectorAttempt).not.toHaveBeenCalled();
@@ -362,7 +496,8 @@ describe('video director task lifecycle', () => {
     vi.mocked(api.createDirectorAttempt).mockRejectedValue(new ApiError('bad frame', 422,
       { detail: { field: 'segments[0].first_frame', segment_id: 's1', message: 'bad frame' } }));
     const { result } = renderHook(useTask);
-    act(() => result.current.generate(draft));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
     await waitFor(() => expect(result.current.fieldErrors['segments[0].first_frame']).toBe('bad frame'));
     expect(nodeData().pendingSubmission).toBeNull();
   });

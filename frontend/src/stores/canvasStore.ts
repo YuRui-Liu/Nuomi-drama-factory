@@ -49,6 +49,7 @@ import {
 } from '@/features/canvas/domain/nodeRegistry';
 import { EXPORT_RESULT_DISPLAY_NAME } from '@/features/canvas/domain/nodeDisplay';
 import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
+import { readDirectorBinding, sameDirectorFrameSlot, type DirectorBinding } from '@/features/canvas/domain/videoDirectorBindings';
 import {
   type ViewportBookmark,
   type ViewportBookmarks,
@@ -127,6 +128,8 @@ export type CanvasMutationSource =
 interface CanvasState {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
+  /** In-memory generation for bulk canvas replacement; never serialized. */
+  canvasHydrationEpoch: number;
   /**
    * Counts user-driven mutations since the last hydrate (or canvas switch). A
    * value of 0 means "the user has not touched this canvas yet", which lets
@@ -556,8 +559,23 @@ function dedupeReferenceInputEdges(edges: CanvasEdge[], nodeMap: ReadonlyMap<str
   return edges.filter((_edge, index) => !droppedIndexes.has(index));
 }
 
+function validateDirectorEdgeCandidate(
+  candidate: CanvasEdge,
+  targetNode: CanvasNode,
+  acceptedEdges: CanvasEdge[],
+): { slot: DirectorBinding; conflict: CanvasEdge | null } | null {
+  const slot = readDirectorBinding(candidate);
+  if (!slot) return null;
+  if (slot.kind !== 'reference') {
+    const draft = (targetNode.data as VideoDirectorNodeData).draft;
+    if (!draft?.segments.some((segment) => segment.id === slot.segmentId)) return null;
+  }
+  return { slot, conflict: acceptedEdges.find((edge) => sameDirectorFrameSlot(edge, candidate)) ?? null };
+}
+
 function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): CanvasEdge[] {
   const nodeMap = new Map(nodes.map((node) => [node.id, node] as const));
+  const acceptedDirectorEdges: CanvasEdge[] = [];
 
   const normalizedEdges = rawEdges
     .filter((edge) => {
@@ -573,7 +591,13 @@ function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): C
         return false;
       }
       // 丢弃违反上游类型规则的历史遗留边（如音频←非文本）。
-      return isUpstreamConnectionAllowed(sourceNode.type, targetNode.type);
+      if (!isUpstreamConnectionAllowed(sourceNode.type, targetNode.type)) return false;
+      if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
+        const validation = validateDirectorEdgeCandidate(edge, targetNode, acceptedDirectorEdges);
+        if (!validation || validation.conflict) return false;
+        acceptedDirectorEdges.push(edge);
+      }
+      return true;
     })
     .map((edge) => ({
       ...edge,
@@ -596,6 +620,8 @@ function normalizeEdgesWithNodes(rawEdges: CanvasEdge[], nodes: CanvasNode[]): C
       dedupedEdges.push(edge);
       continue;
     }
+    if (nodeMap.get(edge.target)?.type === CANVAS_NODE_TYPES.videoDirector ||
+      nodeMap.get(dedupedEdges[existingIndex].target)?.type === CANVAS_NODE_TYPES.videoDirector) continue;
     dedupedEdges[existingIndex] = edge;
   }
   return dedupedEdges;
@@ -1232,6 +1258,7 @@ function createDefaultStoryboardExportOptions(): StoryboardExportOptions {
 export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodes: [],
   edges: [],
+  canvasHydrationEpoch: 0,
   userEditsSinceHydrate: 0,
   lastMutationSource: null,
   pendingClearIntent: false,
@@ -1383,6 +1410,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       // 3D 世界节点只用一张上游图生成，因此入边唯一：已有其它上游时拒绝新连接。
       // 这是所有连线路径(手动拖线 / 拖到空白生成节点)的共同收口处。
       const targetNode = state.nodes.find((node) => node.id === connection.target);
+      if (targetNode?.type === CANVAS_NODE_TYPES.videoDirector) return {};
       if (
         targetNode?.type === CANVAS_NODE_TYPES.threeDWorld &&
         state.edges.some(
@@ -1437,9 +1465,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setCanvasData: (nodes, edges, history) => {
     const normalizedCanvas = normalizeCanvasData(nodes, edges);
 
-    set({
+    set((state) => ({
       nodes: normalizedCanvas.nodes,
       edges: normalizedCanvas.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: null,
       activeToolDialog: null,
       history: normalizeHistory(history),
@@ -1449,7 +1478,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       userEditsSinceHydrate: 0,
       lastMutationSource: null,
       pendingClearIntent: false,
-    });
+    }));
   },
 
   applyCanvasDataEdit: (nodes, edges) => {
@@ -1465,6 +1494,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return {
         nodes: normalizedCanvas.nodes,
         edges: normalizedCanvas.edges,
+        canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
         selectedNodeId: null,
         activeToolDialog: null,
         history: {
@@ -1480,9 +1510,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   hydrateCanvasDraft: (draft) => {
     const normalizedCanvas = normalizeCanvasData(draft.nodes, draft.edges);
 
-    set({
+    set((state) => ({
       nodes: normalizedCanvas.nodes,
       edges: normalizedCanvas.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: null,
       activeToolDialog: null,
       history: normalizeHistory(draft.history ?? undefined),
@@ -1490,7 +1521,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       userEditsSinceHydrate: draft.mutation.userEditsSinceHydrate,
       lastMutationSource: draft.mutation.lastMutationSource,
       pendingClearIntent: draft.mutation.pendingClearIntent,
-    });
+    }));
   },
 
   setViewportState: (viewport) => {
@@ -1943,6 +1974,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     if (!sourceNode || !targetNode) {
       return null;
     }
+    if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) return null;
     if (!nodeHasSourceHandle(sourceNode.type) || !nodeHasTargetHandle(targetNode.type)) {
       return null;
     }
@@ -1989,18 +2021,38 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return null;
     }
 
-    const edgeId = options?.id || `e-${source}-${target}-${String(data.edgeKind || 'data')}`;
+    const requestedSourceHandle = normalizeHandleId(options?.sourceHandle) ?? 'source';
+    const requestedTargetHandle = normalizeHandleId(options?.targetHandle) ?? 'target';
+    const isSameDirectorRequest = (edge: CanvasEdge) => edge.source === source && edge.target === target &&
+      JSON.stringify(edge.data) === JSON.stringify(data) &&
+      (options?.id === undefined || options.id === edge.id) &&
+      (edge.sourceHandle ?? 'source') === requestedSourceHandle &&
+      (edge.targetHandle ?? 'target') === requestedTargetHandle;
+    let directorSlot: DirectorBinding | null = null;
+    if (targetNode.type === CANVAS_NODE_TYPES.videoDirector) {
+      const candidate = { source, target, data } as CanvasEdge;
+      const validation = validateDirectorEdgeCandidate(candidate, targetNode, state.edges);
+      if (!validation) return null;
+      directorSlot = validation.slot;
+      if (validation.conflict) {
+        return isSameDirectorRequest(validation.conflict) ? validation.conflict.id : null;
+      }
+    }
+
+    const edgeId = options?.id || (directorSlot
+      ? `e-${source}-${target}-videoDirectorImage-${directorSlot.kind}${directorSlot.kind === 'reference' ? '' : `-${directorSlot.segmentId}`}`
+      : `e-${source}-${target}-${String(data.edgeKind || 'data')}`);
     const existing = state.edges.find((edge) => edge.id === edgeId);
     if (existing) {
-      return edgeId;
+      return directorSlot && !isSameDirectorRequest(existing) ? null : edgeId;
     }
 
     const newEdge: CanvasEdge = {
       id: edgeId,
       source,
       target,
-      sourceHandle: normalizeHandleId(options?.sourceHandle) ?? 'source',
-      targetHandle: normalizeHandleId(options?.targetHandle) ?? 'target',
+      sourceHandle: requestedSourceHandle,
+      targetHandle: requestedTargetHandle,
       type: 'disconnectableEdge',
       data,
     };
@@ -3752,6 +3804,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({
       nodes: target.nodes,
       edges: target.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: resolveSelectedNodeId(state.selectedNodeId, target.nodes),
       activeToolDialog: resolveActiveToolDialog(state.activeToolDialog, target.nodes),
       history: {
@@ -3784,6 +3837,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({
       nodes: target.nodes,
       edges: target.edges,
+      canvasHydrationEpoch: state.canvasHydrationEpoch + 1,
       selectedNodeId: resolveSelectedNodeId(state.selectedNodeId, target.nodes),
       activeToolDialog: resolveActiveToolDialog(state.activeToolDialog, target.nodes),
       history: {
