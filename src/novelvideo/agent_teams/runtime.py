@@ -102,10 +102,19 @@ def freeze_task_methods(ctx, task_type, payload, route):
     from novelvideo.text_task_runtime.models import AgentTaskRoute
     path = Path(ctx.state_dir) / 'agent-team.db'
     needed = task_methods(task_type)
-    if not needed or not path.is_file():
+    expected_active = payload.get('expected_agent_team_active_revision')
+    if expected_active is not None and (type(expected_active) is not int or expected_active < 0):
+        raise ValueError('expected active revision must be a nonnegative integer')
+    if (not needed and expected_active is None) or not path.is_file():
+        if expected_active:
+            from .store import RevisionConflict
+            raise RevisionConflict('team active revision changed')
         return []
     service = AgentTeamService(AgentTeamStore(path), None, '', connected_subtasks)
     active = service.store.get_binding(ctx.project_id)
+    if expected_active is not None and (active['active_revision'] if active else 0) != expected_active:
+        from .store import RevisionConflict
+        raise RevisionConflict('team active revision changed')
     if active is None:
         return []
     # Payload fingerprints identify submitted references, not the mutable content
