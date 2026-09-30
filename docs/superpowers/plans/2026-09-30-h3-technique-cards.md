@@ -47,10 +47,10 @@
 
 ### 任务 4：前端选择和前后端校验一致
 
-- [ ] 写失败测试：选择卡、复制/删除/重排/刷新草稿保持绑定；不兼容项可见但不可选，已选失配保留并禁止生成；目录读取失败允许无卡生成。
-- [ ] 传输层补齐 `technique` wire 字段及目录读取；在面板读取目录并用 `alignDirectorDuration` 计算与后端一致的模式/时长。
-- [ ] `TechniqueCardPicker` 展示标题、效果、来源、适用范围和禁用理由，支持清除选择；接入片段编辑器与历史视图。
-- [ ] 运行 director 前端测试、`tsc --noEmit`、Vite 构建，提交本任务。
+- [x] 写失败测试：选择卡、复制/删除/重排/刷新草稿保持绑定；不兼容项可见但不可选，已选失配保留并禁止生成；目录读取失败允许无卡生成。
+- [x] 传输层补齐 `technique` wire 字段及目录读取；在面板读取目录并用 `alignDirectorDuration` 计算与后端一致的模式/时长。
+- [x] `TechniqueCardPicker` 展示标题、效果、来源、适用范围和禁用理由，支持清除选择；接入片段编辑器与历史视图。
+- [x] 运行 director 前端测试、类型检查和 Vite 构建，提交本任务。`tsc -p tsconfig.app.json --noEmit` 仅剩与本任务无关的 `team-studio.test.tsx` 缺失 `../studio-context`。
 
 ### 任务 5：端到端契约与离线质量评估准备
 

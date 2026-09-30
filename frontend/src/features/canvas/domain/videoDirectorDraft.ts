@@ -5,7 +5,8 @@ function cloneImage(image: DirectorImage | null): DirectorImage | null {
 }
 
 function cloneSegment(segment: DirectorSegment): DirectorSegment {
-  return { ...segment, firstFrame: cloneImage(segment.firstFrame), lastFrame: cloneImage(segment.lastFrame) };
+  return { ...segment, firstFrame: cloneImage(segment.firstFrame), lastFrame: cloneImage(segment.lastFrame),
+    technique: segment.technique ? { ...segment.technique } : null };
 }
 
 export function createDirectorDraft(firstSegmentId: string = crypto.randomUUID()): DirectorDraft {
@@ -16,7 +17,7 @@ export function createDirectorDraft(firstSegmentId: string = crypto.randomUUID()
     aspectRatio: '9:16',
     resolution: '720p',
     references: [],
-    segments: [{ id: firstSegmentId, prompt: '', durationSeconds: 5, firstFrame: null, lastFrame: null }],
+    segments: [{ id: firstSegmentId, prompt: '', durationSeconds: 5, firstFrame: null, lastFrame: null, technique: null }],
   };
 }
 
@@ -26,7 +27,8 @@ export function addSegment(draft: DirectorDraft, id: string, segment: Partial<Om
     ...draft,
     revision: draft.revision + 1,
     segments: [...draft.segments, { id, prompt: segment.prompt ?? '', durationSeconds: segment.durationSeconds ?? 5,
-      firstFrame: cloneImage(segment.firstFrame ?? null), lastFrame: cloneImage(segment.lastFrame ?? null) }],
+      firstFrame: cloneImage(segment.firstFrame ?? null), lastFrame: cloneImage(segment.lastFrame ?? null),
+      technique: segment.technique ? { ...segment.technique } : null }],
   };
 }
 
@@ -58,7 +60,8 @@ export function updateSegment(draft: DirectorDraft, id: string, patch: Partial<O
     revision: draft.revision + 1,
     segments: draft.segments.map((segment) => segment.id === id
       ? { ...segment, ...patch, firstFrame: patch.firstFrame === undefined ? segment.firstFrame : cloneImage(patch.firstFrame),
-          lastFrame: patch.lastFrame === undefined ? segment.lastFrame : cloneImage(patch.lastFrame) }
+          lastFrame: patch.lastFrame === undefined ? segment.lastFrame : cloneImage(patch.lastFrame),
+          technique: patch.technique === undefined ? segment.technique : patch.technique ? { ...patch.technique } : null }
       : segment),
   };
 }

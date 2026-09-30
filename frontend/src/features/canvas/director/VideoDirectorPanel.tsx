@@ -108,7 +108,8 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
                   className="h-20 w-20 rounded object-contain" />)}</div></div>}
         </section>
         <div className="space-y-3">{draft.segments.map((segment, index) => <DirectorSegmentEditor key={segment.id}
-          segment={segment} index={index} count={draft.segments.length} capabilities={capabilities} errors={errors}
+          segment={segment} effectiveSegment={effective.segments[index]} index={index} count={draft.segments.length} capabilities={capabilities} techniques={task.techniques}
+          hasReferences={effective.references.length > 0} errors={errors}
           effectiveFrames={{
             firstFrame: binding.errors[`segments[${index}].first_frame`] ? null : effective.segments[index]?.firstFrame ?? null,
             lastFrame: binding.errors[`segments[${index}].last_frame`] ? null : effective.segments[index]?.lastFrame ?? null,

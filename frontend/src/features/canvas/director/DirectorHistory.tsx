@@ -14,6 +14,13 @@ export function DirectorHistory({ attempts, activeId, onRetry, onRefresh }: { at
         <p>{tr('originalPrompt', '原始提示词')}：{attempt.snapshot.segments.map((segment) => segment.prompt).join(' / ')}</p>
         {attempt.optimized && <><p>{tr('optimizedPrompt', '优化提示词')}：{attempt.optimized.segments.map((segment) => segment.prompt).join(' / ')}</p>
           <p>{tr('route', '路线')}：{attempt.optimized.route} · {tr('profile', '配置')}：{attempt.optimized.profileId} v{attempt.optimized.profileVersion}</p></>}
+        {Object.entries(attempt.frozenTechniques ?? {}).map(([segmentId, frozen]) => <div key={segmentId} className="rounded border border-white/10 p-2">
+          <p>{tr('segment', '分段')} {segmentId} · {frozen.card.title} v{frozen.card.version} · {frozen.card.content_hash}</p>
+          <p>{frozen.card.summary}</p>
+          {frozen.card.sources?.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="mr-2 text-cyan-300">{source.credit}</a>)}
+          <p>{tr('optimizedPrompt', '优化提示词')}：{attempt.optimized?.segments.find((segment) => segment.segmentId === segmentId)?.prompt ?? '—'}</p>
+          <pre className="overflow-auto whitespace-pre-wrap">{JSON.stringify(frozen.projection, null, 2)}</pre>
+        </div>)}
         <p>{tr('workflow', '工作流')}：{attempt.workflowId ?? '—'} · {attempt.workflowProfileId ?? '—'} v{attempt.workflowProfileVersion ?? '—'}</p>
         {attempt.actualParameters && <pre className="overflow-auto whitespace-pre-wrap">{JSON.stringify(attempt.actualParameters, null, 2)}</pre>}
         {attempt.resultUrl && <a href={attempt.resultUrl} target="_blank" rel="noreferrer" className="text-cyan-300">{tr('viewResult', '查看结果')}</a>}

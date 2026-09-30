@@ -41,10 +41,11 @@ export function directorSubmissionFingerprint(draft: DirectorDraft): string {
     aspectRatio: draft.aspectRatio,
     resolution: draft.resolution,
     references: draft.references.map(fingerprintImage),
-    segments: draft.segments.map(({ id, prompt, durationSeconds, firstFrame, lastFrame }) => ({
+    segments: draft.segments.map(({ id, prompt, durationSeconds, firstFrame, lastFrame, technique }) => ({
       id, prompt, durationSeconds,
       firstFrame: fingerprintImage(firstFrame),
       lastFrame: fingerprintImage(lastFrame),
+      technique: technique ? { id: technique.id, version: technique.version } : null,
     })),
   });
 }

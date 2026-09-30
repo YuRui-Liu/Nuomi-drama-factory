@@ -209,6 +209,7 @@ export interface DirectorSegment {
   durationSeconds: number;
   firstFrame: DirectorImage | null;
   lastFrame: DirectorImage | null;
+  technique?: { id: string; version: string } | null;
 }
 
 export interface DirectorDraft {
@@ -251,6 +252,7 @@ export interface DirectorAttempt {
   snapshot: DirectorDraft;
   stage: string;
   optimized: OptimizedDirector | null;
+  frozenTechniques?: Record<string, { card: import('@/api/videoDirector').TechniqueCard; projection: Record<string, unknown> }>;
   rulesHash: string | null;
   referenceLimit: number | null;
   workflowId: string | null;

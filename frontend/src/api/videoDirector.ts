@@ -14,6 +14,15 @@ export interface DirectorCapabilities {
   modes: { id: string; supported: boolean }[];
 }
 
+export interface TechniqueCard {
+  id: string; version: string; status: 'active' | 'retired'; title: string; summary: string;
+  category: string; intent: string; content_hash: string;
+  applicability: { modes: ('i2v' | 'fl2v' | 'ref_only')[]; min_duration_seconds: number;
+    max_duration_seconds: number; last_frame_constraint: 'required' | 'allowed' | 'forbidden' };
+  sources: { url: string; credit: string; source_type: string; checked_at: string; basis: string }[];
+}
+export interface DirectorTechniqueCatalog { catalogVersion: string; techniques: TechniqueCard[] }
+
 type Wire = Record<string, any>;
 const path = (project: string) => `projects/${encodeURIComponent(project)}/freezone/video-director`;
 
@@ -33,6 +42,7 @@ export function draftToWire(draft: DirectorDraft): Wire {
     references: draft.references.map(imageToWire), segments: draft.segments.map((segment) => ({
       id: segment.id, prompt: segment.prompt, duration_seconds: segment.durationSeconds,
       first_frame: imageToWire(segment.firstFrame), last_frame: imageToWire(segment.lastFrame),
+      technique: segment.technique ?? null,
     })) };
 }
 export function draftFromWire(draft: Wire): DirectorDraft {
@@ -41,7 +51,7 @@ export function draftFromWire(draft: Wire): DirectorDraft {
     references: (draft.references ?? []).map(imageFromWire).filter(Boolean) as DirectorImage[],
     segments: (draft.segments ?? []).map((segment: Wire) => ({ id: segment.id, prompt: segment.prompt,
       durationSeconds: segment.duration_seconds, firstFrame: imageFromWire(segment.first_frame),
-      lastFrame: imageFromWire(segment.last_frame) })) };
+      lastFrame: imageFromWire(segment.last_frame), technique: segment.technique ?? null })) };
 }
 function optimizedFromWire(data: Wire | null): OptimizedDirector | null {
   return data && { revision: data.revision, route: data.route, profileId: data.profile_id,
@@ -55,13 +65,17 @@ export function attemptFromWire(data: Wire): DirectorAttempt {
   return { id: data.id, projectId: data.project_id, canvasId: data.canvas_id, nodeId: data.node_id,
     requestId: data.request_id, parentAttemptId: data.parent_attempt_id ?? null,
     revision: data.revision, snapshot: draftFromWire(data.snapshot), stage: data.stage,
-    optimized: optimizedFromWire(data.optimized), rulesHash: data.rules_hash ?? null,
+    optimized: optimizedFromWire(data.optimized), frozenTechniques: data.frozen_techniques ?? {}, rulesHash: data.rules_hash ?? null,
     referenceLimit: data.reference_limit ?? null, workflowId: data.workflow_id ?? null,
     workflowProfileId: data.workflow_profile_id ?? null, workflowProfileVersion: data.workflow_profile_version ?? null,
     actualParameters: data.actual_parameters ?? null, taskId: data.task_id ?? null,
     providerTaskId: data.provider_task_id ?? null, resultUrl: data.result_url ?? null,
     error: data.error ?? null, failedStage: data.failed_stage ?? null,
     createdAt: data.created_at ?? null, updatedAt: data.updated_at ?? null };
+}
+export async function getDirectorTechniques(project: string): Promise<DirectorTechniqueCatalog> {
+  const d = await apiCall<{ catalog_version: string; techniques: TechniqueCard[] }>(`${path(project)}/techniques`);
+  return { catalogVersion: d.catalog_version, techniques: d.techniques };
 }
 export async function getDirectorCapabilities(project: string): Promise<DirectorCapabilities> {
   const d = await apiCall<Wire>(`${path(project)}/capabilities`);

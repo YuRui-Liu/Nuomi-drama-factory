@@ -9,7 +9,7 @@ import { ApiError } from '@/api/client';
 import { readDirectorJournal, writeDirectorJournal } from '@/features/canvas/director/directorSubmissionJournal';
 
 vi.mock('@/api/videoDirector', () => ({
-  getDirectorCapabilities: vi.fn(), listDirectorAttempts: vi.fn(), getDirectorAttempt: vi.fn(),
+  getDirectorCapabilities: vi.fn(), getDirectorTechniques: vi.fn(), listDirectorAttempts: vi.fn(), getDirectorAttempt: vi.fn(),
   createDirectorAttempt: vi.fn(), retryDirectorAttempt: vi.fn(), resumeDirectorAttempt: vi.fn(),
 }));
 
@@ -50,12 +50,36 @@ beforeEach(() => {
     configuredReferenceLimit: 5, fps: 24, frameStep: 17, frameOffset: 5,
     params: { resolution: ['720p'], aspectRatio: ['9:16'] }, sizes: [], modes: [] });
   vi.mocked(api.listDirectorAttempts).mockResolvedValue([]);
+  vi.mocked(api.getDirectorTechniques).mockResolvedValue({ catalogVersion: 'v1', techniques: [] });
   vi.mocked(api.getDirectorAttempt).mockResolvedValue(attempt());
   vi.mocked(api.createDirectorAttempt).mockReset();
   vi.mocked(api.resumeDirectorAttempt).mockResolvedValue(attempt());
 });
 
 describe('video director task lifecycle', () => {
+  it('blocks selected unknown cards centrally before writing a submission journal', async () => {
+    const selected = structuredClone(draft);
+    selected.segments[0].technique = { id: 'unknown', version: '1' };
+    setNode({ draft: selected });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    await waitFor(() => expect(result.current.techniques).toEqual([]));
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors['segments[0].technique']).toBe('techniqueUnknown');
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
+  it('allows the unselected baseline when catalog loading fails', async () => {
+    vi.mocked(api.getDirectorTechniques).mockRejectedValue(new Error('offline'));
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.techniqueError).toBe(true));
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.segments[0].technique).toBeNull();
+    expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
+  });
   it('freezes only the active image route when both routes have saved images', async () => {
     const mixed = structuredClone(draft);
     mixed.segments[0].firstFrame = { imageId: 'first', url: '/first.png' };

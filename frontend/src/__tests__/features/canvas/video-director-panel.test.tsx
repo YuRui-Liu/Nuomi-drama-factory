@@ -22,11 +22,26 @@ function makeData(): VideoDirectorNodeData {
   return { draft: createDirectorDraft('one'), activeAttemptId: null, videoUrl: null, resultRevision: null };
 }
 function task(overrides: Partial<ReturnType<typeof useVideoDirectorTask>> = {}): ReturnType<typeof useVideoDirectorTask> {
-  return { capabilities, attempts: [], error: '', fieldErrors: {}, generate: vi.fn(), recoverPending: vi.fn(),
+  return { capabilities, techniques: [], techniqueError: false, attempts: [], error: '', fieldErrors: {}, generate: vi.fn(), recoverPending: vi.fn(),
     retry: vi.fn(), refresh: vi.fn(), ...overrides };
 }
 
 describe('video director panel', () => {
+  it('shows a nested server technique error beside the selected card with segment context', () => {
+    const data = makeData();
+    data.draft.segments[0].technique = { id: 'ending', version: '1' };
+    const controller = task({ techniques: [{ id: 'ending', version: '1', title: '尾帧衔接', summary: '过渡',
+      status: 'active', category: 'ending', intent: 'transition', content_hash: 'hash', sources: [],
+      applicability: { modes: ['fl2v'], min_duration_seconds: 3, max_duration_seconds: 15,
+        last_frame_constraint: 'required' } }],
+      fieldErrors: { 'segments[0].technique.mode': 'ending@1: Technique does not support ref_only.' } });
+    render(<I18nextProvider i18n={zhI18n}><VideoDirectorPanel nodeId="director" data={data} task={controller}
+      onDraftChange={vi.fn()} onClose={vi.fn()} /></I18nextProvider>);
+    expect(screen.getByRole('alert')).toHaveTextContent('分段 1');
+    expect(screen.getByRole('alert')).toHaveTextContent('尾帧衔接');
+    expect(screen.getByRole('alert')).toHaveTextContent('模式');
+    expect(screen.getByRole('alert')).toHaveTextContent('ref_only');
+  });
   it('shows the connected first frame as read-only and identifies the saved disconnect fallback', () => {
     const data = makeData();
     data.activeInputMode = 'frames';

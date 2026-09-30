@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createDirectorAttempt, getDirectorAttempt, getDirectorCapabilities, listDirectorAttempts,
-  resumeDirectorAttempt, retryDirectorAttempt, type DirectorCapabilities } from '@/api/videoDirector';
+import { createDirectorAttempt, getDirectorAttempt, getDirectorCapabilities, getDirectorTechniques, listDirectorAttempts,
+  resumeDirectorAttempt, retryDirectorAttempt, type DirectorCapabilities, type TechniqueCard } from '@/api/videoDirector';
 import { CANVAS_NODE_TYPES, type DirectorAttempt, type VideoDirectorNodeData } from '../domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -39,6 +39,9 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const { project, canvas } = readUrl();
   const canvasId = canvas ?? 'default';
   const [capabilities, setCapabilities] = useState<DirectorCapabilities | null>(null);
+  const [techniques, setTechniques] = useState<TechniqueCard[] | null>(null);
+  const [techniqueError, setTechniqueError] = useState(false);
+  const techniqueCatalog = useRef<TechniqueCard[] | null>(null);
   const [attempts, setAttempts] = useState<DirectorAttempt[]>([]);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -175,7 +178,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     }
     bindingFieldErrors.current = {};
     const effective = projectDirectorDraft(binding.draft, mode);
-    const errors = validateDirectorDraft(effective, capabilities);
+    const errors = validateDirectorDraft(effective, capabilities, techniqueCatalog.current);
     setFieldErrors(errors);
     if (Object.keys(errors).length) return;
     setError('');
@@ -199,6 +202,23 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     updateNodeData(nodeId, { pendingSubmission });
     void submitPending(pendingSubmission);
   }, [project, canvasId, nodeId, submitPending, updateNodeData, attempts, capabilities]);
+
+  useEffect(() => {
+    let active = true;
+    techniqueCatalog.current = null;
+    setTechniques(null);
+    setTechniqueError(false);
+    if (project) void getDirectorTechniques(project).then((catalog) => {
+      if (!active || !sameLocation(project, canvasId)) return;
+      techniqueCatalog.current = catalog.techniques;
+      setTechniques(catalog.techniques);
+    }).catch(() => {
+      if (!active || !sameLocation(project, canvasId)) return;
+      techniqueCatalog.current = null;
+      setTechniqueError(true);
+    });
+    return () => { active = false; };
+  }, [project, canvasId]);
 
   const recoverPending = useCallback(() => {
     const pending = currentData(nodeId)?.pendingSubmission;
@@ -306,5 +326,5 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     return () => { window.clearInterval(timer); window.removeEventListener('online', onOnline); };
   }, [project, data.activeAttemptId, applies, issueToken, resumeIfCurrent]);
 
-  return { capabilities, attempts, error, fieldErrors, generate, recoverPending, retry, refresh };
+  return { capabilities, techniques, techniqueError, attempts, error, fieldErrors, generate, recoverPending, retry, refresh };
 }

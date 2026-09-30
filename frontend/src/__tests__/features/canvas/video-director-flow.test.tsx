@@ -69,6 +69,37 @@ describe('Director real component flow', () => {
         videoUrl: null, resultRevision: null, pendingSubmission: null } }] as never });
   });
 
+  it('marks a completed result stale after only the selected technique changes', async () => {
+    const draft = createDirectorDraft('opening');
+    draft.references = [{ imageId: 'ref', url: '/ref.png' }];
+    draft.segments[0].prompt = 'Action';
+    useCanvasStore.getState().updateNodeData('director', { draft, activeAttemptId: 'completed',
+      videoUrl: '/video.mp4', resultRevision: draft.revision });
+    const response = (data: unknown) => HttpResponse.json({ ok: true, data });
+    server.use(http.get(`${endpoint}/capabilities`, () => response(capabilities)),
+      http.get(`${endpoint}/attempts`, () => response({ attempts: [{ id: 'completed', project_id: 'demo',
+        canvas_id: 'canvas', node_id: 'director', request_id: 'req', revision: draft.revision,
+        snapshot: { schema_version: 1, revision: draft.revision, model_id: draft.modelId,
+          aspect_ratio: draft.aspectRatio, resolution: draft.resolution,
+          references: [{ image_id: 'ref', url: '/ref.png' }],
+          segments: [{ id: 'opening', prompt: 'Action', duration_seconds: 5, first_frame: null,
+            last_frame: null, technique: null }] }, stage: 'completed', optimized: null,
+        result_url: '/video.mp4', created_at: null, updated_at: null }] })),
+      http.get(`${endpoint}/attempts/completed`, () => response({ attempt: { id: 'completed', project_id: 'demo',
+        canvas_id: 'canvas', node_id: 'director', request_id: 'req', revision: draft.revision,
+        snapshot: { schema_version: 1, revision: draft.revision, model_id: draft.modelId,
+          aspect_ratio: draft.aspectRatio, resolution: draft.resolution,
+          references: [{ image_id: 'ref', url: '/ref.png' }],
+          segments: [{ id: 'opening', prompt: 'Action', duration_seconds: 5, first_frame: null,
+            last_frame: null, technique: null }] }, stage: 'completed', optimized: null,
+        result_url: '/video.mp4', created_at: null, updated_at: null } })));
+    render(<CurrentNode />);
+    await waitFor(() => expect(screen.queryByText('输入已修改')).not.toBeInTheDocument());
+    act(() => useCanvasStore.getState().updateNodeData('director', { draft: { ...draft, revision: 1,
+      segments: [{ ...draft.segments[0], technique: { id: 'slow-push-in', version: '1.0.0' } }] } }));
+    expect(await screen.findByText('输入已修改')).toBeInTheDocument();
+  });
+
   it('starts in Ref mode and exposes image and prompt inputs on the card', async () => {
     expect(getNodeDefinition(CANVAS_NODE_TYPES.videoDirector).createDefaultData().activeInputMode).toBe('ref');
     server.use(http.get(`${endpoint}/capabilities`, () => HttpResponse.json({ ok: true, data: capabilities })),

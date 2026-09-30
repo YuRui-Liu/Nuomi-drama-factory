@@ -86,11 +86,23 @@ describe('video director inputs', () => {
       resolution: draft.resolution,
       references: [expectedImage(reference)],
       segments: [{ id: 'segment', prompt: '', durationSeconds: 5,
-        firstFrame: expectedImage(firstFrame), lastFrame: expectedImage(lastFrame) }],
+        firstFrame: expectedImage(firstFrame), lastFrame: expectedImage(lastFrame), technique: null }],
     }));
     expect(directorSubmissionFingerprint({ ...draft, revision: 42, schemaVersion: 1 })).toBe(fingerprint);
     expect(directorSubmissionFingerprint({ ...draft, modelId: 'another-model' })).not.toBe(fingerprint);
     expect(directorSubmissionFingerprint({ ...draft, segments: [{ ...draft.segments[0], prompt: 'Move' }] })).not.toBe(fingerprint);
+  });
+
+  it('marks a card-only change as a new submission input and normalizes legacy absence', () => {
+    const draft = dataWithImages().draft;
+    const original = directorSubmissionFingerprint(draft);
+    const segment = draft.segments[0];
+    expect(directorSubmissionFingerprint({ ...draft, segments: [{ ...segment, technique: undefined }] })).toBe(original);
+    const selected = { ...draft, segments: [{ ...segment, technique: { id: 'slow-push-in', version: '1.0.0' } }] };
+    expect(directorSubmissionFingerprint(selected)).not.toBe(original);
+    expect(directorSubmissionFingerprint(draftFromWire(draftToWire(selected)))).toBe(directorSubmissionFingerprint(selected));
+    expect(directorSubmissionFingerprint({ ...selected, segments: [{ ...selected.segments[0],
+      technique: { id: 'slow-push-in', version: '2.0.0' } }] })).not.toBe(directorSubmissionFingerprint(selected));
   });
 
   it('normalizes optional image fields like wire serialization', () => {

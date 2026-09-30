@@ -3481,6 +3481,7 @@
       "videoDirector": "Video Director"
     },
     "videoDirector": {
+      "techniques": { "label": "Technique card", "none": "No card", "clear": "Clear card", "unavailable": "Unavailable", "catalogUnavailable": "Card catalog unavailable", "limits": "Applies to", "field_mode": "Mode", "field_duration_seconds": "Duration", "field_status": "Status", "lastFrame_required": "Last frame required", "lastFrame_allowed": "Last frame allowed", "lastFrame_forbidden": "No last frame", "techniqueCatalogUnavailable": "Card catalog unavailable; clear the selected card to generate", "techniqueUnknown": "Selected card version is unavailable; change or clear it", "techniqueRetired": "Card is retired", "techniqueModeUnsupported": "Card does not support this mode", "techniqueDurationShort": "Aligned duration is below the card minimum", "techniqueDurationLong": "Aligned duration exceeds the card maximum", "techniqueLastFrameRequired": "Card requires a last frame", "techniqueLastFrameForbidden": "Card does not support a last frame" },
       "panelFrame": { "connectedFrameAlt": "Connected {{label}}", "connectedFrameSource": "From a connected node; used for this generation", "restoreAfterDisconnect": "Saved image restored after disconnect" },
       "activeRouteLabel": "Active route: {{route}}",
       "imageSlot": { "preview": "{{label}} preview", "select": "Select image", "upload": "Upload image", "remove": "Remove", "uploadLabel": "Upload {{label}} image", "dropHint": "Drop an image here", "uploading": "Uploading…", "invalidFile": "Choose an image file" },

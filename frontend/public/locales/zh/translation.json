@@ -3481,6 +3481,7 @@
       "videoDirector": "视频导演"
     },
     "videoDirector": {
+      "techniques": { "label": "手法卡片", "none": "不使用卡片", "clear": "清除卡片", "unavailable": "当前不可用", "catalogUnavailable": "卡片目录暂不可用", "limits": "适用", "field_mode": "模式", "field_duration_seconds": "时长", "field_status": "状态", "lastFrame_required": "需要尾帧", "lastFrame_allowed": "允许尾帧", "lastFrame_forbidden": "不支持尾帧", "techniqueCatalogUnavailable": "卡片目录暂不可用，请清除已选卡片后生成", "techniqueUnknown": "所选卡片版本已失效，请换卡或清除", "techniqueRetired": "卡片已停用", "techniqueModeUnsupported": "卡片不支持当前模式", "techniqueDurationShort": "对齐后时长短于卡片下限", "techniqueDurationLong": "对齐后时长超过卡片上限", "techniqueLastFrameRequired": "卡片需要尾帧", "techniqueLastFrameForbidden": "卡片不支持尾帧" },
       "panelFrame": { "connectedFrameAlt": "连线{{label}}", "connectedFrameSource": "来自连线节点，当前参与生成", "restoreAfterDisconnect": "断线后恢复已选图片" },
       "activeRouteLabel": "活动路线：{{route}}",
       "imageSlot": { "preview": "{{label}}预览", "select": "选择图片", "upload": "上传图片", "remove": "移除", "uploadLabel": "{{label}}上传图片", "dropHint": "可拖入图片", "uploading": "上传中…", "invalidFile": "请选择图片文件" },

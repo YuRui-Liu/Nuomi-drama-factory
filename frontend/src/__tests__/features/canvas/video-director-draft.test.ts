@@ -43,6 +43,18 @@ describe("video director draft", () => {
     expect(() => copySegment(original, "first", "first")).toThrow(/duplicate/i);
   });
 
+  it("keeps technique bound to segment identity through copy, reorder, deletion and clone", () => {
+    const selected = updateSegment(createDirectorDraft('first'), 'first', { technique: { id: 'slow-push-in', version: '1.0.0' } });
+    const copied = copySegment(selected, 'first', 'second');
+    expect(copied.segments[1].technique).toEqual(selected.segments[0].technique);
+    expect(copied.segments[1].technique).not.toBe(copied.segments[0].technique);
+    const moved = reorderSegments(copied, 1, 0);
+    expect(moved.segments.map((segment) => [segment.id, segment.technique?.id])).toEqual([
+      ['second', 'slow-push-in'], ['first', 'slow-push-in'],
+    ]);
+    expect(deleteSegment(moved, 'first').segments.map((segment) => segment.id)).toEqual(['second']);
+  });
+
   it("duplicates node data with independent draft and no active attempt or result", () => {
     const data = {
       draft: updateSegment(updateDraft(createDirectorDraft("first"), {

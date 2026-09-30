@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { createDirectorAttempt, getDirectorCapabilities, listDirectorAttempts } from '@/api/videoDirector';
+import { createDirectorAttempt, getDirectorCapabilities, getDirectorTechniques, listDirectorAttempts, draftFromWire, draftToWire, attemptFromWire } from '@/api/videoDirector';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 
 vi.mock('@/api/client', async (loadActual) => {
@@ -23,6 +23,21 @@ const rawAttempt = { id: 'a1', project_id: 'demo', canvas_id: 'canvas', node_id:
     segments: [{ id: 's1', prompt: 'Original', duration_seconds: 5, first_frame: null, last_frame: null }] } };
 
 describe('video director API', () => {
+  it('reads the technique catalog and preserves selection and frozen history', async () => {
+    server.use(http.get(`${base}/techniques`, () => HttpResponse.json({ ok: true, data: {
+      catalog_version: 'v1', techniques: [{ id: 'slow-push-in', version: '1.0.0', title: '缓慢推近',
+        summary: '推近', status: 'active', applicability: { modes: ['i2v'], min_duration_seconds: 3,
+          max_duration_seconds: 15, last_frame_constraint: 'forbidden' }, sources: [] }] } })));
+    expect((await getDirectorTechniques('demo')).techniques[0].applicability.modes).toEqual(['i2v']);
+    const draft = createDirectorDraft('s1');
+    draft.segments[0].technique = { id: 'slow-push-in', version: '1.0.0' };
+    expect(draftFromWire(draftToWire(draft)).segments[0].technique).toEqual(draft.segments[0].technique);
+    const restored = attemptFromWire({ ...rawAttempt, frozen_techniques: { s1: {
+      card: { id: 'slow-push-in', version: '1.0.0', title: '缓慢推近' },
+      projection: { intent: '收紧注意力', content_hash: 'abc' },
+    } } });
+    expect(restored.frozenTechniques?.s1.projection.content_hash).toBe('abc');
+  });
   it('converts capabilities and submits an immutable snake_case draft through the envelope', async () => {
     let request: unknown;
     server.use(
