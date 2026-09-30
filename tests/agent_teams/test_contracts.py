@@ -68,6 +68,19 @@ def test_catalog_is_fixed_and_honest_about_connection():
     assert all(r.subtasks and not r.connected and r.adapter_id is None for r in ROLE_CATALOG)
 
 
+def test_catalog_maps_production_roles_and_writer_document_kinds():
+    roles = {role.id: role for role in ROLE_CATALOG}
+    assert roles["director"].name == "分镜导演"
+    assert roles["director"].subtasks == ("director_plan",)
+    assert set(roles["writer"].subtasks) == {
+        "brief", "outline", "people", "scenes", "props", "episode_synopsis", "episode_script",
+    }
+    assert "screenplay_semantics" in roles["script_parser"].subtasks
+    assert set(roles["video_director"].subtasks) == {
+        "h3_episode_pack", "h3_segment_repair", "freezone_video_director",
+    }
+
+
 def test_snapshot_is_pinned_and_forbids_credentials():
     values = dict(id="run", project_id="p", template_id="t", template_revision=1, active_revision=1,
                   role_id="writer", subtask_id="script_creation_generation", input_revision="1", input_hash="sha",
