@@ -82,6 +82,17 @@ describe('Director real component flow', () => {
     expect(screen.getByText('MiniMax H3 Ref')).toBeInTheDocument();
   });
 
+  it('opens the editor when card generation finds an invalid draft', async () => {
+    let capabilitiesLoaded = false;
+    server.use(http.get(`${endpoint}/capabilities`, () => { capabilitiesLoaded = true; return HttpResponse.json({ ok: true, data: capabilities }); }),
+      http.get(`${endpoint}/attempts`, () => HttpResponse.json({ ok: true, data: { attempts: [] } })));
+    render(<CurrentNode />);
+    await waitFor(() => expect(capabilitiesLoaded).toBe(true));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(await screen.findByText('没有参考图时必须选择首帧')).toBeInTheDocument();
+  });
+
   it('switches card segment without rewriting another prompt', () => {
     const draft = createDirectorDraft('first');
     draft.segments.push({ ...draft.segments[0], id: 'second', prompt: 'second prompt' });

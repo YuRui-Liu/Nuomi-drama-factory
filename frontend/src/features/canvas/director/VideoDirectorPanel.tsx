@@ -5,7 +5,6 @@ import { OperationPanelShell } from '../ui/OperationPanelShell';
 import type { DirectorDraft, VideoDirectorNodeData } from '../domain/canvasNodes';
 import { addSegment, copySegment, deleteSegment, reorderSegments, updateDraft, updateSegment } from '../domain/videoDirectorDraft';
 import { useVideoDirectorTask } from './useVideoDirectorTask';
-import { validateDirectorDraft, type DirectorErrors } from './directorValidation';
 import { directorErrorText } from './directorValidation';
 import { DirectorSegmentEditor } from './DirectorSegmentEditor';
 import { DirectorHistory } from './DirectorHistory';
@@ -24,7 +23,6 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
 }) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
-  const [localErrors, setErrors] = useState<DirectorErrors>({});
   const [clearedErrors, setClearedErrors] = useState<Set<string>>(() => new Set());
   const clearImageValidation = (target: DirectorImageTarget) => {
     const key = target.kind === 'frame' ? (() => {
@@ -32,12 +30,11 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       return index < 0 ? null : `segments[${index}].${target.field === 'firstFrame' ? 'first_frame' : 'last_frame'}`;
     })() : 'references';
     if (!key) return;
-    setErrors((current) => { const next = { ...current }; delete next[key]; return next; });
     setClearedErrors((current) => new Set(current).add(key));
   };
   const images = useDirectorImageActions(nodeId, task.capabilities?.effectiveReferenceLimit, clearImageValidation);
   const errors = Object.fromEntries(Object.entries({
-    ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))), ...localErrors,
+    ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))),
   }).map(([key, error]) => [key, directorErrorText(error, t)]));
   const draft = data.draft;
   const nodes = useCanvasStore((state) => state.nodes);
@@ -46,17 +43,15 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   const binding = resolveDirectorBindings(draft, nodes, edges.filter((edge) => edge.target === nodeId), mode);
   const effective = projectDirectorDraft(binding.draft, mode);
   const capabilities = task.capabilities;
-  const setDraft = (next: DirectorDraft) => { onDraftChange(next); setErrors({}); setClearedErrors(new Set()); };
+  const setDraft = (next: DirectorDraft) => { onDraftChange(next); setClearedErrors(new Set()); };
   const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
   const pending = !!data.pendingSubmission;
   const generating = pending || !!data.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage));
 
   const generate = () => {
     if (!capabilities) return;
-    const nextErrors = { ...validateDirectorDraft(effective, capabilities), ...binding.errors };
-    setErrors(nextErrors);
     setClearedErrors(new Set());
-    if (!Object.keys(nextErrors).length) task.generate(effective);
+    task.generate();
   };
 
   return <>

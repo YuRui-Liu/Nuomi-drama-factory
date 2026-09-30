@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createDirectorAttempt, getDirectorAttempt, getDirectorCapabilities, listDirectorAttempts,
   resumeDirectorAttempt, retryDirectorAttempt, type DirectorCapabilities } from '@/api/videoDirector';
-import { CANVAS_NODE_TYPES, type DirectorAttempt, type DirectorDraft, type VideoDirectorNodeData } from '../domain/canvasNodes';
+import { CANVAS_NODE_TYPES, type DirectorAttempt, type VideoDirectorNodeData } from '../domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { clearDirectorJournal, readDirectorJournal, writeDirectorJournal,
   type DirectorSubmissionJournal } from './directorSubmissionJournal';
+import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
+import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
+import { validateDirectorDraft } from './directorValidation';
 
 const terminal = new Set(['completed', 'failed', 'submission_unknown']);
 
@@ -129,12 +132,22 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     }
   }, [project, canvasId, nodeId, applies, advanceToken, updateNodeData]);
 
-  const generate = useCallback((draft: DirectorDraft) => {
-    const current = currentData(nodeId);
+  const generate = useCallback(() => {
+    const state = useCanvasStore.getState();
+    const node = state.nodes.find((item) => item.id === nodeId);
+    const current = node?.type === CANVAS_NODE_TYPES.videoDirector ? node.data as VideoDirectorNodeData : null;
     const active = attempts.find((item) => item.id === current?.activeAttemptId);
-    if (!project || submitting.current || !current || current.pendingSubmission ||
+    if (!project || !capabilities || submitting.current || !current || current.pendingSubmission ||
       current.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
-    const frozenDraftSnapshot = structuredClone(draft);
+    const mode = resolveDirectorInputMode(current);
+    const directorIncomingEdges = state.edges.filter((edge) => edge.target === nodeId);
+    const binding = resolveDirectorBindings(current.draft, state.nodes, directorIncomingEdges, mode);
+    const effective = projectDirectorDraft(binding.draft, mode);
+    const errors = { ...validateDirectorDraft(effective, capabilities), ...binding.errors };
+    setFieldErrors(errors);
+    if (Object.keys(errors).length) return;
+    setError('');
+    const frozenDraftSnapshot = structuredClone(effective);
     const pendingSubmission = { requestId: crypto.randomUUID(), frozenDraftSnapshot };
     try {
       writeDirectorJournal(pendingJournal(project, canvasId, nodeId, pendingSubmission, current.activeAttemptId));
@@ -144,7 +157,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     }
     updateNodeData(nodeId, { pendingSubmission });
     void submitPending(pendingSubmission);
-  }, [project, canvasId, nodeId, submitPending, updateNodeData, attempts]);
+  }, [project, canvasId, nodeId, submitPending, updateNodeData, attempts, capabilities]);
 
   const recoverPending = useCallback(() => {
     const pending = currentData(nodeId)?.pendingSubmission;

@@ -12,7 +12,6 @@ import { CANVAS_NODE_INPUT_SURFACE_CLASS, canvasNodeFrameClass } from '@/feature
 import { useCanvasStore } from '@/stores/canvasStore';
 import { resolveMediaUrl } from '@/lib/media-url';
 import { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirectorTask';
-import { validateDirectorDraft } from '@/features/canvas/director/directorValidation';
 import { directorStageLabel } from '@/features/canvas/director/directorStatus';
 import { DirectorImageSlot } from '@/features/canvas/director/DirectorImageSlot';
 import { useDirectorImageActions, type DirectorImageTarget } from '@/features/canvas/director/useDirectorImageActions';
@@ -85,6 +84,9 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   </div>;
 
   useEffect(() => updateNodeInternals(id), [id, updateNodeInternals]);
+  useEffect(() => {
+    if (Object.keys(task.fieldErrors).length) setEditorOpen(true);
+  }, [task.fieldErrors]);
 
   return (
     <div className="group relative h-full w-full overflow-visible" style={VIDEO_DIRECTOR_NODE_SIZE} onClick={() => setSelectedNode(id)}>
@@ -140,7 +142,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             else setEditorOpen(true);
           }}>{t('node.videoDirector.node.edit')}</button>
           <button type="button" className="nodrag text-cyan-300" onClick={() => {
-            if (task.capabilities && !Object.keys({ ...validateDirectorDraft(effective, task.capabilities), ...binding.errors }).length && !data.pendingSubmission) task.generate(effective);
+            if (task.capabilities) task.generate();
             else setEditorOpen(true);
           }}>{tr('generate')}</button>
         </div>
