@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { displayLabel } from "@/task-center/derivations";
 import { taskErrorMessage } from "@/task-center/task-errors";
 import type { TaskState } from "@/task-center/types";
+import { MethodTrace } from '@/features/studios/agent-team/method-trace';
 
 export function formatLocalTaskTime(value?: string | null): string {
   if (!value) return "—";
@@ -188,6 +189,7 @@ export function TaskDetail() {
           <TabsTrigger value="logs">{t("taskCenter.detail.tabs.logs")}</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+          <MethodTrace metadata={taskMetadata(task)} />
           <div className="grid grid-cols-3 gap-x-3 gap-y-1">
             <div>
               <div className="text-muted-foreground">

@@ -17,6 +17,12 @@ router = APIRouter()
 Revision = Annotated[int, Field(strict=True, ge=0)]
 
 
+@router.get('/agent-team-builtin-methods')
+async def builtin_methods(user: dict = Depends(get_api_user)):
+    from novelvideo.agent_teams.builtin_methods import builtin_methods as inspect
+    return inspect()
+
+
 def connected_subtasks():
     try:
         from novelvideo.agent_teams.runtime import connected_subtasks as connected
