@@ -5,6 +5,7 @@ import { TemplatePanel } from './template-panel';
 import { ResourceLibrary } from './resource-library';
 import { TrialCandidate, TrialPanel } from './trial-panel';
 import { MethodTrace } from './method-trace';
+import { MethodEditor } from './method-editor';
 import { defaultMethod, type TeamOverview, type ResourceVersion, type TeamTemplate } from './types';
 import * as tools from './tools-api';
 import * as api from './api';
@@ -103,4 +104,9 @@ it('renders candidate Markdown and keeps structured validation details collapsed
   expect(screen.getByText('角色对白。')).toBeInTheDocument();
   expect(screen.getByText('校验结果：通过')).toBeInTheDocument();
   expect(screen.getByText('结构化候选与校验详情').closest('details')).not.toHaveAttribute('open');
+});
+it('displays the frozen title when personal library identity collides with a pinned snapshot', () => {
+  render(<MethodEditor role="writer" method={{ ...defaultMethod, skills: [{ id: resource.id, revision: resource.revision }] }} overrides={{}} resources={[{ ...resource, content: '# 个人库同名版本', owner: 'other' }]} resourceSnapshots={[{ ...resource, content: '# 已冻结技法标题' }]} disabled={false} onChange={vi.fn()} onRestore={vi.fn()} />);
+  expect(screen.getByText(/已冻结技法标题 · v1/)).toBeInTheDocument();
+  expect(screen.queryByText(/个人库同名版本/)).not.toBeInTheDocument();
 });
