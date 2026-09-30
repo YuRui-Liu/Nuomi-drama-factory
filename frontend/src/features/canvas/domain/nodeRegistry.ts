@@ -512,6 +512,7 @@ const videoDirectorNodeDefinition: CanvasNodeDefinition<VideoDirectorNodeData> =
   createDefaultData: () => ({
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.videoDirector],
     draft: createDirectorDraft(),
+    activeInputMode: 'ref',
     activeAttemptId: null,
     videoUrl: null,
     resultRevision: null,

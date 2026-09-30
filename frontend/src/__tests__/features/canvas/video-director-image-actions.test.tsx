@@ -12,7 +12,15 @@ const uploadFreezoneImage = vi.hoisted(() => vi.fn());
 vi.mock('@/api/ops', () => ({ uploadFreezoneImage }));
 vi.mock('@/features/canvas/ui/AssetLibraryModal', () => ({ AssetLibraryModal: () => null }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
-  t: (_key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? _key,
+  t: (key: string, options?: { defaultValue?: string; label?: string }) => ({
+    'node.videoDirector.imageSlot.preview': `${options?.label}预览`,
+    'node.videoDirector.imageSlot.select': '选择图片',
+    'node.videoDirector.imageSlot.upload': '上传图片',
+    'node.videoDirector.imageSlot.remove': '移除',
+    'node.videoDirector.imageSlot.uploadLabel': `${options?.label}上传图片`,
+    'node.videoDirector.imageSlot.dropHint': '可拖入图片',
+    'node.videoDirector.imageSlot.uploading': '上传中…',
+  } as Record<string, string>)[key] ?? options?.defaultValue ?? key,
 }) }));
 
 const frame: DirectorImageTarget = { kind: 'frame', segmentId: 's1', field: 'firstFrame' };

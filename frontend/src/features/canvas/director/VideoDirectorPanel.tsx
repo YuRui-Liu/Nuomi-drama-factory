@@ -11,6 +11,9 @@ import { DirectorHistory } from './DirectorHistory';
 import { directorStageLabel } from './directorStatus';
 import { DirectorImageSlot } from './DirectorImageSlot';
 import { useDirectorImageActions, type DirectorImageTarget } from './useDirectorImageActions';
+import { useCanvasStore } from '@/stores/canvasStore';
+import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
+import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
 
@@ -34,6 +37,11 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   const images = useDirectorImageActions(nodeId, task.capabilities?.effectiveReferenceLimit, clearImageValidation);
   const errors = { ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))), ...localErrors };
   const draft = data.draft;
+  const nodes = useCanvasStore((state) => state.nodes);
+  const edges = useCanvasStore((state) => state.edges);
+  const mode = resolveDirectorInputMode(data);
+  const binding = resolveDirectorBindings(draft, nodes, edges.filter((edge) => edge.target === nodeId), mode);
+  const effective = projectDirectorDraft(binding.draft, mode);
   const capabilities = task.capabilities;
   const setDraft = (next: DirectorDraft) => { onDraftChange(next); setErrors({}); setClearedErrors(new Set()); };
   const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
@@ -42,10 +50,10 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
 
   const generate = () => {
     if (!capabilities) return;
-    const nextErrors = validateDirectorDraft(draft, capabilities);
+    const nextErrors = { ...validateDirectorDraft(effective, capabilities), ...binding.errors };
     setErrors(nextErrors);
     setClearedErrors(new Set());
-    if (!Object.keys(nextErrors).length) task.generate(draft);
+    if (!Object.keys(nextErrors).length) task.generate(effective);
   };
 
   return <>
@@ -56,6 +64,8 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
+        <p className="mb-3 text-sm">{tr('activeRoute', '活动路线')}：{mode === 'ref' ? tr('refRoute', 'MiniMax H3 Ref') : tr('framesRoute', 'MiniMax H3')}</p>
+        {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-sm text-red-300">{error}</p>)}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="text-xs">{tr('model', '模型')}<select aria-label={tr('model', '模型')} className="mt-1 block w-full rounded bg-black/30 p-2" value={draft.modelId}
             onChange={(event) => setDraft(updateDraft(draft, { modelId: event.target.value }))}>
@@ -89,6 +99,12 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
             onPick={() => images.openPicker({ kind: 'references' })}
             onUpload={(file) => void images.uploadFile({ kind: 'references' }, file)} onRemove={() => {}} /></div></div>
           {errors.references && <p className="text-xs text-red-300">{errors.references}</p>}
+          {mode !== 'ref' && draft.references.length > 0 && <p className="text-xs text-text-muted">{tr('retainedInactive', '已保留，当前不参与生成')}</p>}
+          {effective.references.some((image) => !draft.references.some((manual) => manual.imageId === image.imageId)) &&
+            <div className="mt-2"><p className="text-xs">{tr('connectedReferences', '当前连线参考图')}</p>
+              <div className="mt-1 flex gap-2">{effective.references.filter((image) => !draft.references.some((manual) => manual.imageId === image.imageId))
+                .map((image) => <img key={image.imageId} src={image.url} alt={tr('connectedReferences', '当前连线参考图')}
+                  className="h-20 w-20 rounded object-contain" />)}</div></div>}
         </section>
         <div className="space-y-3">{draft.segments.map((segment, index) => <DirectorSegmentEditor key={segment.id}
           segment={segment} index={index} count={draft.segments.length} capabilities={capabilities} errors={errors}
@@ -100,6 +116,16 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
           onCopy={() => setDraft(copySegment(draft, segment.id, crypto.randomUUID()))}
           onDelete={() => setDraft(deleteSegment(draft, segment.id))}
           onMove={(offset) => setDraft(reorderSegments(draft, index, index + offset))} />)}</div>
+        {mode === 'ref' && draft.segments.some((segment) => segment.firstFrame || segment.lastFrame) &&
+          <p className="text-xs text-text-muted">{tr('retainedInactive', '已保留，当前不参与生成')}</p>}
+        {mode === 'frames' && effective.segments.some((segment, index) => segment.firstFrame?.imageId !== draft.segments[index]?.firstFrame?.imageId || segment.lastFrame?.imageId !== draft.segments[index]?.lastFrame?.imageId) &&
+          <div className="mt-2"><p className="text-xs">{tr('connectedFrames', '当前连线帧')}</p>
+            <div className="mt-1 flex gap-2">{effective.segments.flatMap((segment, index) => (['firstFrame', 'lastFrame'] as const).flatMap((field) => {
+              const image = segment[field];
+              return image && image.imageId !== draft.segments[index]?.[field]?.imageId ?
+                [<img key={`${segment.id}:${field}`} src={image.url} alt={`${tr('segment', '分段')} ${index + 1} ${tr(field, field)}`}
+                  className="h-20 w-20 rounded object-contain" />] : [];
+            }))}</div></div>}
         {errors.segments && <p className="text-xs text-red-300">{errors.segments}</p>}
         <button type="button" className="mt-3 rounded border border-white/10 px-3 py-2 text-sm" onClick={() => setDraft(addSegment(draft, crypto.randomUUID()))}>{tr('addSegment', '添加分段')}</button>
         <DirectorHistory attempts={task.attempts} activeId={data.activeAttemptId} onRetry={task.retry} onRefresh={() => void task.refresh()} />

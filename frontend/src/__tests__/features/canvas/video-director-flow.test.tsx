@@ -10,6 +10,7 @@ import { VideoDirectorNode } from '@/features/canvas/nodes/VideoDirectorNode';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import { CANVAS_NODE_TYPES, type VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { getNodeDefinition } from '@/features/canvas/domain/nodeRegistry';
 
 // Node's fetch cannot resolve ky's browser-relative prefix under jsdom.
 vi.mock('@/api/client', async (loadActual) => {
@@ -68,6 +69,66 @@ describe('Director real component flow', () => {
         videoUrl: null, resultRevision: null, pendingSubmission: null } }] as never });
   });
 
+  it('starts in Ref mode and exposes image and prompt inputs on the card', async () => {
+    expect(getNodeDefinition(CANVAS_NODE_TYPES.videoDirector).createDefaultData().activeInputMode).toBe('ref');
+    server.use(http.get(`${endpoint}/capabilities`, () => HttpResponse.json({ ok: true, data: capabilities })),
+      http.get(`${endpoint}/attempts`, () => HttpResponse.json({ ok: true, data: { attempts: [] } })));
+    render(<CurrentNode />);
+    expect(screen.getByText('Ref 引导，待输入')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '主体参考图' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '首帧' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '尾帧' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: '当前片段提示词' })).toHaveValue('');
+    expect(screen.getByText('MiniMax H3 Ref')).toBeInTheDocument();
+  });
+
+  it('switches card segment without rewriting another prompt', () => {
+    const draft = createDirectorDraft('first');
+    draft.segments.push({ ...draft.segments[0], id: 'second', prompt: 'second prompt' });
+    useCanvasStore.getState().updateNodeData('director', { draft });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: '片段 2' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '当前片段提示词' }), { target: { value: 'revised second' } });
+    expect(nodeData().visibleSegmentId).toBe('second');
+    expect(nodeData().draft.segments.map((segment) => segment.prompt)).toEqual(['', 'revised second']);
+  });
+
+  it('keeps the first frame when switching back to Ref', () => {
+    const draft = createDirectorDraft('first');
+    draft.segments[0].firstFrame = { imageId: 'frame', url: '/frame.png' };
+    useCanvasStore.getState().updateNodeData('director', { draft, activeInputMode: 'frames' });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().activeInputMode).toBe('ref');
+    expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('frame');
+    expect(screen.getByText('已保留，当前不参与生成')).toBeInTheDocument();
+  });
+
+  it('switches to frames when a first frame is selected without references', async () => {
+    const response = (data: unknown) => HttpResponse.json({ ok: true, data });
+    server.use(http.get('*/api/v1/projects/demo/freezone/video/character-library', () => response(library)),
+      http.post('*/api/v1/projects/demo/freezone/video/asset-library/sync-from-mainline', () => response(library)));
+    render(<CurrentNode />);
+    fireEvent.click(within(screen.getByRole('group', { name: '首帧' })).getByRole('button', { name: '选择图片' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看Hero的图片' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Hero 基础图 基础肖像' }));
+    fireEvent.click(screen.getByRole('button', { name: '确定' }));
+    await waitFor(() => expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('base'));
+    expect(nodeData().activeInputMode).toBe('frames');
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('base');
+  });
+
+  it('asks for a target before dropping onto an occupied card', () => {
+    const draft = createDirectorDraft('first');
+    draft.references = [{ imageId: 'reference', url: '/reference.png' }];
+    useCanvasStore.getState().updateNodeData('director', { draft, activeInputMode: 'ref' });
+    render(<CurrentNode />);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), { dataTransfer: { files: [new File(['image'], 'new.png', { type: 'image/png' })] } });
+    expect(screen.getByRole('dialog', { name: '选择图片放置目标' })).toBeInTheDocument();
+    expect(nodeData().draft.references).toHaveLength(1);
+  });
+
   it('selects character variants, submits ordered raw segments, then shows optimized history and video', async () => {
     let postedDraft: Record<string, any> | undefined;
     let storedAttempt: Record<string, any> | undefined;
@@ -124,7 +185,7 @@ describe('Director real component flow', () => {
       ['base', 'hero', null], ['costume', 'hero', 'coat'],
     ]);
     fireEvent.click(screen.getByRole('button', { name: '添加分段' }));
-    const editors = screen.getAllByRole('textbox');
+    const editors = screen.getAllByRole('textbox').slice(-2);
     fireEvent.change(editors[0], { target: { value: 'Opening original' } });
     fireEvent.change(editors[1], { target: { value: 'Closing original' } });
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
