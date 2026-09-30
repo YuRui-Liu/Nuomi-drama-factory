@@ -142,8 +142,12 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     const mode = resolveDirectorInputMode(current);
     const directorIncomingEdges = state.edges.filter((edge) => edge.target === nodeId);
     const binding = resolveDirectorBindings(current.draft, state.nodes, directorIncomingEdges, mode);
+    if (Object.keys(binding.errors).length) {
+      setFieldErrors(binding.errors);
+      return;
+    }
     const effective = projectDirectorDraft(binding.draft, mode);
-    const errors = { ...validateDirectorDraft(effective, capabilities), ...binding.errors };
+    const errors = validateDirectorDraft(effective, capabilities);
     setFieldErrors(errors);
     if (Object.keys(errors).length) return;
     setError('');

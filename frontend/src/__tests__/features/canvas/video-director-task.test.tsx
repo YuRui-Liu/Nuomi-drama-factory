@@ -103,6 +103,20 @@ describe('video director task lifecycle', () => {
     expect(api.createDirectorAttempt).not.toHaveBeenCalled();
   });
 
+  it('reports active binding errors before draft validation errors', async () => {
+    const invalid = structuredClone(draft);
+    invalid.modelId = 'retired-model';
+    invalid.segments[0].prompt = '';
+    setNode({ draft: invalid, activeInputMode: 'ref' });
+    connectSource(null, { kind: 'reference' });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(result.current.fieldErrors).toEqual({ references: 'Connected reference image is unavailable' });
+    expect(nodeData().pendingSubmission).toBeNull();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+
   it('ignores a missing connected source on the inactive route', async () => {
     connectSource(null, { kind: 'firstFrame', segmentId: 's1' });
     vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
