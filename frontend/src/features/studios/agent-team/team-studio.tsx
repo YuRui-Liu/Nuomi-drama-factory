@@ -78,7 +78,7 @@ export function TeamStudio({ project }: { project: string }) {
         <div hidden={view !== 'method'} className="space-y-6">
           <div className="flex flex-wrap items-center gap-3 rounded border border-zinc-800 p-3 text-xs text-zinc-400"><p>未覆盖时沿用内置创作方法；固定输出协议始终保留。</p><Button variant="outline" onClick={() => { setResourceViewRequest(n => n + 1); setView('tools'); }}>查看当前内置方法与来源</Button></div>
           {toolsEditing && <p className="text-xs text-amber-200">工具面板有未完成编辑，请先发布、放弃或确认提交。</p>}
-          <MethodEditor role={role} method={method} overrides={data.overrides[role]?.[task] ?? {}} resources={resources.data ?? []} disabled={unavailable || !!conflict || toolsEditing} onChange={change} onRestore={field => change(field, undefined)} />
+          <MethodEditor role={role} method={method} overrides={data.overrides[role]?.[task] ?? {}} resources={resources.data ?? []} resourceSnapshots={[...(base.draft?.data.resources ?? []), ...(base.active?.snapshot.resources ?? [])]} disabled={unavailable || !!conflict || toolsEditing} onChange={change} onRestore={field => change(field, undefined)} />
           {resources.isError && <p role="alert" className="text-xs text-amber-300">资源库读取失败，无法选择新资源；已固定引用仍保留。</p>}
           {modifiedDisconnected && <p className="text-xs text-amber-300">未接入子任务含自定义配置，暂不能启用团队。</p>}
           <VersionPanel project={project} overview={base} disabled={dirty || unavailable || saving || !!conflict || toolsEditing} activationDisabled={modifiedDisconnected} onChanged={refresh} />
