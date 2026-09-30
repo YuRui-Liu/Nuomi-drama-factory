@@ -10,7 +10,7 @@ import { DirectorSegmentEditor } from './DirectorSegmentEditor';
 import { DirectorHistory } from './DirectorHistory';
 import { directorStageLabel } from './directorStatus';
 import { DirectorImageSlot } from './DirectorImageSlot';
-import { useDirectorImageActions } from './useDirectorImageActions';
+import { useDirectorImageActions, type DirectorImageTarget } from './useDirectorImageActions';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
 
@@ -20,12 +20,22 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
 }) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
-  const images = useDirectorImageActions(nodeId, task.capabilities?.effectiveReferenceLimit);
   const [localErrors, setErrors] = useState<DirectorErrors>({});
-  const errors = { ...task.fieldErrors, ...localErrors };
+  const [clearedErrors, setClearedErrors] = useState<Set<string>>(() => new Set());
+  const clearImageValidation = (target: DirectorImageTarget) => {
+    const key = target.kind === 'frame' ? (() => {
+      const index = data.draft.segments.findIndex((segment) => segment.id === target.segmentId);
+      return index < 0 ? null : `segments[${index}].${target.field === 'firstFrame' ? 'first_frame' : 'last_frame'}`;
+    })() : 'references';
+    if (!key) return;
+    setErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+    setClearedErrors((current) => new Set(current).add(key));
+  };
+  const images = useDirectorImageActions(nodeId, task.capabilities?.effectiveReferenceLimit, clearImageValidation);
+  const errors = { ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))), ...localErrors };
   const draft = data.draft;
   const capabilities = task.capabilities;
-  const setDraft = (next: DirectorDraft) => { onDraftChange(next); setErrors({}); };
+  const setDraft = (next: DirectorDraft) => { onDraftChange(next); setErrors({}); setClearedErrors(new Set()); };
   const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
   const pending = !!data.pendingSubmission;
   const generating = pending || !!data.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage));
@@ -34,6 +44,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
     if (!capabilities) return;
     const nextErrors = validateDirectorDraft(draft, capabilities);
     setErrors(nextErrors);
+    setClearedErrors(new Set());
     if (!Object.keys(nextErrors).length) task.generate(draft);
   };
 

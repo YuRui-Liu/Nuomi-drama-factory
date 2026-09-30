@@ -11,6 +11,9 @@ import type { useVideoDirectorTask } from '@/features/canvas/director/useVideoDi
 const uploadFreezoneImage = vi.hoisted(() => vi.fn());
 vi.mock('@/api/ops', () => ({ uploadFreezoneImage }));
 vi.mock('@/features/canvas/ui/AssetLibraryModal', () => ({ AssetLibraryModal: () => null }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({
+  t: (_key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? _key,
+}) }));
 
 const frame: DirectorImageTarget = { kind: 'frame', segmentId: 's1', field: 'firstFrame' };
 const refs: DirectorImageTarget = { kind: 'references' };
@@ -29,10 +32,10 @@ function data(): VideoDirectorNodeData {
   return { draft, activeInputMode: 'frames', activeAttemptId: null, videoUrl: null, resultRevision: null };
 }
 function current() { return useCanvasStore.getState().nodes.find((node) => node.id === 'director')!.data as VideoDirectorNodeData; }
-function PanelHarness() {
+function PanelHarness({ fieldErrors = {} }: { fieldErrors?: Record<string, string> }) {
   const node = useCanvasStore((state) => state.nodes.find((item) => item.id === 'director'))!;
   const task = { capabilities: { effectiveReferenceLimit: 2, models: [], params: { aspectRatio: [], resolution: [] } },
-    attempts: [], error: '', fieldErrors: {}, generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() };
+    attempts: [], error: '', fieldErrors, generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() };
   return <VideoDirectorPanel nodeId="director" data={node.data as VideoDirectorNodeData} task={task as unknown as ReturnType<typeof useVideoDirectorTask>}
     onDraftChange={(draft) => useCanvasStore.getState().updateNodeData('director', { draft })} onClose={vi.fn()} />;
 }
@@ -99,15 +102,33 @@ describe('director image actions', () => {
     expect(current().activeInputMode).toBe('frames');
   });
 
-  it('does not revise a full reference slot when an additional upload completes', async () => {
+  it('rejects an add-reference upload before transfer when the limit is full', async () => {
     const initial = data();
     initial.draft.references = [{ imageId: 'a', url: '/a.png' }, { imageId: 'b', url: '/b.png' }];
     useCanvasStore.getState().updateNodeData('director', initial);
-    uploadFreezoneImage.mockResolvedValue({ url: '/c.png' });
     render(<Harness target={refs} />);
     await act(async () => actions.uploadFile(refs, new File(['x'], 'c.png', { type: 'image/png' })));
+    expect(uploadFreezoneImage).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('上限');
     expect(current().draft.references.map((image) => image.imageId)).toEqual(['a', 'b']);
     expect(current().draft.revision).toBe(0);
+  });
+
+  it('rejects an add-reference result if another image fills the slot during upload', async () => {
+    const initial = data();
+    initial.draft.references = [{ imageId: 'a', url: '/a.png' }];
+    useCanvasStore.getState().updateNodeData('director', initial);
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness target={refs} />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(refs, new File(['x'], 'c.png', { type: 'image/png' })); });
+    act(() => useCanvasStore.getState().updateNodeData('director', { draft: {
+      ...current().draft, revision: 1, references: [...current().draft.references, { imageId: 'b', url: '/b.png' }],
+    } }));
+    await act(async () => { resolve({ url: '/c.png' }); await pending; });
+    expect(current().draft.references.map((image) => image.imageId)).toEqual(['a', 'b']);
+    expect(screen.getByRole('alert')).toHaveTextContent('上限');
   });
 
   it('does not write an upload into a different canvas route', async () => {
@@ -119,6 +140,68 @@ describe('director image actions', () => {
     window.history.replaceState({}, '', '/projects/demo/freezone/another-canvas');
     await act(async () => { resolve({ url: '/new.png' }); await pending; });
     expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+  });
+
+  it('rejects an old upload after only the canvas query changes', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    window.history.replaceState({}, '', '/projects/demo/freezone?canvas=one');
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    window.history.replaceState({}, '', '/projects/demo/freezone?canvas=two');
+    await act(async () => { resolve({ url: '/new.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+  });
+
+  it('rejects an old upload after the same node ID is rebuilt', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    act(() => useCanvasStore.getState().setCanvasData([{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
+      position: { x: 0, y: 0 }, data: data() }], []));
+    await act(async () => { resolve({ url: '/new.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+  });
+
+  it('lets only the latest upload for a slot control its result and status', async () => {
+    const resolvers: Array<(value: { url: string }) => void> = [];
+    uploadFreezoneImage.mockImplementation(() => new Promise((done) => { resolvers.push(done); }));
+    render(<Harness />);
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => { first = actions.uploadFile(frame, new File(['a'], 'a.png', { type: 'image/png' })); });
+    act(() => { second = actions.uploadFile(frame, new File(['b'], 'b.png', { type: 'image/png' })); });
+    await act(async () => { resolvers[0]({ url: '/a.png' }); await first; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+    expect(screen.getByRole('status')).toHaveTextContent('上传中');
+    await act(async () => { resolvers[1]({ url: '/b.png' }); await second; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('/b.png');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('does not commit or update state after the image action component unmounts', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const view = render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    view.unmount();
+    await act(async () => { resolve({ url: '/new.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+  });
+
+  it('activates reference mode when the same selected reference is confirmed', () => {
+    const initial = data();
+    initial.draft.references = [{ imageId: 'a', url: '/a.png' }];
+    useCanvasStore.getState().updateNodeData('director', initial);
+    render(<Harness target={refs} />);
+    act(() => actions.openPicker(refs));
+    act(() => actions.libraryProps?.onConfirm?.([{ media: 'image', name: 'a', imageId: 'a', url: '/a.png' }]));
+    expect(current().activeInputMode).toBe('ref');
+    expect(current().draft.revision).toBe(1);
   });
 
   it('replaces one existing reference at the limit after its panel upload succeeds', async () => {
@@ -148,5 +231,14 @@ describe('director image actions', () => {
     await waitFor(() => expect(within(slot).getByRole('alert')).toHaveTextContent('network down'));
     expect(current().draft.references.map((image) => image.imageId)).toEqual(['a']);
     expect(current().draft.revision).toBe(0);
+  });
+
+  it('clears the prior frame validation error after a successful panel upload', async () => {
+    uploadFreezoneImage.mockResolvedValue({ url: '/new.png' });
+    render(<PanelHarness fieldErrors={{ 'segments[0].first_frame': '旧校验错误' }} />);
+    expect(screen.getByText('旧校验错误')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('首帧上传图片'), { target: { files: [new File(['x'], 'new.png', { type: 'image/png' })] } });
+    await waitFor(() => expect(current().draft.segments[0].firstFrame?.url).toBe('/new.png'));
+    expect(screen.queryByText('旧校验错误')).not.toBeInTheDocument();
   });
 });
