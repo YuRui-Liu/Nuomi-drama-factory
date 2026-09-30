@@ -56,3 +56,15 @@ def test_detail_cannot_shadow_immutable_columns(tmp_path: Path):
     detached["id"] = "forged"
     assert store.get(original["id"])["snapshot"]["revision"] == 3
     assert store.get(original["id"])["id"] == original["id"]
+
+
+def test_retry_clones_frozen_techniques_and_cannot_mutate_them(tmp_path: Path):
+    store = DirectorAttemptStore(tmp_path)
+    frozen = {"s1": {"card": {"id": "fixed-reaction", "sources": [{"url": "https://example.test"}]},
+                     "projection": {"content_hash": "old"}}}
+    parent, _ = store.create("p", "c", "n", "r", _draft("freezone/a.png"),
+                             detail={"frozen_techniques": frozen})
+    with pytest.raises(ValueError, match="immutable"):
+        store.update(parent["id"], frozen_techniques={})
+    child, _ = store.retry(parent["id"])
+    assert child["frozen_techniques"] == frozen

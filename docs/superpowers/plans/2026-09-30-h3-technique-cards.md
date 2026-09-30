@@ -33,11 +33,11 @@
 
 ### 任务 2：草稿选择、提交冻结与历史
 
-- [ ] 写失败测试：无卡草稿继续有效；选卡解析错误、退役和模式/时长冲突会拒绝提交且指出片段；合法卡在 attempt 冻结 ID、版本、哈希、投影、来源。
-- [ ] 扩展 `DirectorSegment`，加入可空 `technique` 选择；在 attempt 的 `detail` 存 `frozen_techniques`，按片段 ID 索引并保持历史可读。
-- [ ] `DirectorService.create` 在图片冻结前解析并校验；`_resume_locked` 只从 attempt 的冻结投影读取，不访问在线目录；旧 attempt 无字段保持原行为。
-- [ ] 优化缓存校验加入冻结投影的稳定哈希；重试同一 attempt 不因目录更新改写已冻结手法。
-- [ ] 运行 service/store/capabilities 测试，提交本任务。
+- [x] 写失败测试：无卡草稿继续有效；选卡解析错误、退役和模式/时长冲突会拒绝提交且指出片段；合法卡在 attempt 冻结 ID、版本、哈希、投影、来源。
+- [x] 扩展 `DirectorSegment`，加入可空 `technique` 选择；在 attempt 的 `detail` 存 `frozen_techniques`，按片段 ID 索引并保持历史可读。
+- [x] `DirectorService.create` 在图片冻结前解析并校验；`_resume_locked` 只从 attempt 的冻结投影读取，不访问在线目录；旧 attempt 无字段保持原行为。
+- [x] 优化缓存校验加入冻结投影的稳定哈希；重试同一 attempt 不因目录更新改写已冻结手法。
+- [x] 运行 service/store/capabilities 测试，提交本任务。
 
 ### 任务 3：逐片段结构化改写
 

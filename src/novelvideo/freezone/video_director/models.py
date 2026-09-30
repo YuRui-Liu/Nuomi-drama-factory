@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from novelvideo.media_capabilities.video.h3_wire import H3BaseWire, H3ReferenceWire
+from .techniques import TechniqueCard
 
 
 class _FrozenModel(BaseModel):
@@ -26,12 +27,35 @@ class DirectorImage(_FrozenModel):
     sha256: str | None = None
 
 
+class TechniqueSelection(_FrozenModel):
+    id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+
+
+class FrozenTechniqueProjection(_FrozenModel):
+    id: str
+    version: str
+    content_hash: str
+    intent: str
+    action_beats: tuple[str, ...]
+    performance: str
+    camera: str
+    ending_composition: str
+    avoid: tuple[str, ...]
+
+
+class FrozenTechnique(_FrozenModel):
+    card: TechniqueCard
+    projection: FrozenTechniqueProjection
+
+
 class DirectorSegment(_FrozenModel):
     id: str
     prompt: str = ""
     duration_seconds: float
     first_frame: DirectorImage | None = None
     last_frame: DirectorImage | None = None
+    technique: TechniqueSelection | None = None
 
     @field_validator("duration_seconds")
     @classmethod
@@ -103,5 +127,6 @@ class DirectorAttempt(_FrozenModel):
     updated_at: datetime | None = None
 
 
-__all__ = ["DirectorImage", "DirectorSegment", "DirectorDraft", "DirectorAttempt",
+__all__ = ["DirectorImage", "TechniqueSelection", "FrozenTechniqueProjection",
+           "FrozenTechnique", "DirectorSegment", "DirectorDraft", "DirectorAttempt",
            "CanvasBaseWire", "CanvasReferenceWire", "OptimizedSegment", "OptimizedDirector"]

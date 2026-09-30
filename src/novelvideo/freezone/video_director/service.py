@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import json
 import os
 import traceback
 from io import BytesIO
@@ -22,10 +23,11 @@ from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 from novelvideo.media_capabilities.video.h3_prompt_profile import H3_CANVAS_WRITING_RULES
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 
-from .capabilities import validate_generation
-from .models import DirectorDraft, DirectorImage, OptimizedDirector
+from .capabilities import DirectorCapabilityError, validate_generation
+from .models import DirectorDraft, DirectorImage, FrozenTechnique, OptimizedDirector
 from .optimizer import optimize
 from .store import DirectorAttemptStore
+from . import techniques
 
 
 _MIMES = {"PNG": ("image/png", ".png"), "JPEG": ("image/jpeg", ".jpg"),
@@ -79,6 +81,16 @@ def _read_image(ctx, image: DirectorImage) -> tuple[StructuredImage, str]:
 
 def _current_rules_hash() -> str:
     return hashlib.sha256(H3_CANVAS_WRITING_RULES.encode()).hexdigest()
+
+
+def _techniques_hash(frozen_techniques: dict) -> str | None:
+    if not frozen_techniques:
+        return None
+    payload = {segment_id: frozen["projection"] for segment_id, frozen
+               in frozen_techniques.items()}
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _known_rejection(exc: Exception) -> bool:
@@ -183,13 +195,35 @@ class DirectorService:
                          if item["request_id"] == request_id), None)
         if existing:
             return existing, False
-        validate_generation(draft, reference_limit=self.reference_limit)
+        validation = validate_generation(draft, reference_limit=self.reference_limit)
+        frozen_techniques = {}
+        for index, (segment, aligned) in enumerate(zip(draft.segments, validation.timeline)):
+            if segment.technique is None:
+                continue
+            selection = segment.technique
+            field = f"segments[{index}].technique"
+            try:
+                card = techniques.resolve_technique(selection.id, selection.version)
+            except ValueError as exc:
+                raise DirectorCapabilityError(field, str(exc), segment.id) from exc
+            applicability = techniques.check_applicability(card, aligned.mode,
+                                                            segment.duration_seconds)
+            if not applicability["compatible"]:
+                reason = applicability["reasons"][0]
+                raise DirectorCapabilityError(
+                    f"{field}.{reason['field']}",
+                    f"{selection.id}@{selection.version}: {reason['message']}",
+                    segment.id,
+                )
+            frozen_techniques[segment.id] = FrozenTechnique(
+                card=card, projection=techniques.project_technique(card),
+            ).model_dump(mode="json")
         snapshot, frozen = self._freeze(draft)
+        detail = {"frozen_images": frozen, "reference_limit": self.reference_limit}
+        if frozen_techniques:
+            detail["frozen_techniques"] = frozen_techniques
         attempt, created = self.store.create(self.ctx.project_id, canvas_id, node_id,
-                                             request_id, snapshot, detail={
-                                                 "frozen_images": frozen,
-                                                 "reference_limit": self.reference_limit,
-                                             })
+                                             request_id, snapshot, detail=detail)
         return attempt, created
 
     def get(self, attempt_id: str):
@@ -235,11 +269,14 @@ class DirectorService:
         reference_limit = int(item.get("reference_limit") or self.reference_limit)
         if not item.get("provider_task_id"):
             current_hash = _current_rules_hash()
+            frozen_techniques = item.get("frozen_techniques") or {}
+            current_techniques_hash = _techniques_hash(frozen_techniques)
             cached = item.get("optimized")
             from novelvideo.media_capabilities.video.h3_prompt_profile import (
                 H3_PROMPT_PROFILE_ID, H3_PROMPT_PROFILE_VERSION,
             )
             if (cached and item.get("rules_hash") == current_hash and
+                item.get("techniques_hash") == current_techniques_hash and
                 cached.get("profile_id") == H3_PROMPT_PROFILE_ID and
                 cached.get("profile_version") == H3_PROMPT_PROFILE_VERSION):
                 optimized = OptimizedDirector.model_validate(cached)
@@ -258,8 +295,16 @@ class DirectorService:
                         runtime = current_text_task_runtime()
                     if runtime is None:
                         raise RuntimeError("director text runtime is unavailable")
-                    optimized = await self.optimizer(runtime, draft, frozen_images=images,
-                                                     reference_limit=reference_limit)
+                    optimizer_kwargs = {"frozen_images": images,
+                                        "reference_limit": reference_limit}
+                    # Task 3's optimizer accepts this keyword. Legacy no-card
+                    # optimizers retain their original call signature.
+                    if frozen_techniques:
+                        optimizer_kwargs["frozen_techniques"] = {
+                            segment_id: frozen["projection"]
+                            for segment_id, frozen in frozen_techniques.items()
+                        }
+                    optimized = await self.optimizer(runtime, draft, **optimizer_kwargs)
                 except Exception as exc:
                     error = "Director optimization failed"
                     if isinstance(exc, KnowledgeRuntimeError) and exc.code == "DSH_VISION_KEY_MISSING":
@@ -281,7 +326,9 @@ class DirectorService:
                                                  for frame, line in islice(traceback.walk_tb(exc.__traceback__), 32)
                                              ])
                 item = self.store.update(attempt_id, optimized=optimized.model_dump(mode="json"),
-                                         rules_hash=current_hash, stage="preparing")
+                                         rules_hash=current_hash,
+                                         techniques_hash=current_techniques_hash,
+                                         stage="preparing")
             # Upload and compilation happen before the paid submission claim.
             try:
                 paths = {key: self.store.root / "frozen" / value

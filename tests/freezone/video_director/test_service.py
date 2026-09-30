@@ -7,8 +7,11 @@ from PIL import Image
 
 from novelvideo.freezone.video_director.models import (
     CanvasBaseWire, DirectorDraft, DirectorImage, DirectorSegment, OptimizedDirector, OptimizedSegment,
+    TechniqueSelection,
 )
 from novelvideo.freezone.video_director.service import DirectorService
+from novelvideo.freezone.video_director.capabilities import DirectorCapabilityError
+from novelvideo.freezone.video_director.techniques import resolve_technique
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
 from novelvideo.media_capabilities.video.h3_prompt_profile import H3_PROMPT_PROFILE_VERSION
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
@@ -25,6 +28,103 @@ def draft(url, *, sha256="wrong"):
         DirectorSegment(id="one", prompt="Walk", duration_seconds=5,
                         first_frame=DirectorImage(image_id="image", url=url, sha256=sha256)),
     ))
+
+
+def selected_draft(url, card_id="fixed-reaction", version="1.0.0", duration=5):
+    source = draft(url)
+    segment = source.segments[0].model_copy(update={
+        "duration_seconds": duration,
+        "technique": TechniqueSelection(id=card_id, version=version),
+    })
+    return DirectorDraft.model_validate(source.model_copy(update={"segments": (segment,)}).model_dump())
+
+
+def test_selection_freezes_full_card_and_projection_before_images(setup):
+    _, service, _, _ = setup
+    source = selected_draft("missing.png")
+    with pytest.raises(ValueError, match="image does not exist"):
+        service.create("c", "n", "r", source)
+    assert service.store.list("project-1") == []
+
+
+@pytest.mark.parametrize("card_id,version,duration", [
+    ("unknown", "1.0.0", 5), ("fixed-reaction", "wrong", 5),
+    ("fixed-reaction", "1.0.0", 15),
+])
+def test_invalid_selection_reports_segment_before_image_freeze(setup, card_id, version, duration):
+    _, service, _, _ = setup
+    with pytest.raises(DirectorCapabilityError) as captured:
+        service.create("c", "n", "r", selected_draft("missing.png", card_id, version, duration))
+    assert captured.value.segment_id == "one"
+    assert captured.value.field.startswith("segments[0].technique")
+    assert service.store.list("project-1") == []
+
+
+def test_selected_attempt_freezes_card_and_sources(setup):
+    from novelvideo.api.routes.freezone_video_director import _public
+
+    ctx, service, _, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", selected_draft("frame.png"))
+    frozen = item["frozen_techniques"]["one"]
+    card = resolve_technique("fixed-reaction", "1.0.0")
+    assert frozen["card"] == card.model_dump(mode="json")
+    assert frozen["projection"]["content_hash"] == card.content_hash
+    assert frozen["card"]["sources"][0]["url"].startswith("https://")
+    assert _public(item)["frozen_techniques"] == item["frozen_techniques"]
+
+
+def test_retired_selection_is_rejected_with_segment_field(setup, monkeypatch):
+    from novelvideo.freezone.video_director import techniques
+
+    _, service, _, _ = setup
+    retired = resolve_technique("fixed-reaction", "1.0.0").model_copy(update={"status": "retired"})
+    monkeypatch.setattr(techniques, "_CARDS", (retired,))
+    with pytest.raises(DirectorCapabilityError) as captured:
+        service.create("c", "n", "r", selected_draft("missing.png"))
+    assert captured.value.segment_id == "one"
+    assert captured.value.field == "segments[0].technique"
+
+
+def test_mode_mismatch_is_rejected_with_segment_field(setup):
+    _, service, _, _ = setup
+    source = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p",
+                           references=(DirectorImage(image_id="ref", url="missing.png"),),
+                           segments=(DirectorSegment(
+                               id="ref-segment", prompt="Walk", duration_seconds=5,
+                               technique=TechniqueSelection(id="fixed-reaction", version="1.0.0")),))
+    with pytest.raises(DirectorCapabilityError) as captured:
+        service.create("c", "n", "r", source)
+    assert captured.value.segment_id == "ref-segment"
+    assert captured.value.field == "segments[0].technique.mode"
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_frozen_card_and_cache_hash(setup, monkeypatch):
+    from novelvideo.freezone.video_director import techniques
+
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", selected_draft("frame.png"))
+    captured = []
+
+    async def record(runtime, source, *, frozen_images, reference_limit, frozen_techniques):
+        captured.append(frozen_techniques)
+        return await fake_optimize(runtime, source, frozen_images=frozen_images,
+                                   reference_limit=reference_limit)
+
+    service.optimizer = record
+    provider.fail_submit = RunningHubError("rejected", code="BAD_INPUT", http_status=200)
+    await service.resume(item["id"])
+    original = service.get(item["id"])["frozen_techniques"]
+    monkeypatch.setattr(techniques, "resolve_technique", lambda *_: (_ for _ in ()).throw(AssertionError("catalog read")))
+    child, _ = service.retry(item["id"])
+    assert child["frozen_techniques"] == original
+    assert len(captured) == 1
+    service.store.update(child["id"], techniques_hash="invalidated")
+    provider.fail_submit = None
+    await service.resume(child["id"])
+    assert captured == [{"one": original["one"]["projection"]}] * 2
 
 
 async def fake_optimize(runtime, source, *, frozen_images, reference_limit):

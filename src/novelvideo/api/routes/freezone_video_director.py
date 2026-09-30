@@ -36,7 +36,7 @@ def _limits():
 def _public(item):
     result = {key: item.get(key) for key in (
         "id", "project_id", "canvas_id", "node_id", "request_id", "parent_attempt_id",
-        "snapshot", "stage", "optimized", "rules_hash", "reference_limit", "workflow_id",
+        "snapshot", "stage", "frozen_techniques", "optimized", "rules_hash", "reference_limit", "workflow_id",
         "workflow_profile_id", "workflow_profile_version", "actual_parameters",
         "task_id", "provider_task_id", "result_url", "error", "failed_stage",
         "created_at", "updated_at",

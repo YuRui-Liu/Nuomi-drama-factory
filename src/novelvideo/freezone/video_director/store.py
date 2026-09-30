@@ -16,6 +16,7 @@ _PROTECTED = frozenset({
     "id", "project_id", "canvas_id", "node_id", "request_id", "parent_attempt_id",
     "snapshot", "stage", "detail", "created_at", "updated_at",
 })
+_IMMUTABLE_DETAIL = frozenset({"frozen_techniques"})
 
 
 def _validate_detail(detail: dict) -> None:
@@ -103,6 +104,8 @@ class DirectorAttemptStore:
 
     def update(self, attempt_id: str, **changes):
         _validate_detail({key: value for key, value in changes.items() if key != "stage"})
+        if _IMMUTABLE_DETAIL.intersection(changes):
+            raise ValueError("frozen technique snapshots are immutable")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
@@ -135,9 +138,11 @@ class DirectorAttemptStore:
             previous = json.loads(parent["detail"])
             cache = {"frozen_images": previous.get("frozen_images", {}),
                      "reference_limit": previous.get("reference_limit", 5)}
+            if "frozen_techniques" in previous:
+                cache["frozen_techniques"] = previous["frozen_techniques"]
             # The child has a new paid-task identity, but can reuse the exact
             # immutable optimization until its writing rules/profile change.
-            cache.update({key: previous[key] for key in ("optimized", "rules_hash")
+            cache.update({key: previous[key] for key in ("optimized", "rules_hash", "techniques_hash")
                           if key in previous})
             db.execute("""INSERT INTO attempts
                 (id,project_id,canvas_id,node_id,request_id,parent_attempt_id,snapshot,stage,detail,created_at,updated_at)
