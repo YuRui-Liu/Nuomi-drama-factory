@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
+import { draftFromWire, draftToWire } from '@/api/videoDirector';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import {
   directorSubmissionFingerprint,
@@ -48,6 +49,19 @@ describe('video director inputs', () => {
     expect(setDirectorInputMode(switched, 'frames')).toBe(switched);
   });
 
+  it('persists an explicit choice when it matches the mode inferred for a legacy node', () => {
+    const legacy = dataWithImages();
+    expect(resolveDirectorInputMode(legacy)).toBe('ref');
+
+    const selected = setDirectorInputMode(legacy, 'ref');
+    expect(selected.activeInputMode).toBe('ref');
+    expect(selected.draft.revision).toBe(legacy.draft.revision + 1);
+
+    const withDifferentImages = { ...selected, draft: { ...selected.draft, references: [] } };
+    expect(resolveDirectorInputMode(withDifferentImages)).toBe('ref');
+    expect(setDirectorInputMode(selected, 'ref')).toBe(selected);
+  });
+
   it('projects only the active input images into a submission without changing the draft', () => {
     const draft = dataWithImages().draft;
     const ref = projectDirectorDraft(draft, 'ref');
@@ -64,16 +78,29 @@ describe('video director inputs', () => {
   it('fingerprints only submission fields and ignores the draft revision', () => {
     const draft = dataWithImages().draft;
     const fingerprint = directorSubmissionFingerprint(draft);
+    const expectedImage = (image: typeof reference) => ({ ...image, assetId: null, characterId: null,
+      variantId: null, variantLabel: null, assetKind: null, sha256: null });
     expect(fingerprint).toBe(JSON.stringify({
       modelId: draft.modelId,
       aspectRatio: draft.aspectRatio,
       resolution: draft.resolution,
-      references: [reference],
-      segments: [{ id: 'segment', prompt: '', durationSeconds: 5, firstFrame, lastFrame }],
+      references: [expectedImage(reference)],
+      segments: [{ id: 'segment', prompt: '', durationSeconds: 5,
+        firstFrame: expectedImage(firstFrame), lastFrame: expectedImage(lastFrame) }],
     }));
     expect(directorSubmissionFingerprint({ ...draft, revision: 42, schemaVersion: 1 })).toBe(fingerprint);
     expect(directorSubmissionFingerprint({ ...draft, modelId: 'another-model' })).not.toBe(fingerprint);
     expect(directorSubmissionFingerprint({ ...draft, segments: [{ ...draft.segments[0], prompt: 'Move' }] })).not.toBe(fingerprint);
+  });
+
+  it('normalizes optional image fields like wire serialization', () => {
+    const draft = dataWithImages().draft;
+    const wireRoundTrip = draftFromWire(draftToWire(draft));
+    expect(directorSubmissionFingerprint(wireRoundTrip)).toBe(directorSubmissionFingerprint(draft));
+
+    const explicitNulls = { ...draft, references: [{ ...reference, assetId: null, characterId: null,
+      variantId: null, variantLabel: null, assetKind: null, sha256: null }] };
+    expect(directorSubmissionFingerprint(explicitNulls)).toBe(directorSubmissionFingerprint(draft));
   });
 
   it('switches from Ref to frames after the final reference is removed if a first frame exists', () => {

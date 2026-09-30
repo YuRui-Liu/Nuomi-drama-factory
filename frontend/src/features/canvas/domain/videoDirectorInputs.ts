@@ -1,6 +1,20 @@
-import type { DirectorDraft, VideoDirectorNodeData } from './canvasNodes';
+import type { DirectorDraft, DirectorImage, VideoDirectorNodeData } from './canvasNodes';
 
 export type DirectorInputMode = 'ref' | 'frames';
+
+function fingerprintImage(image: DirectorImage | null): DirectorImage | null {
+  if (!image) return null;
+  return {
+    imageId: image.imageId,
+    url: image.url,
+    assetId: image.assetId ?? null,
+    characterId: image.characterId ?? null,
+    variantId: image.variantId ?? null,
+    variantLabel: image.variantLabel ?? null,
+    assetKind: image.assetKind ?? null,
+    sha256: image.sha256 ?? null,
+  };
+}
 
 export function resolveDirectorInputMode(data: VideoDirectorNodeData): DirectorInputMode {
   if (data.activeInputMode) return data.activeInputMode;
@@ -26,15 +40,17 @@ export function directorSubmissionFingerprint(draft: DirectorDraft): string {
     modelId: draft.modelId,
     aspectRatio: draft.aspectRatio,
     resolution: draft.resolution,
-    references: draft.references,
+    references: draft.references.map(fingerprintImage),
     segments: draft.segments.map(({ id, prompt, durationSeconds, firstFrame, lastFrame }) => ({
-      id, prompt, durationSeconds, firstFrame, lastFrame,
+      id, prompt, durationSeconds,
+      firstFrame: fingerprintImage(firstFrame),
+      lastFrame: fingerprintImage(lastFrame),
     })),
   });
 }
 
 export function setDirectorInputMode(data: VideoDirectorNodeData, mode: DirectorInputMode): VideoDirectorNodeData {
-  if (resolveDirectorInputMode(data) === mode) return data;
+  if (data.activeInputMode === mode) return data;
   return { ...data, activeInputMode: mode, draft: { ...data.draft, revision: data.draft.revision + 1 } };
 }
 
