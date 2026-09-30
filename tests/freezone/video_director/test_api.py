@@ -16,7 +16,45 @@ from novelvideo.freezone.video_director.models import (
     OptimizedDirector, OptimizedSegment,
 )
 from novelvideo.freezone.video_director.service import DirectorService
+from novelvideo.freezone.video_director.techniques import CATALOG_VERSION, list_techniques
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+
+
+@pytest.mark.asyncio
+async def test_technique_catalog_requires_viewer_and_returns_complete_cards(monkeypatch):
+    roles = []
+
+    async def resolve(project, user, *, required_role):
+        roles.append(required_role)
+        if project != "p":
+            raise HTTPException(404)
+        return SimpleNamespace(project_id="p"), "alice", "show", None, None
+
+    monkeypatch.setattr(route, "_resolve_freezone_project", resolve)
+    app = FastAPI()
+    app.include_router(route.router, prefix="/api/v1")
+    app.dependency_overrides[get_api_user] = lambda: {"username": "alice"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/projects/p/freezone/video-director/techniques")
+        missing = await client.get("/api/v1/projects/missing/freezone/video-director/techniques")
+    assert response.status_code == 200
+    assert missing.status_code == 404
+    assert roles == ["viewer", "viewer"]
+    data = response.json()["data"]
+    assert data["catalog_version"] == CATALOG_VERSION
+    assert len(data["techniques"]) == len(list_techniques())
+    first = data["techniques"][0]
+    assert set(first) >= {
+        "id", "version", "content_hash", "status", "title", "summary", "category",
+        "intent", "action_beats", "performance", "camera", "ending_composition",
+        "avoid", "applicability", "sources",
+    }
+    assert set(first["applicability"]) >= {
+        "modes", "min_duration_seconds", "max_duration_seconds",
+    }
+    assert set(first["sources"][0]) >= {
+        "url", "credit", "source_type", "checked_at", "basis",
+    }
 
 
 @pytest.mark.asyncio

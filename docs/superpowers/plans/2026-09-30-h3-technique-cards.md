@@ -20,16 +20,16 @@
 - `frontend/src/api/videoDirector.ts`、`frontend/src/features/canvas/domain/canvasNodes.ts`：目录和选择的前后端 wire 契约。
 - `frontend/src/features/canvas/director/TechniqueCardPicker.tsx`：片段卡片选择、禁用原因、来源链接。
 - `frontend/src/features/canvas/director/{VideoDirectorPanel,DirectorSegmentEditor,directorValidation,DirectorHistory}.tsx`：接入选择与历史；既有无卡行为不变。
-- `frontend/src/locales/{zh,en}.json`：中英文文案。
+- `frontend/public/locales/{zh,en}/translation.json`：中英文文案。
 - `tests/freezone/video_director/test_techniques.py`、相关服务与优化测试、前端 director 测试：真实契约回归。
 
 ### 任务 1：只读精选目录与适用性
 
-- [ ] 写失败测试：目录有 8–12 张启用卡，ID/版本唯一、哈希由手法内容确定、每张有追溯链接；`i2v`/`fl2v`/`ref_only` 与对齐时长的兼容性返回精确原因。
-- [ ] 运行 `pytest tests/freezone/video_director/test_techniques.py -q`，确认失败。
-- [ ] 在 `techniques.py` 建立严格卡片模型与 10 张原创归纳卡；来源只存链接和提炼依据，读取目录不联网；按 `frames_for_duration(..., H3_FPS)` 的对齐秒数检查时长。
-- [ ] 增加 `GET /techniques`，返回目录、目录版本及契约字段；API 测试验证结构。
-- [ ] 运行目录和 API 测试，提交本任务。
+- [x] 写失败测试：目录有 8–12 张启用卡，ID/版本唯一、哈希由手法内容确定、每张有追溯链接；`i2v`/`fl2v`/`ref_only` 与对齐时长的兼容性返回精确原因。
+- [x] 运行 `pytest tests/freezone/video_director/test_techniques.py -q`，确认失败。
+- [x] 在 `techniques.py` 建立严格卡片模型与 8 张有具体来源支撑的原创归纳卡；来源只存链接和提炼依据，读取目录不联网；按 `frames_for_duration(..., H3_FPS)` 的对齐秒数检查时长。
+- [x] 增加 `GET /techniques`，返回目录、目录版本及契约字段；API 测试验证结构。
+- [x] 运行目录和 API 测试，提交本任务。
 
 ### 任务 2：草稿选择、提交冻结与历史
 

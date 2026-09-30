@@ -13,6 +13,7 @@ from novelvideo.freezone.video_director.capabilities import (
 )
 from novelvideo.freezone.video_director.models import DirectorDraft
 from novelvideo.freezone.video_director.service import DirectorService
+from novelvideo.freezone.video_director.techniques import CATALOG_VERSION, list_techniques
 from novelvideo.ports import get_task_backend
 from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
@@ -84,6 +85,15 @@ async def capabilities(project: str, user: dict = Depends(get_api_user)):
     data.update(configured_reference_limit=configured, effective_reference_limit=effective,
                 frame_step=17, frame_offset=5)
     return {"ok": True, "data": data}
+
+
+@router.get("/techniques")
+async def techniques(project: str, user: dict = Depends(get_api_user)):
+    await _resolve_freezone_project(project, user, required_role="viewer")
+    return {"ok": True, "data": {
+        "catalog_version": CATALOG_VERSION,
+        "techniques": [card.model_dump(mode="json") for card in list_techniques()],
+    }}
 
 
 @router.post("/attempts", status_code=status.HTTP_202_ACCEPTED)
