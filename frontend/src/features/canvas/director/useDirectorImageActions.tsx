@@ -48,7 +48,17 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
   const slotKey = useCallback((target: DirectorImageTarget) => target.kind === 'references' ? 'references'
     : target.kind === 'reference' ? `reference:${target.imageId}` : `${target.segmentId}.${target.field}`, []);
   const clearError = (target: DirectorImageTarget) => setErrors((current) => ({ ...current, [slotKey(target)]: '' }));
-  const commitDirectorSlot = useCallback((target: DirectorImageTarget, images: DirectorImage[], removeId?: string) => {
+  const invalidatePending = useCallback((target: DirectorImageTarget) => {
+    const keys = new Set([slotKey(target)]);
+    if (target.kind === 'references') Object.keys(latestUpload.current).filter((key) => key.startsWith('reference:')).forEach((key) => keys.add(key));
+    if (target.kind === 'reference') keys.add('references');
+    keys.forEach((key) => { latestUpload.current[key] = (latestUpload.current[key] ?? 0) + 1; });
+    setUploading((current) => Object.fromEntries(Object.entries(current).map(([key, value]) =>
+      [key, keys.has(key) ? false : value])));
+  }, [slotKey]);
+  const commitDirectorSlot = useCallback((target: DirectorImageTarget, images: DirectorImage[], removeId?: string,
+    sourceUpload?: number) => {
+    if (sourceUpload === undefined) invalidatePending(target);
     const current = nodeData(nodeId);
     if (!current) return false;
     const draft = current.draft;
@@ -85,7 +95,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     clearError(target);
     if (images.length) onCommit?.(target);
     return true;
-  }, [nodeId, referenceLimit, slotKey, onCommit]);
+  }, [nodeId, referenceLimit, slotKey, onCommit, invalidatePending]);
   const removeImage = useCallback((target: DirectorImageTarget, imageId?: string) => {
     const current = nodeData(nodeId);
     if (!current) return;
@@ -113,24 +123,19 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     if (!project) { setErrors((current) => ({ ...current, [key]: '缺少项目，无法上传图片' })); return; }
     setErrors((current) => ({ ...current, [key]: '' }));
     setUploading((current) => ({ ...current, [key]: true }));
-    let nodeValid = true;
-    let observedNode = startingNode;
-    const unsubscribe = useCanvasStore.subscribe((state) => {
-      const nextNode = state.nodes.find((item) => item.id === nodeId);
-      if (!nextNode) { nodeValid = false; return; }
-      if (nextNode !== observedNode) {
-        const previousDraft = (observedNode.data as VideoDirectorNodeData).draft;
-        const nextDraft = (nextNode.data as VideoDirectorNodeData).draft;
-        if (!previousDraft || !nextDraft) { nodeValid = false; return; }
-        if (previousDraft !== nextDraft && nextDraft.revision <= previousDraft.revision) nodeValid = false;
-        observedNode = nextNode;
-      }
-    });
-    const currentRequest = () => mounted.current && latestUpload.current[key] === sequence && nodeValid &&
+    const currentRequest = () => mounted.current && latestUpload.current[key] === sequence &&
+      directorNode(nodeId) === startingNode &&
       readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route;
     try {
       const uploaded = await uploadFreezoneImage(project, file, file.name);
-      if (!currentRequest() || !nodeData(nodeId)) return;
+      if (!currentRequest() || !nodeData(nodeId)) {
+        if (mounted.current && latestUpload.current[key] === sequence && target.kind === 'references' &&
+          readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route &&
+          referenceLimit !== undefined && (nodeData(nodeId)?.draft.references.length ?? 0) >= referenceLimit) {
+          setErrors((old) => ({ ...old, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
+        }
+        return;
+      }
       const image: DirectorImage = { imageId: uploaded.url, url: uploaded.url };
       if (target.kind === 'references') {
         const current = nodeData(nodeId)!;
@@ -139,12 +144,11 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
           setErrors((old) => ({ ...old, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
           return;
         }
-        commitDirectorSlot(target, [...current.draft.references, image]);
-      } else commitDirectorSlot(target, [image]);
+        commitDirectorSlot(target, [...current.draft.references, image], undefined, sequence);
+      } else commitDirectorSlot(target, [image], undefined, sequence);
     } catch (error) {
       if (currentRequest()) setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : '图片上传失败' }));
     } finally {
-      unsubscribe();
       if (mounted.current && latestUpload.current[key] === sequence) setUploading((current) => ({ ...current, [key]: false }));
     }
   }, [nodeId, referenceLimit, commitDirectorSlot, slotKey]);

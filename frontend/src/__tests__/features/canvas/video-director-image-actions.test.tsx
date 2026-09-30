@@ -166,6 +166,21 @@ describe('director image actions', () => {
     expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
   });
 
+  it('rejects an old upload when a same-ID replacement has a higher revision', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    const replacement = data();
+    replacement.draft.revision = 20;
+    act(() => useCanvasStore.getState().setCanvasData([{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
+      position: { x: 0, y: 0 }, data: replacement }], []));
+    await act(async () => { resolve({ url: '/new.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+    expect(current().draft.revision).toBe(20);
+  });
+
   it('lets only the latest upload for a slot control its result and status', async () => {
     const resolvers: Array<(value: { url: string }) => void> = [];
     uploadFreezoneImage.mockImplementation(() => new Promise((done) => { resolvers.push(done); }));
@@ -179,6 +194,31 @@ describe('director image actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent('上传中');
     await act(async () => { resolvers[1]({ url: '/b.png' }); await second; });
     expect(current().draft.segments[0].firstFrame?.imageId).toBe('/b.png');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('keeps a manual library choice made while a frame upload is pending', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    act(() => actions.openPicker(frame));
+    act(() => actions.libraryProps?.onConfirm?.([{ media: 'image', name: 'manual', imageId: 'manual', url: '/manual.png' }]));
+    await act(async () => { resolve({ url: '/late.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('manual');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('keeps a manual removal made while a frame upload is pending', async () => {
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<Harness />);
+    let pending!: Promise<void>;
+    act(() => { pending = actions.uploadFile(frame, new File(['x'], 'x.png', { type: 'image/png' })); });
+    act(() => actions.removeImage(frame));
+    await act(async () => { resolve({ url: '/late.png' }); await pending; });
+    expect(current().draft.segments[0].firstFrame).toBeNull();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
