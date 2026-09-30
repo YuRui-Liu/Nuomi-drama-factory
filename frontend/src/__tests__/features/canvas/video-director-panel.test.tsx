@@ -1,11 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import i18next from 'i18next';
+import { I18nextProvider, initReactI18next } from 'react-i18next';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { VideoDirectorPanel } from '@/features/canvas/director/VideoDirectorPanel';
 import { createDirectorDraft, addSegment } from '@/features/canvas/domain/videoDirectorDraft';
-import type { VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
+import { CANVAS_NODE_TYPES, type VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
 import type { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirectorTask';
+import { useCanvasStore } from '@/stores/canvasStore';
 
 vi.mock('@/features/canvas/ui/AssetLibraryModal', () => ({ AssetLibraryModal: () => null }));
+const zhI18n = i18next.createInstance();
+await zhI18n.use(initReactI18next).init({ lng: 'zh', fallbackLng: 'zh',
+  resources: { zh: { translation: JSON.parse(readFileSync('public/locales/zh/translation.json', 'utf8')) } } });
 
 const capabilities = { models: [{ id: 'minimax-h3', label: 'MiniMax H3', adapter: 'h3', referenceAdapter: 'h3_ref' }],
   referenceLimit: 5, effectiveReferenceLimit: 5, configuredReferenceLimit: 5, fps: 24, frameStep: 17, frameOffset: 5,
@@ -20,6 +27,27 @@ function task(overrides: Partial<ReturnType<typeof useVideoDirectorTask>> = {}):
 }
 
 describe('video director panel', () => {
+  it('shows the connected first frame as read-only and identifies the saved disconnect fallback', () => {
+    const data = makeData();
+    data.activeInputMode = 'frames';
+    data.draft.segments[0].firstFrame = { imageId: 'manual', url: '/manual.png' };
+    useCanvasStore.getState().setCanvasData([
+      { id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data },
+      { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/linked.png' } },
+    ], [{ id: 'link', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage',
+      slot: { kind: 'firstFrame', segmentId: 'one' } } }]);
+    render(<I18nextProvider i18n={zhI18n}><VideoDirectorPanel nodeId="director" data={data} task={task()}
+      onDraftChange={vi.fn()} onClose={vi.fn()} /></I18nextProvider>);
+    const first = screen.getByRole('group', { name: '首帧' });
+    expect(within(first).getByRole('img', { name: '连线首帧' })).toHaveAttribute('src', expect.stringContaining('/linked.png'));
+    expect(within(first).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(first).getByText('断线后恢复已选图片')).toBeInTheDocument();
+    expect(within(first).getByRole('img', { name: '断线后恢复已选图片' })).toHaveAttribute('src', '/manual.png');
+    act(() => useCanvasStore.setState({ edges: [] }));
+    const manual = screen.getByRole('group', { name: '首帧' });
+    expect(within(manual).getByRole('button', { name: '移除' })).toBeInTheDocument();
+    expect(within(manual).getByRole('img')).toHaveAttribute('src', '/manual.png');
+  });
   it('delegates generation after two-segment draft edits without passing a stale draft', () => {
     const data = makeData();
     data.draft.references = [{ imageId: 'reference', url: '/reference.png' }];

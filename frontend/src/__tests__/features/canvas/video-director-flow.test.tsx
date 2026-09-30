@@ -181,6 +181,15 @@ describe('Director real component flow', () => {
     expect(nodeData().draft.references).toHaveLength(1);
   });
 
+  it('does not pass a blank-card image drop to the canvas parent', () => {
+    const parentDrop = vi.fn();
+    render(<div onDrop={parentDrop}><CurrentNode /></div>);
+    fireEvent.drop(screen.getByText('MiniMax H3 Ref'), {
+      dataTransfer: { files: [new File(['image'], 'ref.png', { type: 'image/png' })] },
+    });
+    expect(parentDrop).not.toHaveBeenCalled();
+  });
+
   it('selects character variants, submits ordered raw segments, then shows optimized history and video', async () => {
     let postedDraft: Record<string, any> | undefined;
     let storedAttempt: Record<string, any> | undefined;

@@ -3481,6 +3481,7 @@
       "videoDirector": "视频导演"
     },
     "videoDirector": {
+      "panelFrame": { "connectedFrameAlt": "连线{{label}}", "connectedFrameSource": "来自连线节点，当前参与生成", "restoreAfterDisconnect": "断线后恢复已选图片" },
       "activeRouteLabel": "活动路线：{{route}}",
       "imageSlot": { "preview": "{{label}}预览", "select": "选择图片", "upload": "上传图片", "remove": "移除", "uploadLabel": "{{label}}上传图片", "dropHint": "可拖入图片", "uploading": "上传中…" },
       "errors": { "connectedReferenceUnavailable": "连线参考图不可用", "connectedFrameUnavailable": "连线帧图片不可用", "modelUnavailable": "当前模型不可用，请选择可用模型", "resolutionUnavailable": "当前分辨率不可用", "aspectUnavailable": "当前画幅不可用", "sizeUnavailable": "当前分辨率与画幅组合不可用", "segmentsRequired": "至少需要一个分段", "promptRequired": "请输入分段提示词", "durationPositive": "时长必须为正数", "referenceFirstConflict": "参考图与首帧不可同时使用", "referenceLastConflict": "参考图与尾帧不可同时使用", "lastFrameAlone": "尾帧不能单独使用，请选择首帧", "firstFrameRequired": "没有参考图时必须选择首帧", "referenceLimit": "最多选择 {{count}} 张参考图", "modeUnavailable": "{{mode}} 模式当前不可用", "referenceUploadLimit": "参考图已达到上限（{{count}} 张）", "projectMissing": "缺少项目，无法上传图片", "uploadFailed": "图片上传失败" },

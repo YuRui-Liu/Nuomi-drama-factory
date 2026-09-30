@@ -5,6 +5,7 @@ import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 import type { DirectorDraft, DirectorImage, VideoDirectorNodeData } from '../domain/canvasNodes';
 import { reconcileDirectorInputModeAfterReferenceRemoval } from '../domain/videoDirectorInputs';
+import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
 import type { AssetLibraryModalProps, AssetLibrarySelection } from '../ui/AssetLibraryModal';
 
 export type DirectorImageTarget = { kind: 'references' } | { kind: 'reference'; imageId: string } | {
@@ -106,8 +107,12 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     let next: VideoDirectorNodeData = { ...current, draft: nextDraft };
     if (images.length) next.activeInputMode = target.kind === 'frame' ? 'frames' : 'ref';
     else if (target.kind !== 'frame' && (removeId || draft.references.length > 0)) {
-      next = reconcileDirectorInputModeAfterReferenceRemoval(next);
-      next.draft = { ...next.draft, revision: nextDraft.revision };
+      const canvas = useCanvasStore.getState();
+      const projected = resolveDirectorBindings(nextDraft, canvas.nodes, canvas.edges.filter((edge) => edge.target === nodeId), 'ref');
+      if (!projected.draft.references.length) {
+        next = reconcileDirectorInputModeAfterReferenceRemoval(next);
+        next.draft = { ...next.draft, revision: nextDraft.revision };
+      }
     }
     useCanvasStore.getState().updateNodeData(nodeId, { draft: next.draft, activeInputMode: next.activeInputMode });
     clearError(target);

@@ -6,6 +6,8 @@ import { DirectorImageSlot } from './DirectorImageSlot';
 
 interface Props {
   segment: DirectorSegment;
+  effectiveFrames?: Pick<DirectorSegment, 'firstFrame' | 'lastFrame'>;
+  boundFrames?: { firstFrame: boolean; lastFrame: boolean };
   index: number;
   count: number;
   capabilities: DirectorCapabilities | null;
@@ -21,7 +23,7 @@ interface Props {
   onMove: (offset: number) => void;
 }
 
-export function DirectorSegmentEditor({ segment, index, count, capabilities, errors, onPatch, onPick, onUpload, onRemove, imageErrors, uploading, onCopy, onDelete, onMove }: Props) {
+export function DirectorSegmentEditor({ segment, effectiveFrames, boundFrames, index, count, capabilities, errors, onPatch, onPick, onUpload, onRemove, imageErrors, uploading, onCopy, onDelete, onMove }: Props) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   const prefix = `segments[${index}]`;
@@ -48,10 +50,21 @@ export function DirectorSegmentEditor({ segment, index, count, capabilities, err
     {errors[`${prefix}.duration_seconds`] && <p className="text-xs text-red-300">{errors[`${prefix}.duration_seconds`]}</p>}
     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
       {(['firstFrame', 'lastFrame'] as const).map((field) => <div key={field}>
-        <DirectorImageSlot label={field === 'firstFrame' ? tr('firstFrame', '首帧') : tr('lastFrame', '尾帧')}
+        {boundFrames?.[field] ? <div role="group" aria-label={tr(field, field)} className="rounded border border-white/10 p-2">
+          <span>{tr(field, field)}</span>
+          {effectiveFrames?.[field] && <img src={effectiveFrames[field]!.url}
+            alt={t('node.videoDirector.panelFrame.connectedFrameAlt', { label: tr(field, field) })}
+            className="mt-1 h-20 w-full object-contain" />}
+          <p className="mt-1 text-text-muted">{t('node.videoDirector.panelFrame.connectedFrameSource')}</p>
+          {segment[field] && <div className="mt-2 border-t border-white/10 pt-2">
+            <p className="text-text-muted">{t('node.videoDirector.panelFrame.restoreAfterDisconnect')}</p>
+            <img src={segment[field]!.url} alt={t('node.videoDirector.panelFrame.restoreAfterDisconnect')}
+              className="mt-1 h-12 w-full object-contain opacity-60" />
+          </div>}
+        </div> : <DirectorImageSlot label={field === 'firstFrame' ? tr('firstFrame', '首帧') : tr('lastFrame', '尾帧')}
           image={segment[field]} error={imageErrors[`${segment.id}.${field}`]}
           uploading={uploading[`${segment.id}.${field}`]}
-          onPick={() => onPick(field)} onUpload={(file) => onUpload(field, file)} onRemove={() => onRemove(field)} />
+          onPick={() => onPick(field)} onUpload={(file) => onUpload(field, file)} onRemove={() => onRemove(field)} />}
         {errors[`${prefix}.${field === 'firstFrame' ? 'first_frame' : 'last_frame'}`] &&
           <p className="text-red-300">{errors[`${prefix}.${field === 'firstFrame' ? 'first_frame' : 'last_frame'}`]}</p>}
       </div>)}

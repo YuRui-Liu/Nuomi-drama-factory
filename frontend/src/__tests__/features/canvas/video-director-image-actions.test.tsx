@@ -136,6 +136,21 @@ describe('director image actions', () => {
     expect(current().draft.revision).toBe(1);
   });
 
+  it('stays in Ref when removing the last manual reference leaves a live connected reference', () => {
+    const next = data();
+    next.activeInputMode = 'ref';
+    next.draft.references = [{ imageId: 'manual', url: '/manual.png' }];
+    useCanvasStore.getState().setCanvasData([
+      { id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data: next },
+      { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/linked.png' } },
+    ], [{ id: 'link', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }]);
+    render(<Harness target={refs} />);
+    act(() => actions.removeImage({ kind: 'reference', imageId: 'manual' }));
+    expect(current().draft.references).toEqual([]);
+    expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+    expect(current().activeInputMode).toBe('ref');
+  });
+
   it('keeps a newer panel selection when an older card upload finishes later', async () => {
     let finish!: (value: { url: string }) => void;
     uploadFreezoneImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));

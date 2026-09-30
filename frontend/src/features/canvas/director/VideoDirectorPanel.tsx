@@ -12,7 +12,7 @@ import { directorStageLabel } from './directorStatus';
 import { DirectorImageSlot } from './DirectorImageSlot';
 import { useDirectorImageActions, type DirectorImageTarget } from './useDirectorImageActions';
 import { useCanvasStore } from '@/stores/canvasStore';
-import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
+import { readDirectorBinding, resolveDirectorBindings } from '../domain/videoDirectorBindings';
 import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
@@ -40,7 +40,8 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
   const mode = resolveDirectorInputMode(data);
-  const binding = resolveDirectorBindings(draft, nodes, edges.filter((edge) => edge.target === nodeId), mode);
+  const incoming = edges.filter((edge) => edge.target === nodeId);
+  const binding = resolveDirectorBindings(draft, nodes, incoming, mode);
   const effective = projectDirectorDraft(binding.draft, mode);
   const capabilities = task.capabilities;
   const setDraft = (next: DirectorDraft) => { onDraftChange(next); setClearedErrors(new Set()); };
@@ -108,6 +109,14 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
         </section>
         <div className="space-y-3">{draft.segments.map((segment, index) => <DirectorSegmentEditor key={segment.id}
           segment={segment} index={index} count={draft.segments.length} capabilities={capabilities} errors={errors}
+          effectiveFrames={{
+            firstFrame: binding.errors[`segments[${index}].first_frame`] ? null : effective.segments[index]?.firstFrame ?? null,
+            lastFrame: binding.errors[`segments[${index}].last_frame`] ? null : effective.segments[index]?.lastFrame ?? null,
+          }}
+          boundFrames={{
+            firstFrame: mode === 'frames' && incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'firstFrame' && slot.segmentId === segment.id; }),
+            lastFrame: mode === 'frames' && incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'lastFrame' && slot.segmentId === segment.id; }),
+          }}
           onPatch={(patch) => setDraft(updateSegment(draft, segment.id, patch))}
           onPick={(field) => images.openPicker({ kind: 'frame', segmentId: segment.id, field })}
           onUpload={(field, file) => void images.uploadFile({ kind: 'frame', segmentId: segment.id, field }, file)}
@@ -118,14 +127,6 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
           onMove={(offset) => setDraft(reorderSegments(draft, index, index + offset))} />)}</div>
         {mode === 'ref' && draft.segments.some((segment) => segment.firstFrame || segment.lastFrame) &&
           <p className="text-xs text-text-muted">{t('node.videoDirector.editor.retainedInactive')}</p>}
-        {mode === 'frames' && effective.segments.some((segment, index) => segment.firstFrame?.imageId !== draft.segments[index]?.firstFrame?.imageId || segment.lastFrame?.imageId !== draft.segments[index]?.lastFrame?.imageId) &&
-          <div className="mt-2"><p className="text-xs">{t('node.videoDirector.editor.connectedFrames')}</p>
-            <div className="mt-1 flex gap-2">{effective.segments.flatMap((segment, index) => (['firstFrame', 'lastFrame'] as const).flatMap((field) => {
-              const image = segment[field];
-              return image && image.imageId !== draft.segments[index]?.[field]?.imageId ?
-                [<img key={`${segment.id}:${field}`} src={image.url} alt={`${tr('segment', '分段')} ${index + 1} ${tr(field, field)}`}
-                  className="h-20 w-20 rounded object-contain" />] : [];
-            }))}</div></div>}
         {errors.segments && <p className="text-xs text-red-300">{errors.segments}</p>}
         <button type="button" className="mt-3 rounded border border-white/10 px-3 py-2 text-sm" onClick={() => setDraft(addSegment(draft, crypto.randomUUID()))}>{tr('addSegment', '添加分段')}</button>
         <DirectorHistory attempts={task.attempts} activeId={data.activeAttemptId} onRetry={task.retry} onRefresh={() => void task.refresh()} />
