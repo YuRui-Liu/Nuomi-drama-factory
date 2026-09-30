@@ -20,6 +20,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
     'node.videoDirector.imageSlot.uploadLabel': `${options?.label}上传图片`,
     'node.videoDirector.imageSlot.dropHint': '可拖入图片',
     'node.videoDirector.imageSlot.uploading': '上传中…',
+    'node.videoDirector.imageSlot.invalidFile': '请选择图片文件',
     'node.videoDirector.errors.referenceUploadLimit': `参考图已达到上限（${(options as { count?: number })?.count} 张）`,
     'node.videoDirector.errors.projectMissing': '缺少项目，无法上传图片',
     'node.videoDirector.errors.uploadFailed': '图片上传失败',
@@ -220,10 +221,11 @@ describe('director image actions', () => {
     expect(current().draft.revision).toBe(0);
   });
 
-  it('ignores non-image drops without uploading', () => {
+  it('shows a local error for non-image drops without uploading', () => {
     render(<Harness />);
     fireEvent.drop(screen.getByLabelText('首帧'), { dataTransfer: { files: [new File(['x'], 'x.txt', { type: 'text/plain' })] } });
     expect(uploadFreezoneImage).not.toHaveBeenCalled();
+    expect(within(screen.getByRole('group', { name: '首帧' })).getByRole('alert')).toHaveTextContent('请选择图片文件');
   });
 
   it('preserves character variant identity from library selection', () => {

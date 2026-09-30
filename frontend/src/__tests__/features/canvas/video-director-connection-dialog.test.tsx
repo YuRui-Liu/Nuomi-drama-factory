@@ -19,7 +19,23 @@ vi.mock('@xyflow/react', async () => {
     screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }), setCenter: vi.fn(), setViewport: vi.fn() }),
   useStoreApi: () => ({ getState: () => ({ transform: [0, 0, 1] }), setState: vi.fn(), subscribe: () => () => {} }) };
 });
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? _key }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string; count?: number; index?: number; frame?: string; label?: string }) => ({
+  'node.videoDirector.connectionTarget.title': '选择图片连接目标',
+  'node.videoDirector.connectionTarget.description': '选择这张图片在视频导演中使用的位置。',
+  'node.videoDirector.connectionTarget.reference': '主体参考图',
+  'node.videoDirector.connectionTarget.projectMissing': '未选择项目，无法添加主体参考图',
+  'node.videoDirector.connectionTarget.limitUnavailable': '无法获取参考图数量限制',
+  'node.videoDirector.connectionTarget.alreadyBound': '该图片已连接为主体参考图',
+  'node.videoDirector.connectionTarget.loadingLimit': '正在获取参考图数量限制',
+  'node.videoDirector.connectionTarget.limitReached': `主体参考图已达到上限（${options?.count} 张）`,
+  'node.videoDirector.connectionTarget.firstFrame': '首帧',
+  'node.videoDirector.connectionTarget.lastFrame': '尾帧',
+  'node.videoDirector.connectionTarget.frameSlot': `第 ${options?.index} 段${options?.frame}`,
+  'node.videoDirector.connectionTarget.occupiedTitle': '该帧槽已被连线占用',
+  'node.videoDirector.connectionTarget.occupied': `${options?.label}已被连线占用`,
+  'node.videoDirector.connectionTarget.manualFallback': '连接期间将使用上游图，断线后恢复已选图片',
+  'node.videoDirector.connectionTarget.cancel': '取消',
+} as Record<string, string>)[key] ?? options?.defaultValue ?? key }) }));
 vi.mock('@/api/skills', () => ({ getSkillRegistry: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/api/videoDirector', () => ({ getDirectorCapabilities: vi.fn().mockResolvedValue({ effectiveReferenceLimit: 1 }) }));
 vi.mock('@/features/canvas/nodes', () => ({ nodeTypes: {} }));

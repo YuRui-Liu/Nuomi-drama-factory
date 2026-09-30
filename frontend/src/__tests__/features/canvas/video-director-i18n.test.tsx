@@ -4,6 +4,7 @@ import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoDirectorNode } from '@/features/canvas/nodes/VideoDirectorNode';
+import { DirectorConnectionTargetDialog } from '@/features/canvas/director/DirectorConnectionTargetDialog';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import type { DirectorAttempt, VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
@@ -22,6 +23,19 @@ const resources = Object.fromEntries(['zh', 'en'].map((language) => [language,
 
 describe('video director with real locale resources', () => {
   beforeEach(() => useCanvasStore.setState({ nodes: [], edges: [] }));
+  it('localizes image connection targets and missing-project guidance', async () => {
+    window.history.replaceState({}, '', '/freezone');
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    render(<I18nextProvider i18n={i18n}><DirectorConnectionTargetDialog sourceId="source"
+      target={{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 },
+        data: { draft: createDirectorDraft('s1') } }} nodes={[]} edges={[]}
+      onSelect={vi.fn()} onCancel={vi.fn()} error="" /></I18nextProvider>);
+    expect(screen.getByRole('dialog', { name: 'Choose image connection target' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Segment 1 first frame' })).toBeInTheDocument();
+    expect(screen.getByText('Select a project to add subject references')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
   it('shows a changed-input marker for a completed result and returns to inputs', async () => {
     const i18n = i18next.createInstance();
     await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
