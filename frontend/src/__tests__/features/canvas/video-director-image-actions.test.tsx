@@ -1,13 +1,16 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DirectorImageSlot } from '@/features/canvas/director/DirectorImageSlot';
 import { useDirectorImageActions, type DirectorImageTarget } from '@/features/canvas/director/useDirectorImageActions';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import { CANVAS_NODE_TYPES, type VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { VideoDirectorPanel } from '@/features/canvas/director/VideoDirectorPanel';
+import type { useVideoDirectorTask } from '@/features/canvas/director/useVideoDirectorTask';
 
 const uploadFreezoneImage = vi.hoisted(() => vi.fn());
 vi.mock('@/api/ops', () => ({ uploadFreezoneImage }));
+vi.mock('@/features/canvas/ui/AssetLibraryModal', () => ({ AssetLibraryModal: () => null }));
 
 const frame: DirectorImageTarget = { kind: 'frame', segmentId: 's1', field: 'firstFrame' };
 const refs: DirectorImageTarget = { kind: 'references' };
@@ -26,6 +29,13 @@ function data(): VideoDirectorNodeData {
   return { draft, activeInputMode: 'frames', activeAttemptId: null, videoUrl: null, resultRevision: null };
 }
 function current() { return useCanvasStore.getState().nodes.find((node) => node.id === 'director')!.data as VideoDirectorNodeData; }
+function PanelHarness() {
+  const node = useCanvasStore((state) => state.nodes.find((item) => item.id === 'director'))!;
+  const task = { capabilities: { effectiveReferenceLimit: 2, models: [], params: { aspectRatio: [], resolution: [] } },
+    attempts: [], error: '', fieldErrors: {}, generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() };
+  return <VideoDirectorPanel nodeId="director" data={node.data as VideoDirectorNodeData} task={task as unknown as ReturnType<typeof useVideoDirectorTask>}
+    onDraftChange={(draft) => useCanvasStore.getState().updateNodeData('director', { draft })} onClose={vi.fn()} />;
+}
 
 describe('director image actions', () => {
   beforeEach(() => {
@@ -109,5 +119,34 @@ describe('director image actions', () => {
     window.history.replaceState({}, '', '/projects/demo/freezone/another-canvas');
     await act(async () => { resolve({ url: '/new.png' }); await pending; });
     expect(current().draft.segments[0].firstFrame?.imageId).toBe('old');
+  });
+
+  it('replaces one existing reference at the limit after its panel upload succeeds', async () => {
+    const initial = data();
+    initial.draft.references = [{ imageId: 'a', url: '/a.png' }, { imageId: 'b', url: '/b.png' }];
+    useCanvasStore.getState().updateNodeData('director', initial);
+    let resolve!: (value: { url: string }) => void;
+    uploadFreezoneImage.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<PanelHarness />);
+    const slot = screen.getByLabelText('参考图 a');
+    fireEvent.change(within(slot).getByLabelText('参考图 a上传图片'), { target: { files: [new File(['x'], 'new.png', { type: 'image/png' })] } });
+    expect(within(slot).getByRole('status')).toHaveTextContent('上传中');
+    expect(current().draft.references.map((image) => image.imageId)).toEqual(['a', 'b']);
+    await act(async () => resolve({ url: '/new.png' }));
+    expect(current().draft.references.map((image) => image.imageId)).toEqual(['/new.png', 'b']);
+    expect(current().draft.revision).toBe(1);
+  });
+
+  it('keeps an existing reference and shows its panel slot error after upload fails', async () => {
+    const initial = data();
+    initial.draft.references = [{ imageId: 'a', url: '/a.png' }];
+    useCanvasStore.getState().updateNodeData('director', initial);
+    uploadFreezoneImage.mockRejectedValue(new Error('network down'));
+    render(<PanelHarness />);
+    const slot = screen.getByLabelText('参考图 a');
+    fireEvent.change(within(slot).getByLabelText('参考图 a上传图片'), { target: { files: [new File(['x'], 'new.png', { type: 'image/png' })] } });
+    await waitFor(() => expect(within(slot).getByRole('alert')).toHaveTextContent('network down'));
+    expect(current().draft.references.map((image) => image.imageId)).toEqual(['a']);
+    expect(current().draft.revision).toBe(0);
   });
 });

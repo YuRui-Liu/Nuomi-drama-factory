@@ -67,9 +67,11 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
             <button type="button" onClick={() => images.openPicker({ kind: 'references' })}>{tr('selectReferences', '选择参考图')}</button></div>
           <div className="mt-2 flex gap-2 overflow-auto">{draft.references.map((image) => <div key={image.imageId} className="w-28 shrink-0">
             <DirectorImageSlot label={`${tr('references', '参考图')} ${image.imageId}`} image={image}
-              onPick={() => images.openPicker({ kind: 'references' })}
-              onUpload={(file) => void images.uploadFile({ kind: 'references' }, file)}
-              onRemove={() => images.removeImage({ kind: 'references' }, image.imageId)} />
+              error={images.errors[images.slotKey({ kind: 'reference', imageId: image.imageId })]}
+              uploading={images.uploading[images.slotKey({ kind: 'reference', imageId: image.imageId })]}
+              onPick={() => images.openPicker({ kind: 'reference', imageId: image.imageId })}
+              onUpload={(file) => void images.uploadFile({ kind: 'reference', imageId: image.imageId }, file)}
+              onRemove={() => images.removeImage({ kind: 'reference', imageId: image.imageId })} />
           </div>)}
           <div className="w-28 shrink-0"><DirectorImageSlot label={tr('addReference', '添加参考图')} image={null}
             error={images.errors.references} uploading={images.uploading.references}

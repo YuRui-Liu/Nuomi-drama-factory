@@ -6,7 +6,7 @@ import type { DirectorDraft, DirectorImage, VideoDirectorNodeData } from '../dom
 import { reconcileDirectorInputModeAfterReferenceRemoval } from '../domain/videoDirectorInputs';
 import type { AssetLibraryModalProps, AssetLibrarySelection } from '../ui/AssetLibraryModal';
 
-export type DirectorImageTarget = { kind: 'references' } | {
+export type DirectorImageTarget = { kind: 'references' } | { kind: 'reference'; imageId: string } | {
   kind: 'frame'; segmentId: string; field: 'firstFrame' | 'lastFrame';
 };
 
@@ -34,8 +34,8 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number)
   const [pickTarget, setPickTarget] = useState<DirectorImageTarget | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
-  const slotKey = useCallback((target: DirectorImageTarget) => target.kind === 'references'
-    ? 'references' : `${target.segmentId}.${target.field}`, []);
+  const slotKey = useCallback((target: DirectorImageTarget) => target.kind === 'references' ? 'references'
+    : target.kind === 'reference' ? `reference:${target.imageId}` : `${target.segmentId}.${target.field}`, []);
   const clearError = (target: DirectorImageTarget) => setErrors((current) => ({ ...current, [slotKey(target)]: '' }));
   const commitDirectorSlot = useCallback((target: DirectorImageTarget, images: DirectorImage[], removeId?: string) => {
     const current = nodeData(nodeId);
@@ -49,14 +49,23 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number)
       if (references.length === draft.references.length && references.every((image, index) =>
         JSON.stringify(image) === JSON.stringify(draft.references[index]))) return;
       nextDraft = { ...draft, revision: draft.revision + 1, references };
+    } else if (target.kind === 'reference') {
+      const index = draft.references.findIndex((image) => image.imageId === target.imageId);
+      if (index < 0) return;
+      const replacement = images[0];
+      if (replacement && draft.references.some((image, other) => other !== index && image.imageId === replacement.imageId)) return;
+      const references = replacement ? draft.references.map((image, other) => other === index ? replacement : image)
+        : draft.references.filter((_, other) => other !== index);
+      if (replacement && JSON.stringify(replacement) === JSON.stringify(draft.references[index])) return;
+      nextDraft = { ...draft, revision: draft.revision + 1, references };
     } else {
       if (!draft.segments.some((segment) => segment.id === target.segmentId)) return;
       nextDraft = { ...draft, revision: draft.revision + 1, segments: draft.segments.map((segment) => segment.id === target.segmentId
         ? { ...segment, [target.field]: images[0] ?? null } : segment) };
     }
     let next: VideoDirectorNodeData = { ...current, draft: nextDraft };
-    if (images.length) next.activeInputMode = target.kind === 'references' ? 'ref' : 'frames';
-    else if (target.kind === 'references' && (removeId || draft.references.length > 0)) {
+    if (images.length) next.activeInputMode = target.kind === 'frame' ? 'frames' : 'ref';
+    else if (target.kind !== 'frame' && (removeId || draft.references.length > 0)) {
       next = reconcileDirectorInputModeAfterReferenceRemoval(next);
       next.draft = { ...next.draft, revision: nextDraft.revision };
     }
@@ -68,6 +77,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number)
     if (!current) return;
     if (target.kind === 'references') commitDirectorSlot(target,
       current.draft.references.filter((image) => image.imageId !== imageId), imageId);
+    else if (target.kind === 'reference') commitDirectorSlot(target, [], target.imageId);
     else commitDirectorSlot(target, []);
   }, [nodeId, commitDirectorSlot]);
   const uploadFile = useCallback(async (target: DirectorImageTarget, file: File) => {
@@ -96,6 +106,10 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number)
   const closePicker = useCallback(() => setPickTarget(null), []);
   const current = nodeData(nodeId);
   const selections = pickTarget?.kind === 'references' ? current?.draft.references.map(directorImageToSelection) ?? []
+    : pickTarget?.kind === 'reference' ? (() => {
+      const image = current?.draft.references.find((item) => item.imageId === pickTarget.imageId);
+      return image ? [directorImageToSelection(image)] : [];
+    })()
     : pickTarget?.kind === 'frame' ? (() => {
       const image = current?.draft.segments.find((segment) => segment.id === pickTarget.segmentId)?.[pickTarget.field];
       return image ? [directorImageToSelection(image)] : [];
