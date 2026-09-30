@@ -4,11 +4,37 @@ from contextvars import ContextVar
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 
 from .models import ExecutionSnapshot
 
 WRITER_KINDS = ('brief', 'outline', 'people', 'scenes', 'props', 'episode_synopsis', 'episode_script')
 _CURRENT = ContextVar('agent_team_methods', default={})
+
+
+def load_generation_methods(ctx, run_id):
+    """Read durable run routing from the document DB, independent of task TTL."""
+    path = Path(ctx.state_dir) / 'data.db'
+    if not path.is_file():
+        return None
+    with sqlite3.connect(path, timeout=30) as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_team_generation_bindings'").fetchone()
+        if not exists:
+            return None
+        row = db.execute('SELECT data FROM agent_team_generation_bindings WHERE project_id=? AND run_id=?', (ctx.project_id, run_id)).fetchone()
+        return json.loads(row[0]) if row else None
+
+
+def bind_generation_methods(ctx, run_id, metadata):
+    """First submission wins atomically, including the explicit no-team [] state."""
+    path = Path(ctx.state_dir) / 'data.db'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path, timeout=30) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS agent_team_generation_bindings (project_id TEXT NOT NULL, run_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(project_id, run_id))')
+        db.execute('INSERT OR IGNORE INTO agent_team_generation_bindings VALUES (?, ?, ?)',
+                   (ctx.project_id, run_id, json.dumps(metadata, ensure_ascii=False)))
+        row = db.execute('SELECT data FROM agent_team_generation_bindings WHERE project_id=? AND run_id=?', (ctx.project_id, run_id)).fetchone()
+        return json.loads(row[0])
 
 
 def connected_subtasks():

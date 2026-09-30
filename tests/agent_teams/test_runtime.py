@@ -130,3 +130,19 @@ async def test_enqueue_retry_reuses_run_snapshot_and_copies_payload(monkeypatch,
     assert captured['job'].envelope['payload']['nested']['value'] == 'before'
     assert captured['metadata']['agent_team_snapshots'] == frozen
     assert captured['job'].envelope['agent_team_snapshots'] == frozen
+    # Task-state TTL expires, but the logical generation run is durable.
+    previous = None
+    monkeypatch.setattr(tasks, 'resolve_configured_agent_task_route', lambda **kw: pytest.fail('retry resolved current route'))
+    await backend.enqueue_project_task(ctx, task_type='script_creation_generation', scope='run:r', payload=payload)
+    assert captured['job'].envelope['agent_team_snapshots'] == frozen
+
+
+def test_durable_run_binding_first_submission_wins(tmp_path):
+    from novelvideo.agent_teams.runtime import bind_generation_methods, load_generation_methods
+    ctx = SimpleNamespace(state_dir=tmp_path, project_id='p')
+    original = {'agent_team_snapshots': [], 'agent_route_snapshot': {'model': 'original'}}
+    assert bind_generation_methods(ctx, 'r', original) == original
+    assert bind_generation_methods(ctx, 'r', {'changed': True}) == original
+    assert load_generation_methods(ctx, 'r') == original
+    assert load_generation_methods(SimpleNamespace(state_dir=tmp_path, project_id='other'), 'r') is None
+    assert not (tmp_path / 'agent-team.db').exists()
