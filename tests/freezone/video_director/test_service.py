@@ -10,6 +10,7 @@ from novelvideo.freezone.video_director.models import (
 )
 from novelvideo.freezone.video_director.service import DirectorService
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+from novelvideo.media_capabilities.video.h3_prompt_profile import H3_PROMPT_PROFILE_VERSION
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 
 
@@ -34,7 +35,7 @@ async def fake_optimize(runtime, source, *, frozen_images, reference_limit):
                           integrated_multimodal_description="[Shot 1] Walk",
                           overall_soundscape="Footsteps", non_diegetic_music="N/A")
     return OptimizedDirector(revision=source.revision, route="h3", profile_id="minimax-h3-director",
-                             profile_version=15, optimized_at=datetime.now(timezone.utc),
+                             profile_version=H3_PROMPT_PROFILE_VERSION, optimized_at=datetime.now(timezone.utc),
                              segments=(OptimizedSegment(segment_id="one", mode="i2va",
                                  requested_duration_seconds=5, duration_seconds=aligned.duration_seconds,
                                  frames=aligned.frames, wire=wire, prompt=compile_h3_wire(wire)),))

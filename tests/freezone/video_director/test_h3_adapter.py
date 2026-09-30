@@ -11,6 +11,7 @@ from novelvideo.freezone.video_director.models import (
     DirectorSegment, OptimizedDirector, OptimizedSegment,
 )
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+from novelvideo.media_capabilities.video.h3_prompt_profile import H3_PROMPT_PROFILE_VERSION
 
 
 def image(image_id):
@@ -38,7 +39,7 @@ def optimized(draft, wires, route):
     from novelvideo.freezone.video_director.capabilities import validate_generation
     aligned = validate_generation(draft).timeline
     return OptimizedDirector(revision=draft.revision, route=route,
-                             profile_id="minimax-h3-director", profile_version=15,
+                             profile_id="minimax-h3-director", profile_version=H3_PROMPT_PROFILE_VERSION,
                              optimized_at=datetime.now(timezone.utc),
                              segments=tuple(OptimizedSegment(
                                  segment_id=source.id, mode=wire.mode,

@@ -11,6 +11,7 @@ from novelvideo.freezone.video_director.models import (
 )
 from novelvideo.freezone.video_director.provider import RunningHubDirectorProvider
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+from novelvideo.media_capabilities.video.h3_prompt_profile import H3_PROMPT_PROFILE_VERSION
 
 
 class FakeClient:
@@ -62,7 +63,7 @@ async def test_reference_workflow_uses_its_settings_key_and_no_refine_node(tmp_p
                                detailed_description="<Subject 1> walks", overall_soundscape="Footsteps",
                                non_diegetic_music="N/A")
     optimized = OptimizedDirector(revision=1, route="h3_ref", profile_id="minimax-h3-director",
-                                  profile_version=15, optimized_at=datetime.now(timezone.utc),
+                                  profile_version=H3_PROMPT_PROFILE_VERSION, optimized_at=datetime.now(timezone.utc),
                                   segments=(OptimizedSegment(segment_id="s", mode="ref2va",
                                       requested_duration_seconds=5, duration_seconds=aligned.duration_seconds,
                                       frames=aligned.frames, wire=wire, prompt=compile_h3_wire(wire)),))
@@ -104,7 +105,7 @@ async def test_known_ordinary_profile_receives_timeline_and_refine_dimensions(tm
                           integrated_multimodal_description="[Shot 1] Walk",
                           overall_soundscape="Footsteps", non_diegetic_music="N/A")
     optimized = OptimizedDirector(revision=1, route="h3", profile_id="minimax-h3-director",
-                                  profile_version=15, optimized_at=datetime.now(timezone.utc),
+                                  profile_version=H3_PROMPT_PROFILE_VERSION, optimized_at=datetime.now(timezone.utc),
                                   segments=(OptimizedSegment(segment_id="s", mode="i2va",
                                       requested_duration_seconds=5, duration_seconds=aligned.duration_seconds,
                                       frames=aligned.frames, wire=wire, prompt=compile_h3_wire(wire)),))
