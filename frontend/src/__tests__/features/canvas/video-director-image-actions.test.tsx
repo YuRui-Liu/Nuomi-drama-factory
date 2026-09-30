@@ -20,6 +20,9 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
     'node.videoDirector.imageSlot.uploadLabel': `${options?.label}上传图片`,
     'node.videoDirector.imageSlot.dropHint': '可拖入图片',
     'node.videoDirector.imageSlot.uploading': '上传中…',
+    'node.videoDirector.errors.referenceUploadLimit': `参考图已达到上限（${(options as { count?: number })?.count} 张）`,
+    'node.videoDirector.errors.projectMissing': '缺少项目，无法上传图片',
+    'node.videoDirector.errors.uploadFailed': '图片上传失败',
   } as Record<string, string>)[key] ?? options?.defaultValue ?? key,
 }) }));
 

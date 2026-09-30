@@ -6,6 +6,7 @@ import type { DirectorDraft, VideoDirectorNodeData } from '../domain/canvasNodes
 import { addSegment, copySegment, deleteSegment, reorderSegments, updateDraft, updateSegment } from '../domain/videoDirectorDraft';
 import { useVideoDirectorTask } from './useVideoDirectorTask';
 import { validateDirectorDraft, type DirectorErrors } from './directorValidation';
+import { directorErrorText } from './directorValidation';
 import { DirectorSegmentEditor } from './DirectorSegmentEditor';
 import { DirectorHistory } from './DirectorHistory';
 import { directorStageLabel } from './directorStatus';
@@ -35,7 +36,9 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
     setClearedErrors((current) => new Set(current).add(key));
   };
   const images = useDirectorImageActions(nodeId, task.capabilities?.effectiveReferenceLimit, clearImageValidation);
-  const errors = { ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))), ...localErrors };
+  const errors = Object.fromEntries(Object.entries({
+    ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))), ...localErrors,
+  }).map(([key, error]) => [key, directorErrorText(error, t)]));
   const draft = data.draft;
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
@@ -65,7 +68,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
         <p className="mb-3 text-sm">{tr('activeRoute', '活动路线')}：{mode === 'ref' ? tr('refRoute', 'MiniMax H3 Ref') : tr('framesRoute', 'MiniMax H3')}</p>
-        {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-sm text-red-300">{error}</p>)}
+        {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-sm text-red-300">{directorErrorText(error, t)}</p>)}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="text-xs">{tr('model', '模型')}<select aria-label={tr('model', '模型')} className="mt-1 block w-full rounded bg-black/30 p-2" value={draft.modelId}
             onChange={(event) => setDraft(updateDraft(draft, { modelId: event.target.value }))}>

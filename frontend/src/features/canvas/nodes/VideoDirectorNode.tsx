@@ -20,6 +20,7 @@ import { AssetLibraryModal } from '@/features/canvas/ui/AssetLibraryModal';
 import { directorSubmissionFingerprint, projectDirectorDraft, resolveDirectorInputMode, setDirectorInputMode } from '@/features/canvas/domain/videoDirectorInputs';
 import { resolveDirectorBindings } from '@/features/canvas/domain/videoDirectorBindings';
 import { updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
+import { directorErrorText } from '@/features/canvas/director/directorValidation';
 
 const VideoDirectorPanel = lazy(() => import('@/features/canvas/director/VideoDirectorPanel').then((module) => ({ default: module.VideoDirectorPanel })));
 
@@ -89,6 +90,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
           {inputChanged && <p className="text-xs text-amber-300">{tr('inputChanged')}</p>}
           <button type="button" className="nodrag text-xs text-cyan-300" onClick={() => setShowResult(false)}>{tr('backToInputs')}</button>
         </div> : <>
+          {videoUrl && <button type="button" className="nodrag self-start text-xs text-cyan-300" onClick={() => setShowResult(true)}>{tr('viewVideo')}</button>}
           <div className="flex items-center justify-between text-xs">
             <span>{mode === 'ref' ? tr('refRoute') : tr('framesRoute')}</span>
             <div className="flex gap-2"><button type="button" className="nodrag" aria-pressed={mode === 'ref'} onClick={() => setMode('ref')}>Ref</button>
@@ -97,7 +99,11 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
           {mode === 'ref' && !effective.references.length && <p className="text-xs text-text-muted">{tr('refEmpty')}</p>}
           <div className="nodrag min-h-0 flex-1 overflow-auto">
             <div className="mb-2 flex gap-2 overflow-auto">{(mode === 'ref' ? effective.references : data.draft.references).map((image) =>
-              <div key={image.imageId} className="w-28 shrink-0">{slot(tr('reference'), image, { kind: 'reference', imageId: image.imageId })}</div>)}
+              <div key={image.imageId} className="w-28 shrink-0">{data.draft.references.some((manual) => manual.imageId === image.imageId)
+                ? slot(tr('reference'), image, { kind: 'reference', imageId: image.imageId })
+                : <div role="group" aria-label={tr('reference')} className="rounded border border-white/10 p-2 text-xs">
+                  <span>{tr('reference')}</span><img src={image.url} alt={tr('connectedImage')} className="mt-1 h-20 w-full object-contain" />
+                  <p className="mt-1 text-text-muted">{tr('connectedImage')}</p></div>}</div>)}
               <div className="w-28 shrink-0">{slot(tr('reference'), null, { kind: 'references' })}</div></div>
             {mode === 'frames' && data.draft.references.length > 0 && <p className="text-xs text-text-muted">{tr('retainedInactive')}</p>}
             {segments.length > 1 && <div className="mb-2 flex gap-2 overflow-auto">{segments.map((item, index) =>
@@ -112,7 +118,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
                 <textarea className="nodrag mt-1 w-full rounded border border-white/20 bg-black/20 p-2" value={segment.prompt}
                   onChange={(event) => updateNodeData(id, { draft: updateSegment(data.draft, segment.id, { prompt: event.target.value }) })} />
               </label></>}
-            {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-xs text-red-300">{error}</p>)}
+            {Object.values(binding.errors).map((error, index) => <p key={index} role="alert" className="text-xs text-red-300">{directorErrorText(error, t)}</p>)}
           </div>
         </>}
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
@@ -124,7 +130,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             else setEditorOpen(true);
           }}>{t('node.videoDirector.node.edit')}</button>
           <button type="button" className="nodrag text-cyan-300" onClick={() => {
-            if (task.capabilities && !Object.keys(validateDirectorDraft(effective, task.capabilities)).length && !data.pendingSubmission) task.generate(effective);
+            if (task.capabilities && !Object.keys({ ...validateDirectorDraft(effective, task.capabilities), ...binding.errors }).length && !data.pendingSubmission) task.generate(effective);
             else setEditorOpen(true);
           }}>{tr('generate')}</button>
         </div>

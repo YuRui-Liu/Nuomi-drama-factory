@@ -3,6 +3,32 @@ import type { DirectorCapabilities } from '@/api/videoDirector';
 
 export type DirectorErrors = Record<string, string>;
 
+/** Preserve domain error strings for callers while localizing the visible editor/card copy. */
+export function directorErrorText(error: string, t: (key: string, options?: Record<string, unknown>) => string): string {
+  const keys: Record<string, string> = {
+    'Connected reference image is unavailable': 'connectedReferenceUnavailable',
+    'Connected frame image is unavailable': 'connectedFrameUnavailable',
+    '当前模型不可用，请选择可用模型': 'modelUnavailable',
+    '当前分辨率不可用': 'resolutionUnavailable',
+    '当前画幅不可用': 'aspectUnavailable',
+    '当前分辨率与画幅组合不可用': 'sizeUnavailable',
+    '至少需要一个分段': 'segmentsRequired',
+    '请输入分段提示词': 'promptRequired',
+    '时长必须为正数': 'durationPositive',
+    '参考图与首帧不可同时使用': 'referenceFirstConflict',
+    '参考图与尾帧不可同时使用': 'referenceLastConflict',
+    '尾帧不能单独使用，请选择首帧': 'lastFrameAlone',
+    '没有参考图时必须选择首帧': 'firstFrameRequired',
+  };
+  const key = keys[error];
+  if (key) return t(`node.videoDirector.errors.${key}`, { defaultValue: error });
+  const limit = /^最多选择 (\d+) 张参考图$/.exec(error);
+  if (limit) return t('node.videoDirector.errors.referenceLimit', { count: Number(limit[1]), defaultValue: error });
+  const mode = /^(\w+) 模式当前不可用$/.exec(error);
+  if (mode) return t('node.videoDirector.errors.modeUnavailable', { mode: mode[1], defaultValue: error });
+  return error;
+}
+
 export function alignDirectorDuration(seconds: number, capabilities: DirectorCapabilities): { frames: number; seconds: number } {
   const { fps, frameStep, frameOffset } = capabilities;
   if (!Number.isFinite(seconds) || seconds <= 0 || fps <= 0 || frameStep <= 0) return { frames: 0, seconds: 0 };

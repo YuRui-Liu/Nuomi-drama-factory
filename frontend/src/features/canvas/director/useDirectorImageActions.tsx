@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { uploadFreezoneImage } from '@/api/ops';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -36,6 +37,7 @@ function nodeData(nodeId: string): VideoDirectorNodeData | null {
 
 export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
   onCommit?: (target: DirectorImageTarget) => void) {
+  const { t } = useTranslation();
   const [pickTarget, setPickTarget] = useState<DirectorImageTarget | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
@@ -118,10 +120,10 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
     const epoch = useCanvasStore.getState().canvasHydrationEpoch;
     if (target.kind === 'references' && referenceLimit !== undefined &&
       (nodeData(nodeId)?.draft.references.length ?? 0) >= referenceLimit) {
-      setErrors((current) => ({ ...current, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
+      setErrors((current) => ({ ...current, [key]: t('node.videoDirector.errors.referenceUploadLimit', { count: referenceLimit }) }));
       return;
     }
-    if (!project) { setErrors((current) => ({ ...current, [key]: '缺少项目，无法上传图片' })); return; }
+    if (!project) { setErrors((current) => ({ ...current, [key]: t('node.videoDirector.errors.projectMissing') })); return; }
     setErrors((current) => ({ ...current, [key]: '' }));
     setUploading((current) => ({ ...current, [key]: true }));
     let nodePresent = true;
@@ -137,7 +139,7 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
         if (mounted.current && latestUpload.current[key] === sequence && target.kind === 'references' &&
           readUrl().project === project && readUrl().canvas === canvas && window.location.pathname === route &&
           referenceLimit !== undefined && (nodeData(nodeId)?.draft.references.length ?? 0) >= referenceLimit) {
-          setErrors((old) => ({ ...old, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
+          setErrors((old) => ({ ...old, [key]: t('node.videoDirector.errors.referenceUploadLimit', { count: referenceLimit }) }));
         }
         return;
       }
@@ -146,18 +148,18 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
         const current = nodeData(nodeId)!;
         if (referenceLimit !== undefined && current.draft.references.length >= referenceLimit &&
           !current.draft.references.some((item) => item.imageId === image.imageId)) {
-          setErrors((old) => ({ ...old, [key]: `参考图已达到上限（${referenceLimit} 张）` }));
+          setErrors((old) => ({ ...old, [key]: t('node.videoDirector.errors.referenceUploadLimit', { count: referenceLimit }) }));
           return;
         }
         commitDirectorSlot(target, [...current.draft.references, image], undefined, sequence);
       } else commitDirectorSlot(target, [image], undefined, sequence);
     } catch (error) {
-      if (currentRequest()) setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : '图片上传失败' }));
+      if (currentRequest()) setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : t('node.videoDirector.errors.uploadFailed') }));
     } finally {
       unsubscribe();
       if (mounted.current && latestUpload.current[key] === sequence) setUploading((current) => ({ ...current, [key]: false }));
     }
-  }, [nodeId, referenceLimit, commitDirectorSlot, slotKey]);
+  }, [nodeId, referenceLimit, commitDirectorSlot, slotKey, t]);
   const openPicker = useCallback((target: DirectorImageTarget) => { clearError(target); setPickTarget(target); }, [slotKey]);
   const closePicker = useCallback(() => setPickTarget(null), []);
   const current = nodeData(nodeId);

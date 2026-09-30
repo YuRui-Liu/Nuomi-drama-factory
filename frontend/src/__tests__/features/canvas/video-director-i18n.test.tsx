@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs';
 import i18next from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoDirectorNode } from '@/features/canvas/nodes/VideoDirectorNode';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import type { DirectorAttempt, VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
+import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
+import { useCanvasStore } from '@/stores/canvasStore';
 
 const useTask = vi.hoisted(() => vi.fn());
 vi.mock('@/features/canvas/director/useVideoDirectorTask', () => ({ useVideoDirectorTask: useTask }));
@@ -19,6 +21,7 @@ const resources = Object.fromEntries(['zh', 'en'].map((language) => [language,
   { translation: JSON.parse(readFileSync(`public/locales/${language}/translation.json`, 'utf8')) }])) as Record<string, { translation: object }>;
 
 describe('video director with real locale resources', () => {
+  beforeEach(() => useCanvasStore.setState({ nodes: [], edges: [] }));
   it('shows a changed-input marker for a completed result and returns to inputs', async () => {
     const i18n = i18next.createInstance();
     await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
@@ -40,6 +43,64 @@ describe('video director with real locale resources', () => {
     expect(document.querySelector('video')).toHaveAttribute('controls');
     fireEvent.click(screen.getByRole('button', { name: 'Back to inputs' }));
     expect(screen.getByRole('textbox', { name: 'Current segment prompt' })).toHaveValue('edited');
+    fireEvent.click(screen.getByRole('button', { name: 'View video' }));
+    expect(document.querySelector('video')).toHaveAttribute('controls');
+  });
+  it('blocks generation for an unavailable connected reference even when a manual reference is valid', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    const draft = createDirectorDraft('s1');
+    draft.references = [{ imageId: 'manual', url: '/manual.png' }];
+    draft.segments[0].prompt = 'A scene';
+    const data: VideoDirectorNodeData = { draft, activeInputMode: 'ref', activeAttemptId: null, videoUrl: null, resultRevision: null };
+    useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data }],
+      edges: [{ id: 'missing', source: 'gone', target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }] } as never);
+    const generate = vi.fn();
+    useTask.mockReturnValue({ capabilities: { models: [{ id: draft.modelId }], params: { aspectRatio: [draft.aspectRatio], resolution: [draft.resolution] },
+      sizes: [], modes: [{ id: 'ref_only', supported: true }], effectiveReferenceLimit: 5 }, attempts: [], error: '', fieldErrors: {},
+      generate, recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} onOpenEditor={vi.fn()} /></I18nextProvider>);
+    expect(screen.getByRole('alert')).toHaveTextContent('Connected reference image is unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it('renders a connected reference without manual image actions', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    const draft = createDirectorDraft('s1');
+    const data: VideoDirectorNodeData = { draft, activeInputMode: 'ref', activeAttemptId: null, videoUrl: null, resultRevision: null };
+    useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data },
+      { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/linked.png' } }],
+      edges: [{ id: 'link', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }] } as never);
+    useTask.mockReturnValue({ capabilities: null, attempts: [], error: '', fieldErrors: {},
+      generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} /></I18nextProvider>);
+    const linkedImage = document.querySelector('img[src*="linked.png"]');
+    expect(linkedImage).toBeInTheDocument();
+    const group = linkedImage?.closest('[role="group"]') as HTMLElement;
+    expect(within(group).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(group).getByText('Connected image')).toBeInTheDocument();
+  });
+  it('translates image action errors in English', async () => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    window.history.replaceState({}, '', '/freezone');
+    const data: VideoDirectorNodeData = { draft: createDirectorDraft('s1'), activeInputMode: 'ref',
+      activeAttemptId: null, videoUrl: null, resultRevision: null };
+    useCanvasStore.setState({ nodes: [{ id: 'director', type: CANVAS_NODE_TYPES.videoDirector,
+      position: { x: 0, y: 0 }, data }], edges: [] } as never);
+    useTask.mockReturnValue({ capabilities: null, attempts: [], error: '', fieldErrors: {},
+      generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} /></I18nextProvider>);
+    fireEvent.change(screen.getByLabelText('Upload Subject references image'),
+      { target: { files: [new File(['image'], 'source.png', { type: 'image/png' })] } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Cannot upload image without a project');
   });
   it.each([
     { language: 'zh', empty: 'Ref 引导，待输入', segments: '1 段', duration: '5.0 秒', edit: '编辑', stage: '优化中', title: '视频导演 · director', model: '模型' },
