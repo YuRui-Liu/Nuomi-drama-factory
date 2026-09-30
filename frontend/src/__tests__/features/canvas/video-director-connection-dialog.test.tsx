@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Connection } from '@xyflow/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Canvas } from '@/features/canvas/Canvas';
+import { getDirectorCapabilities } from '@/api/videoDirector';
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -48,6 +49,7 @@ function dragImageToDirector() {
 describe('director image connection target', () => {
   beforeEach(() => {
     onConnect = undefined;
+    vi.mocked(getDirectorCapabilities).mockResolvedValue({ effectiveReferenceLimit: 1 } as Awaited<ReturnType<typeof getDirectorCapabilities>>);
     window.history.replaceState({}, '', '/projects/demo/freezone');
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     useCanvasStore.getState().setCanvasData([
@@ -149,5 +151,53 @@ describe('director image connection target', () => {
     fireEvent.click(screen.getByRole('button', { name: '第 1 段尾帧' }));
     expect(useCanvasStore.getState().edges).toHaveLength(1);
     expect(useCanvasStore.getState().edges[0]?.source).toBe(thirdId);
+  });
+
+  it('explains that a connected frame temporarily uses the upstream image over a manual frame', async () => {
+    const director = useCanvasStore.getState().nodes.find((node) => node.id === 'director')!;
+    const draft = (director.data as { draft: ReturnType<typeof createDirectorDraft> }).draft;
+    useCanvasStore.getState().updateNodeData('director', { draft: {
+      ...draft, segments: [{ ...draft.segments[0], firstFrame: { imageId: 'manual', url: '/manual.png' } }],
+    } });
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    dragImageToDirector();
+    expect(screen.getByRole('button', { name: '第 1 段首帧' })).toBeEnabled();
+    expect(screen.getByText('连接期间将使用上游图，断线后恢复已选图片')).toBeInTheDocument();
+  });
+
+  it('does not add a second reference edge from the same image source', async () => {
+    vi.mocked(getDirectorCapabilities).mockResolvedValue({ effectiveReferenceLimit: 2 } as Awaited<ReturnType<typeof getDirectorCapabilities>>);
+    const secondId = useCanvasStore.getState().addNode(CANVAS_NODE_TYPES.upload, { x: 0, y: 200 }, { imageUrl: '/second.png' });
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    dragImageToDirector();
+    await waitFor(() => expect(screen.getByRole('button', { name: '主体参考图' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '主体参考图' }));
+    dragImageToDirector();
+    await waitFor(() => expect(screen.getByText('该图片已连接为主体参考图')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '主体参考图' })).toBeDisabled();
+    expect(useCanvasStore.getState().edges).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    act(() => onConnect?.({ source: secondId, target: 'director', sourceHandle: 'source', targetHandle: 'target' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '主体参考图' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '主体参考图' }));
+    expect(useCanvasStore.getState().edges.map((edge) => edge.source)).toEqual(['image', secondId]);
+  });
+
+  it('clears the previous project reference limit while loading the new project', async () => {
+    let finishNewProject!: (value: Awaited<ReturnType<typeof getDirectorCapabilities>>) => void;
+    vi.mocked(getDirectorCapabilities).mockImplementation((project) => project === 'other'
+      ? new Promise((resolve) => { finishNewProject = resolve; })
+      : Promise.resolve({ effectiveReferenceLimit: 2 } as Awaited<ReturnType<typeof getDirectorCapabilities>>));
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    dragImageToDirector();
+    await waitFor(() => expect(screen.getByRole('button', { name: '主体参考图' })).toBeEnabled());
+    window.history.replaceState({}, '', '/projects/other/freezone');
+    act(() => useCanvasStore.getState().updateNodeData('director', { displayName: 'Updated director' }));
+    await waitFor(() => expect(screen.getByText('正在获取参考图数量限制')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '主体参考图' })).toBeDisabled();
+    await act(async () => finishNewProject({ effectiveReferenceLimit: 2 } as Awaited<ReturnType<typeof getDirectorCapabilities>>));
   });
 });

@@ -4,7 +4,8 @@ import { readUrl } from '@/lib/url-params';
 import type { CanvasEdge, CanvasNode, VideoDirectorNodeData } from '../domain/canvasNodes';
 import { readDirectorBinding, resolveDirectorBindings, type DirectorBinding } from '../domain/videoDirectorBindings';
 
-export function DirectorConnectionTargetDialog({ target, nodes, edges, onSelect, onCancel, error }: {
+export function DirectorConnectionTargetDialog({ sourceId, target, nodes, edges, onSelect, onCancel, error }: {
+  sourceId: string;
   target: CanvasNode;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
@@ -16,6 +17,8 @@ export function DirectorConnectionTargetDialog({ target, nodes, edges, onSelect,
   const [capabilityError, setCapabilityError] = useState('');
   const project = readUrl().project;
   useEffect(() => {
+    setReferenceLimit(null);
+    setCapabilityError('');
     if (!project) {
       setCapabilityError('未选择项目，无法添加主体参考图');
       return;
@@ -32,8 +35,9 @@ export function DirectorConnectionTargetDialog({ target, nodes, edges, onSelect,
   const draft = (target.data as VideoDirectorNodeData).draft;
   const incoming = edges.filter((edge) => edge.target === target.id);
   const references = resolveDirectorBindings(draft, nodes, incoming, 'ref').draft.references;
-  const referenceDisabled = referenceLimit === null || references.length >= referenceLimit;
-  const referenceReason = capabilityError || (referenceLimit === null ? '正在获取参考图数量限制'
+  const alreadyBoundReference = incoming.some((edge) => edge.source === sourceId && readDirectorBinding(edge)?.kind === 'reference');
+  const referenceDisabled = alreadyBoundReference || referenceLimit === null || references.length >= referenceLimit;
+  const referenceReason = alreadyBoundReference ? '该图片已连接为主体参考图' : capabilityError || (referenceLimit === null ? '正在获取参考图数量限制'
     : referenceDisabled ? `主体参考图已达到上限（${referenceLimit} 张）` : '');
 
   return <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/65 p-4" onMouseDown={(event) => {
@@ -57,6 +61,7 @@ export function DirectorConnectionTargetDialog({ target, nodes, edges, onSelect,
               onClick={() => onSelect({ kind, segmentId: segment.id })}
               className="block w-full rounded-lg border border-white/15 px-3 py-2 text-left disabled:cursor-not-allowed disabled:opacity-45">{label}</button>
             {occupied && <p className="text-xs text-amber-200">{label}已被连线占用</p>}
+            {!occupied && segment[kind] && <p className="text-xs text-white/60">连接期间将使用上游图，断线后恢复已选图片</p>}
           </div>;
         }))}
       </div>

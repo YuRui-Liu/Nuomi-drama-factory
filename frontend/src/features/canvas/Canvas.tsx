@@ -57,7 +57,7 @@ import {
 } from '@/features/canvas/domain/canvasNodes';
 import { cloneVideoDirectorData } from '@/features/canvas/domain/videoDirectorDraft';
 import { setDirectorInputMode } from '@/features/canvas/domain/videoDirectorInputs';
-import type { DirectorBinding } from '@/features/canvas/domain/videoDirectorBindings';
+import { readDirectorBinding, type DirectorBinding } from '@/features/canvas/domain/videoDirectorBindings';
 import {
   CANVAS_ASSET_DRAG_MIME,
   readAssetDragPayload,
@@ -1753,6 +1753,11 @@ export function Canvas({
     if (!director || director.type !== CANVAS_NODE_TYPES.videoDirector || !image ||
       !isUpstreamConnectionAllowed(image.type, director.type)) {
       setPendingDirectorConnections((queued) => queued.slice(1));
+      return;
+    }
+    if (slot.kind === 'reference' && current.edges.some((edge) => edge.source === source && edge.target === target &&
+      readDirectorBinding(edge)?.kind === 'reference')) {
+      setDirectorConnectionError('该图片已连接为主体参考图');
       return;
     }
     const edgeId = current.addEdgeWithData(source, target, { edgeKind: 'videoDirectorImage', slot }, { id: crypto.randomUUID() });
@@ -4656,6 +4661,7 @@ export function Canvas({
 
       {pendingDirectorConnection && nodes.find((node) => node.id === pendingDirectorConnection.target)?.type === CANVAS_NODE_TYPES.videoDirector &&
         <DirectorConnectionTargetDialog
+          sourceId={pendingDirectorConnection.source}
           target={nodes.find((node) => node.id === pendingDirectorConnection.target)!}
           nodes={nodes}
           edges={edges}
