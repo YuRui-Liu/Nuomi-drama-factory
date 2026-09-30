@@ -976,7 +976,8 @@ export function Canvas({
 
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
-  const [pendingDirectorConnection, setPendingDirectorConnection] = useState<Connection | null>(null);
+  const [pendingDirectorConnections, setPendingDirectorConnections] = useState<Connection[]>([]);
+  const pendingDirectorConnection = pendingDirectorConnections[0] ?? null;
   const [directorConnectionError, setDirectorConnectionError] = useState('');
   // 连线可见性：隐藏时只给 ReactFlow 的边打 `hidden`，真实 edges 一动不动（见
   // edgeVisibilityStore）。持久化/自动布局/导出全部照用 store 里的真实连线。
@@ -1732,7 +1733,7 @@ export function Canvas({
       if (target?.type === CANVAS_NODE_TYPES.videoDirector && source &&
         isUpstreamConnectionAllowed(source.type, target.type)) {
         setDirectorConnectionError('');
-        setPendingDirectorConnection(connection);
+        setPendingDirectorConnections((queued) => [...queued, connection]);
         return;
       }
       if (connectSkillRoleBinding(connection, explicitSkill)) {
@@ -1751,7 +1752,7 @@ export function Canvas({
     const image = current.nodes.find((node) => node.id === source);
     if (!director || director.type !== CANVAS_NODE_TYPES.videoDirector || !image ||
       !isUpstreamConnectionAllowed(image.type, director.type)) {
-      setPendingDirectorConnection(null);
+      setPendingDirectorConnections((queued) => queued.slice(1));
       return;
     }
     const edgeId = current.addEdgeWithData(source, target, { edgeKind: 'videoDirectorImage', slot }, { id: crypto.randomUUID() });
@@ -1764,7 +1765,7 @@ export function Canvas({
       const next = setDirectorInputMode(latest.data as VideoDirectorNodeData, slot.kind === 'reference' ? 'ref' : 'frames');
       if (next !== latest.data) useCanvasStore.getState().updateNodeData(target, next);
     }
-    setPendingDirectorConnection(null);
+    setPendingDirectorConnections((queued) => queued.slice(1));
     setDirectorConnectionError('');
     scheduleCanvasPersist(0);
   }, [pendingDirectorConnection, scheduleCanvasPersist]);
@@ -1772,7 +1773,7 @@ export function Canvas({
   useEffect(() => {
     if (pendingDirectorConnection && (!nodes.some((node) => node.id === pendingDirectorConnection.source) ||
       !nodes.some((node) => node.id === pendingDirectorConnection.target))) {
-      setPendingDirectorConnection(null);
+      setPendingDirectorConnections((queued) => queued.slice(1));
       setDirectorConnectionError('');
     }
   }, [nodes, pendingDirectorConnection]);
@@ -4660,7 +4661,7 @@ export function Canvas({
           edges={edges}
           error={directorConnectionError}
           onSelect={confirmDirectorConnection}
-          onCancel={() => { setPendingDirectorConnection(null); setDirectorConnectionError(''); }}
+          onCancel={() => { setPendingDirectorConnections((queued) => queued.slice(1)); setDirectorConnectionError(''); }}
         />}
 
       {marqueeSelectionRect && (

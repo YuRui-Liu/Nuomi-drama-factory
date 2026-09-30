@@ -115,4 +115,39 @@ describe('director image connection target', () => {
     expect(screen.getByRole('button', { name: '主体参考图' })).toBeDisabled();
     expect(useCanvasStore.getState().edges).toHaveLength(0);
   });
+
+  it('processes consecutive image connections one by one without dropping the first source', async () => {
+    useCanvasStore.getState().addNode(CANVAS_NODE_TYPES.upload, { x: 0, y: 200 }, { imageUrl: '/second.png' });
+    const secondId = useCanvasStore.getState().nodes.find((node) => node.id !== 'image' && node.id !== 'director')!.id;
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    act(() => {
+      onConnect?.({ source: 'image', target: 'director', sourceHandle: 'source', targetHandle: 'target' });
+      onConnect?.({ source: secondId, target: 'director', sourceHandle: 'source', targetHandle: 'target' });
+    });
+    fireEvent.click(screen.getByRole('button', { name: '第 1 段首帧' }));
+    expect(useCanvasStore.getState().edges[0]).toMatchObject({ source: 'image', data: { slot: { kind: 'firstFrame', segmentId: 'stable-segment' } } });
+    expect(screen.getByRole('dialog', { name: '选择图片连接目标' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '第 1 段尾帧' }));
+    expect(useCanvasStore.getState().edges[1]).toMatchObject({ source: secondId, data: { slot: { kind: 'lastFrame', segmentId: 'stable-segment' } } });
+    expect(screen.queryByRole('dialog', { name: '选择图片连接目标' })).not.toBeInTheDocument();
+  });
+
+  it('advances after cancel and skips a queued connection whose source is gone', async () => {
+    const secondId = useCanvasStore.getState().addNode(CANVAS_NODE_TYPES.upload, { x: 0, y: 200 }, { imageUrl: '/second.png' });
+    const thirdId = useCanvasStore.getState().addNode(CANVAS_NODE_TYPES.upload, { x: 0, y: 400 }, { imageUrl: '/third.png' });
+    mount();
+    await waitFor(() => expect(onConnect).toBeDefined());
+    act(() => {
+      for (const source of ['image', secondId, thirdId]) {
+        onConnect?.({ source, target: 'director', sourceHandle: 'source', targetHandle: 'target' });
+      }
+      useCanvasStore.getState().deleteNode(secondId);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('dialog', { name: '选择图片连接目标' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '第 1 段尾帧' }));
+    expect(useCanvasStore.getState().edges).toHaveLength(1);
+    expect(useCanvasStore.getState().edges[0]?.source).toBe(thirdId);
+  });
 });
