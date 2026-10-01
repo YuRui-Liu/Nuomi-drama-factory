@@ -3,9 +3,11 @@ import type { TechniqueCard } from '@/api/videoDirector';
 import { directorErrorText } from '@/features/canvas/director/directorValidation';
 import { durationLabel, incompatibility, type TechniqueContext } from './presentation';
 import { TechniqueSketch } from './TechniqueSketch';
+import { RelatedCases } from './RelatedCases';
 
-export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBack }: {
+export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBack, onCase }: {
   card: TechniqueCard; context?: TechniqueContext; catalogAvailable: boolean; onApply: () => void; onBack: () => void;
+  onCase?: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => t(`techniqueLibrary.${key}`, { defaultValue: fallback });
@@ -19,6 +21,7 @@ export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBa
       <p className="mt-3 text-sm leading-relaxed text-slate-200">{card.summary}</p>
       <p className="mb-4 mt-2 text-sm leading-relaxed text-slate-400">{card.intent}</p>
       <TechniqueSketch id={card.id} large />
+      <RelatedCases ids={card.case_ids} onOpen={onCase} />
       {!!card.action_beats?.length && <div className="mt-5"><h4 className="mb-3 text-xs text-slate-400">{tr('beats', '动作节拍')}</h4>
         <ol className="space-y-3">{card.action_beats.map((beat, index) => <li key={index} className="flex gap-3 text-sm leading-relaxed"><span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-cyan-400/10 text-[10px] text-cyan-300">{index + 1}</span>{beat}</li>)}</ol></div>}
       {([['performance', '人物表演', card.performance], ['camera', '镜头调度', card.camera], ['ending', '结尾构图', card.ending_composition]] as const).map(([key, label, value]) => value && <div key={key} className="mt-5"><h4 className="mb-1 text-xs text-slate-400">{tr(key, label)}</h4><p className="text-sm leading-relaxed">{value}</p></div>)}
@@ -27,7 +30,7 @@ export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBa
         <p>{card.applicability.modes.map((mode) => tr(`mode_${mode}`, { i2v: '首帧生成', fl2v: '首尾帧生成', ref_only: '参考图生成' }[mode])).join(' · ')}</p>
         <p>{durationLabel(card.applicability.min_duration_seconds)}–{durationLabel(card.applicability.max_duration_seconds)} {tr('seconds', '秒')} · {tr(`frame_${card.applicability.last_frame_constraint}`, { required: '需要尾帧', allowed: '可选尾帧', forbidden: '不使用尾帧' }[card.applicability.last_frame_constraint])}</p>
       </div>
-      {!!card.sources?.length && <div className="mt-4 text-xs"><h4 className="mb-2 text-slate-400">{tr('sources', '参考来源')}</h4>{card.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="mb-2 block break-words text-cyan-300 underline-offset-4 hover:underline">{source.credit} ↗</a>)}</div>}
+      {!!card.sources?.length && <div className="mt-4 text-xs"><h4 className="mb-2 text-slate-400">{tr('sources', '参考来源')}</h4>{card.sources.map((source, index) => <div key={`${source.url}-${index}`} className="mb-3 break-words">{/^https?:\/\//i.test(source.url) ? <a href={source.url} target="_blank" rel="noopener noreferrer" className="block text-cyan-300 underline-offset-4 hover:underline">{source.credit} ↗</a> : <p>{source.credit}</p>}{source.basis && <p className="mt-1 whitespace-pre-line leading-5 text-slate-400">{source.basis}</p>}</div>)}</div>}
     </div>
     {context && <div className="border-t border-white/10 p-4">
       {issue && <p className="mb-3 text-xs text-amber-200">{issue === 'capabilitiesUnavailable' ? tr(issue, '模型能力暂不可用，无法选择') : issue === 'modeUnavailable' ? tr(issue, '当前模型不支持此输入模式') : directorErrorText(issue, t)}</p>}

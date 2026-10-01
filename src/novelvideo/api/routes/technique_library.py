@@ -4,7 +4,8 @@ import logging
 from pathlib import Path
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from novelvideo.technique_library import catalog as case_catalog
 
 from novelvideo import config
 from novelvideo.api.auth import get_api_user
@@ -49,6 +50,36 @@ def catalog(user: dict = Depends(get_api_user)) -> dict:
 @router.get("/favorites")
 def favorites(user: dict = Depends(get_api_user)) -> dict:
     return _favorites(_owner(user))
+
+
+def _related(case: dict) -> dict:
+    return {**case, "related_technique_ids": [card.id for card in list_techniques()
+             if case["id"] in getattr(card, "case_ids", ())]}
+
+
+@router.get("/cases")
+def cases(q: str = '', use_case: str = '', provenance: str = '',
+          offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=100),
+          user: dict = Depends(get_api_user)) -> dict:
+    _owner(user)
+    try:
+        data = case_catalog.query_cases(q, use_case, provenance, offset, limit)
+    except case_catalog.CatalogUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    data['items'] = [_related(case) for case in data['items']]
+    return {'ok': True, 'data': data}
+
+
+@router.get("/cases/{case_id}")
+def case_detail(case_id: str, user: dict = Depends(get_api_user)) -> dict:
+    _owner(user)
+    try:
+        case = case_catalog.get_case(case_id)
+    except case_catalog.CatalogUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if case is None:
+        raise HTTPException(404, 'Case not found')
+    return {'ok': True, 'data': _related(case)}
 
 
 @router.put("/favorites/{card_id}")

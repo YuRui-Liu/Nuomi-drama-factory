@@ -8,6 +8,8 @@ import { browseTechniques, techniqueKey, categories, categoryLabels, categoryOf,
 import { TechniqueSketch } from './TechniqueSketch';
 import { TechniqueDetail } from './TechniqueDetail';
 import { useTechniqueLibrary } from './useTechniqueLibrary';
+import { CaseBrowser } from './CaseBrowser';
+import { useCases } from './presentation';
 
 export function TechniqueLibrary({ context, label, className }: { context?: TechniqueContext; label?: string; className?: string }) {
   const { t } = useTranslation();
@@ -40,6 +42,9 @@ function LibraryBody({ username, context, searchRef, onClose }: {
   const tr = (key: string, fallback: string) => t(`techniqueLibrary.${key}`, { defaultValue: fallback });
   const { catalog, favorites, busy, mutation } = useTechniqueLibrary(username);
   const [category, setCategory] = useState('all');
+  const [entry, setEntry] = useState<'techniques' | 'cases'>('techniques');
+  const [caseId, setCaseId] = useState<string>();
+  const [useCase, setUseCase] = useState('');
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -49,14 +54,24 @@ function LibraryBody({ username, context, searchRef, onClose }: {
   const visible = cards.filter((card) => {
     const group = categoryOf(card);
     return (category === 'all' || (category === 'favorites' ? favoriteIds.has(card.id) : group === category))
+      && (!useCase || card.use_cases?.includes(useCase))
       && (!context || showAll || !incompatibility(card, context))
       && `${card.title} ${card.summary} ${card.intent} ${card.category} ${tr(`category_${group}`, categoryLabels[group])}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   });
   const selected = cards.find((card) => techniqueKey(card) === selectedId);
-  const reset = () => { setQuery(''); setCategory('all'); setShowAll(false); };
+  const reset = () => { setQuery(''); setCategory('all'); setShowAll(false); setUseCase(''); };
   const issueText = (issue: string) => issue === 'capabilitiesUnavailable' ? tr(issue, '模型能力暂不可用，无法选择')
     : issue === 'modeUnavailable' ? tr(issue, '当前模型不支持此输入模式') : directorErrorText(issue, t);
-  return <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <nav aria-label={tr('entries', '浏览类型')} className="flex shrink-0 gap-3 border-b border-white/10 px-5 py-3">
+      <button type="button" aria-pressed={entry === 'techniques'} className="rounded px-3 py-1 text-sm text-cyan-200" onClick={() => setEntry('techniques')}>{tr('techniquesEntry', '手法')}</button>
+      <button type="button" aria-pressed={entry === 'cases'} className="rounded px-3 py-1 text-sm text-cyan-200" onClick={() => { setCaseId(undefined); setEntry('cases'); }}>{tr('cases', '案例')}</button>
+    </nav>
+    {entry === 'cases' ? <CaseBrowser key={caseId ?? 'list'} username={username} initialId={caseId} techniqueTitles={Object.fromEntries(cards.map((card) => [card.id, card.title]))} onTechnique={(id) => {
+      const card = cards.find((candidate) => candidate.id === id);
+      if (card) { setSelectedId(techniqueKey(card)); setMobileDetail(true); setEntry('techniques'); return true; }
+      return false;
+    }} /> : <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
     <nav aria-label={tr('categories', '手法分类')} className={`${mobileDetail ? 'hidden lg:flex' : 'flex'} shrink-0 gap-1 overflow-x-auto border-b border-white/10 p-3 lg:w-[160px] lg:flex-col lg:border-b-0 lg:border-r lg:p-4`}>
       {(['all', 'favorites', ...categories] as const).map((value) => <button type="button" key={value} aria-pressed={category === value}
         onClick={() => { setCategory(value); setMobileDetail(false); }} className={`whitespace-nowrap rounded-lg px-3 py-2.5 text-left text-xs transition-colors ${category === value ? 'bg-cyan-300/10 text-cyan-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'}`}>
@@ -67,6 +82,7 @@ function LibraryBody({ username, context, searchRef, onClose }: {
     <div className={`${mobileDetail ? 'hidden lg:flex' : 'flex'} min-h-0 min-w-0 flex-1 flex-col`}>
       <div className="shrink-0 space-y-3 border-b border-white/10 p-4">
         <label className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 text-slate-400 focus-within:border-cyan-300/60"><Search size={15} /><input ref={searchRef} type="search" aria-label={tr('search', '搜索手法')} placeholder={tr('searchPlaceholder', '搜索情绪、动作或镜头…')} value={query} onChange={(event) => setQuery(event.target.value)} className="h-10 min-w-0 flex-1 bg-transparent text-sm text-slate-200 outline-none" /></label>
+        <select aria-label={tr('techniqueUse', '手法用途')} className="rounded bg-slate-800 p-2 text-xs" value={useCase} onChange={(event) => setUseCase(event.target.value)}><option value="">{tr('allUses', '全部用途')}</option>{Object.entries(useCases).map(([id, title]) => <option key={id} value={id}>{tr(`use_${id}`, title)}</option>)}</select>
         <div className="flex items-center justify-between gap-2 text-xs text-slate-400"><span>{visible.length} {tr('count', '个手法')}</span>{context && <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={showAll} onChange={(event) => setShowAll(event.target.checked)} className="accent-cyan-300" />{tr('showAll', '显示全部手法')}</label>}</div>
         {favorites.isError && <div role="alert" className="flex items-center justify-between gap-2 text-xs text-amber-200"><span>{tr('favoritesError', '收藏读取失败')}</span><button type="button" onClick={() => void favorites.refetch()} className="underline">{tr('retryFavorites', '重试读取收藏')}</button></div>}
         {mutation.isError && <div role="alert" className="flex items-center justify-between gap-2 text-xs text-amber-200"><span>{tr('notSaved', '未保存')}</span><button type="button" disabled={busy} onClick={() => mutation.variables && mutation.mutate(mutation.variables)} className="underline">{tr('retrySave', '重试保存')}</button></div>}
@@ -94,9 +110,9 @@ function LibraryBody({ username, context, searchRef, onClose }: {
       </div>
     </div>
     <aside className={`${mobileDetail ? 'flex' : 'hidden lg:flex'} min-h-0 min-w-0 flex-1 flex-col border-white/10 bg-black/10 lg:w-[330px] lg:flex-none lg:border-l`}>
-      {selected ? <TechniqueDetail card={selected} context={context} catalogAvailable={!!catalog.data && !catalog.isError} onBack={() => setMobileDetail(false)} onApply={() => {
+      {selected ? <TechniqueDetail card={selected} context={context} catalogAvailable={!!catalog.data && !catalog.isError} onCase={(id) => { setCaseId(id); setEntry('cases'); }} onBack={() => setMobileDetail(false)} onApply={() => {
         if (context && catalog.data && !catalog.isError && !incompatibility(selected, context)) { context.onSelect({ id: selected.id, version: selected.version }); onClose(); }
       }} /> : <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center text-sm leading-relaxed text-slate-500"><BookOpen size={30} /><p>{tr('selectDetail', '选择一张卡片，查看动作节拍与镜头细节')}</p></div>}
     </aside>
-  </div>;
+  </div>}</div>;
 }

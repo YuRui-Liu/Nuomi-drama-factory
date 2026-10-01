@@ -15,9 +15,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from novelvideo.media_capabilities.video.h3_timeline import H3_FPS, frames_for_duration
+from novelvideo.technique_library.enrichment import load_technique_publication
+from novelvideo.technique_library.models import UseCase
 
 
-CATALOG_VERSION = "2026-09-30.2"
+CATALOG_VERSION = "2026-10-01.1"
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -69,6 +71,8 @@ class TechniqueCard(BaseModel):
     avoid: tuple[str, ...] = Field(min_length=1)
     applicability: TechniqueApplicability
     sources: tuple[TechniqueSource, ...] = Field(min_length=1)
+    use_cases: tuple[UseCase, ...] = ()
+    case_ids: tuple[str, ...] = ()
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -212,6 +216,19 @@ _CARDS: tuple[TechniqueCard, ...] = (
         last_frame_constraint="required",
     ),
 )
+
+
+def _publish_cards() -> tuple[TechniqueCard, ...]:
+    publication = load_technique_publication()
+    legacy = tuple(TechniqueCard.model_validate({
+        **card.model_dump(exclude={"content_hash"}),
+        **publication["legacy_display"][card.id],
+    }) for card in _CARDS)
+    additions = tuple(TechniqueCard.model_validate(item) for item in publication["cards"])
+    return legacy + additions
+
+
+_CARDS = _publish_cards()
 
 
 def list_techniques() -> tuple[TechniqueCard, ...]:

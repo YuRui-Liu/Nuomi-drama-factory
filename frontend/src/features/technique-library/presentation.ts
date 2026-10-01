@@ -8,7 +8,8 @@ export interface TechniqueContext {
   capabilities: DirectorCapabilities | null;
   onSelect: (selection: DirectorSegment['technique']) => void;
 }
-export const categories = ['performance', 'relationship', 'camera', 'action', 'continuity'] as const;
+export const useCases = { cinema: '电影叙事', performance: '人物表演', action: '动作', product: '产品展示', music: '音乐', stylized: '风格化' };
+export const categories = ['performance', 'relationship', 'camera', 'action', 'continuity', 'other'] as const;
 export type Category = typeof categories[number];
 export const techniqueKey = (card: TechniqueCard): string => `${card.id}@${card.version}`;
 
@@ -33,13 +34,14 @@ function compareVersions(a: string, b: string): number {
   if (aPre === undefined || bPre === undefined) return Number(aPre === undefined) - Number(bPre === undefined);
   return aPre.localeCompare(bPre, 'en', { numeric: true });
 }
-export const categoryLabels: Record<Category, string> = { performance: '人物表演', relationship: '双人关系', camera: '镜头运动', action: '动作与揭示', continuity: '首尾帧衔接' };
+export const categoryLabels: Record<Category, string> = { performance: '人物表演', relationship: '双人关系', camera: '镜头运动', action: '动作与揭示', continuity: '首尾帧衔接', other: '其他创作手法' };
 export function categoryOf(card: TechniqueCard): Category {
   if (card.id === 'subject-entrance' || card.category === '动作高潮') return 'action';
   if (card.category === '双人调度') return 'relationship';
   if (card.category === '首尾帧') return 'continuity';
   if (['跟拍', '揭示运镜'].includes(card.category)) return 'camera';
-  return 'performance';
+  if (['人物反应', '人物表演', '情绪表演', '表演'].includes(card.category)) return 'performance';
+  return 'other';
 }
 export function incompatibility(card: TechniqueCard, context?: TechniqueContext): string | null {
   if (!context) return null;

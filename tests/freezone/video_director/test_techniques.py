@@ -18,7 +18,7 @@ from novelvideo.freezone.video_director.techniques import (
 
 def test_catalog_has_distinct_curated_cards_with_traceable_sources():
     cards = list_techniques()
-    assert 8 <= len(cards) <= 12
+    assert len(cards) == 24
     assert CATALOG_VERSION
     assert len({(card.id, card.version) for card in cards}) == len(cards)
     assert all(card.status == "active" for card in cards)
@@ -46,11 +46,11 @@ def test_analysis_sources_point_to_a_creator_case_or_official_guide():
                 assert marker == "status" and post_id.isdigit(), card.id
                 assert source.credit == f"@{handle}", card.id
             else:
-                assert source.url == (
-                    "https://github.com/MiniMax-AI/MiniMax-H3/blob/main/"
-                    "skills/h3-prompt-writing/references/base-en.txt"
-                ), card.id
-                assert source.credit == "MiniMax-AI", card.id
+                assert parsed.scheme == "https" and not parsed.username and not parsed.password
+                assert (parsed.netloc, parsed.path.split("/")[1]) in {
+                    ("github.com", "MiniMax-AI"), ("huggingface.co", "MiniMaxAI"),
+                }, card.id
+                assert source.credit in {"MiniMax-AI", "MiniMaxAI"}, card.id
             assert len(source.basis) >= 20, card.id
             assert "归纳" not in source.basis or "案例" in source.basis, card.id
 

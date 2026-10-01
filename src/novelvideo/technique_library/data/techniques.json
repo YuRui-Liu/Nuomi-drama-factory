@@ -1,0 +1,828 @@
+{
+  "schema_version": "1.0",
+  "legacy_display": {
+    "fixed-reaction": {
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-6e4cccbcb4cc3751",
+        "h3-d43286725662adf6"
+      ]
+    },
+    "expression-build": {
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-11f60a5c1d11f78b",
+        "h3-2d38b6738fa4d179",
+        "h3-e9d068613fde2cf7"
+      ]
+    },
+    "two-person-gaze": {
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-11f60a5c1d11f78b",
+        "h3-2d38b6738fa4d179",
+        "h3-e9d068613fde2cf7"
+      ]
+    },
+    "lateral-follow": {
+      "use_cases": [
+        "cinema",
+        "action"
+      ],
+      "case_ids": [
+        "h3-d0ab120d471159fd",
+        "h3-d26a80671bd35f33"
+      ]
+    },
+    "slow-push-in": {
+      "use_cases": [
+        "cinema",
+        "product"
+      ],
+      "case_ids": [
+        "h3-0238a7ab5a35c91c",
+        "h3-549bab37bec10074",
+        "h3-ad324cfd731b7fb6"
+      ]
+    },
+    "subject-entrance": {
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-2bcd5a1e00458a95",
+        "h3-3ddf9615b1eefd43",
+        "h3-b03cafbd555bd609"
+      ]
+    },
+    "contained-climax": {
+      "use_cases": [
+        "action",
+        "cinema"
+      ],
+      "case_ids": [
+        "h3-433c597329d07d05",
+        "h3-599106906c719fbd",
+        "h3-abd5b01e287270d5"
+      ]
+    },
+    "endpoint-continuity": {
+      "use_cases": [
+        "cinema",
+        "stylized"
+      ],
+      "case_ids": []
+    }
+  },
+  "cards": [
+    {
+      "id": "product-orbit",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "产品环绕揭示",
+      "summary": "已有产品需要展示侧面轮廓时，用一次小角度环绕连接整体与质感。",
+      "category": "环绕运镜",
+      "intent": "已有产品需要展示侧面轮廓时，用一次小角度环绕连接整体与质感。",
+      "action_beats": [
+        "先呈现完整产品",
+        "沿一侧缓慢绕行观察表面",
+        "在清楚的产品主视角停留"
+      ],
+      "performance": "物体维持原有状态，只保留输入已设定的细微运动。",
+      "camera": "围绕同一中心做小角度弧移，保持物体尺寸稳定。",
+      "ending_composition": "产品边界完整，主视角停稳并留有空间。",
+      "avoid": [
+        "擅自添加品牌、粒子或变形",
+        "环绕中更换环境"
+      ],
+      "use_cases": [
+        "product",
+        "cinema"
+      ],
+      "case_ids": [
+        "h3-d06dc6702f2f931c"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/CaliraVal/status/2083059583308751079",
+          "credit": "@CaliraVal",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：第二段环绕观察表面，末段产品停留；只提取小角度环绕与收束。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "overhead-assembly",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "俯拍分步组装",
+      "summary": "仅在用户给定物料及组装顺序时，俯拍呈现构件如何逐步成为成品。",
+      "category": "俯拍调度",
+      "intent": "仅在用户给定物料及组装顺序时，俯拍呈现构件如何逐步成为成品。",
+      "action_beats": [
+        "显示已有构件布局",
+        "按给定顺序完成少量装配",
+        "操作手退出并展示成品"
+      ],
+      "performance": "每次放置后稍作停顿，使接触和连接关系可读。",
+      "camera": "固定俯拍，保持工作区域完整可见。",
+      "ending_composition": "成品留在工作区中央，双手不遮挡结果。",
+      "avoid": [
+        "凭空生成未给定的构件或成品",
+        "多步同时发生掩盖过程"
+      ],
+      "use_cases": [
+        "product",
+        "stylized"
+      ],
+      "case_ids": [
+        "h3-81db89991f9403c1"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/Maercihh/status/2082704405619679353",
+          "credit": "@Maercihh",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：俯拍案例逐层建立结构并让手离开；提炼可读的分步装配。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "motivated-light-reveal",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "光源触发揭示",
+      "summary": "素材已有可变化光源及主体时，让光源动作成为暗部信息显现的原因。",
+      "category": "光影揭示",
+      "intent": "素材已有可变化光源及主体时，让光源动作成为暗部信息显现的原因。",
+      "action_beats": [
+        "保留原始暗部层次",
+        "已有光源发生指定变化",
+        "主体反应后画面稳定"
+      ],
+      "performance": "先感知光线，再给出幅度有限的视线或呼吸变化。",
+      "camera": "保持原轴线，光线揭示后允许小幅缓推。",
+      "ending_composition": "已被照亮的主体清晰，光线保持连续。",
+      "avoid": [
+        "新增打火机、伤痕或剧情",
+        "没有光源依据的闪烁"
+      ],
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-c50c9688ca4c8cf4"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/doctorwasif/status/2082790356983447606",
+          "credit": "@doctorwasif",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：作者案例用光源动作揭示面部再承接反应；仅提炼因果照明。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "low-backward-track",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "低机位后退跟随",
+      "summary": "主体已有向前行进意图且路径清楚时，低机位后退保持姿态可读。",
+      "category": "跟拍",
+      "intent": "主体已有向前行进意图且路径清楚时，低机位后退保持姿态可读。",
+      "action_beats": [
+        "主体沿给定方向起步",
+        "摄影机随前行同步后退",
+        "镜头随主体减速收束"
+      ],
+      "performance": "让步态与衣物自然响应行进，不强行加入摆拍动作。",
+      "camera": "低机位沿路径后退，维持主体尺度和头脚关系。",
+      "ending_composition": "主体停稳，前行方向仍可辨认。",
+      "avoid": [
+        "穿过障碍物后退",
+        "新增衣物或改变主体身份"
+      ],
+      "use_cases": [
+        "product",
+        "music",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-9bea4cb54358fcac"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/Kiber_Alla/status/2083583963512062019",
+          "credit": "@Kiber_Alla",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：低机位后退跟随前行人物；提炼步态、尺度与方向连续性。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "motion-match-transition",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "同位动作匹配转场",
+      "summary": "仅当用户给定多个可用场景时，以同一物体的连续运动衔接场景变化。",
+      "category": "匹配转场",
+      "intent": "仅当用户给定多个可用场景时，以同一物体的连续运动衔接场景变化。",
+      "action_beats": [
+        "建立物体运动方向",
+        "在位置尺度相近的节点切换已给定场景",
+        "物体完成原动作并停稳"
+      ],
+      "performance": "主体的速度和朝向跨切点连续。",
+      "camera": "切点前后保持屏幕位置及尺度，避免额外甩镜。",
+      "ending_composition": "停在用户指定的最终场景，物体落点清楚。",
+      "avoid": [
+        "自行创造季节、场景或物体",
+        "资料不足时硬做场景切换"
+      ],
+      "use_cases": [
+        "product",
+        "stylized"
+      ],
+      "case_ids": [
+        "h3-289f6fb712426b8b"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/HBCoop_/status/2082827829172117943",
+          "credit": "@HBCoop_",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：案例保持物体位置与轨迹穿越场景；仅提炼同位动作匹配。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "demonstration-inserts",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "使用动作插入特写",
+      "summary": "已有使用者与操作物件时，以关键操作细节解释使用动作。",
+      "category": "细节插入",
+      "intent": "已有使用者与操作物件时，以关键操作细节解释使用动作。",
+      "action_beats": [
+        "先交代人与物件关系",
+        "在已给定操作节点插入细节",
+        "回到使用者与物件的整体关系"
+      ],
+      "performance": "手指与物件接触清晰，操作不越过用户设定的功能。",
+      "camera": "建立镜头与插入特写沿同一动作轴线连接。",
+      "ending_composition": "使用结果和持物姿态共同可见。",
+      "avoid": [
+        "新增产品功能或广告文案",
+        "特写中改变物件和手部身份"
+      ],
+      "use_cases": [
+        "product",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-eb72a78f540d4d53"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/AIwithSynthia/status/2082845923152150697",
+          "credit": "@AIwithSynthia",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：作者持物演示配合操作细节；只提炼整体、细节与关系回归。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "projected-light-performance",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "投影光表演",
+      "summary": "仅当素材或意图已有投影或变化光源时，让连续表演与光线变化共同建立节奏。",
+      "category": "光影表演",
+      "intent": "仅当素材或意图已有投影或变化光源时，让连续表演与光线变化共同建立节奏。",
+      "action_beats": [
+        "建立人物与现有光源关系",
+        "保持表演连续并呈现光线变化",
+        "在一个姿态和光线状态上停稳"
+      ],
+      "performance": "动作遵循已有表演意图，光线变化不强迫新增对白。",
+      "camera": "稳定低机位保留人物与地面关系，不频繁切镜。",
+      "ending_composition": "人物可辨认，光线和动作共同收束。",
+      "avoid": [
+        "自动添加歌词或投影内容",
+        "承诺外部音频同步或复用"
+      ],
+      "use_cases": [
+        "music",
+        "stylized"
+      ],
+      "case_ids": [
+        "h3-f9dfca21448c2287"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/h64g_/status/2092307579221516749",
+          "credit": "@h64g_",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "作者公开原文：案例以连续低机位呈现投影及反射；只提炼已有光源与表演关系。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "macro-contact-texture",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "接触质感微距",
+      "summary": "用户已指定接触对象和过程时，近距离呈现一次接触前后的表面变化。",
+      "category": "微距质感",
+      "intent": "用户已指定接触对象和过程时，近距离呈现一次接触前后的表面变化。",
+      "action_beats": [
+        "呈现接触前表面",
+        "工具或液滴按原意图接触",
+        "保留接触结果供观察"
+      ],
+      "performance": "动作幅度小且连贯，保持接触点可见。",
+      "camera": "固定微距，焦点围绕既定接触区域保持稳定。",
+      "ending_composition": "接触痕迹与对象边界清楚，不追加变化。",
+      "avoid": [
+        "凭空添加液体或工具",
+        "把其他材质改为美妆皮肤"
+      ],
+      "use_cases": [
+        "product",
+        "cinema"
+      ],
+      "case_ids": [
+        "h3-ae59ab974002566b"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 3,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/iamrealsnow/status/2083027203651178519",
+          "credit": "@iamrealsnow",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：反推案例以微距观察接触质感；提炼表面接触与结果观察。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "centered-match-transition",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "居中行进衔接",
+      "summary": "用户已提供造型或背景的多个状态时，用居中前行连接指定变化。",
+      "category": "匹配转场",
+      "intent": "用户已提供造型或背景的多个状态时，用居中前行连接指定变化。",
+      "action_beats": [
+        "确认首个给定状态",
+        "保持前行动作并衔接下一给定状态",
+        "最终状态保持片刻"
+      ],
+      "performance": "步态和身体节奏持续，身份不随状态变化。",
+      "camera": "摄影机后退保持人物居中与尺度一致。",
+      "ending_composition": "最后给定状态稳定，人物轮廓完整。",
+      "avoid": [
+        "自行换装或替换背景",
+        "多状态资料不足仍制造变化"
+      ],
+      "use_cases": [
+        "stylized",
+        "product"
+      ],
+      "case_ids": [
+        "h3-b72c23acb7efaaa2"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/AIwithkhan/status/2082688149470470241",
+          "credit": "@AIwithkhan",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：反推案例用居中前行连接外观状态；仅提炼动作连续与画面匹配。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "performance-arc",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "表演弧线靠近",
+      "summary": "已有连续表演时，沿侧面到正面的弧线靠近最清晰的表演瞬间。",
+      "category": "环绕运镜",
+      "intent": "已有连续表演时，沿侧面到正面的弧线靠近最清晰的表演瞬间。",
+      "action_beats": [
+        "从侧面呈现原有表演",
+        "缓慢弧移并适度靠近",
+        "在表演强度清楚的位置停下"
+      ],
+      "performance": "保留既有表演力度和节奏，不新增唱词或发声方式。",
+      "camera": "一次平滑弧移由侧面转至正面，靠近幅度服从空间。",
+      "ending_composition": "表情与关键动作均可见，镜头停止后留出观看时间。",
+      "avoid": [
+        "增加歌词、音色或外部音频依赖",
+        "弧移时穿越主体"
+      ],
+      "use_cases": [
+        "music",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-887e189ca9bc08fb"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/Kiber_Alla/status/2082605878679609528",
+          "credit": "@Kiber_Alla",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：reconstructed 案例从侧面弧移到正面近景；提炼表演观察角度。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "impact-cut",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "动作落点切换",
+      "summary": "已有一个明确动作及落点时，在动作关键节点切换视角以保持因果可读。",
+      "category": "动作剪辑",
+      "intent": "已有一个明确动作及落点时，在动作关键节点切换视角以保持因果可读。",
+      "action_beats": [
+        "交代起势与方向",
+        "在主要动作节点接续视角",
+        "落点后停留确认结果"
+      ],
+      "performance": "只完成一次指定动作，身体重心与落点连续。",
+      "camera": "切点匹配运动方向，避免切镜遮掉动作结果。",
+      "ending_composition": "落点和动作后姿态清楚可见。",
+      "avoid": [
+        "擅自增加跑酷路线或危险动作",
+        "反向剪接和落点瞬移"
+      ],
+      "use_cases": [
+        "action",
+        "cinema"
+      ],
+      "case_ids": [
+        "h3-20cb44fbe6e2a3f1"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/HustleXR/status/2082735985864130911",
+          "credit": "@HustleXR",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：reconstructed 案例按起势与落点组织运动视角；只提炼单动作剪辑。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "listener-countershot",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "倾听反应对切",
+      "summary": "已存在两名角色及交流关系时，用倾听者的反应承接说话者的信息。",
+      "category": "双人调度",
+      "intent": "已存在两名角色及交流关系时，用倾听者的反应承接说话者的信息。",
+      "action_beats": [
+        "中景交代两人关系",
+        "已有说话动作后切至倾听者",
+        "在倾听回应上停留"
+      ],
+      "performance": "倾听者先接收再回应；无给定对白时不补台词。",
+      "camera": "中景与近景保持轴线和视线高度一致。",
+      "ending_composition": "倾听者情绪可读，两人关系仍明确。",
+      "avoid": [
+        "新增电话、异地空间或对白",
+        "交换角色与视线方向"
+      ],
+      "use_cases": [
+        "cinema",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-82999101f63bdf0f"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/magnific/status/2083122600738521398",
+          "credit": "@magnific",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：reconstructed 案例交替说话者与倾听者；只提炼反应对切。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "contrasting-energy-pair",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "双人动静反差",
+      "summary": "两名已有角色的行为强度有差异时，用动静反差呈现关系。",
+      "category": "双人调度",
+      "intent": "两名已有角色的行为强度有差异时，用动静反差呈现关系。",
+      "action_beats": [
+        "同框交代两人位置",
+        "一人延续活跃动作另一人克制观察",
+        "近景承接较轻的回应"
+      ],
+      "performance": "活跃与克制有先后呼应，不把克制者变为完全静止。",
+      "camera": "先稳定同框，再沿原轴线靠近回应者。",
+      "ending_composition": "保留回应表情及对方的空间方向。",
+      "avoid": [
+        "新增动画真人混合风格或车内场景",
+        "为制造反差改写人物动机"
+      ],
+      "use_cases": [
+        "performance",
+        "stylized"
+      ],
+      "case_ids": [
+        "h3-e2fe65ea66eb8f9d"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://x.com/seiiiiiiiiiiru/status/2082558386441461989",
+          "credit": "@seiiiiiiiiiiru",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "reconstructed 反推写作参考，非作者原始提示：reconstructed 案例用双人不同强度建立反差；只提炼表演节奏。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "event-aftershock",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "事件余波停留",
+      "summary": "已有明确事件时，把观看重点放在事件结束后的身体回应与空间停顿。",
+      "category": "余波表演",
+      "intent": "已有明确事件时，把观看重点放在事件结束后的身体回应与空间停顿。",
+      "action_beats": [
+        "建立已有事件与环境关系",
+        "事件发生时呈现身体反应",
+        "事件结束后保持安静表情与空间"
+      ],
+      "performance": "反应从紧张逐步松开，余波阶段不追加动作高潮。",
+      "camera": "稳定保留人物与周围空间，事件后不急于切镜。",
+      "ending_composition": "事件已结束，反应后的姿态与环境同留画面。",
+      "avoid": [
+        "新增爆炸、跃迁或其他事件",
+        "用新的高潮挤掉余波停留"
+      ],
+      "use_cases": [
+        "cinema",
+        "action"
+      ],
+      "case_ids": [
+        "h3-05e264d75d21dbc4"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/scripts/readme/reproducible-768p-t2va-request.sh",
+          "credit": "MiniMaxAI",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "官方文本抽取：官方文本按环境、冲击回应与事后安静组织事件；仅提炼余波停留。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "rack-focus-reveal",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "前后景移焦",
+      "summary": "画面已有前景和后景主体时，用一次移焦把注意力交给后景行为。",
+      "category": "焦点调度",
+      "intent": "画面已有前景和后景主体时，用一次移焦把注意力交给后景行为。",
+      "action_beats": [
+        "前景清晰建立层次",
+        "焦点平滑转向已有后景",
+        "后景动作成为关注重点"
+      ],
+      "performance": "后景保持原有行为，不因移焦生成新动作。",
+      "camera": "机位保持不动，以单次焦点移动连接前后景。",
+      "ending_composition": "后景清楚、前景仍保留空间轮廓。",
+      "avoid": [
+        "新增家庭、食物或后景主体",
+        "移焦过程中改变物体位置"
+      ],
+      "use_cases": [
+        "cinema",
+        "product",
+        "performance"
+      ],
+      "case_ids": [
+        "h3-22b502aa22007f55"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/scripts/readme/reproducible-768p-fl2va-request.sh",
+          "credit": "MiniMaxAI",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "官方文本抽取：官方文本从前景转向既有后景人物；只提炼固定机位的焦点交接。 未观看视频或本地复测生成。"
+        }
+      ]
+    },
+    {
+      "id": "speech-settle",
+      "version": "1.0.0",
+      "status": "active",
+      "title": "台词后收束",
+      "summary": "仅在用户已有对白或说话动作时，把说话结束后的自然放松作为表演收束。",
+      "category": "表演收束",
+      "intent": "仅在用户已有对白或说话动作时，把说话结束后的自然放松作为表演收束。",
+      "action_beats": [
+        "延续给定说话动作",
+        "说话结束后嘴部停止且表情放松",
+        "视线轻移后保持短暂停顿"
+      ],
+      "performance": "嘴部、呼吸和视线依次收束，不增加新的台词。",
+      "camera": "保持稳定中近景，让轻微表情变化可读。",
+      "ending_composition": "嘴部不再说话，视线与轻动作自然停稳。",
+      "avoid": [
+        "新增对白或要求外部音频",
+        "不支持视频编辑、音频复用或音频参考同步"
+      ],
+      "use_cases": [
+        "performance",
+        "music",
+        "cinema"
+      ],
+      "case_ids": [
+        "h3-bf4ea0c3155d9a12"
+      ],
+      "applicability": {
+        "modes": [
+          "i2v",
+          "ref_only"
+        ],
+        "min_duration_seconds": 4,
+        "max_duration_seconds": 15.083333333333334,
+        "last_frame_constraint": "forbidden"
+      },
+      "sources": [
+        {
+          "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/scripts/readme/reproducible-768p-ref2va-request.sh",
+          "credit": "MiniMaxAI",
+          "source_type": "analysis_only",
+          "checked_at": "2026-10-01",
+          "basis": "官方文本抽取：官方原文本涉及视频编辑和音频参考；本卡仅提炼台词后表演，不继承这些能力。 未观看视频或本地复测生成。"
+        }
+      ]
+    }
+  ]
+}

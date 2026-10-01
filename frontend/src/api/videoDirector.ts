@@ -15,6 +15,7 @@ export interface DirectorCapabilities {
 }
 
 export interface TechniqueCard {
+  use_cases?: string[]; case_ids?: string[];
   id: string; version: string; status: 'active' | 'retired'; title: string; summary: string;
   category: string; intent: string; content_hash: string;
   action_beats?: string[]; performance?: string; camera?: string; ending_composition?: string; avoid?: string[];
